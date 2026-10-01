@@ -1,0 +1,306 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/config-v1.json",
+  "title": "chock config",
+  "description": "Which gates a project has switched on. Written by `chock init --local` and read by every `chock run`. Belongs in git: it is the project's answer, not one machine's.",
+  "type": "object",
+  "required": [
+    "version",
+    "enabled"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "description": "Schema version. A chock that reads a lower number still reads the file; a higher one makes it refuse rather than half-read it.",
+      "type": "integer",
+      "const": 1
+    },
+    "enabled": {
+      "description": "Gate names, as `chock gates` prints them. A name no gate answers to fails the run rather than going quietly unrun.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "target": {
+      "description": "The target triple the project builds for, where the host is not it. Passed to every tool that takes cargo's `--target`; a tool that cannot be told refuses rather than measure the host build.",
+      "type": "string",
+      "minLength": 1
+    },
+    "profile": {
+      "description": "The cargo profile the project ships, where `release` is not it. `binsize` builds it in place of `--release`, the test runner gets it as nextest's `--cargo-profile`, and a tool that cannot be told refuses.",
+      "type": "string",
+      "minLength": 1
+    },
+    "left_off": {
+      "description": "Default gates that are off, each with why: the debt `chock init` found, or the `--reason` given to `chock disable`, `switched off by hand` without one. `chock enable` removes the entry. A default gate that is neither on nor named here was never decided, and `chock doctor` names it.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "runner": {
+      "description": "The whole command that runs this project's tests, run from the project root, when `cargo nextest run --workspace --no-tests=fail` is not it. A suite that needs a ramdisk or a run directory its own script sets up cannot be started by the default. An array holding nothing is refused rather than falling back, so a config that names no command never runs something the project did not ask for.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "coverage": {
+      "description": "The whole command that writes this project's coverage report, run from the project root. `{lcov}` is replaced with the path chock will read the report from; everything else about how the measurement is made is the project's own business. Needed wherever one cargo command cannot produce the number: a suite that reaches its own server over HTTP, or drives its own binary as a subprocess, has to instrument every one of those processes and merge the counters, and code reached only that way is invisible to `cargo llvm-cov nextest`. A command that exits clean without writing the report is refused rather than read, because the file left behind is an earlier run's answer.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "features": {
+      "description": "Named Cargo features for chock-owned compiler commands. Custom runner and coverage commands remain unchanged. Tools that cannot represent the requested scope refuse rather than silently ignore it; unused-deep deliberately audits all features.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "no_default_features": {
+      "description": "Disable default Cargo features where the tool supports this scope. Does not rewrite custom runner or coverage commands.",
+      "type": "boolean"
+    },
+    "all_features": {
+      "description": "Enable every Cargo feature; takes precedence over the named features list. Does not rewrite custom runner or coverage commands.",
+      "type": "boolean"
+    },
+    "message": {
+      "description": "How wide a commit subject may be and how many lines its body may hold, for the `commits` gate. A convention is the project's to set: a project that puts its reasoning and its numbers in the message needs a wider body than chock's own. An absent field keeps chock's answer for that one limit.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "subject": {
+          "description": "The longest a subject line may be, in characters. chock's own answer is 72.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "body": {
+          "description": "The most non-blank body lines a message may hold. chock's own answer is 12.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "not_shipped": {
+      "description": "Workspace members nobody receives: a fuzz harness that reports a finding by panicking, a benchmark that is nobody's dependency, an xtask that only this repository runs. Inside one, `unwrap`, `expect`, `panic!` and `unsafe` may be switched off, because the lints that forbid them are rules about shipped code. Each entry names a path from the project root, with or without a trailing `/**`, and covers that path and everything under it. Named here rather than waived per file: a per-file waiver is the hole this closes.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "miri": {
+      "description": "Which packages the `miri` gate runs over, and the flags it runs with. The interpreter cannot emulate a call into C, so a workspace that reaches a `-sys` crate from its suite either names the crates where the check means something or never runs it at all. Naming `packages` is the narrower answer and wins over `exclude`; naming neither is the whole workspace.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "packages": {
+          "description": "The only packages to run, as cargo names them. An empty list is a project that named nothing.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "exclude": {
+          "description": "Packages to leave out of the workspace run.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "flags": {
+          "description": "The flags miri runs with, replacing chock's `-Zmiri-disable-isolation -Zmiri-strict-provenance` rather than adding to them: a suite whose dependencies fail under one of those needs it gone, and no list of extra flags can remove it. A rayon pool reaches crossbeam-epoch, which casts an integer to a pointer, so `[\"-Zmiri-disable-isolation\", \"-Zmiri-tree-borrows\", \"-Zmiri-ignore-leaks\"]` is what such a workspace runs. An empty list is a project that named nothing.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "vcs": {
+      "description": "Which system holds this tree's history, where both a git repository and an outpost one do. Absent, chock measures it: the longer history is the live one and the shorter is a mirror that has fallen behind. Naming it here settles the question instead.",
+      "enum": [
+        "git",
+        "outpost"
+      ]
+    },
+    "stage": {
+      "description": "Where a gate runs, for each gate whose default does not suit this project. `commit`: the pre-commit hook, the pre-push hook and CI. `push`: the pre-push hook and CI. `ci`: CI only. `manual`: only a `chock run` that somebody starts, so nothing enforces it, and `chock doctor` lists it. A gate that needs no compiler defaults to `commit`, and one that compiles defaults to `push`. A plain `chock run` runs every stage. `chock stage` writes this, and naming a gate's default stage removes its entry.",
+      "type": "object",
+      "additionalProperties": {
+        "enum": [
+          "commit",
+          "push",
+          "ci",
+          "manual"
+        ]
+      }
+    },
+    "runner_tools": {
+      "description": "The commands `runner` calls that chock cannot see. A script's own bytes are in the tree; the clippy and kani it shells out to are not, and a verdict kept across one of those upgrades would be stale. Naming them is what lets `test` and `idempotent` answer from the verdict record at all — without them those gates have no key and run every time, which is correct rather than convenient.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "strict": {
+      "description": "Ratchets held to zero rather than to their recorded numbers: any finding fails, whatever .chock/baseline.json holds, and the gate needs no baseline. For a check a team wants clean outright rather than merely no worse.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "clean_when_touched": {
+      "description": "Ratchets held to zero in each file the change touches: the commits since the upstream fork and the uncommitted edits, or in CI the commit under test. Other files keep their recorded numbers. Applies to gates that count debt per file or item.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "local_only": {
+      "description": "Checks CI cannot run, because the tool they need cannot be installed there. Measured on chock itself: eight gates need `outpost`, which is not on crates.io and whose source is a private repository in another organisation with no release artefact, so CI failed on every push with `nice: 'outpost': No such file or directory` and therefore enforced nothing at all. The hooks still run these on every push, where the tool exists; `chock run --ci` leaves them out, so CI is green about what it can enforce and claims nothing about what it cannot. Naming a check here to make a red one go away is the one use this must not have, and the hook still running it is what makes that pointless.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "commands": {
+      "description": "The project's own checks, run as gates. Each runs from the project root with no shell. One that only passes or fails is a blocker when it fails. One that `counts` must exit clean and print a JSON object of item to count on stdout, and each count is debt ratcheted per item, so a project's existing findings hold at their level and a new one fails. The `commands` gate runs those that need no compiler at every commit; `commands-build` runs those marked `builds` at push. A command's own output decides nothing else: the exit code and the printed counts are the whole contract.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "run"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "What findings are filed under, and what the report calls the command.",
+            "type": "string",
+            "minLength": 1
+          },
+          "run": {
+            "description": "The whole command, program first. An empty list is refused rather than skipped.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "counts": {
+            "description": "The command prints a JSON object of counts rather than answering pass or fail.",
+            "type": "boolean"
+          },
+          "builds": {
+            "description": "The command compiles, so it runs with `commands-build` rather than at every commit.",
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "forbidden": {
+      "description": "Phrases this project refuses in its source, each with the reason a reader is told. Matched on every line of every file `slop` reads, without regard to case, by the `phrases` gate and by the editor hook as the file is written, so the commit refuses exactly what the edit already reported.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "text",
+          "why"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "description": "The phrase. An entry with no text is refused, because it would match every line.",
+            "type": "string",
+            "minLength": 1
+          },
+          "why": {
+            "description": "What the finding tells whoever wrote it.",
+            "type": "string",
+            "minLength": 1
+          },
+          "word": {
+            "description": "Match only where the phrase stands alone: no letter, digit, `_` or `-` touching it on either side, and no `.` before it. `dvc` then matches in `uses dvc.` but not in `advc`, `dvc-core` or `file.dvc`.",
+            "type": "boolean"
+          },
+          "except": {
+            "description": "Paths from the project root where the phrase is allowed, such as the one directory whose code runs the tool the phrase names. `*` matches within one path segment and `**` any number of whole segments, so `**/vcs/**` is every `vcs` directory and `plans/**` is one at the root.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "history": {
+      "description": "Settings of the `history` gate.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "accepted": {
+          "description": "Credentials published on purpose, such as a test token signed by a throwaway key, which `history` no longer reports. Each entry names the rule, the file and the commit of a finding `chock run history` reported, and gives the reason someone reviewed it as safe.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "commit",
+              "path",
+              "rule",
+              "reason"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "commit": {
+                "description": "The commit the finding names, or its first 7 or more characters.",
+                "type": "string",
+                "minLength": 7
+              },
+              "path": {
+                "description": "The file the finding names, from the project root.",
+                "type": "string",
+                "minLength": 1
+              },
+              "rule": {
+                "description": "The rule the finding names, such as `jwt`.",
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "description": "Why the credential is safe to publish. An entry with no reason stops the gate.",
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

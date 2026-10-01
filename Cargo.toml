@@ -1,0 +1,74 @@
+[package]
+name = "chock"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.0"
+description = "Quality gates for Rust: new code must be clean, and existing debt can only go down. 53 checks, one exit code, JSON for agents."
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/outpostHQ/chock"
+keywords = ["testing", "quality", "coverage", "mutation", "ci"]
+categories = ["development-tools::cargo-plugins", "development-tools::testing"]
+# The binary compiles `docs/agents.md`, `justfile`, `tool-versions.env` and `deny.toml` into
+# `chock init`; everything else a published crate needs is its source, schemas and licence.
+include = [
+  "/src/**/*.rs",
+  "/schema/*.json",
+  "/docs/agents.md",
+  "/justfile",
+  "/tool-versions.env",
+  "/deny.toml",
+  "/README.md",
+  "/CHANGELOG.md",
+  "/LICENSE",
+  "/NOTICE",
+]
+
+# Where `cargo binstall chock` finds the archives the release workflow attaches to each tag.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+# An empty table, so cargo treats this package as its own workspace root rather than joining one it
+# finds in a parent directory — which is what cargo-mutants builds each mutant inside.
+[workspace]
+
+[dependencies]
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["raw_value"] }
+syn = { version = "3.0.6", features = ["full", "visit"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+rustix = { version = "1.1.5", features = ["process"] }
+
+# Size everywhere but the parser chock spends its own time in: 3.1 MB rather than 4.5, for a survey
+# of this tree 5% slower rather than the 19% that `"s"` on every crate cost.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
+
+[profile.release.package.proc-macro2]
+opt-level = 3
+
+[profile.release.package.syn]
+opt-level = 3
+
+[profile.dev]
+debug = "line-tables-only"
+
+[lints.rust]
+# mutest-rs and kani each set their own cfg while running; declaring them keeps cargo quiet.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(mutest)", "cfg(kani)"] }
+unsafe_code = "deny"
+
+[lints.clippy]
+expect_used = "deny"
+panic = "deny"
+unwrap_used = "deny"

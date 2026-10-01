@@ -1,0 +1,12 @@
+/target
+lcov.info
+.chock/last-run.json
+.chock/run.lock
+kani-list.json
+# `?*.chock` and not `*.chock`: `*` matches the empty string, so that pattern hides all of `.chock/`,
+# config and agents.md included, and a clone then runs no gates at all.
+?*.chock
+.*.tmp
+.chock/verdicts.json
+.chock/last-edit
+rustc-ice-*.txt

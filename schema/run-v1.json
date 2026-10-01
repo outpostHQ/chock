@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/run-v1.json",
+  "title": "chock run",
+  "description": "What one `chock run` found. Printed by `chock run --json`, and cached at `.chock/last-run.json` \u2014 where it holds the last result for each gate rather than one run, so that running one gate does not erase what another found. `chock explain` reads it back without paying for the gates again.",
+  "type": "object",
+  "required": [
+    "version",
+    "chock",
+    "gates"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "chock": {
+      "description": "The chock that produced this run.",
+      "type": "string"
+    },
+    "gates": {
+      "description": "Every gate the run touched, in the order it ran them.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/gate"
+      }
+    }
+  },
+  "$defs": {
+    "gate": {
+      "type": "object",
+      "required": [
+        "gate",
+        "verdict",
+        "exit_code",
+        "rerun",
+        "duration_ms"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "gate": {
+          "description": "The name `chock run <gate>` takes.",
+          "type": "string"
+        },
+        "verdict": {
+          "description": "`passed` met the bar, `tripped` did not, `cannot_run` produced no measurement at all. A cannot_run is never a pass: treating it as one is the mistake that makes the whole thing worthless.",
+          "enum": [
+            "passed",
+            "tripped",
+            "cannot_run"
+          ]
+        },
+        "exit_code": {
+          "description": "What this gate alone would exit with: 0 passed, 1 tripped, 2 could not run. A run exits with the worst of them.",
+          "type": "integer",
+          "enum": [
+            0,
+            1,
+            2
+          ]
+        },
+        "measured": {
+          "description": "What this run measured, summed over the gate's keys. Absent for a pass/fail gate, which produces a verdict rather than a number.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "baseline": {
+          "description": "What the committed baseline holds for the same keys. Absent for a pass/fail gate.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "unit": {
+          "description": "What `measured` counts.",
+          "type": "string"
+        },
+        "cannot_run_reason": {
+          "description": "Why no measurement was produced. Present exactly when the verdict is cannot_run.",
+          "type": "string"
+        },
+        "findings": {
+          "description": "Findings and scope advisories. A passing gate may include advisory entries; these do not change its verdict or measured count.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/finding"
+          }
+        },
+        "rerun": {
+          "description": "The narrowest command that re-runs this one gate. Fix, then run this rather than the whole set.",
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ran_at": {
+          "description": "When this gate ran, in seconds since the Unix epoch. Written only into the cached record at .chock/last-run.json, which holds the last result for each gate rather than one run: without it a reader cannot tell a result this run produced from one an earlier run left, and would read a stale pass as a current one.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "fix": {
+          "description": "What to do about a gate that tripped, in one sentence for a person or an agent. Present exactly when the verdict is `tripped`.",
+          "type": "string"
+        },
+        "recalled": {
+          "description": "True where this verdict was answered from an earlier run's record rather than taken again, every input the gate names having hashed the same: the files chock's walk can see, the config, the baseline, the versions of the tools it shells out to, and chock's own version. Absent means the gate ran. A gate that names no inputs is never recalled, and a `cannot_run` is never kept, because nothing was measured and the tool that was missing may be installed by the time anybody asks again.",
+          "type": "boolean"
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": [
+        "file",
+        "message"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "description": "Relative to the project root, so it means the same on the next machine. Empty when the finding is about the gate rather than a file, in which case `item` names the subject.",
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "item": {
+          "description": "The function, lint or measure this is about, where the file alone is not the subject.",
+          "type": "string"
+        },
+        "measured": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "baseline": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "message": {
+          "description": "What is wrong, in one line.",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

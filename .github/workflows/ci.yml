@@ -1,0 +1,170 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fast:
+    name: Fast gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # No `toolchain:` input: the action reads rust-toolchain.toml, so CI and a laptop compile the
+      # same tree with the same rustc. Its own cache is off because the next step is the cache.
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: fast
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Downloads prebuilt binaries rather than compiling each tool, which is minutes against tens
+      # of minutes. It falls back to `cargo install` for anything with no release to fetch.
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install the pinned tools these gates need
+        run: |
+          . ./tool-versions.env
+          cargo binstall -y --locked cargo-deny@"$CARGO_DENY_VERSION"
+          cargo binstall -y --locked cargo-machete@"$CARGO_MACHETE_VERSION"
+          cargo binstall -y --locked cargo-sort@"$CARGO_SORT_VERSION"
+          cargo binstall -y --locked typos-cli@"$TYPOS_CLI_VERSION"
+
+      - name: Install chock from this checkout
+        run: cargo install --locked --path .
+
+      # Never a list of gate names: one went stale here for ten gates. `--fast` asks for a property of
+      # the gate; `--ci` drops what `local_only` names, whose tool no runner can install.
+      - name: Every gate that needs no compiler
+        run: chock run --fast --ci
+
+  # The same run on each system chock ships for. `system` is the name tool-versions.env uses.
+  everything:
+    name: Every gate on ${{ matrix.system }}, installed from scratch
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, system: linux }
+          - { os: macos-latest, system: macos }
+          - { os: windows-latest, system: windows }
+    env:
+      SYSTEM: ${{ matrix.system }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # `mutation` diffs against HEAD~1, which a shallow clone does not have.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy, rustfmt, llvm-tools-preview
+          cache: false
+
+      # mutest-driver links librustc_driver from one exact compiler build, so it only runs with the
+      # nightly it was built against. rustc-dev carries that library; cargo-udeps needs any nightly.
+      - name: Install the nightly toolchains
+        run: |
+          . ./tool-versions.env
+          rustup toolchain install "$MUTEST_NIGHTLY" --profile minimal --component rustc-dev --component llvm-tools
+          rustup toolchain install nightly --profile minimal
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: everything
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      # A tool whose KEY_OS leaves out this system is not installed; `chock run` names its gate.
+      - name: Install the pinned tools
+        run: |
+          . ./tool-versions.env
+          here() { [[ -z "$1" || ",$1," == *",$SYSTEM,"* ]]; }
+          cargo binstall -y --locked cargo-nextest@"$CARGO_NEXTEST_VERSION"
+          cargo binstall -y --locked cargo-llvm-cov@"$CARGO_LLVM_COV_VERSION"
+          cargo binstall -y --locked cargo-crap@"$CARGO_CRAP_VERSION"
+          cargo binstall -y --locked cargo-deny@"$CARGO_DENY_VERSION"
+          cargo binstall -y --locked cargo-machete@"$CARGO_MACHETE_VERSION"
+          cargo binstall -y --locked cargo-sort@"$CARGO_SORT_VERSION"
+          if here "$CARGO_ACL_OS"; then cargo binstall -y --locked cargo-acl@"$CARGO_ACL_VERSION"; fi
+          cargo binstall -y --locked cargo-udeps@"$CARGO_UDEPS_VERSION"
+          cargo binstall -y --locked cargo-bsize@"$CARGO_BSIZE_VERSION"
+          cargo binstall -y --locked typos-cli@"$TYPOS_CLI_VERSION"
+          cargo binstall -y --locked just@"$JUST_VERSION"
+          if here "$KANI_VERIFIER_OS"; then cargo binstall -y --locked kani-verifier@"$KANI_VERIFIER_VERSION"; fi
+
+      # Installing the crate is half of it: the solver bundle and the nightly kani needs are fetched
+      # on first use. Doing that here rather than inside the gate keeps a failed download legible.
+      - name: Fetch kani's backend
+        run: |
+          . ./tool-versions.env
+          if [[ ",$KANI_VERIFIER_OS," == *",$SYSTEM,"* ]]; then cargo kani --version; fi
+
+      # cackle analyses a build script by running it, so it runs it inside bubblewrap. Ubuntu 23.10
+      # and newer refuse unprivileged user namespaces until AppArmor is told otherwise.
+      - name: Let the acl sandbox start
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Clone the mutest fork
+        run: git clone --depth 1 https://github.com/outpostHQ/mutest-rs "$RUNNER_TEMP/mutest-rs"
+
+      # From inside the clone: rustup reads the toolchain from the working directory, and ours
+      # pins a stable carrying no rustc-dev.
+      - name: Build mutest from the fork
+        working-directory: ${{ runner.temp }}/mutest-rs
+        env:
+          # Replaces `[build] rustflags`, where mutest keeps this, rather than adding to it.
+          RUSTFLAGS: -Zembed-metadata=yes
+        run: |
+          cargo build --profile=release -p mutest-runtime
+          cargo install --force --path mutest-driver
+          cargo install --force --path cargo-mutest
+
+      - name: Install chock from this checkout
+        run: cargo install --locked --path .
+
+      # Not `chock doctor`: it checks every pin, including the opt-in tools this job deliberately
+      # does not install. `chock run` is the proof — a gate whose tool is absent cannot pass.
+      - name: Every gate this project has switched on
+        run: chock run --ci
+
+      # A gate that could not run says why in its own output, which these keep for reading.
+      - name: Processes still running
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: Get-CimInstance Win32_Process | Format-Table ProcessId, ParentProcessId, Name, CommandLine -Wrap | Out-String -Width 300
+
+      - name: Keep mutest's results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutest-results-${{ matrix.system }}
+          path: target/test-scratch/mutest-results-*
+          if-no-files-found: ignore

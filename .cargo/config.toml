@@ -1,0 +1,4 @@
+# Test scratch sits inside this repository, and under mutation a test's `git config` once walked up
+# and rewrote its hook declarations: git that cargo starts here stops looking at the scratch root.
+[env]
+GIT_CEILING_DIRECTORIES = { value = "target/test-scratch", relative = true }

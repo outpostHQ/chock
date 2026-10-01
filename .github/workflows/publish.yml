@@ -1,0 +1,77 @@
+name: publish
+
+# A tag triggers it, so a release is something somebody did rather than something a merge caused.
+# Not the first one though: crates.io will not let a trusted-publishing token create a new crate.
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: crates.io
+    runs-on: ubuntu-latest
+    # Trusted publishing hands the job a short-lived token instead of a stored secret.
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+
+      - name: The tag and the manifest agree
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          manifest=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          test "$tagged" = "$manifest" \
+            || { echo "tag $tagged is not Cargo.toml's $manifest" >&2; exit 1; }
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install the pinned tools these gates need
+        run: |
+          . ./tool-versions.env
+          cargo binstall -y --locked cargo-deny@"$CARGO_DENY_VERSION"
+          cargo binstall -y --locked cargo-machete@"$CARGO_MACHETE_VERSION"
+          cargo binstall -y --locked cargo-sort@"$CARGO_SORT_VERSION"
+          cargo binstall -y --locked typos-cli@"$TYPOS_CLI_VERSION"
+
+      - name: Install chock from this checkout
+        run: cargo install --locked --path .
+
+      # Publishing something that fails its own gates would be the worst possible advertisement.
+      - name: chock gates chock
+        run: chock run --fast --ci
+
+      - name: What the published crate would contain
+        run: cargo package --locked --list
+
+      # The first release is published by hand, so its tag finds the version already there.
+      - name: Is this version on crates.io already?
+        id: published
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -A 'chock-publish (github.com/outpostHQ/chock)' \
+            "https://crates.io/api/v1/crates/chock/${GITHUB_REF_NAME#v}")
+          echo "exists=$([ "$code" = 200 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        if: steps.published.outputs.exists != 'true'
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: cargo publish
+        if: steps.published.outputs.exists != 'true'
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

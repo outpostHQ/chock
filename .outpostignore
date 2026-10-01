@@ -1,0 +1,9 @@
+/target
+lcov.info
+.chock/last-run.json
+.chock/run.lock
+.chock/last-edit
+rustc-ice-*.txt
+?*.chock
+.chock/verdicts.json
+kani-list.json
