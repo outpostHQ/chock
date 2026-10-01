@@ -1,0 +1,28 @@
+chock
+Copyright 2026 Outpost Innovations, Inc.
+
+Licensed under the Apache License, Version 2.0. See LICENSE for the full text.
+
+chock runs other programs rather than reimplementing them. It does not bundle,
+link or redistribute any of them — each is installed separately and pinned by
+version in tool-versions.env. Their licences are their own; check them before
+redistributing anything that includes them.
+
+Tools chock invokes:
+
+  just                https://github.com/casey/just
+  cargo-nextest       https://github.com/nextest-rs/nextest
+  cargo-llvm-cov      https://github.com/taiki-e/cargo-llvm-cov
+  cargo-crap          https://github.com/minikin/cargo-crap
+  cargo-deny          https://github.com/EmbarkStudios/cargo-deny
+  cargo-machete       https://github.com/bnjbvr/cargo-machete
+  cargo-udeps         https://github.com/est31/cargo-udeps
+  cargo-mutants       https://github.com/sourcefrog/cargo-mutants
+  cargo-bsize         https://crates.io/crates/cargo-bsize
+  typos               https://github.com/crate-ci/typos
+  kani                https://github.com/model-checking/kani
+
+  mutest-rs           https://github.com/outpostHQ/mutest-rs
+                      A fork maintained by Outpost Innovations, Inc. of
+                      https://github.com/zalanlevai/mutest-rs (https://mutest.rs),
+                      carrying its original licence.

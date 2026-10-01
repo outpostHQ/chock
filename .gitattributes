@@ -1,0 +1,3 @@
+# LF on every checkout, Windows included: tests compare files byte for byte, and the binary
+# compiles some of them in with include_str!.
+* text=auto eol=lf

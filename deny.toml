@@ -1,0 +1,32 @@
+[advisories]
+yanked = "deny"
+
+[licenses]
+# Your own crates are judged by your repository, not by this list; without this a project that has
+# not chosen a licence yet fails its supply-chain gate on day one.
+private = { ignore = true }
+
+# A pre-approved list is a policy, not a claim about what this tree happens to pull in today, so an
+# entry nothing matched is not a finding. Without this every run reports seven of them, for ever.
+unused-allowed-license = "allow"
+
+# Permissive plus the weak-copyleft ones that are safe to link. Add to this list deliberately.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+]
+
+[bans]
+multiple-versions = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

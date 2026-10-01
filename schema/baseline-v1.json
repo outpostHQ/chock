@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/baseline-v1.json",
+  "title": "chock baseline",
+  "description": "Where a tree stood when `chock baseline` last ran. Ratchet gates compare against it and fail only when a number gets worse. Belongs in git, and moves on the main branch deliberately.",
+  "type": "object",
+  "required": ["version", "chock", "gates"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "type": "integer", "const": 1 },
+    "chock": {
+      "description": "The chock that recorded these numbers, so a reader can tell whether a change in them is a change in the tree or in the measure.",
+      "type": "string"
+    },
+    "gates": {
+      "description": "One series per ratchet gate. Keys within a series are that gate's own: a file path, a function, or the name of a measure. binsize, bsize, coverage and mutest measure differently on each system, so macOS and Windows keep theirs as `<gate>@macos` and `<gate>@windows`.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "description": "Lower is better, always. A gate trips when a key's measurement exceeds this.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "units": {
+      "description": "What each gate was counting when it was recorded. A gate that changes unit keeps its keys, so no key check catches it and the new numbers read as a regression. Absent in a baseline written before chock kept them, which cannot be checked rather than being a mismatch.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

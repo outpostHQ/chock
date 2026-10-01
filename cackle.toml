@@ -1,0 +1,82 @@
+[common]
+version = 2
+import_std = [
+    "fs",
+    "net",
+    "process",
+]
+
+[api.process]
+include = ["rustix::process"]
+
+# Build scripts and proc-macros run unsandboxed otherwise: bubblewrap is what stops one reaching
+# the network or a path outside the build while cackle is deciding whether it may.
+[sandbox]
+kind = "Bubblewrap"
+
+[pkg.serde_derive]
+allow_proc_macro = true
+
+[pkg.unicode-ident]
+allow_unsafe = true
+
+[pkg.quote]
+build.allow_apis = [
+    "process",
+]
+
+[pkg.zmij]
+build.allow_apis = [
+    "process",
+]
+allow_unsafe = true
+
+[pkg.serde_core]
+build.allow_apis = [
+    "fs",
+    "process",
+]
+allow_unsafe = true
+
+[pkg.serde]
+build.allow_apis = [
+    "fs",
+    "process",
+]
+
+[pkg.proc-macro2]
+build.allow_apis = [
+    "fs",
+    "process",
+]
+allow_unsafe = true
+
+[pkg.itoa]
+allow_unsafe = true
+
+[pkg.memchr]
+allow_unsafe = true
+
+[pkg.syn]
+allow_unsafe = true
+
+[pkg.serde_json]
+allow_unsafe = true
+
+# Reviewed syscall dependencies; chock itself still denies unsafe Rust.
+[pkg.bitflags]
+allow_unsafe = true
+
+[pkg.linux-raw-sys]
+allow_unsafe = true
+
+[pkg.rustix]
+build.allow_apis = ["fs", "process"]
+allow_apis = ["process"]
+allow_unsafe = true
+
+[pkg.chock]
+allow_apis = [
+    "fs",
+    "process",
+]

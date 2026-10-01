@@ -1,0 +1,8 @@
+# Settings for the `typos` gate. A project that disagrees with a word writes it here rather than
+# switching the gate off, which is the whole reason the gate counts rather than refuses.
+
+[default]
+extend-ignore-re = [
+  # The gate's own fixtures: misspellings fed to its reader, and the keys it must count them under.
+  "(#|\"typo\":\")(teh|adn|zzz)\"",
+]
