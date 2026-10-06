@@ -228,6 +228,28 @@ pub fn run_env(
     run_full(program, args, cwd, MAX_CAPTURE, env, &mut ())
 }
 
+/// How a program is started: `run_env`, or a test's stand-in with fixed answers.
+pub type Start<'a> = &'a dyn Fn(&str, &[&str], &Path, &[(&str, &str)]) -> Result<Output, ExecError>;
+
+/// What a program printed, or the command with why it failed.
+pub fn printed(
+    start: Start,
+    program: &str,
+    args: &[&str],
+    cwd: &Path,
+    env: &[(&str, &str)],
+) -> Result<String, String> {
+    let out = start(program, args, cwd, env).map_err(|e| e.to_string())?;
+    match out.success() {
+        true => Ok(out.stdout),
+        false => Err(format!(
+            "`{program} {}` failed: {}",
+            args.join(" "),
+            out.failure_details()
+        )),
+    }
+}
+
 pub(crate) trait Watchdog {
     fn poll(&mut self) -> Result<(), String>;
     fn complete(&mut self) -> Result<(), String>;
@@ -757,6 +779,37 @@ mod tests {
             stderr: stderr.to_string(),
             truncated: false,
         }
+    }
+
+    #[test]
+    fn printed_is_the_stdout_of_a_command_that_passed_and_names_one_that_did_not() {
+        let cwd = Path::new(".");
+        let passed: Start = &|_, _, _, _| {
+            Ok(Output {
+                code: Some(0),
+                ..said("abc\n", "noise")
+            })
+        };
+        assert_eq!(
+            printed(passed, "git", &["status"], cwd, &[]),
+            Ok("abc\n".to_string())
+        );
+        let failed: Start = &|_, _, _, _| Ok(said("", "fatal: no remote\n"));
+        assert_eq!(
+            printed(failed, "git", &["ls-remote", "origin"], cwd, &[]),
+            Err("`git ls-remote origin` failed: fatal: no remote\nstderr (bounded output):\nfatal: no remote\n".to_string())
+        );
+        let absent: Start = &|program, _, _, _| {
+            Err(ExecError {
+                program: program.to_string(),
+                stage: Stage::Spawn,
+                reason: "not found".to_string(),
+            })
+        };
+        assert_eq!(
+            printed(absent, "git", &[], cwd, &[]),
+            Err("could not start git: not found".to_string())
+        );
     }
 
     #[test]

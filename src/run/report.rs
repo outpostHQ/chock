@@ -289,11 +289,16 @@ impl GateReport {
     fn against(&self, now: u64, was: u64) -> String {
         match self.verdict == Verdict::Tripped && now <= was {
             true => format!(
-                "{now} against {was} in total, {} finding(s)",
-                self.findings.len()
+                "{now} against {was} in total, {}",
+                plural(self.findings.len(), "finding")
             ),
             false => format!("{now} against {was}"),
         }
+    }
+
+    /// Whether the report says more than its summary line: findings, or what to do next.
+    fn detailed(&self) -> bool {
+        !self.findings.is_empty() || self.fix.is_some()
     }
 
     /// One line, aligned, for a human reading a whole run.
@@ -323,13 +328,22 @@ impl GateReport {
         if self.verdict == Verdict::Pass {
             return line;
         }
-        let reasons = match self.findings.is_empty() {
-            true => String::new(),
-            false => block(self),
+        let reasons = match self.detailed() {
+            true => block(self),
+            false => String::new(),
         };
         format!("{line}\n{}{reasons}", self.summary())
             .trim_end()
             .to_string()
+    }
+}
+
+/// `1 gate` or `3 gates`: a count and its noun, as a person reads them.
+#[must_use]
+pub(crate) fn plural(count: usize, noun: &str) -> String {
+    match count {
+        1 => format!("1 {noun}"),
+        _ => format!("{count} {noun}s"),
     }
 }
 
@@ -370,15 +384,16 @@ impl Run {
             count(Verdict::CannotRun),
             self.gates.len(),
         );
+        let gates = plural(total, "gate");
         match (tripped, refused) {
-            (0, 0) => format!("{total} check(s) ok."),
+            (0, 0) => format!("{gates} ok."),
             (0, refused) if refused == total => {
-                "no check could run, so nothing was measured.".to_string()
+                "no gate could run, so nothing was measured.".to_string()
             }
-            (0, refused) => format!("{refused} of {total} check(s) could not run."),
-            (tripped, 0) => format!("{tripped} of {total} check(s) tripped."),
+            (0, refused) => format!("{refused} of {gates} could not run."),
+            (tripped, 0) => format!("{tripped} of {gates} tripped."),
             (tripped, refused) => {
-                format!("{tripped} of {total} check(s) tripped and {refused} could not run.")
+                format!("{tripped} of {gates} tripped and {refused} could not run.")
             }
         }
     }
@@ -423,7 +438,7 @@ impl Run {
             out.push_str(&gate.summary());
             out.push('\n');
         }
-        for gate in self.gates.iter().filter(|g| !g.findings.is_empty()) {
+        for gate in self.gates.iter().filter(|g| g.detailed()) {
             out.push_str(&block(gate));
         }
         if !self.gates.is_empty() {
@@ -433,6 +448,17 @@ impl Run {
             out.push_str(&format!("{once}\n"));
         }
         out
+    }
+}
+
+/// The line `chock baseline` prints for a gate it could not measure, and the install that repairs
+/// it where one does.
+#[must_use]
+pub fn skipped(gate: &str, reason: &str) -> String {
+    let line = format!("  SKIPPED   {gate:<12} {reason}");
+    match crate::gates::fixes::repair(reason) {
+        Some(fix) => format!("{line}\n  fix: {fix}"),
+        None => line,
     }
 }
 
@@ -613,7 +639,7 @@ mod tests {
         report.findings = vec![Finding::at("src/a.rs", "not in the baseline")];
         assert_eq!(
             report.summary(),
-            "  bigfiles   TRIPPED     9 against 9 in total, 1 finding(s)"
+            "  bigfiles   TRIPPED     9 against 9 in total, 1 finding"
         );
         report.verdict = Verdict::Pass;
         assert_eq!(report.summary(), "  bigfiles   ok          9 against 9");
@@ -665,6 +691,32 @@ mod tests {
     }
 
     #[test]
+    fn a_gate_a_tool_stopped_says_the_install_in_the_run_as_it_ends_and_in_baseline() {
+        let reason = "`kani` is not installed, so this gate has nothing to run";
+        let mut stopped = GateReport::cannot_run("proof", "chock run proof", reason);
+        stopped.fix = Some("run `chock init --global`".to_string());
+        let block = "\nproof — chock run proof\n  fix: run `chock init --global`";
+        assert_eq!(
+            stopped.progress(),
+            format!("chock: proof CANNOT RUN after 0 s\n  proof      CANNOT RUN  {reason}{block}")
+        );
+        let run = Run::new("0.1.0", vec![stopped]);
+        assert!(run.render().contains(&format!("{block}\n")));
+        assert_eq!(
+            skipped("mutest", crate::gates::mutation::tool::FOREIGN),
+            format!(
+                "  SKIPPED   mutest       {}\n  fix: {}",
+                crate::gates::mutation::tool::FOREIGN,
+                crate::gates::mutation::tool::REPAIR
+            )
+        );
+        assert_eq!(
+            skipped("crap", "no coverage was measured"),
+            "  SKIPPED   crap         no coverage was measured"
+        );
+    }
+
+    #[test]
     fn a_tripped_gate_says_what_to_do_beneath_its_findings_and_in_explain() {
         let mut tripped = GateReport::new("slop", Verdict::Tripped, "chock run slop");
         tripped.findings = vec![Finding::at("src/a.rs", "block of 5 lines").line(4)];
@@ -700,7 +752,7 @@ mod tests {
              slop       TRIPPED\n\n\
              slop — just slop\n  \
              src/a.rs:4: block of 5 lines\n\n\
-             1 of 2 check(s) tripped.\n"
+             1 of 2 gates tripped.\n"
         );
     }
 
@@ -713,7 +765,7 @@ mod tests {
             text.contains("miri — advisory, and it passed — chock run miri"),
             "{text}"
         );
-        assert!(text.contains("1 check(s) ok."), "{text}");
+        assert!(text.contains("1 gate ok."), "{text}");
     }
 
     /// Each gate words the refusal its own way, so the shared cause is read from the compiler's output.
@@ -894,7 +946,7 @@ mod tests {
         gates.extend((0..7).map(|i| of(&format!("bad{i}"), Verdict::Tripped)));
         gates.push(of("history", Verdict::CannotRun));
         let run = Run::new("0.1.0", gates);
-        assert_eq!(run.tally(), "7 of 29 check(s) tripped and 1 could not run.");
+        assert_eq!(run.tally(), "7 of 29 gates tripped and 1 could not run.");
         assert_eq!(run.verdict(), Verdict::CannotRun);
     }
 
@@ -907,13 +959,13 @@ mod tests {
         );
         assert_eq!(
             all_refused.tally(),
-            "no check could run, so nothing was measured."
+            "no gate could run, so nothing was measured."
         );
         let some_refused = Run::new(
             "0.1.0",
             vec![of("a", Verdict::Pass), of("b", Verdict::CannotRun)],
         );
-        assert_eq!(some_refused.tally(), "1 of 2 check(s) could not run.");
+        assert_eq!(some_refused.tally(), "1 of 2 gates could not run.");
         assert!(!some_refused.tally().contains("nothing was measured"));
     }
 
@@ -921,9 +973,9 @@ mod tests {
     fn a_run_with_nothing_wrong_counts_what_it_checked() {
         let of = |name: &str| GateReport::new(name, Verdict::Pass, "chock run x");
         let run = Run::new("0.1.0", vec![of("a"), of("b"), of("c")]);
-        assert_eq!(run.tally(), "3 check(s) ok.");
+        assert_eq!(run.tally(), "3 gates ok.");
         let text = run.render();
-        assert!(text.ends_with("3 check(s) ok.\n"), "{text}");
+        assert!(text.ends_with("3 gates ok.\n"), "{text}");
     }
 
     #[test]
@@ -933,7 +985,7 @@ mod tests {
             "0.1.0",
             vec![of("a", Verdict::Pass), of("b", Verdict::Tripped)],
         );
-        assert_eq!(run.tally(), "1 of 2 check(s) tripped.");
+        assert_eq!(run.tally(), "1 of 2 gates tripped.");
     }
 
     #[test]

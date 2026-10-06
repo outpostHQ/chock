@@ -212,7 +212,7 @@ mod tests {
         let held = fs::read_to_string(dir.join(AGENT_FILE)).unwrap();
         assert!(held.contains("`cannot_run` is not a pass"), "{held}");
         assert!(
-            held.contains("Never move a baseline to turn a check green"),
+            held.contains("Never move a baseline to make a gate pass"),
             "{held}"
         );
     }

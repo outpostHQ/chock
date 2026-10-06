@@ -342,10 +342,14 @@ pub fn run_one(gate: &Gate, ctx: &Ctx) -> GateReport {
     report
 }
 
-/// What to do about a gate that tripped; a pass or a refusal needs no fix of the code.
+/// What to do next: the fix for a gate that tripped, the install for one a tool stopped.
 fn advice(report: &GateReport) -> Option<String> {
-    let hint = crate::gates::fixes::fix(&report.gate)?;
-    (report.verdict == Verdict::Tripped).then(|| hint.to_string())
+    let fix = crate::gates::fixes::fix(&report.gate).filter(|_| report.verdict == Verdict::Tripped);
+    let install = report
+        .cannot_run_reason
+        .as_deref()
+        .and_then(crate::gates::fixes::repair);
+    fix.or(install).map(str::to_string)
 }
 
 fn judged(gate: &Gate, ctx: &Ctx) -> GateReport {
@@ -500,7 +504,7 @@ fn surveyed(gate: &Gate, ctx: &Ctx, unit: &str) -> GateReport {
         return GateReport::cannot_run(
             gate.name,
             rerun(gate.name).as_str(),
-            &format!("`{missing}` is not installed, so this gate has nothing to run"),
+            &crate::gates::fixes::not_installed(missing),
         );
     }
     match measured(gate, ctx) {
@@ -597,7 +601,7 @@ fn said_nothing(said: Option<&str>) -> String {
         .and_then(crate::exec::marked)
         .map(|line| format!(" What it marked as the error: {line}."))
         .unwrap_or_default();
-    format!("{SAID_NOTHING}.{marked} Its last {QUOTED_LINES} line(s):\n{tail}")
+    format!("{SAID_NOTHING}.{marked} Its last {QUOTED_LINES} lines:\n{tail}")
 }
 
 /// The last lines a tool wrote, blank ones dropped, in the order it wrote them.
@@ -649,7 +653,7 @@ fn ratchet(gate: &Gate, ctx: &Ctx, keys: Keys, unit: &str) -> GateReport {
         let mut report = GateReport::cannot_run(
             gate.name,
             rerun(gate.name).as_str(),
-            &format!("`{missing}` is not installed, so this gate has nothing to run"),
+            &crate::gates::fixes::not_installed(missing),
         );
         report.unit = Some(unit.to_string());
         return report;
@@ -1440,6 +1444,40 @@ mod tests {
     }
 
     #[test]
+    fn a_gate_a_missing_tool_stopped_carries_the_install_and_any_other_refusal_carries_none() {
+        let stopped = |reason: &str| {
+            advice(&GateReport::cannot_run(
+                "mutest",
+                "chock run mutest",
+                reason,
+            ))
+        };
+        assert_eq!(
+            stopped(&crate::gates::fixes::not_installed("cargo-mutest")).as_deref(),
+            Some(crate::gates::mutation::tool::REPAIR)
+        );
+        assert_eq!(stopped("the suite does not compile"), None);
+        // `unused-deep` reads no finding where rustup has no `nightly`; rustup's words name the repair.
+        let no_nightly = crate::exec::Output {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: "error: toolchain 'nightly-x86_64-unknown-linux-gnu' is not installed\n".into(),
+            truncated: false,
+        };
+        let unread = Outcome::failed(Vec::new()).saying(&no_nightly);
+        let unread = outcome_report(&settling_gate(), Ok(unread));
+        assert_eq!(unread.verdict, Verdict::CannotRun);
+        assert_eq!(
+            advice(&unread).as_deref(),
+            crate::gates::fixes::repair(crate::gates::tools::miri::ABSENT)
+        );
+        assert!(advice(&unread).is_some_and(|fix| fix.contains("chock init --global")));
+        // A refusal with no reason on it has nothing to read.
+        let silent = GateReport::new("mutest", Verdict::CannotRun, "chock run mutest");
+        assert_eq!(advice(&silent), None);
+    }
+
+    #[test]
     fn nothing_lowered_writes_no_record() {
         let report = GateReport::new("slop", Verdict::Pass, "chock run slop");
         assert_eq!(locked_in(&Baseline::empty("0.1.0"), &[report]), None);
@@ -2123,7 +2161,7 @@ mod tests {
         let reason = said_nothing(Some(&wrote(3)));
         assert_eq!(
             reason,
-            format!("{SAID_NOTHING}. Its last {QUOTED_LINES} line(s):\nline 1\nline 2\nline 3")
+            format!("{SAID_NOTHING}. Its last {QUOTED_LINES} lines:\nline 1\nline 2\nline 3")
         );
         // More than it quotes: the tail is what a diagnostic and its notes sit in.
         let long = said_nothing(Some(&wrote(50)));
@@ -2164,7 +2202,7 @@ mod tests {
         let cut = Outcome::failed(Vec::new()).saying(&wrote(true));
         assert_eq!(
             said_nothing(cut.said.as_deref()),
-            format!("{SAID_NOTHING}. Its last {QUOTED_LINES} line(s):\none\ntwo{CUT_SHORT}")
+            format!("{SAID_NOTHING}. Its last {QUOTED_LINES} lines:\none\ntwo{CUT_SHORT}")
         );
     }
 

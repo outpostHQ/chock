@@ -3,6 +3,42 @@
 Notable changes to chock. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-10-06
+
+No command or flag is removed or renamed, and the JSON reports keep their shape. The text that
+chock prints changed: a program that reads it, and not `--json`, must be checked.
+
+- **A missing tool names its install.** A gate that cannot run because its tool is missing, or is
+  another build of it, adds a `fix` line: the command that installs the tool. The line is in the
+  text and in the JSON report, for `chock run` and for `chock baseline`.
+- **mutest.** `chock init --global` builds Outpost's fork of mutest-rs from the newest commit of
+  its `main`, with the nightly that commit names. Upstream mutest-rs prints the same version and
+  refuses the fork's flags, so a mutation run first asks `cargo-mutest` whether it is the fork.
+  `chock doctor` shows the installed commit against `main`, and fails where the fork is missing,
+  is another build, or is behind.
+- **Miri.** `chock init --global` installs the `nightly` toolchain with its `miri` and `rust-src`
+  components. `chock doctor` has a row for Miri where the project runs the `miri` gate.
+- **`crap` findings say why.** A finding shows the function's complexity and coverage now and on
+  record, says which of the two got worse, and what to do about it.
+- **`deps` names an unlicensed crate.** `cargo deny` reports a crate with no licence without a
+  place in a file. That was `CANNOT RUN` with the tool's raw output; it is now a finding, and it
+  says to add a `license` field where the crate is yours.
+- **`msrv` says how to start.** A `Cargo.toml` with no `rust-version` gets a `fix` line.
+- **Help.** `chock --help` groups the commands by task: set up, every day, choose the gates,
+  called by the hooks. `chock help` and `chock help init` work.
+- **One word.** The output says "gate" for a gate; "check" is only a row of `chock doctor`.
+  Counts read `1 gate` and `3 gates` in place of `gate(s)`. `chock init` puts the opt-in gates on
+  one line, and says that on does not mean passed.
+- **`chock stage` and `chock slop`.** `chock stage` answers `runs at ci`. `chock slop FILE` says
+  that `chock edited FILE` reads one file. `chock slop` and the edit hook use one wording for a
+  long comment block.
+- **`chock explain`.** A reason for `CANNOT RUN` prints once. A name that is no gate gets the
+  list of gates, as `chock run` gives it. `chock enable` reads right for one gate.
+- **Docs.** The README is a short front page. The guide, the gate reference, the configuration
+  and the hooks and CI pages are under `docs/`.
+- **Release.** One workflow runs on a tag. It publishes the crate only after every gate passed on
+  Linux, macOS and Windows and each prebuilt binary started from its archive.
+
 ## [0.1.0] - 2026-10-06
 
 First release.

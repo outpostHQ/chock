@@ -85,15 +85,19 @@ fn scoped(scope: &crate::project::config::Scope) -> Vec<String> {
     args
 }
 
+/// The reason for a nightly with no Miri, or no nightly at all; `fixes::repair` reads it back.
+pub const ABSENT: &str = "Miri is not installed on the `nightly` toolchain";
+
+/// Whether cargo says it has no Miri to start: the component is missing, or the whole toolchain.
+fn absent(stderr: &str) -> bool {
+    stderr.contains("'cargo-miri' is not installed") || crate::gates::fixes::no_nightly(stderr)
+}
+
 /// Why miri never tested the code, if it did not: it is not installed, or it hit an operation it
 /// cannot emulate.
 fn never_ran(stderr: &str) -> Option<String> {
-    if stderr.contains("'cargo-miri' is not installed") {
-        return Some(
-            "miri is not installed on the nightly toolchain — \
-             `rustup +nightly component add miri`"
-                .to_string(),
-        );
+    if absent(stderr) {
+        return Some(ABSENT.to_string());
     }
     let unsupported = stderr
         .lines()
@@ -316,14 +320,16 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_miri_component_names_the_command_that_installs_it() {
-        let said = "error: 'cargo-miri' is not installed for the toolchain 'nightly'.\n";
+    fn a_nightly_without_miri_and_a_machine_without_nightly_are_one_reason_with_one_repair() {
+        let component = "error: 'cargo-miri' is not installed for the toolchain 'nightly'.\n";
+        let toolchain = "error: toolchain 'nightly-x86_64-unknown-linux-gnu' is not installed\n";
+        for said in [component, toolchain] {
+            assert_eq!(never_ran(said).as_deref(), Some(ABSENT), "{said}");
+        }
         assert_eq!(
-            never_ran(said),
+            crate::gates::fixes::repair(ABSENT),
             Some(
-                "miri is not installed on the nightly toolchain — \
-                 `rustup +nightly component add miri`"
-                    .to_string()
+                "run `chock init --global`: it installs each nightly toolchain a gate starts, and Miri"
             )
         );
     }

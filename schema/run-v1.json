@@ -102,7 +102,7 @@
           "minimum": 0
         },
         "fix": {
-          "description": "What to do about a gate that tripped, in one sentence for a person or an agent. Present exactly when the verdict is `tripped`.",
+          "description": "What to do about a gate that tripped, or about one that could not run because its tool is missing or is another build of it, in one sentence for a person or an agent. Absent for a gate that passed, and where chock has no advice.",
           "type": "string"
         },
         "recalled": {

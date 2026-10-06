@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::run::report::{Finding, GateReport, Run, Verdict};
+use crate::run::report::{Finding, GateReport, Run, Verdict, plural};
 
 /// The longest run of same-marker comment lines allowed. Longer reasoning belongs in a document.
 pub const MAX_BLOCK: usize = 2;
@@ -162,10 +162,13 @@ pub fn render(hits: &[Block], root: &Path) -> String {
     if hits.is_empty() {
         return String::new();
     }
-    let mut out = format!("{} comment block(s) over {MAX_BLOCK} lines.\n", hits.len());
+    let mut out = format!(
+        "{} over {MAX_BLOCK} lines.\n",
+        plural(hits.len(), "comment block")
+    );
     for h in hits {
         out.push_str(&format!(
-            "{}:{}: comment block of {} lines (limit {MAX_BLOCK})\n",
+            "{}:{}: comment block of {} lines, over {MAX_BLOCK}\n",
             crate::project::relative(root, &h.file),
             h.line,
             h.length
@@ -188,7 +191,7 @@ pub fn render_json(hits: &[Block], root: &Path, chock_version: &str) -> String {
     report.findings = hits
         .iter()
         .map(|hit| {
-            let message = format!("comment block of {} lines (limit {MAX_BLOCK})", hit.length);
+            let message = format!("comment block of {} lines, over {MAX_BLOCK}", hit.length);
             let at = Finding::at(&crate::project::relative(root, &hit.file), &message);
             match u32::try_from(hit.line) {
                 Ok(line) => at.line(line),
@@ -398,9 +401,9 @@ mod tests {
         ];
         assert_eq!(
             render(&hits, Path::new("/w")),
-            "2 comment block(s) over 2 lines.\n\
-             src/a.rs:4: comment block of 5 lines (limit 2)\n\
-             justfile:1: comment block of 3 lines (limit 2)\n"
+            "2 comment blocks over 2 lines.\n\
+             src/a.rs:4: comment block of 5 lines, over 2\n\
+             justfile:1: comment block of 3 lines, over 2\n"
         );
     }
 

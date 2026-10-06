@@ -1,63 +1,131 @@
 name: publish
 
-# A tag triggers it, so a release is something somebody did rather than something a merge caused.
-# Not the first one though: crates.io will not let a trusted-publishing token create a new crate.
+# A `v*` tag is a release. Nothing is public until every gate passed on the three systems and every
+# archive started; `cargo publish` is the last step, because nobody can take a crate back.
 on:
   push:
     tags: ["v*"]
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  publish:
-    name: crates.io
+  gates:
+    name: gates
+    uses: ./.github/workflows/ci.yml
+
+  draft:
+    name: Draft the release
     runs-on: ubuntu-latest
-    # Trusted publishing hands the job a short-lived token instead of a stored secret.
+    timeout-minutes: 10
     permissions:
-      id-token: write
-      contents: read
+      contents: write
+    steps:
+      - name: Create it once, so the builds below only attach to it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+                 --title "$GITHUB_REF_NAME" --notes "See CHANGELOG.md for what changed."
+
+  # The archives `cargo binstall chock` looks for (see [package.metadata.binstall]).
+  binaries:
+    name: ${{ matrix.target }}
+    needs: draft
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # musl links statically, so one Linux binary runs on any distribution's glibc.
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          fetch-depth: 2
+          target: ${{ matrix.target }}
+          cache: false
+
+      - name: Install the musl linker
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          cd "target/${{ matrix.target }}/release"
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a "$GITHUB_WORKSPACE/chock-${{ matrix.target }}.zip" chock.exe
+          else
+            tar czf "$GITHUB_WORKSPACE/chock-${{ matrix.target }}.tgz" chock
+          fi
+
+      # The archive is what a user gets, so the binary starts from it, and it must name the tag.
+      - name: Start the packaged binary
+        run: |
+          mkdir "$RUNNER_TEMP/unpacked"
+          cd "$RUNNER_TEMP/unpacked"
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z x "$GITHUB_WORKSPACE/chock-${{ matrix.target }}.zip"
+          else
+            tar xzf "$GITHUB_WORKSPACE/chock-${{ matrix.target }}.tgz"
+          fi
+          said="$(./chock --version)"
+          echo "$said"
+          test "$said" = "chock ${GITHUB_REF_NAME#v}"
+
+      - name: Attach to the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" chock-${{ matrix.target }}.* --clobber
+
+  publish:
+    name: crates.io
+    needs: [gates, binaries]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Trusted publishing hands the job a short-lived token instead of a stored secret.
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
 
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
 
-      - name: The tag and the manifest agree
-        run: |
-          tagged="${GITHUB_REF_NAME#v}"
-          manifest=$(cargo metadata --no-deps --format-version 1 \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
-          test "$tagged" = "$manifest" \
-            || { echo "tag $tagged is not Cargo.toml's $manifest" >&2; exit 1; }
-
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
-
-      - name: Install the pinned tools these gates need
-        run: |
-          . ./tool-versions.env
-          cargo binstall -y --locked cargo-deny@"$CARGO_DENY_VERSION"
-          cargo binstall -y --locked cargo-machete@"$CARGO_MACHETE_VERSION"
-          cargo binstall -y --locked cargo-sort@"$CARGO_SORT_VERSION"
-          cargo binstall -y --locked typos-cli@"$TYPOS_CLI_VERSION"
-
-      - name: Install chock from this checkout
-        run: cargo install --locked --path .
-
-      # Publishing something that fails its own gates would be the worst possible advertisement.
-      - name: chock gates chock
-        run: chock run --fast --ci
-
       - name: What the published crate would contain
         run: cargo package --locked --list
 
-      # The first release is published by hand, so its tag finds the version already there.
+      # Before the crate, so `cargo binstall chock` finds the archives from the first minute.
+      - name: Show the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
+
+      # A second run of this job finds the version already there, and has nothing left to do.
       - name: Is this version on crates.io already?
         id: published
         run: |
@@ -65,7 +133,7 @@ jobs:
             "https://crates.io/api/v1/crates/chock/${GITHUB_REF_NAME#v}")
           echo "exists=$([ "$code" = 200 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
-      - name: Publish
+      - name: Ask crates.io for a token
         if: steps.published.outputs.exists != 'true'
         uses: rust-lang/crates-io-auth-action@v1
         id: auth

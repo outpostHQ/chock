@@ -2,9 +2,10 @@ name: ci
 
 on:
   push:
-    # A `verify/` branch runs a commit on the three systems before it replaces main.
-    branches: [main, "verify/**"]
+    branches: [main]
   pull_request:
+  # A release tag calls this file: publish.yml lets no crate out before these jobs pass.
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -141,7 +142,7 @@ jobs:
       - name: Build mutest from the fork
         working-directory: ${{ runner.temp }}/mutest-rs
         env:
-          # Replaces `[build] rustflags`, where mutest keeps this, rather than adding to it.
+          # The fork's profiles add their own flags on top of this one.
           RUSTFLAGS: -Zembed-metadata=yes
         run: |
           cargo build --profile=release -p mutest-runtime

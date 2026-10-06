@@ -6,6 +6,8 @@ pub mod agents;
 pub mod doctor;
 pub mod hooks;
 pub mod init;
+pub mod miri;
+pub mod mutest;
 pub mod pins;
 mod repin;
 pub mod version;

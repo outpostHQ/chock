@@ -34,10 +34,10 @@ const USAGE_LINES: [&str; 11] = [
     "chock doctor",
     "chock message FILE",
     "chock edited PATH...",
-    "chock slop [PATH]",
+    "chock slop [DIR]",
     "chock init --global",
-    "--json                  machine-readable output",
-    "Exit codes: 0 the gate passed, 1 the gate tripped, 2 the gate could not run.",
+    "--json                          machine-readable output",
+    "Exit codes: 0 every gate passed, 1 a gate tripped, 2 a gate could not run.",
 ];
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
@@ -273,10 +273,10 @@ fn slop_names_the_file_and_the_line_of_an_over_long_block() {
 
     let ran = chock(&dir, &["slop", &path]);
     assert_eq!(ran.code, 1, "{}", ran.err);
-    says(&ran.out, "1 comment block(s) over 2 lines.");
+    says(&ran.out, "1 comment block over 2 lines.");
     says(
         &ran.out,
-        "src/legacy.rs:1: comment block of 3 lines (limit 2)",
+        "src/legacy.rs:1: comment block of 3 lines, over 2",
     );
     assert_eq!(ran.err, "");
 }
@@ -317,7 +317,7 @@ fn slop_json_carries_the_finding_with_its_file_and_line() {
         .find(|f| f.file == "src/legacy.rs")
         .unwrap();
     assert_eq!(finding.line, Some(1));
-    assert_eq!(finding.message, "comment block of 3 lines (limit 2)");
+    assert_eq!(finding.message, "comment block of 3 lines, over 2");
 }
 
 #[test]
@@ -360,7 +360,7 @@ fn doctor_reports_a_pin_no_machine_can_satisfy_as_missing() {
     says(&ran.out, &format!("MISSING  {IMPOSSIBLE_TOOL} want 9.9.9"));
     says(
         &ran.out,
-        "1 of 1 check(s) need attention. `chock init --global` installs the crates; anything in tool-versions.env that is not one is the project's own to install.",
+        "Needs attention: 1 of 1 check. `chock init --global` installs the crates; a tool in tool-versions.env that is not a crate is yours to install.",
     );
 }
 
@@ -422,7 +422,7 @@ fn explain_refuses_a_name_that_is_not_a_gate() {
 
     let ran = chock(&dir, &["explain", "nope"]);
     assert_eq!(ran.code, 2);
-    says(&ran.err, "chock: no gate named `nope`");
+    says(&ran.err, "chock: no gate named `nope`. There is: ");
 }
 
 #[test]
@@ -438,7 +438,7 @@ fn recording_a_baseline_turns_a_gate_that_could_not_run_into_one_that_passes() {
 
     let recording = chock(&dir, &["baseline", "slop"]);
     assert_eq!(recording.code, 0, "{}", recording.err);
-    says(&recording.out, "recorded  slop         1 key(s)");
+    says(&recording.out, "recorded  slop         1 item");
     says(&recording.out, "wrote .chock/baseline.json");
 
     let written = std::fs::read_to_string(dir.join(".chock/baseline.json")).unwrap();
@@ -513,7 +513,7 @@ fn a_fix_lowers_the_record_and_ci_refuses_a_change_that_did_not_commit_it() {
     put(&dir, ".chock/baseline.json", &held);
     let lowered = chock(&dir, &["baseline", "--lower", "slop"]);
     assert_eq!(lowered.code, 0, "{}", lowered.err);
-    says(&lowered.out, "lowered   slop         1 key(s)");
+    says(&lowered.out, "lowered   slop         1 item");
     assert_eq!(slop_record(&dir), Some(1));
 }
 
@@ -886,9 +886,9 @@ fn init_refuses_what_it_cannot_do_before_writing_anything() {
     );
 }
 
-/// Read from the binary, so the README cannot drift from the registry.
+/// Read from the binary, so the gate reference cannot drift from the registry.
 #[test]
-fn the_readme_names_every_gate_the_binary_has() {
+fn the_gate_reference_names_every_gate_the_binary_has() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
     let listed = chock(repo, &["gates"]);
     // The first column says whether the gate is on, so the name is the second word.
@@ -897,10 +897,10 @@ fn the_readme_names_every_gate_the_binary_has() {
         .lines()
         .filter_map(|line| line.split_whitespace().nth(1))
         .collect();
-    assert!(gates.len() > 20, "only {} gate(s) listed", gates.len());
+    assert!(gates.len() > 20, "only {} gates listed", gates.len());
 
-    let readme = std::fs::read_to_string(repo.join("README.md")).unwrap();
-    let named: Vec<String> = gate_rows(&readme)
+    let reference = std::fs::read_to_string(repo.join(GATE_REFERENCE)).unwrap();
+    let named: Vec<String> = gate_rows(&reference)
         .into_iter()
         .map(|(name, _)| name)
         .collect();
@@ -908,7 +908,19 @@ fn the_readme_names_every_gate_the_binary_has() {
         .iter()
         .filter(|gate| !named.iter().any(|name| name == *gate))
         .collect();
-    assert_eq!(missing, Vec::<&&str>::new(), "not named in README.md");
+    assert_eq!(
+        missing,
+        Vec::<&&str>::new(),
+        "not named in {GATE_REFERENCE}"
+    );
+
+    // The README names each gate once more, in its table by topic.
+    let readme = std::fs::read_to_string(repo.join("README.md")).unwrap();
+    let absent: Vec<&&str> = gates
+        .iter()
+        .filter(|gate| !readme.contains(&format!("`{gate}`")))
+        .collect();
+    assert_eq!(absent, Vec::<&&str>::new(), "not named in README.md");
 
     // The other direction: no row for a gate the binary no longer has.
     let gone: Vec<&String> = named
@@ -918,19 +930,19 @@ fn the_readme_names_every_gate_the_binary_has() {
     assert_eq!(
         gone,
         Vec::<&String>::new(),
-        "named in README.md but not a gate"
+        "named in {GATE_REFERENCE} but not a gate"
     );
 }
 
 #[test]
-fn the_readme_files_every_gate_under_the_kind_the_binary_gives_it() {
+fn the_gate_reference_files_every_gate_under_the_kind_the_binary_gives_it() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
     let listed = chock(repo, &["gates", "--json"]);
     let mut ratchets = ratchet_names(&listed.out);
     assert!(ratchets.len() > 10, "only {} ratchet(s)", ratchets.len());
 
-    let readme = std::fs::read_to_string(repo.join("README.md")).unwrap();
-    let mut ticked: Vec<String> = gate_rows(&readme)
+    let reference = std::fs::read_to_string(repo.join(GATE_REFERENCE)).unwrap();
+    let mut ticked: Vec<String> = gate_rows(&reference)
         .into_iter()
         .filter(|(_, ratchet)| *ratchet)
         .map(|(name, _)| name)
@@ -939,18 +951,20 @@ fn the_readme_files_every_gate_under_the_kind_the_binary_gives_it() {
     ticked.sort();
     assert_eq!(
         ticked, ratchets,
-        "the README's ratchet column disagrees with the binary"
+        "the ratchet column of {GATE_REFERENCE} disagrees with the binary"
     );
 }
 
-/// Each row of the README's check tables, with whether its ratchet column is ticked. Only tables
-/// headed `| check | ratchet | fails when` count: `coverage` also names a command in another.
+const GATE_REFERENCE: &str = "docs/gates.md";
+
+/// Each row of the reference's gate tables, with whether its ratchet column is ticked. Only tables
+/// headed `| gate | ratchet | trips when` count: `coverage` also names a command in another.
 fn gate_rows(readme: &str) -> Vec<(String, bool)> {
     let mut rows = Vec::new();
     let mut in_gate_table = false;
     for line in readme.lines() {
         let row = line.trim();
-        if row.starts_with("| check | ratchet | fails when") {
+        if row.starts_with("| gate | ratchet | trips when") {
             in_gate_table = true;
             continue;
         }
@@ -1179,9 +1193,12 @@ fn staging_a_gate_records_only_a_stage_other_than_its_default() {
     let config = || std::fs::read_to_string(dir.join(".chock/config.json")).unwrap();
     let ci = chock(&dir, &["stage", "binsize", "ci"]);
     assert_eq!(ci.code, 0, "{}{}", ci.out, ci.err);
-    says(&ci.out, "binsize      ci");
+    says(&ci.out, "binsize      runs at ci");
     says(&config(), "\"binsize\": \"ci\"");
-    says(&chock(&dir, &["stage", "binsize", "ci"]).out, "already ci");
+    says(
+        &chock(&dir, &["stage", "binsize", "ci"]).out,
+        "already runs at ci",
+    );
     let manual = chock(&dir, &["stage", "typos", "manual"]);
     says(&manual.out, "only `chock run` does");
     let back = chock(&dir, &["stage", "binsize", "push"]);
@@ -1268,8 +1285,8 @@ fn init_keeps_a_broken_core_check_enabled_and_the_next_run_reports_it() {
     let dir = project("init-broken-module", &[("src/lib.rs", "mod absent;\n")]);
     let init = chock(&dir, &["init", "--local", "--fast"]);
     assert_eq!(init.code, 0, "{}{}", init.out, init.err);
-    says(&init.out, "required check failed:");
-    says(&init.out, "Enabled does not mean passed");
+    says(&init.out, "a required gate, and it trips today:");
+    says(&init.out, "On does not mean passed");
     let config: chock::project::config::Config = serde_json::from_str(
         &std::fs::read_to_string(dir.join(chock::project::config::FILE)).unwrap(),
     )
@@ -1330,6 +1347,7 @@ fn mutation_tool(dir: &Path, args: &[&str], exit: &str, failed: bool) -> Ran {
 case "$*" in
   --version) printf 'cargo 1.98.1\n'; exit 0 ;;
   'mutest --version') printf 'cargo-mutest fixture\n'; exit 0 ;;
+  'mutest run --help') printf '      --require-progress\n'; exit 0 ;;
   'mutest run --call-graph-depth-limit 3 --isolate all --parallel-mutants --metadata-out-root-dir='*) ;;
   'metadata --no-deps --format-version 1') printf '%s\n' '{"workspace_default_members":["fixture"],"packages":[{"id":"fixture","name":"fixture","targets":[{"name":"fixture","kind":["lib"],"test":true},{"name":"commands","kind":["test"],"test":true}]}]}'; exit 0 ;;
   *) printf 'unexpected invocation\n' >&2; exit 1 ;;
@@ -1350,7 +1368,6 @@ if [ -n "$MUTEST_PROGRESS_DIR" ]; then
   prefix="\"schema\":\"mutest-progress\",\"version\":1,\"nonce\":\"$MUTEST_PROGRESS_NONCE\",\"instance_id\":\"$instance\""
   printf '{%s,"event":"header","seq":0,"elapsed_ms":0,"pid":%s,"process_start":{"kind":"linux-proc-starttime","ticks":%s},"exe":"%s","record_limit_bytes":16384,"file_limit_bytes":67108864}\n' "$prefix" "$$" "$ticks" "$exe" > "$file"
   printf '{%s,"event":"phase","seq":1,"elapsed_ms":0,"phase":"evaluation"}\n' "$prefix" >> "$file"
-  printf '{%s,"event":"terminal","seq":2,"elapsed_ms":0,"status":"completed","exit_code":%s}\n' "$prefix" "$FIXTURE_EXIT" >> "$file"
 fi
 printf '%s\n' 'warning: integration test `commands` links no mutant crate, so no mutation can reach its tests' >&2
 /bin/mkdir -p "$results/fixture/lib"
@@ -1359,6 +1376,10 @@ printf '%s\n' '{"mutation_runs":[{"mutation_detection_matrix":{"overall_detectio
 printf '%s\n' 'mutations: 90%. 9 detected (0 timed out; 0 crashed); 1 undetected; 10 total'
 if [ "$FIXTURE_FAILED" = yes ]; then
   printf '%s\n' 'error: the test harness of `launch` in package `fixture` did not build, so none of its mutations were evaluated' >&2
+fi
+# mutest writes the terminal event last; chock stops reading at one that reports an abnormal exit.
+if [ -n "$MUTEST_PROGRESS_DIR" ]; then
+  printf '{%s,"event":"terminal","seq":2,"elapsed_ms":0,"status":"completed","exit_code":%s}\n' "$prefix" "$FIXTURE_EXIT" >> "$file"
 fi
 exit "$FIXTURE_EXIT"
 "#,
@@ -1580,7 +1601,7 @@ fn an_explicit_gate_filtered_out_never_becomes_an_empty_or_partial_success() {
     ] {
         let result = chock(&dir, &args);
         assert_eq!(result.code, 2, "{}{}", result.out, result.err);
-        says(&result.err, "requested checks excluded");
+        says(&result.err, "leaves out what you named");
         says(&result.err, "lint");
         assert_eq!(result.out, "");
         assert!(!dir.join(".chock/last-run.json").exists());
@@ -1597,7 +1618,7 @@ fn an_empty_user_run_is_not_the_same_as_a_hook_with_no_assigned_checks() {
     );
     let run = chock(&dir, &["run", "--fast", "--json"]);
     assert_eq!(run.code, 2, "{}{}", run.out, run.err);
-    says(&run.err, "no checks selected");
+    says(&run.err, "no gate is left after --fast/--ci");
     assert_eq!(run.out, "");
     let hook = chock(&dir, &["hook", "pre-commit"]);
     assert_eq!(hook.code, 0, "{}{}", hook.out, hook.err);
@@ -1620,7 +1641,7 @@ fn ci_cannot_silently_exclude_an_explicit_local_only_gate() {
     let result = chock(&dir, &["run", "--ci", "manifest", "--json"]);
     assert_eq!(result.code, 2, "{}{}", result.out, result.err);
     says(&result.err, "manifest");
-    says(&result.err, "requested checks excluded");
+    says(&result.err, "leaves out what you named");
 }
 
 #[cfg(unix)]
@@ -1787,6 +1808,11 @@ fn init_global_takes_a_prebuilt_release_through_binstall_and_compiles_when_it_ca
         assert_eq!(ran.code, 0, "{}{}", ran.out, ran.err);
         says(&ran.out, "  installing cargo-deny 0.20.2 — ");
         says(&ran.out, "  installed cargo-deny 0.20.2");
+        // No rustup on this `PATH`: Miri is skipped, and that is no failed install.
+        says(
+            &ran.out,
+            "  skipped   miri — only rustup installs it, and chock could not start rustup: ",
+        );
         let log = std::fs::read_to_string(dir.join("cargo.log")).unwrap();
         let fetches: Vec<&str> = log
             .lines()
@@ -1794,6 +1820,136 @@ fn init_global_takes_a_prebuilt_release_through_binstall_and_compiles_when_it_ca
             .collect();
         assert_eq!(fetches, asked, "binstall here {here}, fetching {fetching}");
     }
+}
+
+/// A rustup whose `nightly` holds what `RUSTUP_HAS` names, and that installs where `RUSTUP_ADDS` is 0.
+const LOGGING_RUSTUP: &str = r#"#!/bin/sh
+printf '%s\n' "$*" >> rustup.log
+case "$1 $2 $RUSTUP_HAS" in
+  "component list none") echo "error: toolchain 'nightly' is not installed" >&2; exit 1 ;;
+  "component list both") printf 'miri-x86_64-unknown-linux-gnu\nrust-src\n'; exit 0 ;;
+  "component list part") printf 'rust-src\n'; exit 0 ;;
+esac
+[ "$RUSTUP_ADDS" = 0 ] || echo 'error: no download' >&2
+exit "$RUSTUP_ADDS"
+"#;
+
+#[cfg(unix)]
+#[test]
+fn init_global_adds_miri_to_the_nightly_toolchain_and_fails_where_rustup_refuses() {
+    let listed = "component list --toolchain nightly --installed";
+    let toolchain = "toolchain install nightly --profile minimal --no-self-update";
+    let parts = "component add --toolchain nightly miri rust-src";
+    let installed = "  installed miri — on the `nightly` toolchain";
+    let refused = format!("  FAILED    miri — `rustup {toolchain}` failed: error: no download");
+    for (has, adds, code, line, asked) in [
+        (
+            "both",
+            "1",
+            0,
+            "  current   miri — on the `nightly` toolchain",
+            vec![listed],
+        ),
+        ("part", "0", 0, installed, vec![listed, parts]),
+        ("none", "0", 0, installed, vec![listed, toolchain, parts]),
+        ("none", "1", 1, refused.as_str(), vec![listed, toolchain]),
+    ] {
+        let dir = project("init-miri", &[("tool-versions.env", "")]);
+        put(&dir, "bin/rustup", LOGGING_RUSTUP);
+        make_runnable(&dir.join("bin/rustup"));
+        let env = [("RUSTUP_HAS", has), ("RUSTUP_ADDS", adds)];
+        let ran = with_tools(&dir, &["init", "--global"], &env);
+        assert_eq!(ran.code, code, "{has} {adds}: {}{}", ran.out, ran.err);
+        says(&ran.out, line);
+        let log = std::fs::read_to_string(dir.join("rustup.log")).unwrap();
+        assert_eq!(log.lines().collect::<Vec<_>>(), asked, "{has} {adds}");
+        let failed = "chock init: could not install: miri\n";
+        assert_eq!(ran.err, if code == 0 { "" } else { failed }, "{has} {adds}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn init_global_builds_the_fork_of_mutest_from_its_repository_and_fails_where_it_cannot() {
+    let dir = project("init-fork", &[]);
+    put(
+        &dir,
+        "tool-versions.env",
+        "CARGO_MUTEST_VERSION=0.0.0\nOUTPOST_VERSION=0.0.0\n",
+    );
+    put(&dir, "bin/cargo", LOGGING_CARGO);
+    make_runnable(&dir.join("bin/cargo"));
+    // No git on this `PATH`, so the newest commit of `main` cannot be asked for.
+    let ran = with_tools(&dir, &["init", "--global"], &[]);
+    assert_eq!(ran.code, 1, "{}{}", ran.out, ran.err);
+    says(
+        &ran.out,
+        "  checking  cargo-mutest — against `main` at https://github.com/outpostHQ/mutest-rs; a build of a new commit takes minutes\n  FAILED    cargo-mutest — could not start git: ",
+    );
+    assert!(!ran.out.contains("  local     cargo-mutest"), "{}", ran.out);
+    // Any other tool that no registry holds is still the project's own to build.
+    says(
+        &ran.out,
+        "  local     outpost — not on crates.io; build it from its checkout",
+    );
+    assert_eq!(ran.err, "chock init: could not install: cargo-mutest\n");
+    // cargo was not asked to fetch or to build it: the install stopped at the repository.
+    let log = std::fs::read_to_string(dir.join("cargo.log")).unwrap();
+    assert!(!log.contains("mutest"), "{log}");
+}
+
+/// A cargo that has no `mutest` command and no installed crate.
+const BARE_CARGO: &str = r#"#!/bin/sh
+case "$1" in
+  mutest) echo 'error: no such command: `mutest`' >&2; exit 101 ;;
+esac
+"#;
+
+#[cfg(unix)]
+#[test]
+fn doctor_names_a_missing_fork_of_mutest_and_a_missing_miri_with_the_install_for_each() {
+    let dir = project(
+        "doctor-fork",
+        &[("tool-versions.env", "CARGO_MUTEST_VERSION=0.0.0\n")],
+    );
+    put(
+        &dir,
+        ".chock/config.json",
+        r#"{"version": 1, "enabled": ["miri"]}"#,
+    );
+    for (tool, script) in [("bin/cargo", BARE_CARGO), ("bin/rustup", LOGGING_RUSTUP)] {
+        put(&dir, tool, script);
+        make_runnable(&dir.join(tool));
+    }
+    let ran = with_tools(&dir, &["doctor"], &[("RUSTUP_HAS", "part")]);
+    assert_eq!(ran.code, 1, "{}{}", ran.out, ran.err);
+    let row = |name: &str, said: &str| format!("  BROKEN   {name:<16} {said}\n");
+    says(
+        &ran.out,
+        &row("cargo-mutest", "not installed: run `chock init --global`"),
+    );
+    says(
+        &ran.out,
+        &row(
+            "miri",
+            "the `nightly` toolchain lacks `miri` or `rust-src`: run `chock init --global`",
+        ),
+    );
+    assert!(
+        !ran.out.contains("build it from its checkout"),
+        "{}",
+        ran.out
+    );
+    // The same project with the check off has no row for Miri, and starts no rustup.
+    put(
+        &dir,
+        ".chock/config.json",
+        r#"{"version": 1, "enabled": ["slop"]}"#,
+    );
+    std::fs::remove_file(dir.join("rustup.log")).unwrap();
+    let off = with_tools(&dir, &["doctor"], &[("RUSTUP_HAS", "part")]);
+    assert!(!off.out.contains(" miri "), "{}", off.out);
+    assert!(!dir.join("rustup.log").exists());
 }
 
 #[cfg(unix)]
@@ -1908,6 +2064,9 @@ while :; do :; done
     says(why, "fixture cannot continue");
     let explained = with_tools(&dir, &["explain", "coverage"], &[]);
     says(&explained.out, "fixture cannot continue");
+    // The reason stands in the gate's own line; nothing prints it a second time.
+    let once = why.trim_end();
+    assert_eq!(explained.out.matches(once).collect::<Vec<_>>(), [once]);
 }
 
 #[cfg(unix)]
@@ -1973,6 +2132,45 @@ fn mutation_scope_notes_reach_baseline_output_and_run_json() {
         std::fs::read_to_string(dir.join(chock::run::baseline::FILE)).unwrap(),
         baseline
     );
+}
+
+/// Upstream mutest-rs as `cargo mutest`: it prints the fork's version, and its `run` refuses the
+/// flag chock passes.
+#[cfg(unix)]
+const UPSTREAM_MUTEST: &str = r#"#!/bin/sh
+case "$*" in
+  --version) printf 'cargo 1.98.1\n'; exit 0 ;;
+  'mutest run --help') printf 'Usage: cargo mutest run [OPTIONS]\n      --isolate <MODE>\n'; exit 0 ;;
+  *) printf "error: unexpected argument '--require-progress' found\n" >&2; exit 2 ;;
+esac
+"#;
+
+#[cfg(unix)]
+#[test]
+fn a_cargo_mutest_that_is_not_the_fork_stops_the_check_and_names_the_install() {
+    let dir = project("mutation-foreign", &[("src/lib.rs", "pub fn f() {}\n")]);
+    put(
+        &dir,
+        chock::project::config::FILE,
+        &chock::project::config::Config::of(["mutest"]).render(),
+    );
+    put(&dir, "bin/cargo", UPSTREAM_MUTEST);
+    make_runnable(&dir.join("bin/cargo"));
+    let install = "run `chock init --global`: it builds `cargo-mutest` from the newest commit";
+    let recorded = with_tools(&dir, &["baseline", "mutest"], &[]);
+    assert_eq!(recorded.code, 2, "{}{}", recorded.out, recorded.err);
+    let said = format!("{}{}", recorded.out, recorded.err);
+    says(
+        &said,
+        "  SKIPPED   mutest       this machine's `cargo-mutest` is not a current build of Outpost's fork",
+    );
+    says(&said, &format!("\n  fix: {install}"));
+    assert!(!said.contains("unexpected argument"), "{said}");
+    let result = with_tools(&dir, &["run", "mutest", "--json"], &[]);
+    assert_eq!(result.code, 2, "{}{}", result.out, result.err);
+    let report = parsed(&result.out);
+    assert_eq!(report.gates[0].verdict, Verdict::CannotRun);
+    says(report.gates[0].fix.as_deref().unwrap(), install);
 }
 
 #[cfg(unix)]

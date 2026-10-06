@@ -11,6 +11,7 @@ use crate::gates;
 use crate::project;
 use crate::project::config::Config;
 use crate::run::baseline::Baseline;
+use crate::run::report::plural;
 use crate::run::{self, Ctx, Group, Kind};
 pub use crate::setup::adoption::{Decision, render_decisions};
 use crate::setup::adoption::{adoption, selected};
@@ -89,11 +90,11 @@ chock init [--global] [--local] [--fast]
 
   --global   install the pinned tools, once per machine
   --local    write this project's hooks, justfile, pins and config
-  --fast     measure only the checks that need no compiler; skips the builds
-  --help     this
+  --fast     measure only the gates that need no compiler; skips the builds
+  --help     this text
 
-  No half named means both. After you install a newer chock, `chock init` moves this
-  project's pins to it and keeps the ones chock does not set.
+  With neither --global nor --local, `chock init` does both. After you install a newer chock,
+  run it again: it moves this project's pins to that chock and keeps the pins chock does not set.
 ";
 
 /// No half named means both. `--fast` names neither half, so it leaves that choice alone.
@@ -282,6 +283,9 @@ pub fn local_pin_file(chock_version: &str) -> String {
     )
 }
 
+/// Why a gate on chock's own hooks and config is on before anything measured it.
+const WRITTEN_NOW: &str = "the hooks and the config that this command writes";
+
 /// Keep the measurement beside the adoption decision: core failures and missing measurements remain
 /// enabled, while measured quality debt may be left for the project to adopt deliberately.
 pub fn judge(gate: &run::Gate, ctx: &Ctx) -> (Decision, Option<crate::run::report::GateReport>) {
@@ -290,7 +294,7 @@ pub fn judge(gate: &run::Gate, ctx: &Ctx) -> (Decision, Option<crate::run::repor
         Group::Instrument => return (Decision::Reports, None),
         // Switched on without being measured: the config it reads is the one `init` is about to
         // write, so measuring it here reports it missing and then leaves the gate off.
-        Group::Setup => return (Decision::On("chock's own wiring".to_string()), None),
+        Group::Setup => return (Decision::On(WRITTEN_NOW.to_string()), None),
         Group::Gates | Group::Quality => {}
     }
     if let Some(why) = switched_on_unmeasured(gate, &ctx.root) {
@@ -300,7 +304,7 @@ pub fn judge(gate: &run::Gate, ctx: &Ctx) -> (Decision, Option<crate::run::repor
         // Measured, not run: a ratchet with no baseline cannot run, and `init` is here to fix that.
         Kind::Ratchet { .. } | Kind::AnnotatedRatchet { .. } => match run::measure(gate, ctx) {
             Ok(series) => (
-                Decision::On(format!("ratchet over {} key(s)", series.len())),
+                Decision::On(format!("ratchet: {} today", plural(series.len(), "item"))),
                 None,
             ),
             Err(reason) => (Decision::Unmeasurable(reason), None),
@@ -320,7 +324,10 @@ fn debt_adoption(
     match inspection {
         Err(reason) => (Decision::Unmeasurable(reason), None),
         Ok(found) if found.blockers.is_empty() => (
-            Decision::On(format!("ratchet over {} finding(s)", found.debt.len())),
+            Decision::On(format!(
+                "ratchet: {} today",
+                plural(found.debt.len(), "finding")
+            )),
             None,
         ),
         Ok(found) => {
@@ -460,13 +467,16 @@ fn about_to_measure(fast: bool, root: &Path) -> String {
     };
     let (builds, quick) = (counted(true), counted(false));
     if builds == 0 {
-        return format!("Measuring {quick} check(s) against this tree; none of them build it.");
+        return format!(
+            "Measuring {} against this tree; none of them build it.",
+            plural(quick, "gate")
+        );
     }
     format!(
-        "Measuring {} check(s) against this tree. {builds} of them build this project, which on a \
+        "Measuring {} against this tree. {builds} of them build this project, which on a \
          large workspace is tens of minutes — `chock init --local --fast` switches on only the \
          {quick} that need no compiler.",
-        builds + quick
+        plural(builds + quick, "gate")
     )
 }
 
@@ -493,9 +503,9 @@ fn write_local_with(
     Ok(format!(
         "chock init --local: {}\n{files}{config_note}{ignores}{hooks}{editor}{contract}\n\
          Gates measured against this tree:\n{decisions}\n\
-         {} on. Record the ratchets with `chock baseline`.\n{}",
+         {} on. Next: `chock baseline` records today's numbers.\n{}",
         root.display(),
-        config.enabled.len(),
+        plural(config.enabled.len(), "gate"),
         manifest_notes(root).concat()
     ))
 }
@@ -509,7 +519,7 @@ fn already_chosen(root: &Path) -> Option<Config> {
 }
 
 const DECIDED: &str = ".chock/config.json already says which checks are on, so nothing was \
-measured. `chock enable <name>` switches one on, and `chock run` says where the tree stands.\n";
+measured. `chock enable GATE` switches one on, and `chock run` says where the tree stands.\n";
 
 /// The one file holding decisions somebody made, not measurements chock took. Overwriting it
 /// would switch off gates somebody turned on.
@@ -575,7 +585,7 @@ fn add_ignores(root: &Path) -> Result<String, Error> {
         let added = add_ignores_to(&root.join(file))?;
         // The name without its dot, which is what the other lines of the report are keyed by.
         let label = file.trim_start_matches('.');
-        report.push_str(&format!("  {label:<9} {added} entry(ies) added\n"));
+        report.push_str(&format!("  {label:<9} {} added\n", plural(added, "line")));
     }
     Ok(report)
 }
@@ -819,16 +829,36 @@ fn run_setup(pin: &Pin) -> bool {
 fn install_global(pins: &[Pin]) -> Result<(), Error> {
     let installed = crate::setup::doctor::installed_on_this_machine();
     // Asked per pin: the pin file installs cargo-binstall first, and every tool after it uses it.
-    let failed: Vec<String> = pins
+    let mut failed: Vec<String> = pins
         .iter()
-        .filter(|pin| !install_one(pin, &installed, binstall_here()))
+        .filter(|pin| !installs(pin, &installed))
         .map(|pin| pin.crate_name.clone())
         .collect();
+    // Miri is no pin: it is a part of the `nightly` toolchain, so every machine gets it.
+    let miri = crate::setup::miri::install(&crate::exec::run_env, Path::new("."));
+    failed.extend((!reported(&miri)).then(|| crate::setup::miri::NAME.to_string()));
     if failed.is_empty() {
         Ok(())
     } else {
         Err(Error::NotInstalled(failed))
     }
+}
+
+/// One pin: Outpost's fork of mutest-rs is built from its repository, any other tool is fetched.
+fn installs(pin: &Pin, installed: &dyn Fn(&Pin) -> Option<String>) -> bool {
+    if !crate::setup::mutest::is_pin(pin, std::env::consts::OS) {
+        return install_one(pin, installed, binstall_here());
+    }
+    println!("{}", crate::setup::mutest::starting());
+    let temp = std::env::temp_dir();
+    reported(&crate::setup::mutest::install(&crate::exec::run_env, &temp))
+}
+
+/// Prints what an install that is no crate fetch did; `false` is one that failed.
+fn reported(done: &Result<String, String>) -> bool {
+    let (Ok(line) | Err(line)) = done;
+    println!("{line}");
+    done.is_ok()
 }
 
 /// Whether cargo says crates.io lacks the pin. That is not a failed install: a pin file can
@@ -953,8 +983,8 @@ fn install_one(pin: &Pin, installed: &dyn Fn(&Pin) -> Option<String>, binstall: 
         let said = String::from_utf8_lossy(&out.stderr);
         if not_a_crate(&said) {
             println!(
-                "  skipped   {} — not a crate, so chock did not install it",
-                pin.crate_name
+                "  skipped   {} {} — crates.io does not have it, so chock did not install it",
+                pin.crate_name, pin.want
             );
             return true;
         }
@@ -1001,7 +1031,7 @@ mod tests {
                 blockers: Vec::new(),
             }),
         );
-        assert_eq!(decision, Decision::On("ratchet over 1 finding(s)".into()));
+        assert_eq!(decision, Decision::On("ratchet: 1 finding today".into()));
         assert!(report.is_none());
         let (_, report) = debt_adoption(
             gate,
@@ -1361,7 +1391,7 @@ mod tests {
         let ctx = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
         assert_eq!(
             judge(&crate::gates::text::slop::GATE, &ctx).0,
-            Decision::On("ratchet over 1 key(s)".to_string())
+            Decision::On("ratchet: 1 item today".to_string())
         );
     }
 
@@ -1844,7 +1874,7 @@ mod tests {
         let dir = crate::testdir::make("init-setup-group");
         let ctx = crate::run::Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
         let (decision, report) = judge(&crate::gates::wiring::GATE, &ctx);
-        assert_eq!(decision, Decision::On("chock's own wiring".to_string()));
+        assert_eq!(decision, Decision::On(WRITTEN_NOW.to_string()));
         assert!(decision.enables(), "it would be left out of the config");
         assert!(report.is_none(), "it was run after all");
     }
@@ -1967,7 +1997,7 @@ mod tests {
                  \x20 created   justfile\n\
                  \x20 created   deny.toml\n\
                  \x20 created   .chock/config.json\n\
-                 \x20 gitignore 9 entry(ies) added\n\
+                 \x20 gitignore 9 lines added\n\
                  \x20 editor    .claude/settings.json runs chock on every edit\n\
                  \x20 note      an editor session already open may not fire it until it reloads\n\
                  \x20 created   .chock/agents.md\n\
@@ -1975,7 +2005,7 @@ mod tests {
                  Gates measured against this tree:\n\
                  \x20 on        slop         ratchet\n\
                  \n\
-                 1 on. Record the ratchets with `chock baseline`.\n",
+                 1 gate on. Next: `chock baseline` records today's numbers.\n",
                 dir.display()
             )
         );
@@ -2131,7 +2161,7 @@ mod tests {
             let written = fs::read_to_string(dir.join(file)).unwrap();
             assert!(written.contains("lcov.info"), "{file}: {written}");
         }
-        assert!(said.contains("outpostignore 9 entry(ies) added"), "{said}");
+        assert!(said.contains("outpostignore 9 lines added"), "{said}");
     }
 
     /// `*` matches the empty string in a gitignore, so `*.chock` spells `.chock` and hides the whole

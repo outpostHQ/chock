@@ -3,6 +3,7 @@
 
 pub mod binsize;
 pub mod codeslop;
+mod deps;
 mod doc;
 pub mod dupdeps;
 pub mod machete;
@@ -63,7 +64,7 @@ pub const DEPS: Gate = Gate {
     group: Group::Quality,
     builds: false,
     reads: None,
-    kind: Kind::Binary(deps),
+    kind: Kind::Binary(deps::check),
 };
 
 pub const UNUSED: Gate = Gate {
@@ -492,70 +493,6 @@ fn diffed_file(line: &str) -> Option<&str> {
     Some(path)
 }
 
-fn deps(ctx: &Ctx) -> Result<Outcome, String> {
-    let manifest = std::fs::read_to_string(ctx.root.join(DENY))
-        .map_err(|e| format!("cannot read {DENY}, so no policy says what to check: {e}"))?;
-    let asked = asked_for(&manifest);
-    if asked.is_empty() {
-        return Err(format!(
-            "{DENY} declares no [advisories], [bans], [licenses] or [sources], so there is no \
-             policy to hold anything to"
-        ));
-    }
-    let mut args = vec!["deny", "check"];
-    args.extend(&asked);
-    let out = exec::tool(&ctx.root, "cargo", &args)?;
-    Ok(with_unasked(verdict(&out, &ctx.root), &asked))
-}
-
-/// The outcome, and one finding for each cargo-deny check that did not run. A failure nothing was
-/// read from keeps no finding, so it still reports as unable to run.
-fn with_unasked(mut outcome: Outcome, asked: &[&str]) -> Outcome {
-    if !unread(&outcome) {
-        outcome.findings.extend(not_asked(asked));
-    }
-    outcome
-}
-
-/// The policy file a project writes for cargo-deny.
-const DENY: &str = "deny.toml";
-
-/// Each cargo-deny check, with the section of the policy file that asks for it.
-const CHECKS: [(&str, &str); 4] = [
-    ("[advisories]", "advisories"),
-    ("[bans]", "bans"),
-    ("[licenses]", "licenses"),
-    ("[sources]", "sources"),
-];
-
-/// The cargo-deny checks the project wrote a section for; one with no policy rejects every crate.
-#[must_use]
-fn asked_for(manifest: &str) -> Vec<&'static str> {
-    CHECKS
-        .iter()
-        .filter(|(section, _)| declares(manifest, section))
-        .map(|(_, check)| *check)
-        .collect()
-}
-
-/// The checks the policy file has no section for, so a pass does not read as all four.
-fn not_asked(asked: &[&str]) -> Vec<Finding> {
-    CHECKS
-        .iter()
-        .filter(|(_, check)| !asked.contains(check))
-        .map(|(section, check)| {
-            let message = format!("no {section} section, so cargo-deny did not check {check}");
-            Finding::at(DENY, &message)
-        })
-        .collect()
-}
-
-/// A section heading on its own line, so `[bans.build]` does not read as `[bans]` and a mention
-/// inside a comment does not read as a policy.
-fn declares(manifest: &str, section: &str) -> bool {
-    manifest.lines().map(str::trim).any(|line| line == section)
-}
-
 /// A build script or proc-macro that reaches the network or spawns a process fails unless its entry
 /// in cackle.toml allows it.
 fn acl(ctx: &Ctx) -> Result<Outcome, String> {
@@ -791,12 +728,16 @@ fn complaint(stderr: &str) -> String {
         .to_string()
 }
 
+/// Why `msrv` cannot run in a crate that names no oldest Rust.
+pub(in crate::gates) const NO_MSRV: &str =
+    "Cargo.toml declares no rust-version, so there is no promise to check";
+
 /// Checks the workspace on the oldest Rust its `rust-version` promises, not on the toolchain pin.
 fn msrv(ctx: &Ctx) -> Result<Outcome, String> {
     let manifest = std::fs::read_to_string(ctx.root.join("Cargo.toml"))
         .map_err(|e| format!("cannot read Cargo.toml: {e}"))?;
     let Some(version) = rust_version(&manifest) else {
-        return Err("Cargo.toml declares no rust-version, so there is no promise to check".into());
+        return Err(NO_MSRV.into());
     };
     let listed =
         exec::run("rustup", &["toolchain", "list"], &ctx.root).map_err(|e| e.to_string())?;
@@ -1736,57 +1677,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn only_the_checks_the_project_wrote_a_policy_for_are_run() {
-        let ws = "[graph]\nall-features = true\n\n[advisories]\n\n[bans]\n\n[sources]\n";
-        assert_eq!(asked_for(ws), vec!["advisories", "bans", "sources"]);
-    }
-
-    #[test]
-    fn a_policy_naming_every_check_runs_every_check() {
-        let all = "[advisories]\n[licenses]\n[bans]\n[sources]\n";
-        assert_eq!(
-            asked_for(all),
-            vec!["advisories", "bans", "licenses", "sources"]
-        );
-    }
-
-    #[test]
-    fn a_nested_section_or_a_commented_one_is_not_a_policy() {
-        assert_eq!(
-            asked_for("[bans.build]\n[[bans.build.bypass]]\n"),
-            Vec::<&str>::new()
-        );
-        assert_eq!(
-            asked_for("# [licenses] was removed on purpose\n"),
-            Vec::<&str>::new()
-        );
-        assert_eq!(asked_for("[advisories]"), vec!["advisories"]);
-    }
-
     fn said(outcome: &Outcome) -> Vec<String> {
         outcome.findings.iter().map(Finding::render).collect()
-    }
-
-    /// The false green this answers: a policy with no `[licenses]` passed as if licences held.
-    #[test]
-    fn a_check_with_no_section_is_named_beside_a_pass_or_a_trip_and_never_beside_silence() {
-        let asked = ["advisories", "bans", "sources"];
-        let gap = "deny.toml: no [licenses] section, so cargo-deny did not check licenses";
-        let passed = with_unasked(Outcome::passed(), &asked);
-        assert_eq!(
-            (passed.passed, said(&passed)),
-            (true, vec![gap.to_string()])
-        );
-        let banned = Outcome::failed(vec![Finding::at("Cargo.lock", "banned")]);
-        assert_eq!(
-            said(&with_unasked(banned, &asked)),
-            vec!["Cargo.lock: banned", gap]
-        );
-        let unread = Outcome::failed(Vec::new());
-        assert_eq!(with_unasked(unread.clone(), &asked), unread);
-        let every = ["advisories", "bans", "licenses", "sources"];
-        assert_eq!(with_unasked(Outcome::passed(), &every), Outcome::passed());
     }
 
     /// The false green this answers: a file to reformat ended `lint` before clippy ran.

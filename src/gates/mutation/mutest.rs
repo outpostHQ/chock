@@ -2,6 +2,7 @@
 //! compared; an ineligible one is only an advisory.
 
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use crate::exec;
 use crate::run::baseline::Series;
@@ -11,6 +12,7 @@ use crate::run::{Ctx, Measurement};
 use super::results::Results;
 use super::scope;
 use super::survivors::{self, Survivor};
+use super::tool;
 
 const CALL_GRAPH_DEPTH: &str = "3";
 const TIMEOUT_LIMIT: u64 = 2;
@@ -20,13 +22,19 @@ const NOT_LINKED: &str = "not applicable to linked-crate mutation: no mutant cra
 
 /// The whole crate, or on a local run only the Rust files the change touched.
 pub(in crate::gates) fn measure(ctx: &Ctx) -> Result<Measurement, String> {
+    measured(ctx, tool::usable)
+}
+
+/// `usable` is asked only where a run starts: the record is kept without the tool, and a run
+/// needs one that takes chock's flags.
+fn measured(ctx: &Ctx, usable: fn(&Path) -> Result<(), String>) -> Result<Measurement, String> {
     ctx.default_build("cargo mutest")?;
     let was = ctx.record(crate::gates::tools::MUTEST.name);
     let named = ctx.named_against(crate::gates::tools::MUTEST.name);
     match scope::of(ctx) {
-        None => mutated(ctx, None, &named, read),
         Some(files) if files.is_empty() => Ok(scope::unchanged(was)),
-        Some(files) => scoped(ctx, &files, &was, &named),
+        None => usable(&ctx.root).and_then(|()| mutated(ctx, None, &named, read)),
+        Some(files) => usable(&ctx.root).and_then(|()| scoped(ctx, &files, &was, &named)),
     }
 }
 
@@ -314,7 +322,7 @@ mod tests {
         read(out, results, &Series::default())
     }
 
-    /// A file as the root, so making the results directory fails before cargo starts.
+    /// A file as the root, so asking cargo which tool it has fails before a run starts.
     fn touched(files: &[&str]) -> Ctx {
         let mut baseline = crate::run::baseline::Baseline::empty("0.1.0");
         let mut was = Series::new();
@@ -335,13 +343,28 @@ mod tests {
             kept,
             Ok(touched(&[]).record(crate::gates::tools::MUTEST.name))
         );
-        let started = measure(&touched(&["src/a.rs"]));
-        assert!(
-            started
-                .as_ref()
-                .is_err_and(|error| error.contains("mutest's results")),
-            "{started:?}"
-        );
+        let whole = Ctx {
+            whole: true,
+            ..touched(&["README.md"])
+        };
+        for moved in [touched(&["src/a.rs"]), whole] {
+            let asked = measure(&moved);
+            assert!(
+                asked
+                    .as_ref()
+                    .is_err_and(|error| error.starts_with("could not start cargo: ")),
+                "{asked:?}"
+            );
+            let refused = measured(&moved, |_| Err("no tool".to_string()));
+            assert_eq!(refused.err(), Some("no tool".to_string()));
+            let started = measured(&moved, |_| Ok(()));
+            assert!(
+                started
+                    .as_ref()
+                    .is_err_and(|error| error.contains("mutest's results")),
+                "{started:?}"
+            );
+        }
     }
 
     #[test]

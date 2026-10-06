@@ -98,6 +98,70 @@ struct Scored {
     #[serde(default)]
     status: String,
     baseline_crap: Option<f64>,
+    cyclomatic: Option<f64>,
+    /// A percent. `None` where the coverage report does not name the function's file.
+    coverage: Option<f64>,
+}
+
+/// What a CRAP score is made of: the function's complexity, and the percent of it the tests run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Inputs {
+    complexity: f64,
+    coverage: Option<f64>,
+}
+
+impl Inputs {
+    /// What a finding says after the score: both inputs, against the record's where it holds them,
+    /// and what to do about the one that got worse.
+    fn told(self, was: Option<Self>) -> String {
+        let (now, covered) = (self.complexity, percent(self.coverage));
+        match was {
+            Some(was) => format!(
+                ": complexity {} → {now}, coverage {} → {covered}{}",
+                was.complexity,
+                percent(was.coverage),
+                self.remedy_since(was)
+            ),
+            None => format!(": complexity {now}, coverage {covered}. {}", self.remedy()),
+        }
+    }
+
+    /// For a function with no record to compare: full coverage leaves a score of its complexity.
+    fn remedy(self) -> String {
+        match self.complexity > OVER {
+            true => format!(
+                "Split the function: at complexity {} full coverage still leaves it over CRAP {OVER}",
+                self.complexity
+            ),
+            false => "Test more of it, or split the function".to_string(),
+        }
+    }
+
+    /// For the input that got worse; nothing where neither reads worse than the record's.
+    fn remedy_since(self, was: Self) -> &'static str {
+        let more_branches = self.complexity > was.complexity;
+        let less_tested =
+            matches!((was.coverage, self.coverage), (Some(then), Some(now)) if now < then);
+        let all_tested = self.coverage.is_some_and(|now| now >= 100.0);
+        match (more_branches, less_tested, all_tested) {
+            (true, true, _) => {
+                ". It has more branches and the tests run less of it: test the new branches, or \
+                 split the function"
+            }
+            (true, false, true) => {
+                ". It has more branches and the tests run all of it: split the function"
+            }
+            (true, false, false) => {
+                ". It has more branches: test the new ones, or split the function"
+            }
+            (false, true, _) => ". The tests run less of it: test the lines that no test runs now",
+            (false, false, _) => "",
+        }
+    }
+}
+
+fn percent(coverage: Option<f64>) -> String {
+    coverage.map_or_else(|| "unknown".to_string(), |covered| format!("{covered:.1}%"))
 }
 
 impl Scored {
@@ -124,14 +188,25 @@ impl Scored {
         self.status = status.to_string();
     }
 
-    fn finding(&self, root: &Path) -> Finding {
+    /// `None` for a report that names no complexity.
+    fn inputs(&self) -> Option<Inputs> {
+        let (complexity, coverage) = (self.cyclomatic?, self.coverage);
+        Some(Inputs {
+            complexity,
+            coverage,
+        })
+    }
+
+    /// `was` is what the record holds for the function this one was judged against.
+    fn finding(&self, root: &Path, was: Option<Inputs>) -> Finding {
         let against = match self.baseline_crap {
             Some(was) => format!("was {was:.1}"),
             None => "not in the baseline".to_string(),
         };
+        let why = self.inputs().map(|now| now.told(was)).unwrap_or_default();
         Finding::at(
             &crate::project::relative(root, Path::new(&self.file)),
-            &format!("CRAP {:.1}, {against}", self.crap),
+            &format!("CRAP {:.1}, {against}{why}", self.crap),
         )
         .line(self.line)
         .item(&self.function)
@@ -229,6 +304,20 @@ fn paired(mut delta: Delta, record: &[Scored], root: &Path) -> Delta {
     delta
 }
 
+/// The inputs the record holds for the function `entry` was judged against: the one of its file
+/// and name with that score. Two that differ tell nothing, and so does a function that moved.
+fn before(entry: &Scored, record: &[Scored], root: &Path) -> Option<Inputs> {
+    let was = entry.baseline_crap?;
+    let key = named(root, &entry.file, &entry.function);
+    let mut same = record
+        .iter()
+        .filter(|held| (held.crap - was).abs() <= EPSILON)
+        .filter(|held| named(root, &held.file, &held.function) == key)
+        .filter_map(Scored::inputs);
+    let first = same.next()?;
+    same.all(|other| other == first).then_some(first)
+}
+
 /// Every function in the record under `root`.
 fn recorded(root: &Path) -> Result<Vec<Scored>, String> {
     let name = baseline();
@@ -308,7 +397,7 @@ fn judged(json: &str, succeeded: bool, root: &Path, record: &[Scored]) -> Result
         .entries
         .iter()
         .filter(|entry| entry.worse())
-        .map(|entry| entry.finding(root))
+        .map(|entry| entry.finding(root, before(entry, record, root)))
         .collect();
     let over = delta.entries.iter().filter(|entry| entry.over()).count() as u64;
     let outcome = match (worse.is_empty(), explained) {
@@ -396,8 +485,10 @@ mod tests {
         assert_eq!(
             rendered(&outcome),
             [
-                "src/a.rs:12: parse: CRAP 90.0, was 42.0",
-                "src/d.rs:5: added: CRAP 30.5, not in the baseline"
+                "src/a.rs:12: parse: CRAP 90.0, was 42.0: complexity 9, coverage 0.0%. Test more of \
+                 it, or split the function",
+                "src/d.rs:5: added: CRAP 30.5, not in the baseline: complexity 5, coverage 0.0%. \
+                 Test more of it, or split the function"
             ]
         );
         assert!(!outcome.passed);
@@ -457,6 +548,163 @@ mod tests {
                 .unwrap_err()
                 .starts_with("cargo-crap produced a report chock cannot read")
         );
+    }
+
+    /// `parse` as a report or a record names it, with the inputs of its score.
+    fn scored(crap: f64, cyclomatic: f64, coverage: &str, rest: &str) -> String {
+        format!(
+            r#"{{"file":"src/a.rs","function":"parse","line":10,"crap":{crap},
+               "cyclomatic":{cyclomatic},"coverage":{coverage}{rest}}}"#
+        )
+    }
+
+    fn entries(listed: &[String]) -> String {
+        format!(r#"{{"entries":[{}]}}"#, listed.join(","))
+    }
+
+    /// What the gate says of `parse`, each side given as score, complexity and coverage.
+    fn explained(now: (f64, f64, &str), was: (f64, f64, &str)) -> String {
+        let rest = format!(r#","status":"regressed","baseline_crap":{}"#, was.0);
+        let report = entries(&[scored(now.0, now.1, now.2, &rest)]);
+        let record = held(&entries(&[scored(was.0, was.1, was.2, "")]));
+        let outcome = judged(&report, false, Path::new("/w"), &record).unwrap();
+        rendered(&outcome).join("\n")
+    }
+
+    #[test]
+    fn a_function_that_got_worse_shows_both_inputs_against_the_record_and_what_to_do() {
+        let said = |inputs: &str| format!("src/a.rs:10: parse: CRAP 42.0, was 34.0: {inputs}");
+        assert_eq!(
+            explained((42.0, 14.0, "71.3"), (34.0, 12.0, "78")),
+            said(
+                "complexity 12 → 14, coverage 78.0% → 71.3%. It has more branches and the tests \
+                 run less of it: test the new branches, or split the function"
+            )
+        );
+        assert_eq!(
+            explained((42.0, 14.0, "78"), (34.0, 12.0, "78")),
+            said(
+                "complexity 12 → 14, coverage 78.0% → 78.0%. It has more branches: test the new \
+                 ones, or split the function"
+            )
+        );
+        assert_eq!(
+            explained((42.0, 12.0, "60"), (34.0, 12.0, "78")),
+            said(
+                "complexity 12 → 12, coverage 78.0% → 60.0%. The tests run less of it: test the \
+                 lines that no test runs now"
+            )
+        );
+        // Coverage that rose is no reason; complexity that fell is none either.
+        assert_eq!(
+            explained((42.0, 14.0, "99.9"), (34.0, 12.0, "78")),
+            said(
+                "complexity 12 → 14, coverage 78.0% → 99.9%. It has more branches: test the new \
+                 ones, or split the function"
+            )
+        );
+        // No test is left to write where the tests run every line.
+        assert_eq!(
+            explained((42.0, 42.0, "100"), (34.0, 34.0, "100")),
+            said(
+                "complexity 34 → 42, coverage 100.0% → 100.0%. It has more branches and the \
+                 tests run all of it: split the function"
+            )
+        );
+        assert_eq!(
+            explained((42.0, 10.0, "60"), (34.0, 12.0, "78")),
+            said(
+                "complexity 12 → 10, coverage 78.0% → 60.0%. The tests run less of it: test the \
+                 lines that no test runs now"
+            )
+        );
+    }
+
+    #[test]
+    fn inputs_that_read_no_worse_or_cannot_be_compared_are_shown_with_no_advice() {
+        let said = |inputs: &str| format!("src/a.rs:10: parse: CRAP 42.0, was 34.0: {inputs}");
+        assert_eq!(
+            explained((42.0, 12.0, "78"), (34.0, 12.0, "78")),
+            said("complexity 12 → 12, coverage 78.0% → 78.0%")
+        );
+        // A file the coverage report stopped naming has no percent to compare.
+        assert_eq!(
+            explained((42.0, 12.0, "null"), (34.0, 12.0, "78")),
+            said("complexity 12 → 12, coverage 78.0% → unknown")
+        );
+        assert_eq!(
+            explained((42.0, 12.0, "60"), (34.0, 12.0, "null")),
+            said("complexity 12 → 12, coverage unknown → 60.0%")
+        );
+    }
+
+    #[test]
+    fn a_function_with_no_record_is_told_whether_tests_alone_can_bring_it_under() {
+        let new = |crap: f64, cyclomatic: f64, coverage: &str| {
+            let rest = r#","status":"new","baseline_crap":null"#;
+            let report = entries(&[scored(crap, cyclomatic, coverage, rest)]);
+            rendered(&judged(&report, true, Path::new("/w"), &[]).unwrap()).join("\n")
+        };
+        let said = |rest: &str| format!("src/a.rs:10: parse: CRAP {rest}");
+        assert_eq!(
+            new(110.0, 14.0, "20"),
+            said(
+                "110.0, not in the baseline: complexity 14, coverage 20.0%. Test more of it, or \
+                 split the function"
+            )
+        );
+        assert_eq!(
+            new(930.0, 30.0, "null"),
+            said(
+                "930.0, not in the baseline: complexity 30, coverage unknown. Test more of it, \
+                 or split the function"
+            )
+        );
+        assert_eq!(
+            new(31.5, 31.0, "92.5"),
+            said(
+                "31.5, not in the baseline: complexity 31, coverage 92.5%. Split the function: \
+                 at complexity 31 full coverage still leaves it over CRAP 30"
+            )
+        );
+    }
+
+    #[test]
+    fn the_record_explains_a_function_only_where_it_holds_one_answer_for_it() {
+        let root = Path::new("/w");
+        let run = held(&entries(&[
+            scored(42.0, 14.0, "70", r#","baseline_crap":34.0"#),
+            scored(42.0, 14.0, "70", ""),
+        ]));
+        let (entry, fresh) = (&run[0], &run[1]);
+        let twin = |crap: f64, cyclomatic: f64| scored(crap, cyclomatic, "78", "");
+        let record = |listed: &[String]| held(&entries(listed));
+        let was = Some(Inputs {
+            complexity: 12.0,
+            coverage: Some(78.0),
+        });
+        assert_eq!(before(entry, &record(&[twin(34.0, 12.0)]), root), was);
+        assert_eq!(before(entry, &record(&[twin(34.005, 12.0)]), root), was);
+        // Two of one name and one score that agree are one answer; two that differ are none.
+        let agreeing = record(&[twin(34.0, 12.0), twin(34.0, 12.0)]);
+        assert_eq!(before(entry, &agreeing, root), was);
+        let differing = record(&[twin(34.0, 12.0), twin(34.0, 11.0)]);
+        assert_eq!(before(entry, &differing, root), None);
+        for other in [twin(33.0, 12.0), twin(35.0, 12.0), twin(34.02, 12.0)] {
+            assert_eq!(
+                before(entry, &record(&[other]), root),
+                None,
+                "another score"
+            );
+        }
+        let elsewhere = twin(34.0, 12.0).replace("src/a.rs", "src/b.rs");
+        assert_eq!(before(entry, &record(&[elsewhere]), root), None);
+        let renamed = twin(34.0, 12.0).replace("parse", "read");
+        assert_eq!(before(entry, &record(&[renamed]), root), None);
+        assert_eq!(before(fresh, &record(&[twin(34.0, 12.0)]), root), None);
+        // A record from before cargo-crap wrote the inputs holds a score and nothing to show.
+        let bare = r#"{"entries":[{"file":"src/a.rs","function":"parse","line":10,"crap":34.0}]}"#;
+        assert_eq!(before(entry, &held(bare), root), None);
     }
 
     /// Two functions of one name in one file, as cargo-crap reports them where their lines moved.

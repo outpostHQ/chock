@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use crate::run::report::{Finding, GateReport, Run, Verdict};
+use crate::run::report::{Finding, GateReport, Run, Verdict, plural};
 use crate::setup::pins::Pin;
 use crate::setup::version;
 
@@ -123,15 +123,15 @@ pub const EDITOR_HOOK: &str = "editor hook";
 
 /// Coarse on purpose: the question is whether it ever fires, not exactly when.
 pub fn how_long(ago: std::time::Duration) -> String {
-    const MINUTE: u64 = 60;
-    const HOUR: u64 = 60 * MINUTE;
-    const DAY: u64 = 24 * HOUR;
-    let seconds = ago.as_secs();
+    const MINUTE: usize = 60;
+    const HOUR: usize = 60 * MINUTE;
+    const DAY: usize = 24 * HOUR;
+    let seconds = usize::try_from(ago.as_secs()).unwrap_or(usize::MAX);
     match seconds {
         0..MINUTE => "just now".to_string(),
-        MINUTE..HOUR => format!("{} minute(s) ago", seconds / MINUTE),
-        HOUR..DAY => format!("{} hour(s) ago", seconds / HOUR),
-        _ => format!("{} day(s) ago", seconds / DAY),
+        MINUTE..HOUR => format!("{} ago", plural(seconds / MINUTE, "minute")),
+        HOUR..DAY => format!("{} ago", plural(seconds / HOUR, "hour")),
+        _ => format!("{} ago", plural(seconds / DAY, "day")),
     }
 }
 
@@ -225,6 +225,37 @@ pub fn unpinned_in(
     }
 }
 
+/// The fork's row says how its build stands against `main`: it has no version to compare.
+fn judged(rows: Vec<Row>, standing: &dyn Fn() -> (Verdict, String)) -> Vec<Row> {
+    let fork = |row: &Row| {
+        row.command == crate::setup::mutest::CRATE
+            && matches!(row.status, Status::Unbuilt | Status::Unpinned(_))
+    };
+    rows.into_iter()
+        .map(|row| match fork(&row) {
+            true => inspected(&row.command, standing()),
+            false => row,
+        })
+        .collect()
+}
+
+/// Miri's row, for a project that switched the `miri` check on: no pin names Miri.
+fn miri_in(
+    config: &Result<Option<crate::project::config::Config>, String>,
+    standing: &dyn Fn() -> (Verdict, String),
+) -> Option<Row> {
+    let name = crate::setup::miri::NAME;
+    let on = matches!(config, Ok(Some(config)) if config.is_on(name));
+    on.then(|| inspected(name, standing()))
+}
+
+fn inspected(command: &str, (verdict, message): (Verdict, String)) -> Row {
+    Row {
+        command: command.to_string(),
+        status: Status::Inspected { verdict, message },
+    }
+}
+
 /// Every row `doctor` reports for this tree: the pins, the config, the machine, and the hooks.
 pub fn gathered(
     root: &std::path::Path,
@@ -232,11 +263,16 @@ pub fn gathered(
     extra: &crate::setup::pins::AdditionalPins,
 ) -> Vec<Row> {
     use crate::project::{document, vcs};
-    let mut rows = check(pins, &installed_on_this_machine());
+    let start: crate::exec::Start = &crate::exec::run_env;
+    let rows = check(pins, &installed_on_this_machine());
+    let mut rows = judged(rows, &|| crate::setup::mutest::standing(start, root).row());
     let config = document::read::<crate::project::config::Config>(root).map_err(|e| e.to_string());
     rows.extend(unpinned_in(&config, pins));
     rows.extend(undecided_in(&config));
     rows.extend(manual_in(&config));
+    rows.extend(miri_in(&config, &|| {
+        crate::setup::miri::standing(start, root)
+    }));
     rows.extend(machine_health(root, extra));
     rows.extend(editor_hook(
         wired_into_an_editor(root),
@@ -675,15 +711,15 @@ fn summary(rows: &[Row]) -> String {
             .count();
         writeln!(
             out,
-            "all {} check(s) ok; {matched} of them match a version tool-versions.env pins.",
-            rows.len()
+            "{} ok. Versions that match tool-versions.env: {matched}.",
+            plural(rows.len(), "check")
         )
     } else {
         writeln!(
             out,
-            "{failures} of {} check(s) need attention. `chock init --global` installs the crates; \
-             anything in tool-versions.env that is not one is the project's own to install.",
-            rows.len()
+            "Needs attention: {failures} of {}. `chock init --global` installs the crates; \
+             a tool in tool-versions.env that is not a crate is yours to install.",
+            plural(rows.len(), "check")
         )
     };
     out
@@ -1396,9 +1432,7 @@ mod tests {
         assert_eq!(verdict(&rows), Verdict::Pass);
         let text = render(&rows);
         assert!(
-            text.ends_with(
-                "all 3 check(s) ok; 1 of them match a version tool-versions.env pins.\n"
-            ),
+            text.ends_with("3 checks ok. Versions that match tool-versions.env: 1.\n"),
             "{text}"
         );
     }
@@ -1429,7 +1463,7 @@ mod tests {
         let row = editor_hook(true, Some(std::time::Duration::from_secs(90))).unwrap();
         assert_eq!(
             row.status,
-            Status::Firing("last answered 1 minute(s) ago".to_string())
+            Status::Firing("last answered 1 minute ago".to_string())
         );
         assert!(!row.is_failure());
     }
@@ -1447,15 +1481,74 @@ mod tests {
     fn how_long_ago_is_said_in_the_largest_unit_that_fits() {
         use std::time::Duration;
         assert_eq!(how_long(Duration::from_secs(5)), "just now");
-        assert_eq!(how_long(Duration::from_secs(60)), "1 minute(s) ago");
-        assert_eq!(how_long(Duration::from_secs(3600)), "1 hour(s) ago");
-        assert_eq!(how_long(Duration::from_secs(86_400 * 3)), "3 day(s) ago");
+        assert_eq!(how_long(Duration::from_secs(60)), "1 minute ago");
+        assert_eq!(how_long(Duration::from_secs(3600)), "1 hour ago");
+        assert_eq!(how_long(Duration::from_secs(86_400 * 3)), "3 days ago");
     }
 
     #[test]
     fn a_silent_hook_makes_the_whole_report_fail() {
         let rows = vec![editor_hook(true, None).unwrap()];
         assert_eq!(verdict(&rows), Verdict::Tripped);
+    }
+
+    #[test]
+    fn the_row_of_the_fork_says_how_its_build_stands_and_every_other_row_stays() {
+        let behind = || (Verdict::Tripped, "built from 0123456".to_string());
+        let stands = inspected("cargo-mutest", behind());
+        let pins = [
+            pin("cargo-mutest", "0.0.0"),
+            pin("outpost", "0.0.0"),
+            pin("just", "1.58.0"),
+        ];
+        let here = |pin: &Pin| (pin.command != "outpost").then(|| "0.0.0".to_string());
+        assert_eq!(
+            judged(check(&pins, &here), &behind),
+            vec![
+                stands.clone(),
+                Row {
+                    command: "outpost".into(),
+                    status: Status::Unbuilt,
+                },
+                Row {
+                    command: "just".into(),
+                    status: Status::Drifted {
+                        have: "0.0.0".into(),
+                        want: "1.58.0".into(),
+                    },
+                },
+            ]
+        );
+        assert_eq!(judged(check(&pins[..1], &|_| None), &behind), [stands]);
+        // A pin with a version is a release, and its row compares versions.
+        let released = judged(check(&[pin("cargo-mutest", "1.2.3")], &|_| None), &behind);
+        let want = "1.2.3".to_string();
+        assert_eq!(released[0].status, Status::Missing { want });
+    }
+
+    #[test]
+    fn miri_gets_a_row_only_where_the_project_switched_its_check_on() {
+        use crate::project::config::Config;
+        let asked = std::cell::Cell::new(0);
+        let lacking = || {
+            asked.set(asked.get() + 1);
+            (Verdict::Tripped, "no `rust-src`".to_string())
+        };
+        assert_eq!(miri_in(&Ok(Some(Config::of(["lint"]))), &lacking), None);
+        assert_eq!(miri_in(&Ok(None), &lacking), None);
+        assert_eq!(miri_in(&Err("unreadable".into()), &lacking), None);
+        assert_eq!(
+            asked.get(),
+            0,
+            "a project without the check starts no rustup"
+        );
+        let row = miri_in(&Ok(Some(Config::of(["miri"]))), &lacking).unwrap();
+        assert_eq!(asked.get(), 1);
+        assert_eq!(
+            (row.command.as_str(), row.verdict()),
+            ("miri", Verdict::Tripped)
+        );
+        assert_eq!(describe(&row.status), "no `rust-src`");
     }
 
     fn pin(command: &str, want: &str) -> Pin {
@@ -1565,7 +1658,7 @@ mod tests {
         assert_eq!(
             render(&rows),
             "  ok       just             1.58.0\n\
-             all 1 check(s) ok; 1 of them match a version tool-versions.env pins.\n"
+             1 check ok. Versions that match tool-versions.env: 1.\n"
         );
     }
 
@@ -1575,7 +1668,7 @@ mod tests {
         assert_eq!(
             render(&rows),
             "  DRIFTED  just             have 1.40.0     want 1.58.0\n\
-             1 of 1 check(s) need attention. `chock init --global` installs the crates; anything in tool-versions.env that is not one is the project's own to install.\n"
+             Needs attention: 1 of 1 check. `chock init --global` installs the crates; a tool in tool-versions.env that is not a crate is yours to install.\n"
         );
     }
 
@@ -1585,7 +1678,7 @@ mod tests {
         assert_eq!(
             render(&rows),
             "  MISSING  kani             want 0.67.0\n\
-             1 of 1 check(s) need attention. `chock init --global` installs the crates; anything in tool-versions.env that is not one is the project's own to install.\n"
+             Needs attention: 1 of 1 check. `chock init --global` installs the crates; a tool in tool-versions.env that is not a crate is yours to install.\n"
         );
     }
 
@@ -1629,7 +1722,7 @@ mod tests {
         assert_eq!(
             render(&rows),
             "  absent   outpost          build it from its checkout\n\
-             all 1 check(s) ok; 0 of them match a version tool-versions.env pins.\n"
+             1 check ok. Versions that match tool-versions.env: 0.\n"
         );
     }
 

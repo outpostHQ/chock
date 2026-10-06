@@ -8,5 +8,6 @@ mod results;
 mod scope;
 pub mod survivors;
 mod targets;
+pub mod tool;
 #[cfg(target_os = "linux")]
 mod watch;

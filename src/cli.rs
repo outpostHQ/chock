@@ -71,12 +71,15 @@ impl Change<'_> {
     /// Makes the change to one gate, and says what it set or that the gate had it already.
     fn apply(self, config: &mut Config, gate: &run::Gate) -> String {
         let (changed, done) = match self {
-            Change::On => (config.enable(gate.name), "on"),
-            Change::Off(why) => (config.disable(gate.name, why), "off"),
-            Change::Stage(stage) => (config.place(gate.name, gate.builds, stage), stage.name()),
+            Change::On => (config.enable(gate.name), "on".to_string()),
+            Change::Off(why) => (config.disable(gate.name, why), "off".to_string()),
+            Change::Stage(stage) => (
+                config.place(gate.name, gate.builds, stage),
+                format!("runs at {}", stage.name()),
+            ),
         };
         if changed {
-            done.to_string()
+            done
         } else {
             format!("already {done}")
         }
@@ -85,10 +88,7 @@ impl Change<'_> {
     /// The line after the change: where to look next, or that nothing enforces the gate.
     fn advice(self, names: &[&str]) -> String {
         match self {
-            Change::On => format!(
-                "Run `chock run {}` to see where you stand.\n",
-                names.join(" ")
-            ),
+            Change::On => format!("`chock run {}` shows the findings now.\n", names.join(" ")),
             Change::Stage(Stage::Manual) => {
                 "No hook and no CI job runs a manual gate; only `chock run` does.\n".to_string()
             }
@@ -127,23 +127,26 @@ fn configures<'a>(cmd: &str, names: Vec<&'a str>, change: Change<'a>) -> Command
     Command::Configure { names, change }
 }
 
+/// `run`: the gates it names, with `--fast`, `--ci` and `--json` wherever they stand.
+fn to_run<'a>(rest: &[&'a str]) -> Command<'a> {
+    let (names, json) = split_json(rest);
+    let known = |n: &&str| *n == "--fast" || *n == "--ci";
+    match names.iter().find(|n| n.starts_with('-') && !known(n)) {
+        Some(flag) => Command::Usage(format!("unknown option `{flag}`")),
+        None => Command::Run {
+            fast: names.contains(&"--fast"),
+            ci: names.contains(&"--ci"),
+            names: names.into_iter().filter(|n| !known(n)).collect(),
+            json,
+        },
+    }
+}
+
 #[must_use]
 pub fn parse<'a>(args: &'a [&'a str]) -> Command<'a> {
     match args {
         [cmd, rest @ ..] if *cmd != "init" && asks_for_help(rest) => Command::Help,
-        ["run", rest @ ..] => {
-            let (names, json) = split_json(rest);
-            let known = |n: &&str| *n == "--fast" || *n == "--ci";
-            match names.iter().find(|n| n.starts_with('-') && !known(n)) {
-                Some(flag) => Command::Usage(format!("unknown option `{flag}`")),
-                None => Command::Run {
-                    fast: names.contains(&"--fast"),
-                    ci: names.contains(&"--ci"),
-                    names: names.into_iter().filter(|n| !known(n)).collect(),
-                    json,
-                },
-            }
-        }
+        ["run", rest @ ..] => to_run(rest),
         ["gates", rest @ ..] => json_only("gates", rest, |json| Command::Gates { json }),
         ["enable", rest @ ..] => configures("enable", rest.to_vec(), Change::On),
         ["disable", rest @ ..] => switched_off(rest),
@@ -159,7 +162,8 @@ pub fn parse<'a>(args: &'a [&'a str]) -> Command<'a> {
         ["slop", rest @ ..] => Command::Slop(rest),
         ["init", rest @ ..] => Command::Init(rest),
         ["--version" | "-V"] => Command::Version,
-        ["--help" | "-h"] => Command::Help,
+        ["help", "init"] => Command::Init(&["--help"]),
+        ["--help" | "-h"] | ["help", ..] => Command::Help,
         [] => Command::Usage("no command given".to_string()),
         [cmd, ..] => Command::Usage(format!("unknown command `{cmd}`")),
     }
@@ -399,12 +403,10 @@ fn emit_run(result: &Run, json: bool) {
 
 fn no_work(hook: bool) -> u8 {
     if hook {
-        eprintln!("chock: no checks are assigned to this hook; nothing was measured");
+        eprintln!("chock: no gate is assigned to this hook; nothing was measured");
         return 0;
     }
-    refused(
-        "no checks selected after applying --fast/--ci and the configured `stage`; nothing was measured",
-    )
+    refused("no gate is left after --fast/--ci and the configured `stage`; nothing was measured")
 }
 
 /// Refuses when a filter drops a gate the caller named.
@@ -422,7 +424,7 @@ fn selection(
         .collect();
     if !excluded.is_empty() {
         return Err(format!(
-            "requested checks excluded by --fast/--ci, the configured `stage` or this system: {}; run them without the conflicting filter, or on a system their tool runs on",
+            "--fast/--ci, the configured `stage` or this system leaves out what you named: {}; run them without that filter, or on a system their tool runs on",
             excluded.join(", ")
         ));
     }
@@ -502,9 +504,8 @@ fn enabled_by(config: &Config) -> Result<Vec<&'static run::Gate>, String> {
     let stale = config.unknown(&known);
     if !stale.is_empty() {
         return Err(format!(
-            "{} names {} gate(s) that do not exist: {}",
+            "{} names what is no gate: {}",
             project::config::FILE,
-            stale.len(),
             stale.join(", ")
         ));
     }
@@ -586,21 +587,21 @@ fn record_one(gate: &run::Gate, ctx: &run::Ctx, into: &mut Baseline, lower: bool
     let read = match run::measured(gate, ctx) {
         Ok(read) => read,
         Err(reason) => {
-            eprintln!("  SKIPPED   {:<12} {reason}", gate.name);
+            eprintln!("{}", run::report::skipped(gate.name, &reason));
             return false;
         }
     };
     eprint!("{}", read.notes(gate.name));
     let series = read.series;
     if let Err(why) = run::portable(&series) {
-        eprintln!("  SKIPPED   {:<12} {why}", gate.name);
+        eprintln!("{}", run::report::skipped(gate.name, &why));
         return false;
     }
     emit(&format!(
-        "  {:<9} {:<12} {} key(s)\n",
+        "  {:<9} {:<12} {}\n",
         kept_as(lower),
         gate.name,
-        series.len()
+        run::report::plural(series.len(), "item")
     ));
     into.keep(gate.name, unit_of(gate), series, lower);
     true
@@ -749,7 +750,7 @@ fn explain_or_owe(name: Option<&str>, json: bool) -> ExitCode {
 
 fn explain(name: &str) -> ExitCode {
     if gates::find(name).is_none() {
-        return cannot_run(&format!("no gate named `{name}`"));
+        return cannot_run(&unknown_gate(name));
     }
     let root = match root() {
         Ok(r) => r,
@@ -771,9 +772,6 @@ fn explain(name: &str) -> ExitCode {
     emit(&format!("{}\n", report.summary()));
     if let Some(ago) = elapsed_since(report.ran_at) {
         emit(&format!("  measured {ago}\n"));
-    }
-    if let Some(reason) = &report.cannot_run_reason {
-        emit(&format!("  {reason}\n"));
     }
     for line in report.explained(&root) {
         emit(&format!("  {line}\n"));
@@ -839,8 +837,8 @@ fn record_baseline(asked: &[&str]) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         eprintln!(
-            "chock: {} gate(s) could not be measured: {}",
-            failed.len(),
+            "chock: could not measure {}: {}",
+            run::report::plural(failed.len(), "gate"),
             failed.join(", ")
         );
         ExitCode::from(2)
@@ -967,7 +965,10 @@ fn run_slop(args: &[&str]) -> ExitCode {
         _ => return usage("slop takes at most one path"),
     };
     if !root.is_dir() {
-        return cannot_run(&format!("slop: {} is not a directory", root.display()));
+        return cannot_run(&format!(
+            "slop: {0} is not a directory; `chock edited {0}` checks one file",
+            root.display()
+        ));
     }
     let hits = match slop::scan(&root) {
         Ok(hits) => hits,
@@ -1017,7 +1018,7 @@ mod tests {
         );
         assert_eq!(
             ago(Some(1_000_000), at + std::time::Duration::from_secs(1_800)),
-            Some("30 minute(s) ago".to_string())
+            Some("30 minutes ago".to_string())
         );
         // No stamp, or a clock behind the record, gives `None`.
         assert_eq!(ago(None, at), None);
@@ -1147,6 +1148,9 @@ mod tests {
         assert_eq!(parse(&["-V"]), Command::Version);
         assert_eq!(parse(&["--help"]), Command::Help);
         assert_eq!(parse(&["-h"]), Command::Help);
+        assert_eq!(parse(&["help"]), Command::Help);
+        assert_eq!(parse(&["help", "run"]), Command::Help);
+        assert_eq!(parse(&["help", "init"]), Command::Init(&["--help"]));
     }
 
     #[test]
@@ -1431,13 +1435,13 @@ mod tests {
         let binsize = gates::find("binsize").unwrap();
         let mut config = Config::of(["binsize"]);
         let ci = Change::Stage(Stage::Ci);
-        assert_eq!(ci.apply(&mut config, binsize), "ci");
-        assert_eq!(ci.apply(&mut config, binsize), "already ci");
+        assert_eq!(ci.apply(&mut config, binsize), "runs at ci");
+        assert_eq!(ci.apply(&mut config, binsize), "already runs at ci");
         assert_eq!(Change::On.apply(&mut config, binsize), "already on");
         assert_eq!(Change::Off(None).apply(&mut config, binsize), "off");
         assert_eq!(
             Change::On.advice(&["binsize", "crap"]),
-            "Run `chock run binsize crap` to see where you stand.\n"
+            "`chock run binsize crap` shows the findings now.\n"
         );
         assert!(
             Change::Stage(Stage::Manual)

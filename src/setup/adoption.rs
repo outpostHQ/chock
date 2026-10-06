@@ -34,8 +34,8 @@ impl Decision {
     pub fn detail(&self) -> &str {
         match self {
             Self::On(d) | Self::Found(d) | Self::Failing(d) | Self::Unmeasurable(d) => d,
-            Self::AskedFor => "asked for by name; too slow to assume",
-            Self::Reports => "an instrument, not a gate",
+            Self::AskedFor => "opt-in",
+            Self::Reports => "reports a number; it never trips",
         }
     }
 
@@ -55,7 +55,7 @@ pub(crate) fn adoption(gate: &run::Gate, report: &crate::run::report::GateReport
     match report.verdict {
         Verdict::Pass => Decision::On("already green".to_string()),
         Verdict::Tripped if gate.group == Group::Gates => Decision::Failing(format!(
-            "required check failed: {}",
+            "a required gate, and it trips today: {}",
             found(report.findings.len())
         )),
         Verdict::Tripped => Decision::Found(found(report.findings.len())),
@@ -76,11 +76,11 @@ fn found(count: usize) -> String {
     }
 }
 
-/// One line per gate, then a note naming any that are on but failing or unmeasured.
+/// A line per gate, one line for all the opt-in gates, then a note on any that is on but failing.
 #[must_use]
 pub fn render_decisions(rows: &[(&str, Decision)]) -> String {
     let mut out = String::new();
-    for (name, decision) in rows {
+    for (name, decision) in rows.iter().filter(|(_, d)| *d != Decision::AskedFor) {
         let _ = writeln!(
             out,
             "  {:<9} {:<12} {}",
@@ -89,11 +89,30 @@ pub fn render_decisions(rows: &[(&str, Decision)]) -> String {
             decision.detail()
         );
     }
+    out.push_str(&opt_in(rows));
     out.push_str(&attention(rows));
     out
 }
 
-/// The note naming checks that are on but failing or unmeasured, or nothing.
+/// The opt-in gates on one line: each is still named, and all are off for the one reason.
+fn opt_in(rows: &[(&str, Decision)]) -> String {
+    let names: Vec<&str> = rows
+        .iter()
+        .filter(|(_, decision)| *decision == Decision::AskedFor)
+        .map(|(name, _)| *name)
+        .collect();
+    if names.is_empty() {
+        return String::new();
+    }
+    format!(
+        "  {:<9} {}, each slow or in need of its own tool: {}. `chock enable GATE` switches one on.\n",
+        Decision::AskedFor.label(),
+        crate::run::report::plural(names.len(), "opt-in gate"),
+        names.join(", ")
+    )
+}
+
+/// The note naming gates that are on but failing or unmeasured, or nothing.
 fn attention(rows: &[(&str, Decision)]) -> String {
     let blocked: Vec<&str> = rows
         .iter()
@@ -106,8 +125,8 @@ fn attention(rows: &[(&str, Decision)]) -> String {
         return String::new();
     }
     format!(
-        "Enabled does not mean passed. These checks remain enabled and need attention: {}. \
-         Run `chock run {}` for their current findings.\n",
+        "On does not mean passed. These gates stay on and need attention: {}. \
+         `chock run {}` shows what each one needs.\n",
         blocked.join(", "),
         blocked.join(" ")
     )
@@ -145,7 +164,10 @@ mod tests {
         assert!(Decision::On("already green".to_string()).enables());
         assert!(!Decision::Found("47 findings".to_string()).enables());
         assert!(Decision::Unmeasurable("no lcov".to_string()).enables());
-        assert!(Decision::Failing("required check failed: 1 finding".to_string()).enables());
+        assert!(
+            Decision::Failing("a required gate, and it trips today: 1 finding".to_string())
+                .enables()
+        );
         assert!(!Decision::AskedFor.enables());
         assert!(!Decision::Reports.enables());
     }
@@ -189,10 +211,13 @@ mod tests {
             let decision = adoption(gate, &report);
             assert_eq!(
                 decision,
-                Decision::Failing("required check failed: 1 finding".to_string())
+                Decision::Failing("a required gate, and it trips today: 1 finding".to_string())
             );
             let printed = render_decisions(&[(gate.name, decision.clone())]);
-            assert!(printed.contains("required check failed:"), "{printed}");
+            assert!(
+                printed.contains("a required gate, and it trips today:"),
+                "{printed}"
+            );
             assert!(printed.contains(&run::rerun(gate.name)), "{printed}");
             assert!(selected(&[(gate.name, decision)]).is_on(gate.name));
         }
@@ -261,7 +286,7 @@ mod tests {
         let rows = [
             (
                 "test",
-                Decision::Failing("required check failed: 1 finding".to_string()),
+                Decision::Failing("a required gate, and it trips today: 1 finding".to_string()),
             ),
             ("lint", Decision::Unmeasurable("missing clippy".to_string())),
             ("mutest", Decision::AskedFor),
@@ -272,11 +297,7 @@ mod tests {
             std::collections::BTreeSet::from(["lint".to_string(), "test".to_string()])
         );
         let report = render_decisions(&rows);
-        assert!(report.contains("Run `chock run test lint`"), "{report}");
-        assert!(
-            !report.contains("Run `chock run test lint mutest"),
-            "{report}"
-        );
+        assert!(report.contains("`chock run test lint` shows"), "{report}");
     }
 
     #[test]
@@ -305,17 +326,22 @@ mod tests {
         assert_eq!(
             render_decisions(&rows),
             "  on, error crap         no lcov.info\n\
-             Enabled does not mean passed. These checks remain enabled and need attention: crap. \
-             Run `chock run crap` for their current findings.\n"
+             On does not mean passed. These gates stay on and need attention: crap. \
+             `chock run crap` shows what each one needs.\n"
         );
     }
 
     #[test]
     fn a_costly_gate_is_named_rather_than_assumed() {
-        let rows = [("mutation", Decision::AskedFor)];
+        let rows = [
+            ("mutation", Decision::AskedFor),
+            ("test", Decision::On("already green".to_string())),
+            ("miri", Decision::AskedFor),
+        ];
         assert_eq!(
             render_decisions(&rows),
-            "  off       mutation     asked for by name; too slow to assume\n"
+            "  on        test         already green\n  off       2 opt-in gates, each slow or in need of its own tool: mutation, miri. `chock enable GATE` switches one on.\n"
         );
+        assert_eq!(Decision::AskedFor.detail(), "opt-in");
     }
 }

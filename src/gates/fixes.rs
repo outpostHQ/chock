@@ -1,4 +1,8 @@
-//! What to do about a tripped gate, in one sentence a person or an agent can act on.
+//! What to do about a gate that tripped or could not run, in one sentence a person or an agent can
+//! act on.
+
+use crate::gates::mutation::tool;
+use crate::gates::tools::miri;
 
 /// The fix for a tripped gate; `None` for a name no gate answers to.
 #[must_use]
@@ -7,6 +11,58 @@ pub fn fix(gate: &str) -> Option<&'static str> {
         .iter()
         .find(|(name, _)| *name == gate)
         .map(|(_, hint)| *hint)
+}
+
+/// The reason a gate gives when a tool it starts is not on this machine.
+#[must_use]
+pub fn not_installed(tool: &str) -> String {
+    format!("`{tool}`{NOTHING_TO_RUN}")
+}
+
+const NOTHING_TO_RUN: &str = " is not installed, so this gate has nothing to run";
+
+/// The tool a `not_installed` reason names.
+fn tool_named(reason: &str) -> Option<&str> {
+    let quoted = reason.strip_suffix(NOTHING_TO_RUN)?;
+    quoted.strip_prefix('`')?.strip_suffix('`')
+}
+
+/// rustup's words when `cargo +nightly…` finds no such toolchain on this machine.
+const NO_NIGHTLY: [&str; 2] = ["toolchain 'nightly", "is not installed"];
+
+#[must_use]
+pub fn no_nightly(said: &str) -> bool {
+    NO_NIGHTLY.iter().all(|part| said.contains(part))
+}
+
+/// What repairs a gate that could not run: an install, or a line the manifest lacks. `None` where
+/// the reason is neither.
+#[must_use]
+pub fn repair(reason: &str) -> Option<&'static str> {
+    match reason {
+        crate::gates::tools::NO_MSRV => Some(DECLARE_MSRV),
+        tool::FOREIGN => Some(tool::REPAIR),
+        miri::ABSENT => Some(NIGHTLY),
+        said if no_nightly(said) => Some(NIGHTLY),
+        said => tool_named(said).map(installing),
+    }
+}
+
+const DECLARE_MSRV: &str = "add `rust-version = \"1.NN\"` under `[package]` in Cargo.toml: the oldest Rust this crate promises to build on";
+
+const NIGHTLY: &str =
+    "run `chock init --global`: it installs each nightly toolchain a gate starts, and Miri";
+
+const PINNED: &str = "run `chock init --global`: it installs each tool that `tool-versions.env` pins, or says why it cannot on this system";
+
+fn installing(tool: &str) -> &'static str {
+    match tool {
+        "cargo-mutest" => tool::REPAIR,
+        "rustfmt" => "run `rustup component add rustfmt`",
+        "clippy-driver" => "run `rustup component add clippy`",
+        "cargo" | "rustdoc" => "install Rust with rustup: https://rustup.rs",
+        _ => PINNED,
+    }
 }
 
 const FIXES: [(&str, &str); 53] = [
@@ -213,7 +269,7 @@ const FIXES: [(&str, &str); 53] = [
         "phrases",
         "replace the phrase; the finding carries the reason your config gives for refusing it",
     ),
-    ("wiring", "switch the check on with `chock enable <check>`"),
+    ("wiring", "switch the gate on with `chock enable GATE`"),
 ];
 
 #[cfg(test)]
@@ -232,5 +288,54 @@ mod tests {
             .collect();
         assert_eq!(stray, Vec::<&str>::new());
         assert_eq!(fix("sort"), Some("run `cargo sort --workspace`"));
+    }
+
+    #[test]
+    fn a_gate_that_a_missing_tool_stopped_is_told_the_install_for_that_tool() {
+        let told = |tool: &str| repair(&not_installed(tool));
+        assert_eq!(
+            not_installed("kani"),
+            "`kani` is not installed, so this gate has nothing to run"
+        );
+        assert_eq!(told("cargo-mutest"), Some(tool::REPAIR));
+        assert_eq!(told("rustfmt"), Some("run `rustup component add rustfmt`"));
+        assert_eq!(
+            told("clippy-driver"),
+            Some("run `rustup component add clippy`")
+        );
+        let rust = Some("install Rust with rustup: https://rustup.rs");
+        assert_eq!([told("cargo"), told("rustdoc")], [rust, rust]);
+        assert_eq!(
+            [told("kani"), told("cargo-acl")],
+            [Some(PINNED), Some(PINNED)]
+        );
+    }
+
+    #[test]
+    fn a_reason_no_install_answers_gets_no_repair() {
+        assert_eq!(repair("the suite does not compile"), None);
+        // The sentence without a quoted tool names nothing to install.
+        assert_eq!(repair(NOTHING_TO_RUN), None);
+        assert_eq!(repair(&format!("kani{NOTHING_TO_RUN}")), None);
+        assert_eq!(repair(&format!("`kani{NOTHING_TO_RUN}")), None);
+        assert_eq!(repair(&format!("{} today", not_installed("kani"))), None);
+    }
+
+    #[test]
+    fn a_foreign_mutest_a_missing_miri_and_a_missing_nightly_each_name_chock_init() {
+        assert_eq!(repair(tool::FOREIGN), Some(tool::REPAIR));
+        assert_eq!(repair(miri::ABSENT), Some(NIGHTLY));
+        assert_eq!(repair(crate::gates::tools::NO_MSRV), Some(DECLARE_MSRV));
+        let rustup = "cargo udeps could not build: error: toolchain 'nightly-x86_64-unknown-linux-gnu' is not installed";
+        assert_eq!(repair(rustup), Some(NIGHTLY));
+        assert!(no_nightly(rustup));
+        // Each half alone is some other failure.
+        assert!(!no_nightly(
+            "error: toolchain 'nightly-x86_64-unknown-linux-gnu' is broken"
+        ));
+        assert!(!no_nightly(
+            "error: toolchain 'stable-x86_64-unknown-linux-gnu' is not installed"
+        ));
+        assert_eq!(repair("error: 'cargo-fuzz' is not installed"), None);
     }
 }
