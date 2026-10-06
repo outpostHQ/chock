@@ -1,0 +1,9 @@
+# What the agent hooks check here; see `generative-compilation --help`.
+workspaces = ["."]
+command = "check"
+timeout-secs = 200
+sandbox = true
+on-edit = "check"
+
+[[profile]]
+name = "default"
