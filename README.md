@@ -1,5 +1,7 @@
 # ▰ chock
 
+[![crates.io](https://img.shields.io/crates/v/chock.svg)](https://crates.io/crates/chock)
+
 **Quality gates for Rust: new code must be clean, and existing debt can only go down.**
 
 chock has 53 checks for a Rust project. It runs the ones that are on and gives one result and one
