@@ -60,10 +60,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `parts`: how many jobs share the Miri suite on that system. This job runs part 1.
-          - { os: ubuntu-latest, system: linux, parts: 6 }
-          - { os: macos-latest, system: macos, parts: 15 }
-          - { os: windows-latest, system: windows, parts: 24 }
+          - { os: ubuntu-latest, system: linux }
+          - { os: macos-latest, system: macos }
+          - { os: windows-latest, system: windows }
     env:
       SYSTEM: ${{ matrix.system }}
     defaults:
@@ -82,14 +81,9 @@ jobs:
           components: clippy, rustfmt, llvm-tools-preview
           cache: false
 
-      # mutest-driver links librustc_driver from one exact compiler build, so it only runs with the
-      # nightly it was built against, and rustc-dev carries that library.
-      - name: Install the nightly toolchains
-        run: |
-          . ./tool-versions.env
-          rustup toolchain install "$MUTEST_NIGHTLY" --profile minimal --component rustc-dev --component llvm-tools
-          # cargo-udeps takes any nightly; the `miri` gate needs miri and the standard library's source.
-          rustup toolchain install nightly --profile minimal --component miri --component rust-src
+      # cargo-udeps takes any nightly.
+      - name: Install a nightly toolchain
+        run: rustup toolchain install nightly --profile minimal
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -134,6 +128,62 @@ jobs:
           sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      - name: Install chock from this checkout
+        run: cargo install --locked --path .
+
+      # Not `chock doctor`: it checks every pin, including the opt-in tools this job deliberately
+      # does not install. `chock run` is the proof — a gate whose tool is absent cannot pass.
+      - name: Every gate this project has switched on
+        run: chock run --ci --skip=miri,mutest
+
+      # A gate that could not run says why in its own output, which this keeps for reading.
+      - name: Processes still running
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: Get-CimInstance Win32_Process | Format-Table ProcessId, ParentProcessId, Name, CommandLine -Wrap | Out-String -Width 300
+
+  # `miri` and `mutest` take most of a run, so their jobs run beside the one above, not after it.
+  mutest:
+    name: mutest on ${{ matrix.system }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, system: linux }
+          - { os: macos-latest, system: macos }
+          - { os: windows-latest, system: windows }
+    env:
+      SYSTEM: ${{ matrix.system }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # `mutation` diffs against HEAD~1, which a shallow clone does not have.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+
+      # mutest-driver links librustc_driver from one exact compiler build, so it only runs with the
+      # nightly it was built against, and rustc-dev carries that library.
+      - name: Install mutest's nightly
+        run: |
+          . ./tool-versions.env
+          rustup toolchain install "$MUTEST_NIGHTLY" --profile minimal --component rustc-dev --component llvm-tools
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: mutest
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Clone the mutest fork
         run: git clone --depth 1 https://github.com/outpostHQ/mutest-rs "$RUNNER_TEMP/mutest-rs"
 
@@ -152,10 +202,8 @@ jobs:
       - name: Install chock from this checkout
         run: cargo install --locked --path .
 
-      # Not `chock doctor`: it checks every pin, including the opt-in tools this job deliberately
-      # does not install. `chock run` is the proof — a gate whose tool is absent cannot pass.
-      - name: Every gate this project has switched on
-        run: chock run --ci --miri-partition=1/${{ matrix.parts }}
+      - name: The mutest gate
+        run: chock run --ci mutest
 
       # A gate that could not run says why in its own output, which these keep for reading.
       - name: Processes still running
@@ -171,8 +219,8 @@ jobs:
           path: target/test-scratch/mutest-results-*
           if-no-files-found: ignore
 
-  # Miri over the whole suite takes hours on one runner, so the job above runs part 1 and these
-  # jobs run the other parts at the same time. `parts` must match the job above.
+  # Miri over the whole suite takes hours on one runner, so these jobs run its parts at the same
+  # time. `parts`: how many jobs share the suite on that system.
   miri:
     name: Miri part ${{ matrix.part }} of ${{ matrix.parts }} on ${{ matrix.system }}
     runs-on: ${{ matrix.os }}
@@ -181,7 +229,7 @@ jobs:
       fail-fast: false
       matrix:
         system: [linux, macos, windows]
-        part: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+        part: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
         include:
           - { system: linux, os: ubuntu-latest, parts: 6 }
           - { system: macos, os: macos-latest, parts: 15 }
@@ -234,7 +282,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: miri
-          save-if: ${{ github.ref == 'refs/heads/main' && matrix.part == 2 }}
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.part == 1 }}
 
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@main

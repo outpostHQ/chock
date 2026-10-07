@@ -13,18 +13,23 @@ const FILE: &str = ".chock/run.lock";
 #[derive(Debug)]
 pub struct Held {
     path: PathBuf,
-    beat: Option<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)>,
+    beat: Option<Beat>,
 }
+
+/// The heartbeat thread, and the sender whose drop ends it.
+type Beat = (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>);
 
 impl Drop for Held {
     fn drop(&mut self) {
-        if let Some((stop, thread)) = self.beat.take() {
-            drop(stop);
-            // The thread only refreshes a file, so a panic in it leaves nothing to clean up.
-            thread.join().unwrap_or_default();
-        }
+        self.beat.take().into_iter().for_each(halt);
         let _ = std::fs::remove_file(&self.path);
     }
+}
+
+fn halt((stop, thread): Beat) {
+    drop(stop);
+    // The thread only refreshes a file, so a panic in it leaves nothing to clean up.
+    thread.join().unwrap_or_default();
 }
 
 /// The lock at `path`, its time refreshed every `every` until it is dropped, so a run longer than
@@ -299,15 +304,17 @@ mod tests {
         let long_ago = std::time::SystemTime::now() - crate::exec::deadline() * 2;
         set_modified(&path, long_ago);
         let lock = held(path.clone(), std::time::Duration::from_millis(5));
-        let mut turns = 0;
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            turns += 1;
-            if age(&path).is_some_and(|age| age < crate::exec::deadline()) || turns == 500 {
-                break;
-            }
-        }
-        assert!(age(&path).is_some_and(|age| age < crate::exec::deadline()));
+        let fresh = || age(&path).is_some_and(|age| age < crate::exec::deadline());
+        let stale_turns = (0..500)
+            .take_while(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                !fresh()
+            })
+            .count();
+        assert!(
+            stale_turns < 500 && fresh(),
+            "the heartbeat never refreshed the lock"
+        );
         drop(lock);
         assert!(!path.exists());
         assert!(refresh(&path).is_err(), "a refresh never makes a lock");

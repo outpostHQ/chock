@@ -68,12 +68,14 @@ pub fn dispatch(args: &[&str]) -> ExitCode {
             ci,
             no_cache,
             miri_part,
+            skip,
         } => {
             let how = How {
                 json,
                 no_cache,
                 hook: false,
                 miri_part,
+                skip: &skip,
             };
             run_gates(&names, tier_for(fast, ci), how)
         }
@@ -265,7 +267,7 @@ fn gated(code: u8, when: &str, fix: &str) -> ExitCode {
 
 /// How a run was asked for, beyond the gates it names and the tier that asks.
 #[derive(Debug, Clone, Copy, Default)]
-struct How {
+struct How<'a> {
     json: bool,
     /// A git hook asked, for which no gate staged is not a refusal.
     hook: bool,
@@ -273,13 +275,15 @@ struct How {
     no_cache: bool,
     /// The part of the Miri suite this run takes; `None` is all of it.
     miri_part: Option<crate::gates::tools::miri::Part>,
+    /// Gates left out, though the tier and the config would run them.
+    skip: &'a [&'a str],
 }
 
-fn run_gates(names: &[&str], tier: Tier, how: How) -> ExitCode {
+fn run_gates(names: &[&str], tier: Tier, how: How<'_>) -> ExitCode {
     ExitCode::from(run_gates_code(names, tier, how))
 }
 
-fn run_gates_code(names: &[&str], tier: Tier, how: How) -> u8 {
+fn run_gates_code(names: &[&str], tier: Tier, how: How<'_>) -> u8 {
     let (ctx, config) = match context(tier.meets_an_absent_tool()) {
         Ok((ctx, config)) => (
             Ctx {
@@ -296,7 +300,7 @@ fn run_gates_code(names: &[&str], tier: Tier, how: How) -> u8 {
         Ok(held) => held,
         Err(e) => return refused(&e),
     };
-    let chosen = match selection(names, tier, config.as_ref()) {
+    let chosen = match skipping(selection(names, tier, config.as_ref()), how.skip) {
         Ok(gates) => gates,
         Err(e) => return refused(&e),
     };
@@ -347,7 +351,24 @@ fn no_work(hook: bool) -> u8 {
         eprintln!("chock: no gate is assigned to this hook; nothing was measured");
         return 0;
     }
-    refused("no gate is left after --fast/--ci and the configured `stage`; nothing was measured")
+    refused(
+        "no gate is left after --fast/--ci, --skip and the configured `stage`; nothing was measured",
+    )
+}
+
+/// The gates left after `--skip`; a name that is not a gate is refused like any other typo.
+fn skipping(
+    kept: Result<Vec<&'static run::Gate>, String>,
+    skip: &[&str],
+) -> Result<Vec<&'static run::Gate>, String> {
+    let kept = kept?;
+    if let Some(name) = skip.iter().find(|name| gates::find(name).is_none()) {
+        return Err(unknown_gate(name));
+    }
+    Ok(kept
+        .into_iter()
+        .filter(|gate| !skip.contains(&gate.name))
+        .collect())
 }
 
 /// Refuses when a filter drops a gate the caller named.
@@ -1110,6 +1131,17 @@ mod tests {
         let err = select(&[], Some(&config)).unwrap_err();
         assert!(err.contains("codeslope"), "{err}");
         assert!(err.contains(project::config::FILE), "{err}");
+    }
+
+    #[test]
+    fn skip_leaves_out_the_gates_it_names_and_refuses_a_name_that_is_no_gate() {
+        let kept = || select(&["test", "miri", "mutest"], None);
+        let left = skipping(kept(), &["miri", "mutest"]).unwrap();
+        assert_eq!(names_of(&left), ["test"]);
+        let err = skipping(kept(), &["mirri"]).unwrap_err();
+        assert!(err.starts_with("no gate named `mirri`"), "{err}");
+        let refused = skipping(Err("no gate named `x`".to_string()), &[]).unwrap_err();
+        assert_eq!(refused, "no gate named `x`");
     }
 
     /// `binsize` keeps one number for the project and `sort` one for each package.

@@ -259,6 +259,7 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 | `chock run --ci` | runs the gates a CI job runs: staged for commit, push or ci |
 | `chock run --no-cache` | judges every gate again; no kept verdict answers |
 | `chock run --miri-partition=K/N` | runs only part K of N of the Miri suite |
+| `chock run --skip=GATE,...` | runs every gate but the ones named; CI runs those in other jobs |
 | `chock cache clear` | removes every kept verdict, so the next run judges every gate |
 | `chock explain GATE` | shows the findings of the last run, without a new run |
 | `chock explain` | lists all the debt in the record, largest first, with the fix for each kind |

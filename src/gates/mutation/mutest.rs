@@ -222,10 +222,7 @@ fn read_within(
 /// survivor count shows it. Unless mutest re-ran it alone, only an idle machine can judge it.
 fn timeouts(timed_out: &[Survivor], confirmed: bool) -> Vec<Finding> {
     let lead = "timed out, so mutest counted it as detected";
-    let next = match confirmed {
-        true => "it timed out again when run alone with a longer limit, so it hangs",
-        false => "run again on an idle machine to judge it",
-    };
+    let next = after_timeout(confirmed);
     let mut found = Vec::new();
     for mutation in timed_out {
         let (what, op, file) = (&mutation.what, &mutation.operator, &mutation.file);
@@ -233,6 +230,14 @@ fn timeouts(timed_out: &[Survivor], confirmed: bool) -> Vec<Finding> {
         found.push(Finding::at(file, &said).line(mutation.line).candidate());
     }
     found
+}
+
+/// What a timeout finding asks for: nothing more once mutest confirmed it alone.
+fn after_timeout(confirmed: bool) -> &'static str {
+    match confirmed {
+        true => "it timed out again when run alone with a longer limit, so it hangs",
+        false => "run again on an idle machine to judge it",
+    }
 }
 
 fn unmeasured(out: &exec::Output) -> String {

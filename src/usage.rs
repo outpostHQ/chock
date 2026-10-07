@@ -20,6 +20,7 @@ Every day
   chock run --ci                  the gates a CI job runs: staged for commit, push or ci
   chock run --no-cache            judge every gate again; no kept verdict answers
   chock run --miri-partition=K/N  run only part K of N of the Miri suite
+  chock run --skip=GATE,...       run every gate but the ones named; CI runs those in other jobs
   chock cache clear               remove every kept verdict, so the next run judges every gate
   chock explain GATE              the findings of the last run, without a new run
   chock explain                   all the debt in the record, largest first, with the fix for each

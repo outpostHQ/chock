@@ -302,6 +302,15 @@ fn never(_line: &str) -> bool {
     false
 }
 
+/// What restarts the deadline, the limit on the whole run, and the limit since the last progress:
+/// a paced tool has no limit in all, only one since its last progress.
+fn pacing(pace: Option<Moving>) -> (Moving, std::time::Duration, std::time::Duration) {
+    match pace {
+        Some(moving) => (moving, std::time::Duration::MAX, deadline()),
+        None => (never, deadline(), std::time::Duration::MAX),
+    }
+}
+
 /// The caller's watchdog, and a deadline that each line showing progress restarts.
 struct Paced<'a> {
     inner: &'a mut dyn Watchdog,
@@ -765,15 +774,10 @@ fn run_full(
         Process::spawn(&mut command).map_err(|e| fail(Stage::Spawn, e.to_string()))?;
 
     let moved = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let counts = pace.unwrap_or(never);
+    let (counts, whole, idle) = pacing(pace);
     // Each pipe drains on its own thread: reading one to EOF first deadlocks once the other fills.
     let reading_out = captured(counted(process.child.stdout.take(), counts, &moved), cap);
     let reading_err = captured(counted(process.child.stderr.take(), counts, &moved), cap);
-    // A paced tool has no limit in all, only one since its last progress.
-    let (whole, idle) = match pace {
-        Some(_) => (std::time::Duration::MAX, deadline()),
-        None => (deadline(), std::time::Duration::MAX),
-    };
     let mut paced = Paced::new(watchdog, moved, idle);
     finish_capture(
         &mut process,

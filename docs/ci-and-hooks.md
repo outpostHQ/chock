@@ -89,12 +89,12 @@ number for each key.
 
 `miri` interprets each test, tens of times slower than a normal run. Where the whole suite does not
 fit one CI job, split it into parts: `--miri-partition=K/N` runs part K of N, as nextest's
-`count:K/N` partition splits the tests. One job runs every gate with part 1, and one job each runs
-only `miri` for the other parts:
+`count:K/N` partition splits the tests. One job runs every other gate, and one job each runs only
+`miri` for one part. `--skip` leaves a slow gate out of the first job, so all jobs run at once:
 
 ```yaml
-- run: chock run --ci --miri-partition=1/4                       # every gate, and part 1 of 4
-- run: chock run --ci --miri-partition=${{ matrix.part }}/4 miri # parts 2 to 4, one job each
+- run: chock run --ci --skip=miri                                # every gate but miri
+- run: chock run --ci --miri-partition=${{ matrix.part }}/4 miri # parts 1 to 4, one job each
 ```
 
 Each part keeps its verdict under a key of its own. chock's own

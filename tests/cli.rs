@@ -1161,17 +1161,21 @@ fn ci_runs_every_gate_rather_than_a_list_that_goes_stale() {
         Vec::<&str>::new(),
         "CI names gates instead of running them all"
     );
-    // `--ci` leaves out only what the config's `local_only` names; the job with every gate takes
-    // part 1 of the Miri suite, and jobs of their own take the other parts.
-    assert!(
-        workflow.lines().any(|line| matches!(
-            line.trim(),
-            "run: chock run"
-                | "run: chock run --ci"
-                | "run: chock run --ci --miri-partition=1/${{ matrix.parts }}"
-        )),
-        "no job runs the whole set its tier can"
-    );
+    // `--ci` leaves out only what the config's `local_only` names. The job with every gate may
+    // skip a slow one only where a job of its own runs it.
+    let skipped = workflow
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("run: chock run --ci --skip="));
+    assert!(skipped.is_some(), "no job runs the whole set its tier can");
+    for gate in skipped.unwrap_or_default().split(',') {
+        let alone = format!(" {gate}");
+        assert!(
+            workflow.lines().any(
+                |line| line.trim().starts_with("run: chock run --ci") && line.ends_with(&alone)
+            ),
+            "the job with every gate skips `{gate}`, and no job runs it"
+        );
+    }
 }
 
 /// A scratch project with `slop` on; without it, an edited file answers to chock's own tree.

@@ -58,6 +58,9 @@ No command or flag is removed or renamed. The JSON reports add fields and remove
 - **`mutest` trusts a timeout that it confirmed.** A mutest that re-runs each timed-out mutation
   alone with a longer limit prints `timeouts confirmed:`. Each timeout left is then a hang, and
   the finding says so. The 2% limit on timeouts applies only to a mutest without this line.
+- **`chock run --skip=GATE,...` leaves gates out of a run.** CI can then run a slow gate in a
+  job of its own, at the same time as the job with every other gate. chock's own CI runs `miri`
+  and `mutest` this way. A name that is not a gate is refused.
 - **`mutest` joins its targets.** A mutation is a survivor only when every target that ran it
   missed it. Before, a miss in one target counted even when another target detected it.
 - **`mutest` names each mutation that timed out.** Each one is a finding at its file and line,

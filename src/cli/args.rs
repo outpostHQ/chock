@@ -18,6 +18,8 @@ pub enum Command<'a> {
         no_cache: bool,
         /// The part of the Miri suite to run, from `--miri-partition=K/N`.
         miri_part: Option<Part>,
+        /// Gates left out, from `--skip=NAME,...`: CI runs the slow ones in jobs of their own.
+        skip: Vec<&'a str>,
     },
     /// `cache clear`: removes every kept verdict.
     CacheClear,
@@ -85,9 +87,23 @@ fn configures<'a>(cmd: &str, names: Vec<&'a str>, change: Change<'a>) -> Command
 
 const PARTITION: &str = "--miri-partition";
 
-/// A flag of `run`: `--fast`, `--ci`, `--no-cache` or `--miri-partition=K/N`.
+const SKIP: &str = "--skip=";
+
+/// A flag of `run`: `--fast`, `--ci`, `--no-cache`, `--miri-partition=K/N` or `--skip=NAME,...`.
 fn known(flag: &str) -> bool {
-    matches!(flag, "--fast" | "--ci" | "--no-cache") || flag.starts_with(PARTITION)
+    matches!(flag, "--fast" | "--ci" | "--no-cache")
+        || [PARTITION, SKIP].iter().any(|at| flag.starts_with(at))
+}
+
+/// The gates each `--skip=A,B` names.
+fn skipped<'a>(names: &[&'a str]) -> Vec<&'a str> {
+    names
+        .iter()
+        .copied()
+        .filter_map(|name| name.strip_prefix(SKIP))
+        .flat_map(|list| list.split(','))
+        .filter(|name| !name.is_empty())
+        .collect()
 }
 
 /// `run`: the gates it names, with its flags and `--json` wherever they stand.
@@ -100,6 +116,7 @@ fn to_run<'a>(rest: &[&'a str]) -> Command<'a> {
             fast: names.contains(&"--fast"),
             ci: names.contains(&"--ci"),
             no_cache: names.contains(&"--no-cache"),
+            skip: skipped(&names),
             names: names.into_iter().filter(|n| !known(n)).collect(),
             json,
             miri_part: part,
@@ -236,7 +253,8 @@ mod tests {
                 fast: false,
                 ci: false,
                 no_cache: false,
-                miri_part: None
+                miri_part: None,
+                skip: Vec::new()
             }
         );
     }
@@ -252,7 +270,8 @@ mod tests {
                 fast: true,
                 ci: false,
                 no_cache: false,
-                miri_part: None
+                miri_part: None,
+                skip: Vec::new()
             }
         );
         assert_eq!(
@@ -263,7 +282,8 @@ mod tests {
                 fast: true,
                 ci: false,
                 no_cache: false,
-                miri_part: None
+                miri_part: None,
+                skip: Vec::new()
             }
         );
     }
@@ -278,7 +298,8 @@ mod tests {
                 fast: false,
                 ci: false,
                 no_cache: false,
-                miri_part: None
+                miri_part: None,
+                skip: Vec::new()
             }
         );
     }
@@ -292,6 +313,7 @@ mod tests {
             ci: false,
             no_cache: false,
             miri_part: None,
+            skip: Vec::new(),
         };
         assert_eq!(parse(&["run", "--json", "lint"]), expected);
         assert_eq!(parse(&["run", "lint", "--json"]), expected);
@@ -306,6 +328,7 @@ mod tests {
             ci: true,
             no_cache: true,
             miri_part: None,
+            skip: Vec::new(),
         };
         assert_eq!(parse(&["run", "--no-cache", "--ci", "lint"]), expected);
         assert_eq!(parse(&["run", "lint", "--ci", "--no-cache"]), expected);
@@ -320,6 +343,7 @@ mod tests {
             ci: true,
             no_cache: false,
             miri_part: Some(Part { index: 2, of: 12 }),
+            skip: Vec::new(),
         };
         assert_eq!(
             parse(&["run", "--miri-partition=2/12", "--ci", "miri"]),
@@ -338,9 +362,29 @@ mod tests {
                 ci: false,
                 no_cache: false,
                 miri_part: Some(Part { index, of }),
+                skip: Vec::new(),
             };
             assert_eq!(parse(&["run", &flag]), whole, "{flag}");
         }
+    }
+
+    #[test]
+    fn skip_leaves_out_each_gate_it_lists_wherever_it_stands() {
+        let expected = Command::Run {
+            names: vec!["lint"],
+            json: false,
+            fast: false,
+            ci: true,
+            no_cache: false,
+            miri_part: None,
+            skip: vec!["miri", "mutest", "bsize"],
+        };
+        let asked = ["run", "--skip=miri,mutest,", "--ci", "lint", "--skip=bsize"];
+        assert_eq!(parse(&asked), expected);
+        assert_eq!(
+            parse(&["run", "--skip", "miri"]),
+            Command::Usage("unknown option `--skip`".to_string())
+        );
     }
 
     #[test]
