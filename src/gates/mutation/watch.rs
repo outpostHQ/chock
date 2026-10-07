@@ -469,6 +469,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri's geteuid is always 1000, not the owner's")]
     fn non_utf8_paths_and_filenames_are_reported_without_panicking() {
         use std::os::unix::ffi::OsStringExt;
         let root = crate::testdir::make("watch-non-utf8");
@@ -758,6 +759,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri's geteuid is always 1000, not the owner's")]
     fn an_existing_private_directory_is_not_reused() {
         let (_root, watch, _) = setup();
         assert!(

@@ -603,6 +603,12 @@ fn spawned<'a>(program: &'a str, args: &[&'a str], polite: &[&'a str]) -> (&'a s
     }
 }
 
+/// rustc writes a crash report into its working directory, the tree a later gate reads; a
+/// place the user chose for it still holds. The crash itself still reaches stderr.
+fn crash_report(chosen: Option<&std::ffi::OsStr>) -> Option<(&'static str, &'static str)> {
+    chosen.is_none().then_some(("RUSTC_ICE", "0"))
+}
+
 fn run_full(
     program: &str,
     args: &[&str],
@@ -622,6 +628,7 @@ fn run_full(
     let mut command = Command::new(spawn);
     command
         .args(&argv)
+        .envs(crash_report(std::env::var_os("RUSTC_ICE").as_deref()))
         .envs(env.iter().copied())
         .env(DEPTH, (depth() + 1).to_string())
         .envs(crate::exec::budget::caps())
@@ -925,6 +932,13 @@ mod tests {
             })
             .collect();
         assert_eq!(kept, vec!["PATH=/usr/bin".to_string()]);
+    }
+
+    /// anyhow's first run left a `rustc-ice-*.txt` in its tree; `typos` read it on the second.
+    #[test]
+    fn a_crash_report_goes_nowhere_unless_the_user_chose_a_place() {
+        assert_eq!(crash_report(None), Some(("RUSTC_ICE", "0")));
+        assert_eq!(crash_report(Some(std::ffi::OsStr::new("/var/ice"))), None);
     }
 
     #[test]

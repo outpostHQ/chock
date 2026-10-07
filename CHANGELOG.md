@@ -43,9 +43,13 @@ No command or flag is removed or renamed. The JSON reports add fields and remove
   what to check. The cargo-mutest build prints each step, so a long step does not look like a hang.
 - **Miri runs chock's own suite.** Each test that Miri cannot run, or did not end in 15 minutes,
   is marked with the reason.
-- **`miri` names a stuck test.** Each test has five minutes under Miri. A test past that stops,
-  and the finding names it. Before, one stuck test used the whole run's limit and was not named.
-  A `default-miri` profile in the project's own nextest settings still wins.
+- **A compiler crash leaves no file in the project.** rustc wrote `rustc-ice-*.txt` into the
+  tree, and `typos` read it on the next run. Now the crash goes to the gate's output only, unless
+  `RUSTC_ICE` names a place.
+- **`miri` names a stuck or failed test.** Each test has five minutes under Miri. A test past
+  that stops, and the finding names it. Before, one stuck test used the whole run's limit and was
+  not named. A failed assertion is named too; before, the gate said that it could not run. A
+  `default-miri` profile in the project's own nextest settings still wins.
 - **`mutest` joins its targets.** A mutation is a survivor only when every target that ran it
   missed it. Before, a miss in one target counted even when another target detected it.
 - **`mutest` names each mutation that timed out.** Each one is a finding at its file and line,

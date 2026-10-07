@@ -106,16 +106,25 @@ fn stamp() -> u128 {
         .unwrap_or_default()
 }
 
-/// The suite's verdict, naming each test the limit stopped: nextest prints no span for one.
+/// The suite's verdict, naming each failed test: a failed assertion prints no span chock reads.
 fn judged(out: &exec::Output, root: &Path) -> Outcome {
+    let stopped = super::timed_out_tests(out);
     let mut outcome = super::verdict(out, root);
-    outcome.findings.extend(
-        super::timed_out_tests(out)
-            .iter()
-            .map(|test| Finding::at("", STOPPED).item(test)),
-    );
+    outcome
+        .findings
+        .extend(super::failing_tests(out).iter().map(|test| {
+            let why = if stopped.contains(test) {
+                STOPPED
+            } else {
+                FAILED
+            };
+            Finding::at("", why).item(test)
+        }));
     outcome
 }
+
+const FAILED: &str = "failed under miri; `cargo +nightly miri nextest run` with this test's name \
+                      prints why";
 
 const STOPPED: &str = "ran past its limit under miri, five minutes unless the project's \
                        `[profile.default-miri]` sets one, so it was stopped; give it a smaller \
@@ -382,6 +391,29 @@ mod tests {
                 .map(Finding::render)
                 .collect::<Vec<_>>(),
             [format!("chock vcs::tests::slow: {STOPPED}")]
+        );
+    }
+
+    /// As CI printed a failed assertion: the test is named, so the gate is not unable to run.
+    #[test]
+    fn a_test_that_failed_under_miri_is_named_though_it_printed_no_span() {
+        let out = exec::Output {
+            code: Some(100),
+            stdout: String::new(),
+            stderr: "        FAIL [  14.322s] (117/299) chock watch::tests::reused\n\
+                     error: test run failed\n"
+                .to_string(),
+            truncated: false,
+        };
+        let outcome = judged(&out, Path::new("/w"));
+        assert!(!outcome.passed);
+        assert_eq!(
+            outcome
+                .findings
+                .iter()
+                .map(Finding::render)
+                .collect::<Vec<_>>(),
+            [format!("chock watch::tests::reused: {FAILED}")]
         );
     }
 

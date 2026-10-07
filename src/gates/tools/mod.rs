@@ -295,9 +295,7 @@ fn read_suite(out: &exec::Output, root: &Path) -> Outcome {
     if out.success() {
         return Outcome::passed();
     }
-    let mut named = failed_tests(&out.stdout);
-    named.extend(failed_tests(&out.stderr));
-    let mut found: Vec<Finding> = named
+    let mut found: Vec<Finding> = failing_tests(out)
         .iter()
         .map(|test| Finding::at("", "this test failed").item(test))
         .collect();
@@ -329,6 +327,13 @@ fn worse(line: &str) -> Option<Finding> {
     let (from, to) = moved.split_once(" -> ")?;
     let message = format!("got worse: {} to {}", from.trim(), to.trim());
     Some(Finding::at("", &message).item(measure))
+}
+
+/// Every test nextest gave a failing verdict, from both streams.
+pub(super) fn failing_tests(out: &exec::Output) -> BTreeSet<String> {
+    let mut named = failed_tests(&out.stdout);
+    named.extend(failed_tests(&out.stderr));
+    named
 }
 
 /// Every test nextest gave a failing verdict. A set, since the same line can reach both streams.
@@ -409,8 +414,7 @@ fn failed_twice(second: &exec::Output, root: &Path) -> Vec<Finding> {
     if !spanned.is_empty() {
         return spanned;
     }
-    let mut named = failed_tests(&second.stderr);
-    named.extend(failed_tests(&second.stdout));
+    let named = failing_tests(second);
     if !named.is_empty() {
         return named
             .iter()

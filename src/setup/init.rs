@@ -1043,6 +1043,27 @@ mod tests {
         );
     }
 
+    /// A config somebody wrote is kept: init names only a gate that passes now and the file lacks.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_held_config_is_kept_and_only_a_gate_it_lacks_is_offered() {
+        let dir = crate::testdir::make("init-held-config");
+        let path = dir.join("config.json");
+        let held = Config::of(["lint"]);
+        fs::write(&path, held.render()).unwrap();
+        let file = crate::project::config::FILE;
+        assert_eq!(
+            keep_the_choices_already_made(&path, &held),
+            Ok(format!("  unchanged {file}\n"))
+        );
+        assert_eq!(
+            keep_the_choices_already_made(&path, &Config::of(["lint", "typos"])),
+            Ok(format!(
+                "  unchanged {file}\n  note      1 also pass(es) now: chock enable typos\n"
+            ))
+        );
+    }
+
     /// A `.gitignore` chock cannot read was read as empty and rewritten holding only chock's lines.
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
@@ -1215,10 +1236,10 @@ mod tests {
         assert_eq!(pins_for(Some(&dir)), shipped);
     }
 
-    /// The project's own pins come first, and a pin file chock cannot read stops the install.
+    /// The project's own pins come first.
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    fn a_global_install_takes_the_projects_pins_and_stops_at_ones_it_cannot_read() {
+    fn a_global_install_takes_the_projects_own_pins() {
         let dir = crate::testdir::make("init-global-own-pins");
         let path = dir.join(project::PIN_FILE);
         fs::write(&path, "CARGO_NEXTEST_VERSION=0.9.1\n").unwrap();
@@ -1227,6 +1248,12 @@ mod tests {
             "CARGO_NEXTEST_VERSION=0.9.1\n".to_string(),
         );
         assert_eq!(pins_for(Some(&dir)), Ok(own));
+    }
+
+    /// A pin file chock cannot read stops the install; a directory of that name is one.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a directory")]
+    fn a_global_install_stops_at_a_pin_file_it_cannot_read() {
         let blocked = crate::testdir::make("init-global-pins-unreadable");
         fs::create_dir_all(blocked.join(project::PIN_FILE)).unwrap();
         assert!(matches!(
