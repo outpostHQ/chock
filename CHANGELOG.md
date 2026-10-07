@@ -50,6 +50,14 @@ No command or flag is removed or renamed. The JSON reports add fields and remove
   that stops, and the finding names it. Before, one stuck test used the whole run's limit and was
   not named. A failed assertion is named too; before, the gate said that it could not run. A
   `default-miri` profile in the project's own nextest settings still wins.
+- **`miri` has no limit on the whole run.** The run stops only when no test ends and no crate
+  builds for `CHOCK_TIMEOUT` (30 minutes). Before, a suite or a CI part with many tests failed at
+  30 minutes in all, even when each test kept to its own limit.
+- **A run longer than the deadline keeps its lock.** The holder refreshes the lock while it runs.
+  Before, a second run took over the lock of a live run after 30 minutes.
+- **`mutest` trusts a timeout that it confirmed.** A mutest that re-runs each timed-out mutation
+  alone with a longer limit prints `timeouts confirmed:`. Each timeout left is then a hang, and
+  the finding says so. The 2% limit on timeouts applies only to a mutest without this line.
 - **`mutest` joins its targets.** A mutation is a survivor only when every target that ran it
   missed it. Before, a miss in one target counted even when another target detected it.
 - **`mutest` names each mutation that timed out.** Each one is a finding at its file and line,

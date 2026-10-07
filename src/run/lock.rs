@@ -8,16 +8,51 @@ use std::path::{Path, PathBuf};
 const DIR: &str = ".chock";
 const FILE: &str = ".chock/run.lock";
 
-/// The held run lock, released when it goes out of scope, error paths included.
+/// The held run lock, kept fresh while held and released when it goes out of scope, error paths
+/// included.
 #[derive(Debug)]
 pub struct Held {
     path: PathBuf,
+    beat: Option<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)>,
 }
 
 impl Drop for Held {
     fn drop(&mut self) {
+        if let Some((stop, thread)) = self.beat.take() {
+            drop(stop);
+            // The thread only refreshes a file, so a panic in it leaves nothing to clean up.
+            thread.join().unwrap_or_default();
+        }
         let _ = std::fs::remove_file(&self.path);
     }
+}
+
+/// The lock at `path`, its time refreshed every `every` until it is dropped, so a run longer than
+/// the deadline keeps it.
+fn held(path: PathBuf, every: std::time::Duration) -> Held {
+    let (stop, stopped) = std::sync::mpsc::channel::<()>();
+    let beating = path.clone();
+    let thread = std::thread::spawn(move || {
+        // A lock that cannot be refreshed only ages from then on, and a stale lock names its holder.
+        while stopped.recv_timeout(every) == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            && refresh(&beating).is_ok()
+        {}
+    });
+    Held {
+        path,
+        beat: Some((stop, thread)),
+    }
+}
+
+/// Marks the lock as written now, without creating it where it is gone.
+fn refresh(path: &Path) -> std::io::Result<()> {
+    let file = std::fs::File::options().write(true).open(path)?;
+    file.set_modified(std::time::SystemTime::now())
+}
+
+/// How often a held lock is refreshed: well inside the deadline that makes a lock stale.
+fn beat_every() -> std::time::Duration {
+    (crate::exec::deadline() / 4).max(std::time::Duration::from_secs(1))
 }
 
 /// Attempts and the rest between them, ten seconds in all: long enough for the fast gates to
@@ -68,13 +103,13 @@ fn once(root: &Path) -> Result<Held, Refused> {
         .map_err(|e| Refused::Broken(format!("cannot make {}: {e}", dir.display())))?;
     let path = root.join(FILE);
     match write_new(&path) {
-        Ok(()) => Ok(Held { path }),
+        Ok(()) => Ok(held(path, beat_every())),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match stale(&path) {
             true => {
                 // Ignored: a lock that cannot be removed makes the write below fail, which says so.
                 let _ = std::fs::remove_file(&path);
                 write_new(&path)
-                    .map(|()| Held { path })
+                    .map(|()| held(path, beat_every()))
                     .map_err(|e| Refused::Broken(format!("cannot take {FILE}: {e}")))
             }
             false => Err(Refused::Held(held_by(&path))),
@@ -109,7 +144,8 @@ fn holder(text: &str) -> (&str, &str) {
     (pid.trim(), command.trim())
 }
 
-/// Whether no live run holds the lock: its writer has exited, or it outlived a run's deadline.
+/// Whether no live run holds the lock: its writer has exited, or has not refreshed it for a
+/// deadline.
 fn stale(path: &Path) -> bool {
     let who = std::fs::read_to_string(path).unwrap_or_default();
     if gone(holder(&who).0) == Some(true) {
@@ -252,6 +288,29 @@ mod tests {
         set_modified(&path, long_ago);
         assert!(stale(&path), "the fixture is not old enough to be stale");
         assert_eq!(new_holder(&dir, &path), std::process::id().to_string());
+    }
+
+    #[test]
+    fn a_held_lock_stays_fresh_past_the_deadline_and_goes_when_dropped() {
+        let dir = crate::testdir::make("lock-beat");
+        let path = dir.join(FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "999999").unwrap();
+        let long_ago = std::time::SystemTime::now() - crate::exec::deadline() * 2;
+        set_modified(&path, long_ago);
+        let lock = held(path.clone(), std::time::Duration::from_millis(5));
+        let mut turns = 0;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            turns += 1;
+            if age(&path).is_some_and(|age| age < crate::exec::deadline()) || turns == 500 {
+                break;
+            }
+        }
+        assert!(age(&path).is_some_and(|age| age < crate::exec::deadline()));
+        drop(lock);
+        assert!(!path.exists());
+        assert!(refresh(&path).is_err(), "a refresh never makes a lock");
     }
 
     #[test]

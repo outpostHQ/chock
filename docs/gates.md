@@ -169,7 +169,7 @@ A gate leaves these out on purpose. Each one has a place that shows it.
 | `supply` | a new version of a crate that the record already holds | the diff of `Cargo.lock` |
 | `features` | a `.rs` file that does not parse and is outside `src/` or read by `include!` | the compiler, where a build uses the file |
 | `placement` | a path dependency outside the tree, where the tree is in no repository | the `path` in `Cargo.toml` |
-| `mutest` | on your machine, the files that the change did not touch. Where more than 2% of the mutations in the touched files time out, the run mutates the whole crate | the run says which it did; CI mutates the whole crate |
+| `mutest` | on your machine, the files that the change did not touch. Where more than 2% of the mutations in the touched files time out and mutest did not confirm them by a re-run alone, the run mutates the whole crate | the run says which it did; CI mutates the whole crate |
 | `mutest` | a mutation that times out counts as detected, for up to 2% of the mutations | the run says how many timed out |
 | `modcheck` | the directory of a file that holds the text `chock:modcheck-exempt` | the comment in that file |
 | `modcheck` | a `mod` name that a macro builds and no file has; a `.rs` file that does not parse and is outside `src/` or read by `include!` | the compiler, where a build uses it |

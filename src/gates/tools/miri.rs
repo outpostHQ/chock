@@ -49,7 +49,8 @@ fn checked(ctx: &Ctx) -> Result<Outcome, String> {
 fn miri(ctx: &Ctx, args: &[String]) -> Result<Outcome, String> {
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let flags = miriflags(&ctx.miri);
-    let out = exec::run_env("cargo", &argv, &ctx.root, &[("MIRIFLAGS", flags.as_str())])
+    let env = [("MIRIFLAGS", flags.as_str())];
+    let out = exec::run_paced("cargo", &argv, &ctx.root, &env, moving)
         .map_err(|failed| advice(failed.hung(), &failed.to_string()))?;
     if let Some(why) = never_ran(&out.stderr) {
         return Err(why);
@@ -57,8 +58,16 @@ fn miri(ctx: &Ctx, args: &[String]) -> Result<Outcome, String> {
     Ok(judged(&out, &ctx.root))
 }
 
-/// nextest's Miri profile only warns about a slow test, so one test could use up the run's
-/// deadline unnamed. A project's own `default-miri` setting still wins over this one.
+/// Progress under miri: any line but nextest's note that a test still runs, which a hung test
+/// repeats each minute. So the per-test limit decides, not how many tests the run holds.
+fn moving(line: &str) -> bool {
+    let line = exec::strip_colour(line);
+    let said = line.trim_start();
+    !said.is_empty() && !said.starts_with("SLOW")
+}
+
+/// nextest's Miri profile only warns about a slow test, so one test could run unbounded and
+/// unnamed. A project's own `default-miri` setting still wins over this one.
 const PER_TEST: &str =
     "[profile.default-miri]\nslow-timeout = { period = \"60s\", terminate-after = 5 }\n";
 
@@ -155,12 +164,13 @@ fn invocation(scope: &crate::project::config::Scope, features: &[String]) -> Vec
     args
 }
 
-/// The remedy for a failed run: a narrower scope or longer deadline if it hung, else install miri.
+/// The remedy for a failed run: a per-test limit or longer deadline if it hung, else install miri.
 fn advice(hung: bool, said: &str) -> String {
     if hung {
         format!(
-            "{said}; interpreting costs tens of times what running does, so name the packages \
-             worth it in `miri.packages`, or raise {}",
+            "{said}; no test finished in that time, so a build stalled or a test hangs with no \
+             `terminate-after` in the project's `[profile.default-miri]`: set one there, or \
+             raise {}",
             exec::TIMEOUT
         )
     } else {
@@ -307,9 +317,26 @@ mod tests {
     }
 
     #[test]
+    fn a_test_that_ends_or_a_crate_that_builds_is_progress_and_a_slow_note_is_not() {
+        assert!(moving(
+            "        PASS [   2.104s] (3/9) chock vcs::tests::reads"
+        ));
+        assert!(moving("   Compiling chock v0.2.0"));
+        assert!(moving(
+            "     TIMEOUT [ 300.004s] (2/2) chock vcs::tests::slow"
+        ));
+        assert!(!moving("        SLOW [> 60.000s] chock vcs::tests::slow"));
+        assert!(!moving(
+            "\u{1b}[33m        SLOW\u{1b}[0m [>120.000s] chock vcs::tests::slow"
+        ));
+        assert!(!moving("   "));
+        assert!(!moving(""));
+    }
+
+    #[test]
     fn a_deadline_reached_is_told_apart_from_a_component_that_is_not_installed() {
         let said = advice(true, "cargo gave up waiting");
-        assert!(said.contains("miri.packages"), "{said}");
+        assert!(said.contains("terminate-after"), "{said}");
         assert!(said.contains(exec::TIMEOUT), "{said}");
         assert!(!said.contains("component add"), "{said}");
 

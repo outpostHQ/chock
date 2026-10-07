@@ -122,6 +122,9 @@ reads, and register it in `src/gates/mod.rs`.
   progress checks.
 - **A slow commit is fixed with `at_push`, a slow push with `at_ci`** — they move when a check runs,
   never whether. A project naming `at_ci` checks needs CI, or nothing runs them.
+- **A speed change may change the order of work, the cache, what runs at the same time, and which
+  builds are reused.** It never changes the tests, mutations, flags, build profile or binaries a
+  gate checks. When chock cannot show that an input stayed the same, it runs the gate again.
 
 ## Working with the model
 

@@ -137,7 +137,7 @@ pub(super) fn read(
 ) -> Result<Measurement, String> {
     let found = read_survivors(out, results)?;
     let mut findings = ineligible(out);
-    findings.extend(timeouts(&found.timed_out));
+    findings.extend(timeouts(&found.timed_out, confirmed(out)));
     findings.extend(survivors::sites_over(&found.survivors, was));
     Ok(Measurement::of(
         Series(survivors::telling(&found.survivors)),
@@ -175,7 +175,7 @@ fn survivor_counts(
     }
     let gave_up = totals.timed_out;
     let attempted = totals.total;
-    if over_limit(&totals) {
+    if untrusted(out, &totals) {
         return Err(format!(
             "mutest gave up on {gave_up} of {attempted} mutations, so the score is not \
              trustworthy; re-run on an idle machine"
@@ -189,6 +189,21 @@ fn over_limit(totals: &survivors::Totals) -> bool {
     u128::from(totals.timed_out) * 100 > u128::from(totals.total) * u128::from(TIMEOUT_LIMIT)
 }
 
+/// What mutest prints once it has re-run each timed-out mutation alone with a longer limit.
+const CONFIRMED: &str = "timeouts confirmed:";
+
+/// Whether mutest re-ran its timeouts alone, so each one left is a hang and not load.
+fn confirmed(out: &exec::Output) -> bool {
+    out.stdout
+        .lines()
+        .any(|line| exec::strip_colour(line).trim_start().starts_with(CONFIRMED))
+}
+
+/// Whether the timeouts may come from load: past `TIMEOUT_LIMIT` percent, and none re-run alone.
+fn untrusted(out: &exec::Output, totals: &survivors::Totals) -> bool {
+    over_limit(totals) && !confirmed(out)
+}
+
 /// `read` for a run of only some files, or `None` where their mutations alone pass the timeout
 /// limit: that verdict is the whole crate's to give.
 fn read_within(
@@ -197,20 +212,24 @@ fn read_within(
     was: &Series,
 ) -> Result<Option<Measurement>, String> {
     let totals = survivors::totals(&out.stdout).ok().flatten();
-    match totals.is_some_and(|totals| over_limit(&totals)) {
+    match totals.is_some_and(|totals| untrusted(out, &totals)) {
         true => Ok(None),
         false => read(out, results, was).map(Some),
     }
 }
 
 /// Each mutation a time limit alone stopped, as a lead: mutest counts it as detected, so no
-/// survivor count shows it, and only a run on an idle machine can judge it.
-fn timeouts(timed_out: &[Survivor]) -> Vec<Finding> {
+/// survivor count shows it. Unless mutest re-ran it alone, only an idle machine can judge it.
+fn timeouts(timed_out: &[Survivor], confirmed: bool) -> Vec<Finding> {
     let lead = "timed out, so mutest counted it as detected";
+    let next = match confirmed {
+        true => "it timed out again when run alone with a longer limit, so it hangs",
+        false => "run again on an idle machine to judge it",
+    };
     let mut found = Vec::new();
     for mutation in timed_out {
         let (what, op, file) = (&mutation.what, &mutation.operator, &mutation.file);
-        let said = format!("{lead}: {what} ({op}); run again on an idle machine to judge it");
+        let said = format!("{lead}: {what} ({op}); {next}");
         found.push(Finding::at(file, &said).line(mutation.line).candidate());
     }
     found
@@ -408,6 +427,40 @@ mod tests {
         assert_eq!(
             err,
             "mutest gave up on 4 of 10 mutations, so the score is not trustworthy; re-run on an idle machine"
+        );
+    }
+
+    const CONFIRMED_PAST: &str = "mutations: 90%. 5 detected (4 timed out; 0 crashed); 1 undetected; 10 total\n\
+         \u{1b}[1mtimeouts confirmed: 6 re-run alone; 2 detected, 0 undetected, 0 crashed, 4 timed out again\u{1b}[0m\n";
+
+    #[test]
+    fn timeouts_mutest_confirmed_alone_are_hangs_and_the_run_is_scored() {
+        let series = counted(&ran(CONFIRMED_PAST, Some(3), false), &one).unwrap();
+        assert_eq!(series.get("src/a.rs#eq_op_invert"), Some(1));
+        let within = read_within(
+            &ran(CONFIRMED_PAST, Some(3), false),
+            &one,
+            &Series::default(),
+        );
+        assert!(
+            within.unwrap().is_some(),
+            "confirmed hangs need no whole-crate run"
+        );
+        let timed = |_: u64| {
+            Ok(Joined {
+                survivors: vec![survivor("eq_op_invert")],
+                timed_out: vec![survivor("call_delete")],
+            })
+        };
+        let was = Series([("src/a.rs#eq_op_invert".to_string(), 1)].into());
+        let some = read(&ran(CONFIRMED_PAST, Some(3), false), &timed, &was).unwrap();
+        let said: Vec<String> = some.findings.iter().map(Finding::render).collect();
+        assert_eq!(
+            said,
+            [
+                "src/a.rs:7: timed out, so mutest counted it as detected: does a thing \
+                 (call_delete); it timed out again when run alone with a longer limit, so it hangs"
+            ]
         );
     }
 

@@ -218,7 +218,7 @@ pub fn objected(out: &Output, tool: &str) -> Result<bool, String> {
 
 /// `run` with the capture cap as a parameter, so a test can use a small one.
 fn run_capped(program: &str, args: &[&str], cwd: &Path, cap: usize) -> Result<Output, ExecError> {
-    run_full(program, args, cwd, cap, &[], &mut ())
+    run_full(program, args, cwd, cap, &[], &mut (), None)
 }
 
 /// `run` with extra environment variables, such as `RUSTDOCFLAGS`.
@@ -228,7 +228,7 @@ pub fn run_env(
     cwd: &Path,
     env: &[(&str, &str)],
 ) -> Result<Output, ExecError> {
-    run_full(program, args, cwd, MAX_CAPTURE, env, &mut ())
+    run_full(program, args, cwd, MAX_CAPTURE, env, &mut (), None)
 }
 
 /// How a program is started: `run_env`, or a test's stand-in with fixed answers.
@@ -279,7 +279,123 @@ pub(crate) fn run_watched(
     env: &[(&str, &str)],
     watchdog: &mut dyn Watchdog,
 ) -> Result<Output, ExecError> {
-    run_full(program, args, cwd, MAX_CAPTURE, env, watchdog)
+    run_full(program, args, cwd, MAX_CAPTURE, env, watchdog, None)
+}
+
+/// Whether an output line shows a tool still moving; each such line restarts a paced deadline.
+pub type Moving = fn(&str) -> bool;
+
+/// `run_env` for a tool that may run as long as it shows progress: it is stopped only when no
+/// line `moving` accepts arrives within the deadline.
+pub fn run_paced(
+    program: &str,
+    args: &[&str],
+    cwd: &Path,
+    env: &[(&str, &str)],
+    moving: Moving,
+) -> Result<Output, ExecError> {
+    run_full(program, args, cwd, MAX_CAPTURE, env, &mut (), Some(moving))
+}
+
+/// The `Moving` of a tool with a deadline in all: no line restarts it.
+fn never(_line: &str) -> bool {
+    false
+}
+
+/// The caller's watchdog, and a deadline that each line showing progress restarts.
+struct Paced<'a> {
+    inner: &'a mut dyn Watchdog,
+    moved: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    seen: u64,
+    since: std::time::Instant,
+    limit: std::time::Duration,
+}
+
+impl<'a> Paced<'a> {
+    fn new(
+        inner: &'a mut dyn Watchdog,
+        moved: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        limit: std::time::Duration,
+    ) -> Self {
+        Self {
+            inner,
+            moved,
+            seen: 0,
+            since: std::time::Instant::now(),
+            limit,
+        }
+    }
+}
+
+impl Watchdog for Paced<'_> {
+    fn poll(&mut self) -> Result<(), String> {
+        self.inner.poll()?;
+        let now = self.moved.load(std::sync::atomic::Ordering::Relaxed);
+        if now != self.seen {
+            self.seen = now;
+            self.since = std::time::Instant::now();
+        }
+        match past(self.since.elapsed(), self.limit) {
+            true => Err(format!(
+                "no progress for {}s; cleanup requested",
+                self.limit.as_secs()
+            )),
+            false => Ok(()),
+        }
+    }
+    fn complete(&mut self) -> Result<(), String> {
+        self.inner.complete()
+    }
+}
+
+/// The first bytes of a line that `Moving` reads: room for colour codes, indent and a status word.
+const LINE_START: usize = 64;
+
+/// A pipe that counts, as its bytes pass, each line `moving` accepts.
+struct Counted<R> {
+    inner: R,
+    start: Vec<u8>,
+    moving: Moving,
+    moved: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+fn counted<R>(
+    pipe: Option<R>,
+    moving: Moving,
+    moved: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+) -> Option<Counted<R>> {
+    pipe.map(|inner| Counted {
+        inner,
+        start: Vec::new(),
+        moving,
+        moved: std::sync::Arc::clone(moved),
+    })
+}
+
+impl<R: Read> Read for Counted<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        for &byte in buf.get(..n).unwrap_or_default() {
+            self.feed(byte);
+        }
+        Ok(n)
+    }
+}
+
+impl<R> Counted<R> {
+    fn feed(&mut self, byte: u8) {
+        if byte != b'\n' {
+            if self.start.len() < LINE_START {
+                self.start.push(byte);
+            }
+            return;
+        }
+        if (self.moving)(&String::from_utf8_lossy(&self.start)) {
+            self.moved
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.start.clear();
+    }
 }
 
 /// Long enough for a cold suite on a large workspace and no longer, since a hang is never recalled
@@ -616,6 +732,7 @@ fn run_full(
     cap: usize,
     env: &[(&str, &str)],
     watchdog: &mut dyn Watchdog,
+    pace: Option<Moving>,
 ) -> Result<Output, ExecError> {
     let fail = |stage: Stage, reason: String| ExecError {
         program: program.to_string(),
@@ -647,18 +764,25 @@ fn run_full(
     let mut process =
         Process::spawn(&mut command).map_err(|e| fail(Stage::Spawn, e.to_string()))?;
 
+    let moved = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let counts = pace.unwrap_or(never);
     // Each pipe drains on its own thread: reading one to EOF first deadlocks once the other fills.
-    let reading_out = captured(process.child.stdout.take(), cap);
-    let reading_err = captured(process.child.stderr.take(), cap);
-
+    let reading_out = captured(counted(process.child.stdout.take(), counts, &moved), cap);
+    let reading_err = captured(counted(process.child.stderr.take(), counts, &moved), cap);
+    // A paced tool has no limit in all, only one since its last progress.
+    let (whole, idle) = match pace {
+        Some(_) => (std::time::Duration::MAX, deadline()),
+        None => (deadline(), std::time::Duration::MAX),
+    };
+    let mut paced = Paced::new(watchdog, moved, idle);
     finish_capture(
         &mut process,
         program,
         &reading_out,
         &reading_err,
-        deadline(),
+        whole,
         DRAIN,
-        watchdog,
+        &mut paced,
     )
 }
 
@@ -1269,6 +1393,96 @@ mod tests {
             "{}",
             failed.reason
         );
+    }
+
+    fn stopping(line: &str) -> bool {
+        !line.starts_with("SLOW")
+    }
+
+    fn whole_start(line: &str) -> bool {
+        line.len() == LINE_START
+    }
+
+    #[test]
+    fn a_counted_pipe_counts_each_finished_line_its_moving_accepts() {
+        let moved = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let text = &b"PASS a\nSLOW b\nPA"[..];
+        let mut pipe = counted(Some(text), stopping, &moved).unwrap();
+        let mut held = String::new();
+        pipe.read_to_string(&mut held).unwrap();
+        assert_eq!(held, "PASS a\nSLOW b\nPA");
+        assert_eq!(moved.load(std::sync::atomic::Ordering::Relaxed), 1);
+        pipe.feed(b'\n');
+        assert_eq!(moved.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert!(!never("PASS a"));
+    }
+
+    #[test]
+    fn a_counted_pipe_keeps_only_the_start_of_a_long_line() {
+        let moved = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let long = format!("{}\n", "x".repeat(LINE_START * 2));
+        let mut pipe = counted(Some(long.as_bytes()), whole_start, &moved).unwrap();
+        std::io::copy(&mut pipe, &mut std::io::sink()).unwrap();
+        assert_eq!(moved.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    struct Refusing;
+    impl Watchdog for Refusing {
+        fn poll(&mut self) -> Result<(), String> {
+            Err("refused".into())
+        }
+        fn complete(&mut self) -> Result<(), String> {
+            Err("incomplete".into())
+        }
+    }
+
+    #[test]
+    fn a_paced_deadline_restarts_on_progress_and_passes_the_inner_watchdog_on() {
+        let moved = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut quiet = ();
+        let hour = std::time::Duration::from_secs(3600);
+        let mut paced = Paced::new(&mut quiet, std::sync::Arc::clone(&moved), hour);
+        assert_eq!(paced.poll(), Ok(()));
+        moved.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(paced.poll(), Ok(()));
+        assert_eq!(paced.seen, 1);
+
+        let short = std::time::Duration::from_millis(200);
+        let mut paced = Paced::new(&mut quiet, std::sync::Arc::clone(&moved), short);
+        std::thread::sleep(short + short / 2);
+        moved.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(paced.poll(), Ok(()), "progress restarts the deadline");
+
+        let mut paced = Paced::new(
+            &mut quiet,
+            std::sync::Arc::clone(&moved),
+            std::time::Duration::ZERO,
+        );
+        assert_eq!(
+            paced.poll(),
+            Err("no progress for 0s; cleanup requested".to_string())
+        );
+        assert_eq!(paced.complete(), Ok(()));
+
+        let mut refusing = Refusing;
+        let mut paced = Paced::new(&mut refusing, moved, hour);
+        assert_eq!(paced.poll(), Err("refused".to_string()));
+        assert_eq!(paced.complete(), Err("incomplete".to_string()));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_paced_run_returns_what_its_tool_printed() {
+        let out = run_paced(
+            "sh",
+            &["-c", "echo PASS; echo SLOW >&2"],
+            &here(),
+            &[],
+            stopping,
+        )
+        .unwrap();
+        assert_eq!(out.stdout, "PASS\n");
+        assert_eq!(out.stderr, "SLOW\n");
     }
 
     #[test]
