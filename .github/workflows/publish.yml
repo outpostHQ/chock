@@ -13,9 +13,27 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The tag goes on a commit whose ci and corpus runs on main passed, so this job checks those runs
+  # instead of repeating them. Tag a commit only after both are green.
   gates:
     name: gates
-    uses: ./.github/workflows/ci.yml
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: ci and corpus passed on main for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for workflow in ci.yml corpus.yml; do
+            passed=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --branch main \
+              --commit "$GITHUB_SHA" --status success --json databaseId --jq length)
+            if [ "$passed" -eq 0 ]; then
+              echo "::error::$workflow has no passed run on main for $GITHUB_SHA; tag a commit after it is green"
+              exit 1
+            fi
+          done
 
   draft:
     name: Draft the release

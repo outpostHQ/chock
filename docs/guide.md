@@ -29,8 +29,8 @@ Do this once in each repository. The project must be a git or
 
 ```sh
 cd your-project
-chock init --local             # measures the tree and switches on the gates that pass
-chock baseline                 # records today's numbers in .chock/baseline.json
+chock init --local             # measures the tree and chooses the gates
+chock run                      # judges the tree and writes each gate's first record
 ```
 
 Then commit the files that chock wrote.
@@ -47,9 +47,11 @@ Then commit the files that chock wrote.
 
 Three facts about `chock init --local`:
 
-- **It measures before it switches a gate on.** The required gates (`test`, `lint`, `doc`,
-  `modcheck`) are on even when they trip. A quality gate that trips is reported and left off;
-  `chock enable GATE` adopts it later. A gate that chock could not measure stays on, and the output
+- **It measures before it switches a gate on.** A ratchet is on with the numbers that the tree
+  has today, which the first `chock run` writes as its record. The required gates (`test`, `lint`,
+  `doc`, `modcheck`) are on even when they trip. Another pass/fail gate that trips is reported as
+  `FOUND` and left off, with the reason under `left_off` in the config; `chock enable GATE` adopts
+  it later. A gate that chock could not measure stays on, and the output
   names it. Add `--fast` to measure only the gates that need no compiler, which takes seconds.
 - **On does not mean passed.** The last lines of the output name each gate that is on and needs
   attention.
@@ -58,6 +60,14 @@ Three facts about `chock init --local`:
   [Update chock](ci-and-hooks.md#update-chock).
 
 `chock init` with no flag does both halves: the project first, then the tools.
+
+Two facts about the first `chock run`:
+
+- **It writes each gate's first record.** The run prints `wrote the first record for …` on stderr
+  and leaves `.chock/baseline.json` for you to commit. A gate that you switch on later gets its
+  first record in the same way, from the next run.
+- **CI writes no record.** In `chock run --ci`, a ratchet whose record no change committed is
+  `CANNOT RUN`, and the reason names the command to run outside CI.
 
 ## 3. The daily loop
 
@@ -76,6 +86,24 @@ Three facts about `chock init --local`:
 
 The hooks run the same gates at each commit and each push, so the commands above only give you the
 answer earlier. [Hooks, stages and CI](ci-and-hooks.md) says which gate runs at which step.
+
+A slow gate is not judged twice on what did not change. chock keeps its verdict in the git-ignored
+file `verdicts.json` in `.chock`, under a key of everything the gate reads:
+
+```
+   the files ──┐
+   the tools ──┼─► key ─┬─ a kept verdict has it ──► the row says `recalled`
+   the config ─┤        └─ none has it ────────────► the gate runs; its verdict is kept
+   the record ─┘
+```
+
+- A commit hook, a push hook and a run by hand share the kept verdicts.
+- `CANNOT RUN` is never kept, and a run that wrote a record judges that gate once more.
+- Not every gate keeps a verdict. `deps` asks the network and `commands` runs your own program,
+  so each run judges them again, as it does the gates that chock computes itself.
+- A `runner` or `coverage` command of your own hides its tools from chock. Name them under
+  `runner_tools` or `coverage_tools`, or the gates that use the command run every time.
+- `chock run --no-cache` judges every gate again. `chock cache clear` removes the kept verdicts.
 
 ## 4. Read a result
 
@@ -131,7 +159,7 @@ The record goes down by itself. A run that measures less says `lowered the recor
 and leaves `.chock/baseline.json` modified. Commit it with your change, or CI fails.
 
 **Example.** Your project has 400 comment blocks that are too long. You switch on `slop` and run
-`chock baseline`, which records 400 for the files that hold them. From then on:
+`chock run slop`, which writes 400 as the first record for the files that hold them. From then on:
 
 - a new file with a long comment block trips the gate;
 - one more long block in a file that already has some trips the gate;
@@ -163,7 +191,9 @@ chock survey                         # what every gate measures here; no config 
 
 To demand zero from the first day, list a ratchet under `strict` in `.chock/config.json`. To demand
 zero only in each file a change touches, list it under `clean_when_touched`; the other files keep
-their record. [Configuration](configuration.md) has every key.
+their record. `chock init --local` lists there each ratchet that it switched on, where the ratchet
+keeps a number for each file and measures the same on every machine. Remove a name to hold that
+gate to its record only. [Configuration](configuration.md) has every key.
 
 ## 8. JSON output
 
@@ -227,6 +257,9 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 | `chock run [GATE...]` | runs the named gates; no name means every gate that is on |
 | `chock run --fast` | runs only the gates staged for a commit; they need no compiler |
 | `chock run --ci` | runs the gates a CI job runs: staged for commit, push or ci |
+| `chock run --no-cache` | judges every gate again; no kept verdict answers |
+| `chock run --miri-partition=K/N` | runs only part K of N of the Miri suite |
+| `chock cache clear` | removes every kept verdict, so the next run judges every gate |
 | `chock explain GATE` | shows the findings of the last run, without a new run |
 | `chock explain` | lists all the debt in the record, largest first, with the fix for each kind |
 | `chock gates` | lists every gate: what it measures, its stage, and whether it is on |

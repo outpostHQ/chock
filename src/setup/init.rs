@@ -15,7 +15,7 @@ use crate::run::baseline::Baseline;
 use crate::run::report::plural;
 use crate::run::{self, Ctx, Group, Kind};
 pub use crate::setup::adoption::{Decision, render_decisions};
-use crate::setup::adoption::{adoption, selected};
+use crate::setup::adoption::{adoption, decided};
 use crate::setup::pins::{self, Pin};
 use crate::setup::version;
 
@@ -89,7 +89,7 @@ pub struct Scope {
 pub const USAGE: &str = "\
 chock init [--global] [--local] [--fast]
 
-  --global   install the pinned tools, once per machine
+  --global   install the pinned tools, once per machine: this project's pins, or chock's own
   --local    write this project's hooks, justfile, pins and config
   --fast     measure only the gates that need no compiler; skips the builds
   --help     this text
@@ -138,13 +138,14 @@ pub fn run(args: &[&str]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let cwd = std::env::current_dir().unwrap_or_default();
-    let Some(root) = project::find(&cwd) else {
-        eprintln!("chock init: {}", Error::NotARustProject);
-        return ExitCode::from(2);
-    };
-
+    // `--global` needs no project: a machine gets its tools before it has one.
+    let root = project::find(&cwd);
     if scope.local {
-        match write_local(&root, scope.fast) {
+        let Some(root) = &root else {
+            eprintln!("chock init: {}", Error::NotARustProject);
+            return ExitCode::from(2);
+        };
+        match write_local(root, scope.fast) {
             Ok(report) => print!("{report}"),
             Err(e) => {
                 eprintln!("chock init: {e}");
@@ -152,34 +153,47 @@ pub fn run(args: &[&str]) -> ExitCode {
             }
         }
     }
-    if scope.global {
-        let pin_path = root.join(project::PIN_FILE);
-        let text = match fs::read_to_string(&pin_path) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!(
-                    "chock init: {}",
-                    Error::Unreadable {
-                        path: pin_path.display().to_string(),
-                        reason: e.to_string(),
-                    }
-                );
-                return ExitCode::from(2);
-            }
-        };
-        let parsed = match pins::parse(&text) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("chock init: {}: {e}", pin_path.display());
-                return ExitCode::from(2);
-            }
-        };
-        if let Err(e) = install_global(&parsed, &crate::exec::run_env) {
+    if !scope.global {
+        return ExitCode::SUCCESS;
+    }
+    // Every pin is read and parsed before any install starts.
+    let parsed = match pins_for(root.as_deref()) {
+        Ok((source, text)) => pins::parse(&text).map_err(|e| format!("{source}: {e}")),
+        Err(e) => Err(e.to_string()),
+    };
+    let parsed = match parsed {
+        Ok(p) => p,
+        Err(e) => {
             eprintln!("chock init: {e}");
-            return ExitCode::from(1);
+            return ExitCode::from(2);
         }
+    };
+    // A dropped link is common on a laptop, and the next try often gets through.
+    let patient = super::network::patiently(&crate::exec::run_env, &std::thread::sleep);
+    if let Err(e) = install_global(&parsed, &*patient) {
+        eprintln!("chock init: {e}");
+        return ExitCode::from(1);
     }
     ExitCode::SUCCESS
+}
+
+/// Where `--global` finds no pin file, it installs the pins this chock ships.
+const SHIPPED: &str = "chock's own tool-versions.env";
+
+/// The project's own pin file where it has one; else the pins that `--local` would write.
+fn pins_for(root: Option<&Path>) -> Result<(String, String), Error> {
+    let shipped = (SHIPPED.to_string(), PIN_FILE.to_string());
+    let Some(path) = root.map(|r| r.join(project::PIN_FILE)) else {
+        return Ok(shipped);
+    };
+    match fs::read_to_string(&path) {
+        Ok(text) => Ok((path.display().to_string(), text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(shipped),
+        Err(e) => Err(Error::Unreadable {
+            path: path.display().to_string(),
+            reason: e.to_string(),
+        }),
+    }
 }
 
 /// What happened to one file `init --local` was asked to write.
@@ -302,7 +316,7 @@ pub fn judge(gate: &run::Gate, ctx: &Ctx) -> (Decision, Option<crate::run::repor
         return (Decision::On(why.to_string()), None);
     }
     match gate.kind {
-        // Measured, not run: a ratchet with no baseline cannot run, and `init` is here to fix that.
+        // Measured, not run: a run takes a ratchet's first record, and `init` writes none.
         Kind::Ratchet { .. } | Kind::AnnotatedRatchet { .. } => match run::measure(gate, ctx) {
             Ok(series) => (
                 Decision::On(format!("ratchet: {} today", plural(series.len(), "item"))),
@@ -342,14 +356,14 @@ fn debt_adoption(
 /// `about_to_measure`, so what init says it will build is what init builds.
 #[must_use]
 fn switched_on_unmeasured(gate: &run::Gate, root: &Path) -> Option<&'static str> {
-    // A gate keeping its own baseline cannot run until `chock baseline` writes it, which is the step
-    // init prints next. Judging it left it off, and `baseline` then skipped it for being off.
+    // A gate keeping its own record writes its first one when a local run judges it. That is the
+    // first `chock run`, the step init prints next; `init` writes no record.
     if gates::own_baseline(gate.name).is_some_and(|file| !root.join(file).exists()) {
-        return Some("its baseline is what `chock baseline` writes");
+        return Some("its first record is what the first `chock run` writes");
     }
-    // `chock baseline` measures a ratchet anyway, so init does not build it a second time.
+    // The first `chock run` measures a ratchet anyway, so init does not build it a second time.
     if gate.builds && gate.counts_in().is_some() {
-        return Some("a ratchet; `chock baseline` is what measures it");
+        return Some("a ratchet; the first `chock run` measures it and writes its record");
     }
     None
 }
@@ -395,11 +409,7 @@ fn choose_gates(root: &Path, fast: bool) -> (Config, String) {
         .iter()
         .map(|(name, decision, _)| (*name, decision.clone()))
         .collect();
-    let config = match &found {
-        Some(argv) => selected(&rows).with_coverage(argv.clone()),
-        None => selected(&rows),
-    };
-    let mut report = render_decisions(&rows);
+    let (config, mut report) = decided(&rows, ctx.vcs.is_some(), found.as_deref());
     if let Some(argv) = &found {
         // chock cannot know another program's options, so it prints the one it chose: a fuller
         // mode can change the debt it counts.
@@ -504,7 +514,7 @@ fn write_local_with(
     Ok(format!(
         "chock init --local: {}\n{files}{config_note}{ignores}{hooks}{editor}{contract}\n\
          Gates measured against this tree:\n{decisions}\n\
-         {} on. Next: `chock baseline` records today's numbers.\n{}",
+         {} on. Next: `chock run` judges the tree and writes each gate's first record.\n{}",
         root.display(),
         plural(config.enabled.len(), "gate"),
         manifest_notes(root).concat()
@@ -699,12 +709,9 @@ pub fn record_crap(ctx: &Ctx, lower: bool, did: &str) -> bool {
 /// cargo-crap's report over the record. Paths are made relative first, because the record holds
 /// relative paths and cargo-crap reports absolute ones.
 fn merged_crap(ctx: &Ctx, lower: bool) -> Result<String, String> {
-    let report = crate::exec::run("cargo", &CRAP_REPORT, &ctx.root)
-        .map_err(|_| "could not run cargo crap".to_string())?;
-    produced(&report, "cargo crap")?;
+    let measured = crate::gates::coverage::crap::scores(ctx)?;
     let path = ctx.root.join(crate::gates::coverage::crap::baseline());
     let held = fs::read_to_string(path).unwrap_or_default();
-    let measured = crate::run::baseline::relativize(&report.stdout, &ctx.root);
     crap_kept_higher(held_unless(lower, &held), &measured, &ctx.root)
 }
 
@@ -742,31 +749,6 @@ fn raise(entry: &mut serde_json::Value, was: f64) {
     if entry["crap"].as_f64().is_some_and(|now| now < was) {
         entry["crap"] = serde_json::json!(was);
     }
-}
-
-const CRAP_REPORT: [&str; 8] = [
-    "crap",
-    "--lcov",
-    "lcov.info",
-    "--workspace",
-    "--format",
-    "json",
-    "--sort",
-    "file",
-];
-
-/// Whether a captured run produced something to record. Split from the spawning because a test that
-/// ran the real one would start the suite from inside the suite.
-fn produced(out: &crate::exec::Output, what: &str) -> Result<(), String> {
-    if !out.success() {
-        // A file written from a crashed run looks like a baseline and holds no measurement, which is
-        // worse than having none.
-        return Err(format!("{what} failed; the baseline would measure nothing"));
-    }
-    if out.truncated {
-        return Err(format!("{what} printed more than chock keeps"));
-    }
-    Ok(())
 }
 
 /// Always `false`, so a caller says why and gives up in one line.
@@ -1046,6 +1028,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn only_a_missing_file_reads_as_empty_and_one_that_cannot_be_read_is_an_error() {
         let dir = crate::testdir::make("init-held-or-empty");
         assert_eq!(held_or_empty(&dir.join("absent")), Ok(String::new()));
@@ -1062,6 +1045,7 @@ mod tests {
 
     /// A `.gitignore` chock cannot read was read as empty and rewritten holding only chock's lines.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gitignore_chock_cannot_read_is_left_byte_for_byte_as_it_was() {
         let dir = crate::testdir::make("init-ignores-unreadable");
         let path = dir.join(".gitignore");
@@ -1183,6 +1167,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn an_ordinary_project_is_left_on_the_command_cargo_can_run_itself() {
         let dir = crate::testdir::make("init-coverage-default");
         assert_eq!(coverage_command(&dir), None);
@@ -1191,6 +1176,7 @@ mod tests {
     /// A directory carries the execute bit too, and `bin/coverage` being one is not a script chock
     /// can run: spawning it fails in a way that reads as the project having no coverage command.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_directory_wearing_the_execute_bit_is_not_the_script() {
         let dir = crate::testdir::make("init-coverage-directory");
         fs::create_dir_all(dir.join("bin/coverage")).unwrap();
@@ -1219,31 +1205,39 @@ mod tests {
         fs::set_permissions(path, perms).unwrap();
     }
 
+    /// A machine gets its tools before it has a project, or before `--local` wrote its pins.
     #[test]
-    fn a_run_that_failed_produced_no_baseline() {
-        let out = ran(Some(101), "", false);
-        assert_eq!(
-            produced(&out, "cargo crap"),
-            Err("cargo crap failed; the baseline would measure nothing".to_string())
-        );
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_global_install_with_no_pin_file_takes_the_pins_chock_ships() {
+        let dir = crate::testdir::make("init-global-no-pins");
+        let shipped = Ok((SHIPPED.to_string(), PIN_FILE.to_string()));
+        assert_eq!(pins_for(None), shipped);
+        assert_eq!(pins_for(Some(&dir)), shipped);
     }
 
+    /// The project's own pins come first, and a pin file chock cannot read stops the install.
     #[test]
-    fn a_run_chock_had_to_cut_short_produced_no_baseline() {
-        let out = ran(Some(0), "{}", true);
-        assert_eq!(
-            produced(&out, "the coverage run"),
-            Err("the coverage run printed more than chock keeps".to_string())
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_global_install_takes_the_projects_pins_and_stops_at_ones_it_cannot_read() {
+        let dir = crate::testdir::make("init-global-own-pins");
+        let path = dir.join(project::PIN_FILE);
+        fs::write(&path, "CARGO_NEXTEST_VERSION=0.9.1\n").unwrap();
+        let own = (
+            path.display().to_string(),
+            "CARGO_NEXTEST_VERSION=0.9.1\n".to_string(),
         );
-    }
-
-    #[test]
-    fn a_clean_whole_run_produced_a_baseline() {
-        assert_eq!(produced(&ran(Some(0), "{}", false), "cargo crap"), Ok(()));
+        assert_eq!(pins_for(Some(&dir)), Ok(own));
+        let blocked = crate::testdir::make("init-global-pins-unreadable");
+        fs::create_dir_all(blocked.join(project::PIN_FILE)).unwrap();
+        assert!(matches!(
+            pins_for(Some(&blocked)),
+            Err(Error::Unreadable { .. })
+        ));
     }
 
     /// Writing under `data/` once collided with a project's own file of the same name.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_recorded_baseline_lands_in_chocks_own_directory() {
         let dir = crate::testdir::make("init-crap-baseline");
         assert!(write_crap(&dir, "{\"entries\":[]}", "recorded"));
@@ -1259,6 +1253,7 @@ mod tests {
     /// A path with an absolute root in it matches nothing when the baseline is read back on another
     /// machine, and cargo-crap then falls back to name-only matching.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_recorded_baseline_holds_paths_relative_to_the_project() {
         let dir = crate::testdir::make("init-crap-relative");
         let file = dir.join("src").join("a.rs").display().to_string();
@@ -1270,6 +1265,7 @@ mod tests {
     /// `.chock` occupied by a file leaves nowhere to put the baseline, and reporting that as a
     /// recorded baseline would leave the gate comparing against a file that was never written.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_with_no_room_for_the_baseline_records_nothing() {
         let dir = crate::testdir::make("init-crap-no-room");
         fs::write(dir.join(".chock"), "not a directory").unwrap();
@@ -1295,15 +1291,6 @@ mod tests {
         let mut perms = fs::metadata(dir).unwrap().permissions();
         perms.set_mode(mode);
         fs::set_permissions(dir, perms).unwrap();
-    }
-
-    fn ran(code: Option<i32>, stdout: &str, truncated: bool) -> crate::exec::Output {
-        crate::exec::Output {
-            code,
-            stdout: stdout.to_string(),
-            stderr: String::new(),
-            truncated,
-        }
     }
 
     #[test]
@@ -1383,6 +1370,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_setup_command_that_cannot_run_fails_the_install() {
         assert!(!run_setup(&pinned(Some("chock-no-such-command-exists"))));
     }
@@ -1393,6 +1381,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_setup_command_that_succeeds_leaves_the_install_good() {
         assert!(run_setup(&pinned(Some("true"))));
     }
@@ -1400,6 +1389,7 @@ mod tests {
     /// A command that starts and then exits non-zero is the case that separates "could not run"
     /// from "ran and refused"; without it the success check can be dropped and nothing notices.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_setup_command_that_runs_and_fails_is_not_a_successful_install() {
         assert!(!run_setup(&pinned(Some("false"))));
     }
@@ -1410,6 +1400,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn an_instrument_is_never_switched_on_however_green_the_tree_is() {
         let dir = crate::testdir::make("init-decide-instrument");
         let ctx = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
@@ -1424,6 +1415,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_measurable_ratchet_is_on_from_the_start_because_its_baseline_is_this_tree() {
         let dir = crate::testdir::make("init-decide-ratchet");
         std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -1512,30 +1504,27 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_that_is_not_there_is_created_with_our_content() {
         let dir = crate::testdir::make("init-create");
-        assert_eq!(
-            install_file(&dir, "justfile", "recipe:\n"),
-            Ok(Written::Created("justfile".to_string()))
-        );
-        assert_eq!(
-            std::fs::read_to_string(dir.join("justfile")).unwrap(),
-            "recipe:\n"
-        );
+        let made = install_file(&dir, "justfile", "recipe:\n");
+        assert_eq!(made, Ok(Written::Created("justfile".to_string())));
+        let text = std::fs::read_to_string(dir.join("justfile")).unwrap();
+        assert_eq!(text, "recipe:\n");
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_already_holding_our_content_is_left_exactly_as_it_was() {
         let dir = crate::testdir::make("init-unchanged");
         std::fs::write(dir.join("justfile"), "recipe:\n").unwrap();
-        assert_eq!(
-            install_file(&dir, "justfile", "recipe:\n"),
-            Ok(Written::Unchanged("justfile".to_string()))
-        );
+        let kept = install_file(&dir, "justfile", "recipe:\n");
+        assert_eq!(kept, Ok(Written::Unchanged("justfile".to_string())));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_holding_something_else_keeps_its_content_and_ours_lands_beside_it() {
         let dir = crate::testdir::make("init-conflict");
         std::fs::write(dir.join("justfile"), "theirs\n").unwrap();
@@ -1557,6 +1546,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_second_conflict_does_not_overwrite_the_first_unmerged_copy() {
         let dir = crate::testdir::make("init-conflict-twice");
         std::fs::write(dir.join("justfile"), "theirs\n").unwrap();
@@ -1579,6 +1569,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_third_conflict_counts_past_the_copies_already_there() {
         let dir = crate::testdir::make("init-conflict-thrice");
         std::fs::write(dir.join("justfile"), "theirs\n").unwrap();
@@ -1630,6 +1621,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_conflict_copy_already_holding_our_content_is_reused_so_a_re_run_adds_nothing() {
         let dir = crate::testdir::make("init-conflict-idempotent");
         std::fs::write(dir.join("justfile"), "theirs\n").unwrap();
@@ -1844,6 +1836,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_ratchet_that_builds_is_switched_on_rather_than_built_twice() {
         let dir = crate::testdir::make("init-ratchet-builds");
         let building: Vec<&str> = crate::gates::registry()
@@ -1868,6 +1861,7 @@ mod tests {
     /// init names the cost first, so a caller can choose `--fast`, which must leave out every check
     /// that builds.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn what_the_measuring_will_cost_is_said_before_it_starts() {
         let dir = crate::testdir::make("init-measuring-cost");
         let full = about_to_measure(false, &dir);
@@ -1879,9 +1873,10 @@ mod tests {
         assert!(!quick.contains("--fast"), "{quick}");
     }
 
-    /// `crap` keeps its own baseline, so it cannot run until `chock baseline` writes it — and
-    /// `baseline` records only gates that are on. Judged, each step waited on the other for ever.
+    /// `crap` keeps its own record, and a local run that judges it with none writes the first one.
+    /// `init` writes no record, so it switches `crap` on without judging it.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_that_keeps_its_own_baseline_is_on_before_that_baseline_exists() {
         let dir = crate::testdir::make("init-own-baseline");
         let file = crate::gates::own_baseline("crap").unwrap();
@@ -1890,9 +1885,12 @@ mod tests {
         let (decision, report) = judge(&crate::gates::coverage::crap::GATE, &ctx);
         assert_eq!(
             decision,
-            Decision::On("its baseline is what `chock baseline` writes".to_string())
+            Decision::On("its first record is what the first `chock run` writes".to_string())
         );
-        assert!(decision.enables(), "`chock baseline` would then skip it");
+        assert!(
+            decision.enables(),
+            "the first `chock run` would then skip it"
+        );
         assert!(report.is_none(), "it was built rather than switched on");
         // With the file there the exemption is over. Asserted on the rule and never by judging
         // `crap` again: judging a binary gate runs it, and crap runs coverage, which runs this suite.
@@ -1904,6 +1902,7 @@ mod tests {
     /// A gate about chock's own wiring reads the config `init` has not written yet, so measuring it
     /// reported it missing and then left the gate off — telling the user to run what they just ran.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_about_chocks_own_wiring_is_switched_on_without_being_measured() {
         let setup: Vec<&str> = crate::gates::registry()
             .iter()
@@ -1922,6 +1921,7 @@ mod tests {
     /// Every gate that reads the repository has to be measurable while init is choosing, or init
     /// leaves it out of the config and the project never learns the check exists.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn init_chooses_the_gates_that_read_the_repository() {
         let dir = crate::testdir::make("init-chooses-repo-gates");
         let done = std::process::Command::new("git")
@@ -1945,6 +1945,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn selection_preserves_the_coverage_script_without_running_it() {
         let dir = git_repo("init-select-coverage");
         fs::write(
@@ -1978,6 +1979,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_project_that_already_says_which_checks_are_on_is_never_measured() {
         let dir = crate::testdir::make("init-already-chosen");
         fs::write(dir.join("Cargo.toml"), "[package]\nname = \"a\"\n").unwrap();
@@ -2011,6 +2013,7 @@ mod tests {
     /// A config chock cannot read is not a decision it can keep, so the tree is measured past it
     /// rather than the run stopping on a file somebody hand-edited.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_config_that_cannot_be_read_is_measured_past() {
         let dir = crate::testdir::make("init-unreadable-config");
         fs::write(dir.join("Cargo.toml"), "[package]\nname = \"a\"\n").unwrap();
@@ -2026,6 +2029,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn write_local_reports_every_file_it_wrote_and_the_baselines_it_could_not() {
         let dir = crate::testdir::make("init-local");
         let report = write_local_with(&dir, &stub_choice).unwrap();
@@ -2045,7 +2049,8 @@ mod tests {
                  Gates measured against this tree:\n\
                  \x20 on        slop         ratchet\n\
                  \n\
-                 1 gate on. Next: `chock baseline` records today's numbers.\n",
+                 1 gate on. Next: `chock run` judges the tree and writes each gate's first \
+                 record.\n",
                 dir.display()
             )
         );
@@ -2060,6 +2065,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn write_local_in_a_git_repository_reports_the_hooks_too() {
         let dir = git_repo("init-local-git");
         let report = write_local_with(&dir, &stub_choice).unwrap();
@@ -2161,34 +2167,14 @@ mod tests {
     #[test]
     fn the_embedded_pin_file_parses_by_the_same_parser_doctor_uses() {
         let parsed = pins::parse(PIN_FILE).unwrap();
-        assert_eq!(
-            parsed
-                .iter()
-                .map(|p| p.command.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "cargo-binstall",
-                "just",
-                "cargo-nextest",
-                "cargo-llvm-cov",
-                "cargo-crap",
-                "cargo-deny",
-                "cargo-sort",
-                "cargo-acl",
-                "cargo-machete",
-                "cargo-udeps",
-                "cargo-bsize",
-                "typos",
-                "cargo-mutest",
-                "kani",
-                "outpost",
-            ]
-        );
+        let commands: Vec<&str> = parsed.iter().map(|p| p.command.as_str()).collect();
+        assert_eq!(commands, pins::SHIPPED);
     }
 
     /// Outpost reads only `.outpostignore`, so a git-only wiring leaves an outpost clone tracking
     /// chock's scratch files. A directory no repository holds gets git's, which is what a clone reads.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn every_ignore_file_the_holding_repositories_read_is_written() {
         let dir = crate::testdir::make("init-ignore-files");
         assert_eq!(ignore_files(&dir), vec![".gitignore"]);
@@ -2221,6 +2207,7 @@ mod tests {
     /// The third case moves the slashes: nothing is appended, and the file must come back byte
     /// for byte, with no newline added.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gitignore_gains_only_the_entries_it_lacks_and_is_rewritten_only_when_it_gains_one() {
         let all = "/target\nlcov.info\nkani-list.json\n.chock/last-run.json\n\
                    .chock/run.lock\n.chock/verdicts.json\n.chock/last-edit\nrustc-ice-*.txt\n\

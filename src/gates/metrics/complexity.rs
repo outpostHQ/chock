@@ -3,12 +3,14 @@
 
 use std::path::PathBuf;
 
+use syn::spanned::Spanned;
 use syn::visit::Visit;
-use syn::{BinOp, Block, Expr, ExprBinary, ExprIf, Signature};
+use syn::{BinOp, Block, Expr, ExprBinary, ExprIf, Signature, Stmt};
 
 use crate::project;
 use crate::run::baseline::{Keys, Series};
-use crate::run::{Ctx, Gate, Group, Kind};
+use crate::run::report::{Detail, Place};
+use crate::run::{Ctx, Details, Gate, Group, Kind, Measurement};
 
 /// Score past which a function is hard to follow; splitting it into helpers only hides the number.
 pub const HARD_TO_FOLLOW: u32 = 15;
@@ -26,7 +28,7 @@ pub const GATE: Gate = Gate {
     group: Group::Quality,
     builds: false,
     reads: None,
-    kind: Kind::Ratchet {
+    kind: Kind::AnnotatedRatchet {
         measure,
         keys: Keys::Items,
         unit: "cognitive",
@@ -40,11 +42,24 @@ pub struct Function {
     pub name: String,
     pub line: u32,
     pub score: u32,
+    /// The top-level statement that costs the most, where any costs anything.
+    pub costliest: Option<Costliest>,
+}
+
+/// A top-level statement of a function and what it adds to the function's score.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Costliest {
+    pub line: u32,
+    pub last: u32,
+    pub score: u32,
+    /// What the statement is, such as `match`, in the words a fix line uses.
+    pub what: &'static str,
 }
 
 /// Every function over the bar, keyed `file#name`; one that drops under it leaves the series.
-fn measure(ctx: &Ctx) -> Result<Series, String> {
+fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let mut series = Series::new();
+    let mut details = Details::new();
     let (paths, crates) = walked(ctx)?;
     for path in paths {
         let shown = project::relative(&ctx.root, &path);
@@ -59,15 +74,69 @@ fn measure(ctx: &Ctx) -> Result<Series, String> {
             }
             Err(why) => return Err(format!("{shown}:{why}")),
         };
-        for found in scored {
-            if found.score <= HARD_TO_FOLLOW {
-                continue;
-            }
-            let key = format!("{}#{}", found.file, found.name);
-            keep_worst(&mut series, &key, u64::from(found.score));
-        }
+        keep_over_bar(scored, &mut series, &mut details);
     }
-    Ok(series)
+    Ok(Measurement {
+        series,
+        findings: Vec::new(),
+        details,
+    })
+}
+
+/// Each of one file's functions over the bar, with its detail.
+fn keep_over_bar(scored: Vec<Function>, series: &mut Series, details: &mut Details) {
+    for found in scored {
+        if found.score <= HARD_TO_FOLLOW {
+            continue;
+        }
+        let key = format!("{}#{}", found.file, found.name);
+        // Two functions under one key: the detail goes with the number kept, the worse one.
+        if series
+            .get(&key)
+            .is_none_or(|held| u64::from(found.score) > held)
+        {
+            details.insert(key.clone(), detail(&found));
+        }
+        keep_worst(series, &key, u64::from(found.score));
+    }
+}
+
+/// A statement that holds at least a quarter of its function's score is where a repair starts;
+/// below that the cost is spread.
+const CONCENTRATED: u32 = 4;
+
+fn detail(found: &Function) -> Detail {
+    let concentrated = found
+        .costliest
+        .as_ref()
+        .filter(|cost| cost.score.saturating_mul(CONCENTRATED) >= found.score);
+    let places = concentrated
+        .iter()
+        .map(|cost| {
+            Place::at("costs most", &found.file, cost.line)
+                .through(cost.last)
+                .item(cost.what)
+        })
+        .collect();
+    let fix = match concentrated {
+        Some(cost) => format!(
+            "flatten this {} ({} of {}) with early returns, or move it into a named function; \
+             what stays scores about {}",
+            cost.what,
+            cost.score,
+            found.score,
+            found.score.saturating_sub(cost.score)
+        ),
+        None => format!(
+            "no one statement costs a quarter of the {}; split the function where its steps change",
+            found.score
+        ),
+    };
+    Detail {
+        line: Some(found.line),
+        places,
+        fix: Some(fix),
+    }
 }
 
 /// Keeps the higher value under `key`, since two functions in one file can share a name.
@@ -104,6 +173,7 @@ pub fn functions(source: &str, file: &str) -> Result<Vec<Function>, String> {
         .map(|found| Function {
             file: file.to_string(),
             score: score(&found),
+            costliest: costliest(&found),
             name: found.name,
             line: found.line,
         })
@@ -162,14 +232,50 @@ impl<'ast> Visit<'ast> for Collector<'ast> {
     }
 }
 
-fn score(found: &Body) -> u32 {
-    let mut scorer = Scorer {
+fn scorer(found: &Body) -> Scorer {
+    Scorer {
         name: found.name.clone(),
         method: found.method,
         ..Scorer::default()
-    };
+    }
+}
+
+fn score(found: &Body) -> u32 {
+    let mut scorer = scorer(found);
     scorer.visit_block(found.body);
     scorer.score + u32::from(scorer.recursive)
+}
+
+/// The top-level statement that adds the most, the first of equals; `None` where none adds any.
+fn costliest(found: &Body) -> Option<Costliest> {
+    let mut best: Option<Costliest> = None;
+    for stmt in &found.body.stmts {
+        let mut scorer = scorer(found);
+        scorer.visit_stmt(stmt);
+        if scorer.score > best.as_ref().map_or(0, |held| held.score) {
+            let span = stmt.span();
+            best = Some(Costliest {
+                line: line_of(span.start().line),
+                last: line_of(span.end().line),
+                score: scorer.score,
+                what: what(stmt),
+            });
+        }
+    }
+    best
+}
+
+/// A statement named the way a fix line says it.
+fn what(stmt: &Stmt) -> &'static str {
+    match stmt {
+        Stmt::Expr(Expr::Match(_), _) => "`match`",
+        Stmt::Expr(Expr::If(_), _) => "`if`",
+        Stmt::Expr(Expr::ForLoop(_), _) => "`for` loop",
+        Stmt::Expr(Expr::While(_), _) => "`while` loop",
+        Stmt::Expr(Expr::Loop(_), _) => "`loop`",
+        Stmt::Local(_) => "`let`",
+        _ => "statement",
+    }
 }
 
 #[derive(Default)]
@@ -350,10 +456,35 @@ fn runs(ops: &[Logic]) -> u32 {
 mod tests {
     use super::*;
     use crate::run::baseline::Baseline;
+    use crate::testdir::tree;
     use std::path::Path;
 
     fn scored(source: &str) -> u32 {
         functions(source, "t.rs").unwrap().first().unwrap().score
+    }
+
+    #[test]
+    fn a_key_keeps_its_worst_function_and_its_detail_and_one_at_the_bar_is_left_out() {
+        let at = |name: &str, line: u32, score: u32| Function {
+            file: "t.rs".to_string(),
+            name: name.to_string(),
+            line,
+            score,
+            costliest: None,
+        };
+        let scored = vec![
+            at("f", 1, 20),
+            at("f", 9, 30),
+            at("f", 20, 18),
+            at("g", 40, 15),
+        ];
+        let (mut series, mut details) = (Series::new(), Details::new());
+        keep_over_bar(scored, &mut series, &mut details);
+        assert_eq!(
+            (series.get("t.rs#f"), series.get("t.rs#g")),
+            (Some(30), None)
+        );
+        assert_eq!(details["t.rs#f"].line, Some(9));
     }
 
     fn names(source: &str) -> Vec<String> {
@@ -370,17 +501,8 @@ mod tests {
         format!("fn {name}(a: bool) {{ {body} }}")
     }
 
-    fn tree(name: &str, files: &[(&str, &str)]) -> crate::testdir::Scratch {
-        let dir = crate::testdir::make(name);
-        for (path, source) in files {
-            let full = dir.join(path);
-            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
-            std::fs::write(full, source).unwrap();
-        }
-        dir
-    }
-
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_cargo_never_compiles_that_the_parser_rejects_is_passed_over() {
         let root = tree(
             "complexity-corpus",
@@ -394,6 +516,10 @@ mod tests {
     }
 
     fn measured(root: &Path) -> Result<Series, String> {
+        read(root).map(|read| read.series)
+    }
+
+    fn read(root: &Path) -> Result<Measurement, String> {
         measure(&Ctx::for_root(root.to_path_buf(), Baseline::empty("0.1.0")))
     }
 
@@ -587,6 +713,7 @@ fn f(a: bool, b: Option<u8>) {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn only_a_function_over_the_bar_reaches_the_series() {
         let source = format!("{}\n{}", with_ifs("over", 16), with_ifs("under", 15));
         let dir = tree("complexity-bar", &[("src/a.rs", source.as_str())]);
@@ -597,6 +724,7 @@ fn f(a: bool, b: Option<u8>) {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_function_under_the_bar_leaves_the_ones_after_it_to_be_measured() {
         let source = format!("{}\n{}", with_ifs("quiet", 15), with_ifs("loud", 17));
         let dir = tree("complexity-after-quiet", &[("src/a.rs", source.as_str())]);
@@ -606,6 +734,7 @@ fn f(a: bool, b: Option<u8>) {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn two_functions_of_the_same_name_in_one_file_keep_the_worst() {
         let source = format!("{}\n{}", with_ifs("parse", 18), with_ifs("parse", 25));
         let dir = tree("complexity-duplicate", &[("src/a.rs", source.as_str())]);
@@ -613,17 +742,15 @@ fn f(a: bool, b: Option<u8>) {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_that_does_not_parse_is_a_failure_to_run_rather_than_a_zero() {
-        // The manifest matters: only a file some crate compiles stops the gate.
-        let dir = tree(
-            "complexity-broken",
-            &[("Cargo.toml", ""), ("src/a.rs", "fn f( { this is not rust")],
-        );
+        let dir = tree("complexity-broken", &crate::testdir::UNPARSABLE);
         let err = measured(&dir).unwrap_err();
-        assert!(err.starts_with("src/a.rs:1:"), "{err}");
+        assert!(err.starts_with("src/lib.rs:1:"), "{err}");
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_source_file_under_a_skipped_directory_is_not_measured() {
         let over = with_ifs("over", 20);
         let dir = tree(
@@ -640,6 +767,7 @@ fn f(a: bool, b: Option<u8>) {
 
     /// A directory lists in no fixed order, so a skipped name can come before files still to walk.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn every_skipped_name_is_passed_over_without_ending_the_listing_it_sits_in() {
         let loud = with_ifs("loud", 17);
         let mut paths: Vec<String> = project::SKIPPED
@@ -658,9 +786,89 @@ fn f(a: bool, b: Option<u8>) {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_with_no_function_over_the_bar_measures_empty_rather_than_failing() {
         let dir = tree("complexity-clean", &[("src/a.rs", "fn f() {}")]);
         assert_eq!(measured(&dir).unwrap(), Series::new());
+    }
+
+    #[test]
+    fn the_statement_that_holds_most_of_the_score_is_the_place_to_start() {
+        let source = "fn f(a: u32, b: bool) {
+            let y = if b { 1 } else { 2 };
+            for _ in 0..a {
+                if a > y {
+                    if b {
+                        g();
+                    }
+                }
+            }
+        }";
+        let found = functions(source, "t.rs").unwrap().remove(0);
+        assert_eq!(found.score, 8);
+        let told = detail(&found);
+        assert_eq!(told.line, Some(1));
+        let place = Place::at("costs most", "t.rs", 3)
+            .through(9)
+            .item("`for` loop");
+        assert_eq!(told.places, [place]);
+        assert_eq!(
+            told.fix.as_deref(),
+            Some(
+                "flatten this `for` loop (6 of 8) with early returns, or move it into a named \
+                 function; what stays scores about 2"
+            )
+        );
+    }
+
+    #[test]
+    fn a_score_spread_thin_over_many_statements_names_no_one_of_them() {
+        let found = functions(&with_ifs("flat", 20), "t.rs").unwrap().remove(0);
+        let told = detail(&found);
+        assert_eq!(told.places, []);
+        assert_eq!(
+            told.fix.as_deref(),
+            Some(
+                "no one statement costs a quarter of the 20; split the function where its steps change"
+            )
+        );
+    }
+
+    #[test]
+    fn each_kind_of_statement_is_named_the_way_a_fix_line_says_it() {
+        let item: syn::ItemFn = syn::parse_str(
+            "fn f() { match a {} if a {} for x in y {} while a {} loop {} let a = 1; g(); }",
+        )
+        .unwrap();
+        let named: Vec<&str> = item.block.stmts.iter().map(what).collect();
+        assert_eq!(
+            named,
+            [
+                "`match`",
+                "`if`",
+                "`for` loop",
+                "`while` loop",
+                "`loop`",
+                "`let`",
+                "statement"
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn two_functions_under_one_key_keep_the_detail_of_the_worse() {
+        let source = format!(
+            "struct A; impl A {{ {} }} struct B; impl B {{ {} }} struct C; impl C {{ {} }}",
+            with_ifs("deep", 18),
+            with_ifs("deep", 20),
+            with_ifs("deep", 16)
+        );
+        let dir = tree("complexity-detail", &[("src/a.rs", source.as_str())]);
+        let mut read = read(&dir).unwrap();
+        assert_eq!(read.series.get("src/a.rs#deep"), Some(20));
+        let told = read.details.remove("src/a.rs#deep").unwrap();
+        assert!(told.fix.unwrap().contains("of the 20;"));
     }
 
     #[test]

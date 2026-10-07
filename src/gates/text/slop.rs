@@ -35,41 +35,33 @@ fn measure(ctx: &Ctx) -> Result<Series, String> {
 )]
 mod tests {
     use super::*;
-    use crate::run::baseline::Baseline;
 
-    fn tree(files: &[(&str, &str)]) -> crate::testdir::Held {
-        let dir = crate::testdir::make("gate-slop");
-        for (name, text) in files {
-            let path = dir.join(name);
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            std::fs::write(path, text).unwrap();
-        }
-        let held = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
-        crate::testdir::Held::new(dir, held)
+    fn ctx_of(files: &[(&str, &str)]) -> crate::testdir::Held {
+        crate::testdir::Held::tree("gate-slop", files)
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_with_no_long_comment_blocks_measures_nothing() {
-        let ctx = tree(&[("src/a.rs", "// one\n// two\nfn f() {}\n")]);
+        let ctx = ctx_of(&[("src/a.rs", "// one\n// two\nfn f() {}\n")]);
         assert_eq!(measure(&ctx).unwrap(), Series::new());
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_is_keyed_by_its_path_and_counted_once_per_block() {
-        let ctx = tree(&[(
+        let ctx = ctx_of(&[(
             "src/a.rs",
             "// a\n// b\n// c\nfn f() {}\n// d\n// e\n// f\n",
         )]);
-        let measured = measure(&ctx).unwrap();
-        assert_eq!(measured.get("src/a.rs"), Some(2));
-        assert_eq!(measured.len(), 1);
+        let held = Series([("src/a.rs".to_string(), 2)].into());
+        assert_eq!(measure(&ctx).unwrap(), held);
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn every_file_that_has_one_appears_under_its_own_key() {
-        let ctx = tree(&[
+        let ctx = ctx_of(&[
             ("src/a.rs", "// a\n// b\n// c\n"),
             ("src/b.rs", "// a\n// b\n// c\n"),
             ("src/clean.rs", "fn f() {}\n"),
@@ -81,8 +73,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_key_is_relative_to_the_root_so_it_travels_between_machines() {
-        let ctx = tree(&[("src/deep/a.rs", "// a\n// b\n// c\n")]);
+        let ctx = ctx_of(&[("src/deep/a.rs", "// a\n// b\n// c\n")]);
         let measured = measure(&ctx).unwrap();
         assert_eq!(measured.0.keys().collect::<Vec<_>>(), vec!["src/deep/a.rs"]);
     }

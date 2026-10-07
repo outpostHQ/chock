@@ -1,0 +1,161 @@
+name: corpus
+
+# Every gate, by name, on nine public Rust projects, each at a pinned commit: what chock does on
+# code that its authors did not write. A release waits for its run on main.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# The projects are built and tested here, so the job holds a read-only token and no secret.
+permissions:
+  contents: read
+
+concurrency:
+  group: corpus-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  project:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: httparse, repo: seanmonstar/httparse, at: a0fa552e4e0fa9a5914a736ef3a556748fef709b }
+          - { name: socket2, repo: rust-lang/socket2, at: a9aca128688ef1bebf47ffb1aa57845747cfdb5f }
+          - { name: smoltcp, repo: smoltcp-rs/smoltcp, at: 87b463f50c15f30e4cd2e2725a3bcd5cb883e4d9 }
+          - { name: bytes, repo: tokio-rs/bytes, at: 7930d93d583757e922014312d4aa3e58a415131f }
+          - { name: progenitor, repo: oxidecomputer/progenitor, at: 18777874e57e2db4300e3ced8fe05ec3dc325301 }
+          - { name: semver, repo: dtolnay/semver, at: 280ebcb6edac3aa4cdc545dbff8a26c5ac4861fe }
+          - { name: hexyl, repo: sharkdp/hexyl, at: 6ecc29b9c8c84d08a7e860f7f69c22b113b480ea }
+          - { name: uuid, repo: uuid-rs/uuid, at: b62154e8be41ce42127cba08ee5e5cef3e2ea971 }
+          # The one project that runs with no git directory, as an unpacked archive does.
+          - { name: anyhow, repo: dtolnay/anyhow, at: 2cbb4e1bcbf8e7015f8d8b04a291c4c0597030b4, no_git: true }
+    defaults:
+      run:
+        shell: bash
+        working-directory: project
+    steps:
+      - name: Checkout chock
+        uses: actions/checkout@v6
+        with:
+          path: chock
+          persist-credentials: false
+
+      # Two commits, because `mutation` reads the change since the parent commit.
+      - name: Checkout the project at its pin
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.at }}
+          path: project
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Remove the git directory
+        if: matrix.no_git
+        run: rm -rf .git
+
+      # Plain rustup, and no flag of ours: a project compiles here as it does for its own authors.
+      - name: Install chock from this checkout
+        working-directory: chock
+        run: |
+          rustup toolchain install
+          cargo install --locked --path .
+
+      # cackle runs each build script inside bubblewrap, and Ubuntu refuses the user namespace
+      # that bubblewrap needs until AppArmor is told otherwise.
+      - name: Let the acl sandbox start
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install every tool chock pins
+        run: chock init --global
+
+      # `--fast` writes the project's files and measures no build; the next line switches on each
+      # gate that it left off, so the run below names all of them.
+      - name: Set the project up with every gate on
+        run: |
+          chock init --local --fast
+          chock gates --json | jq -r '.gates[] | select(.enabled | not) | .gate' > "$RUNNER_TEMP/off"
+          if [[ -s "$RUNNER_TEMP/off" ]]; then xargs chock enable < "$RUNNER_TEMP/off"; fi
+          chock gates --json | jq -r '.gates[] | select(.enabled | not) | .gate' > "$RUNNER_TEMP/still-off"
+          if [[ -s "$RUNNER_TEMP/still-off" ]]; then echo "still off:"; cat "$RUNNER_TEMP/still-off"; exit 1; fi
+
+      # Exit 1 is a tripped gate and 2 a gate that could not run; each is an answer. More is a crash.
+      - name: First run, which writes each first record
+        run: |
+          code=0
+          chock run --json > "$RUNNER_TEMP/first.json" 2> "$RUNNER_TEMP/first.err" || code=$?
+          tail -n 40 "$RUNNER_TEMP/first.err"
+          echo "chock run: exit $code"
+          [[ $code -le 2 ]]
+
+      - name: Second run, on the same tree
+        run: |
+          code=0
+          chock run --json > "$RUNNER_TEMP/second.json" 2> "$RUNNER_TEMP/second.err" || code=$?
+          tail -n 40 "$RUNNER_TEMP/second.err"
+          echo "chock run: exit $code"
+          [[ $code -le 2 ]]
+
+      - name: One row for each gate
+        if: always()
+        env:
+          TITLE: ${{ matrix.repo }} at ${{ matrix.at }}
+        run: |
+          {
+            echo "### $TITLE"
+            echo
+            echo "| gate | first run | second run | seconds | why it could not run |"
+            echo "|---|---|---|---|---|"
+            jq -r -s '
+              (.[0].gates | map({key: .gate, value: .}) | from_entries) as $first
+              | .[1].gates[]
+              | [ .gate,
+                  ($first[.gate].verdict // "no row"),
+                  .verdict + (if .recalled then " (kept)" else "" end),
+                  (($first[.gate].duration_ms // 0) / 1000 | floor),
+                  ((.cannot_run_reason // "") | gsub("[\n|]"; " ") | .[0:160]) ]
+              | "| " + (map(tostring) | join(" | ")) + " |"
+            ' "$RUNNER_TEMP/first.json" "$RUNNER_TEMP/second.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # A gate that the registry names and no row answers was left out, which is not a pass. A gate
+      # that passed and then trips on the same tree gave two answers to one question.
+      - name: No gate left out, and no answer that changed
+        run: |
+          chock gates --json | jq -r '.gates[].gate' | sort > "$RUNNER_TEMP/named"
+          for run in first second; do
+            jq -r '.gates[].gate' "$RUNNER_TEMP/$run.json" | sort > "$RUNNER_TEMP/$run.rows"
+            comm -23 "$RUNNER_TEMP/named" "$RUNNER_TEMP/$run.rows" > "$RUNNER_TEMP/$run.left-out"
+          done
+          jq -r -s '
+            (.[0].gates | map({key: .gate, value: .verdict}) | from_entries) as $first
+            | .[1].gates[] | select(.verdict == "tripped" and $first[.gate] == "passed") | .gate
+          ' "$RUNNER_TEMP/first.json" "$RUNNER_TEMP/second.json" > "$RUNNER_TEMP/changed"
+          echo "named: $(wc -l < "$RUNNER_TEMP/named")  rows: $(wc -l < "$RUNNER_TEMP/second.rows")"
+          for list in first.left-out second.left-out changed; do
+            if [[ -s "$RUNNER_TEMP/$list" ]]; then echo "$list:"; cat "$RUNNER_TEMP/$list"; bad=1; fi
+          done
+          [[ -z "${bad:-}" ]]
+
+      - name: Keep both run records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-${{ matrix.name }}
+          path: |
+            ${{ runner.temp }}/first.json
+            ${{ runner.temp }}/first.err
+            ${{ runner.temp }}/second.json
+            ${{ runner.temp }}/second.err
+          if-no-files-found: ignore

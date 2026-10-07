@@ -160,6 +160,15 @@
       },
       "uniqueItems": true
     },
+    "coverage_tools": {
+      "description": "The commands `coverage` calls that chock cannot see. Naming them is what lets `coverage` and `crap` answer from the verdict record where the project runs its own coverage command; without them those gates have no key and run every time.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
     "strict": {
       "description": "Ratchets held to zero rather than to their recorded numbers: any finding fails, whatever .chock/baseline.json holds, and the gate needs no baseline. For a check a team wants clean outright rather than merely no worse.",
       "type": "array",
@@ -170,7 +179,7 @@
       "uniqueItems": true
     },
     "clean_when_touched": {
-      "description": "Ratchets held to zero in each file the change touches: the commits since the upstream fork and the uncommitted edits, or in CI the commit under test. Other files keep their recorded numbers. Applies to gates that count debt per file or item.",
+      "description": "Ratchets held to zero in each file the change touches: the commits since the upstream fork and the uncommitted edits, or in CI the commit under test. Other files keep their recorded numbers. `chock init --local` lists each such ratchet it switched on. A gate with no number for each file or item, such as `binsize`, is refused here.",
       "type": "array",
       "items": {
         "type": "string",

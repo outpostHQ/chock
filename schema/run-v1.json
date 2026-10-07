@@ -142,6 +142,56 @@
         "message": {
           "description": "What is wrong, in one line.",
           "type": "string"
+        },
+        "places": {
+          "description": "The other places the finding is about, each named by what it is to this one: the copy of a body, the statement that costs most, the part that could move.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/place"
+          }
+        },
+        "fix": {
+          "description": "The change that clears this finding, in one sentence, where the gate can name one.",
+          "type": "string"
+        },
+        "grade": {
+          "description": "`candidate` where the gate cannot settle the finding from the source: a lead to judge, which never trips the gate. Absent for a finding, which counts.",
+          "enum": [
+            "finding",
+            "candidate"
+          ]
+        }
+      }
+    },
+    "place": {
+      "type": "object",
+      "required": [
+        "role",
+        "file",
+        "line"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "description": "What this place is to the finding, such as `copy`, `costs most` or `can move out`.",
+          "type": "string"
+        },
+        "file": {
+          "description": "Relative to the project root.",
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "last": {
+          "description": "The last line, where the place spans more than one.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "item": {
+          "description": "The function, type or statement at this place.",
+          "type": "string"
         }
       }
     }

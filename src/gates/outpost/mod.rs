@@ -323,6 +323,7 @@ mod tests {
 
     /// A missing root fails the spawn the same way a missing binary does.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn an_outpost_that_could_not_start_says_the_gate_needs_it_on_path() {
         let nowhere = std::path::Path::new("/nonexistent-chock-root");
         let err = spawn(nowhere, &["check"]).unwrap_err();

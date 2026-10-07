@@ -196,6 +196,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri did not end this test in 19 minutes")]
     fn a_count_that_is_not_an_answer_refuses_rather_than_reading_as_zero() {
         let docs = declared("doc-check", &["true"], true, false);
         assert_eq!(
@@ -237,6 +238,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn each_gate_runs_only_its_own_half_and_refuses_when_it_has_none() {
         let dir = crate::testdir::make("declared-commands");
         let ctx = Ctx {

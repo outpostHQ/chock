@@ -166,6 +166,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_record_on_disk_is_shown_to_a_person_or_an_agent_and_an_unreadable_one_is_refused() {
         let dir = crate::testdir::make("debt-shown");
         assert_eq!(shown(&dir, false).unwrap(), "The baseline holds no debt.\n");
@@ -189,6 +190,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_that_keeps_its_own_record_has_its_debt_shown_with_the_rest() {
         let dir = crate::testdir::make("debt-own-record");
         let file = dir.join(crate::gates::own_baseline("crap").unwrap());

@@ -36,6 +36,8 @@ pub enum Stage {
     Wait,
     /// The child passed its deadline. Any cleanup failure is in the reason.
     Hung,
+    /// The child ran, and the network failed it on each try.
+    Offline,
 }
 
 impl fmt::Display for Stage {
@@ -45,6 +47,7 @@ impl fmt::Display for Stage {
             Self::Capture => write!(f, "could not read the output of"),
             Self::Wait => write!(f, "could not collect the exit of"),
             Self::Hung => write!(f, "gave up waiting for"),
+            Self::Offline => write!(f, "could not reach the network for"),
         }
     }
 }
@@ -229,7 +232,11 @@ pub fn run_env(
 }
 
 /// How a program is started: `run_env`, or a test's stand-in with fixed answers.
-pub type Start<'a> = &'a dyn Fn(&str, &[&str], &Path, &[(&str, &str)]) -> Result<Output, ExecError>;
+pub type Start<'a> = &'a Starter<'a>;
+
+/// What a `Start` points to, for a caller that builds one and holds it.
+pub type Starter<'a> =
+    dyn Fn(&str, &[&str], &Path, &[(&str, &str)]) -> Result<Output, ExecError> + 'a;
 
 /// What a program printed, or the command with why it failed.
 pub fn printed(
@@ -772,6 +779,18 @@ fn remember_tail(tail: &mut Vec<u8>, chunk: &[u8]) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn each_stage_names_the_step_that_failed() {
+        assert_eq!(Stage::Spawn.to_string(), "could not start");
+        assert_eq!(Stage::Capture.to_string(), "could not read the output of");
+        assert_eq!(Stage::Wait.to_string(), "could not collect the exit of");
+        assert_eq!(Stage::Hung.to_string(), "gave up waiting for");
+        assert_eq!(
+            Stage::Offline.to_string(),
+            "could not reach the network for"
+        );
+    }
+
     fn said(stdout: &str, stderr: &str) -> Output {
         Output {
             code: Some(1),
@@ -888,6 +907,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        all(miri, windows),
+        ignore = "Miri cannot give a command a variable on Windows"
+    )]
     fn every_variable_git_exports_into_a_hook_is_cleared_and_nothing_else_is() {
         let mut command = Command::new("env");
         for name in GIT_STATE {
@@ -905,6 +928,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn what_cargo_says_about_the_package_running_chock_never_reaches_a_tool() {
         for name in [
             "CARGO_PKG_NAME",
@@ -992,6 +1016,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_successful_command_reports_its_stdout_and_a_zero_code() {
         let out = run("echo", &["hello"], &here()).unwrap();
         assert_eq!(out.code, Some(0));
@@ -1002,6 +1027,7 @@ mod tests {
 
     /// The limit is passed in, since `deadline` reads chock's own environment, not the child's.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_tool_that_never_finishes_is_killed_rather_than_waited_on() {
         let started = std::time::Instant::now();
         let mut child = Process::spawn(Command::new("sleep").arg("600")).unwrap();
@@ -1015,6 +1041,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_timed_out_command_keeps_its_bounded_diagnostics_from_both_streams() {
         let mut child = Process::spawn(Command::new("sh")
             .args(["-c", "printf 'starting fixture\\n'; printf 'error: fixture stalled\\n' >&2; exec sleep 600"])
@@ -1040,6 +1067,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_pipe_that_never_closes_still_exposes_its_partial_diagnostic() {
         let (_tx, rx) = std::sync::mpsc::channel();
         let stdout = Capture {
@@ -1206,6 +1234,7 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_watched_run_that_fails_quotes_the_error_its_tool_marked_above_the_tail() {
         struct NoRecords;
         impl Watchdog for NoRecords {
@@ -1229,6 +1258,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn watchdog_completion_waits_for_the_process_and_the_recursion_depth_increases() {
         struct MustWait;
         impl Watchdog for MustWait {
@@ -1327,6 +1357,7 @@ mod tests {
     /// Each arm of `Witness::stopped` in one place, so none waits on how fast another test's child is.
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_witness_reads_a_child_as_running_then_dead_then_gone() {
         let mut child = Command::new("sleep").arg("30").spawn().unwrap();
         let witness = Witness::open(i32::try_from(child.id()).unwrap());
@@ -1379,6 +1410,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn timeout_kills_owned_grandchildren_but_not_another_group() {
         let dir = crate::testdir::make("timeout-process-tree");
         let (mut child, stdout, stderr) = tree_fixture(
@@ -1410,6 +1442,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn an_exited_leaders_pipe_holder_is_killed_without_claiming_complete_output() {
         let dir = crate::testdir::make("exited-pipe-holder");
         let (mut child, stdout, stderr) = tree_fixture(
@@ -1435,6 +1468,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_successful_leaders_silent_descendant_is_also_killed() {
         let dir = crate::testdir::make("silent-descendant");
         let (mut child, stdout, stderr) = tree_fixture(
@@ -1472,6 +1506,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn an_external_reaper_invalidates_ownership_before_any_signal() {
         let mut child = externally_reaped();
         let failure =
@@ -1488,6 +1523,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn finalization_refuses_a_child_reaped_elsewhere_and_does_not_retry() {
         let mut child = externally_reaped();
         assert_eq!(
@@ -1506,6 +1542,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn reaping_is_bounded_and_drop_cleans_an_unfinished_owner() {
         let mut child = Process::spawn(Command::new("sleep").arg("600")).unwrap();
         let witness = Witness::open(i32::try_from(child.child.id()).unwrap());
@@ -1529,6 +1566,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_deadline_already_reached_kills_on_the_first_look() {
         let mut child = Process::spawn(Command::new("sleep").arg("600")).unwrap();
         let (stage, _) = wait_until(&mut child, std::time::Duration::ZERO, &mut ()).unwrap_err();
@@ -1538,6 +1576,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_tool_that_finishes_inside_the_deadline_returns_its_exit() {
         let mut child = Process::spawn(Command::new("sh").args(["-c", "exit 5"])).unwrap();
         wait_until(&mut child, std::time::Duration::from_secs(30), &mut ()).unwrap();
@@ -1546,6 +1585,7 @@ mod tests {
 
     /// A variable, unlike a flag, also reaches the cargo that the tool spawns in turn.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_spawned_command_is_told_how_many_jobs_it_may_run() {
         let out = run("sh", &["-c", "echo ${CARGO_BUILD_JOBS:-unset}"], &here()).unwrap();
         assert_ne!(out.stdout.trim(), "unset");
@@ -1557,6 +1597,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_failing_command_is_still_an_ok_result_carrying_its_code() {
         let out = run("sh", &["-c", "exit 3"], &here()).unwrap();
         assert_eq!(out.code, Some(3));
@@ -1564,6 +1605,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_two_streams_are_kept_apart() {
         let out = run("sh", &["-c", "echo o; echo e >&2"], &here()).unwrap();
         assert_eq!(out.stdout, "o\n");
@@ -1571,6 +1613,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn arguments_reach_the_program_in_the_order_given() {
         let out = run("echo", &["one", "two", "three"], &here()).unwrap();
         assert_eq!(out.stdout, "one two three\n");
@@ -1578,12 +1621,14 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_command_runs_in_the_directory_it_was_given() {
         let out = run("pwd", &[], Path::new("/")).unwrap();
         assert_eq!(out.stdout, "/\n");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn stdin_is_closed_so_a_reader_ends_instead_of_waiting_for_a_terminal() {
         let out = run("cat", &[], &here()).unwrap();
         assert_eq!(out.stdout, "");
@@ -1591,6 +1636,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_program_that_is_not_there_names_the_stage_that_failed() {
         let err = run("chock-no-such-program", &[], &here()).unwrap_err();
         assert_eq!(err.stage, Stage::Spawn);
@@ -1602,6 +1648,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn both_streams_flooding_at_once_finishes_rather_than_deadlocking() {
         let out = run(
             "sh",
@@ -1618,6 +1665,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn output_past_the_cap_is_a_prefix_and_says_so() {
         let out = run_capped("sh", &["-c", "yes abcdefgh | head -c 40000"], &here(), 100).unwrap();
         assert_eq!(out.stdout, repeated("abcdefgh", 100));
@@ -1625,6 +1673,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn output_exactly_at_the_cap_is_not_called_truncated() {
         let out = run_capped("printf", &["%s", "0123456789"], &here(), 10).unwrap();
         assert_eq!(out.stdout, "0123456789");
@@ -1632,6 +1681,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_flood_on_stderr_alone_still_marks_the_result_truncated() {
         let out = run_capped(
             "sh",
@@ -1646,6 +1696,7 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri prints the code of an OS error twice")]
     fn a_group_of_only_zombies_is_settled_on_either_system_and_any_other_refusal_is_not() {
         use rustix::io::Errno;
         assert_eq!(nothing_left(Ok(())), Ok(()));
@@ -1666,6 +1717,7 @@ mod tests {
     /// The leader is kept unreaped until this signal, which is the case Darwin answers with EPERM.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_finished_tool_held_unreaped_is_terminated_cleanly() {
         let mut command = Command::new("sh");
         command.args(["-c", "exit 0"]);
@@ -1677,6 +1729,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_signal_leaves_no_code_which_is_never_a_verdict() {
         let out = run("sh", &["-c", "kill -TERM $$"], &here()).unwrap();
         assert_eq!(out.code, None);

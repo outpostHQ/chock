@@ -244,6 +244,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_document_is_written_whole_and_leaves_no_temporary_behind() {
         let dir = crate::testdir::make("document-atomic");
         let path = dir.join("baseline.json");
@@ -253,6 +254,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_rename_that_could_not_happen_takes_its_temporary_with_it() {
         let dir = crate::testdir::make("document-rename-refused");
         let occupied = dir.join("occupied");
@@ -262,6 +264,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn writing_again_replaces_what_was_there() {
         let dir = crate::testdir::make("document-replace");
         let path = dir.join("baseline.json");
@@ -271,6 +274,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_directory_that_does_not_exist_is_an_error_rather_than_a_silent_loss() {
         let dir = crate::testdir::make("document-absent");
         assert!(write(&dir.join("no/such/dir/x.json"), "{}").is_err());
@@ -331,6 +335,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_missing_file_is_absence_rather_than_failure() {
         let dir = crate::testdir::make("document-missing");
         assert_eq!(read::<Probe>(&dir), Ok(None));
@@ -380,6 +385,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_written_document_reads_back_from_its_project_root() {
         let dir = crate::testdir::make("document-roundtrip");
         let probe = Probe {
@@ -392,6 +398,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_relative_path_is_refused_rather_than_written_where_the_process_runs() {
         let stray = Path::new("chock-document-refused-probe.json");
         let refused = write(stray, "{}\n").unwrap_err();

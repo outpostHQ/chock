@@ -5,6 +5,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::mem::discriminant;
+use std::ops::Range;
 
 use proc_macro2::{TokenStream, TokenTree};
 use syn::visit::Visit;
@@ -13,7 +14,8 @@ use syn::{Attribute, Block, Meta, Path, Signature};
 use crate::gates::metrics::prodlines;
 use crate::project;
 use crate::run::baseline::{Keys, Series};
-use crate::run::{Ctx, Gate, Group, Kind};
+use crate::run::report::{Detail, Place};
+use crate::run::{Ctx, Details, Gate, Group, Kind, Measurement};
 
 pub const GATE: Gate = Gate {
     name: "duplication",
@@ -21,7 +23,7 @@ pub const GATE: Gate = Gate {
     group: Group::Quality,
     builds: false,
     reads: None,
-    kind: Kind::Ratchet {
+    kind: Kind::AnnotatedRatchet {
         measure,
         // Keyed by item, so a new copy the baseline never saw trips the gate.
         keys: Keys::Items,
@@ -45,6 +47,11 @@ pub struct Function {
     pub file: String,
     pub name: String,
     pub shape: Shape,
+    /// The lines from `fn` to the closing brace, for navigation; never part of a key.
+    pub line: u32,
+    pub last: u32,
+    /// The body's bytes in its file, read again only to say what two copies differ in.
+    pub bytes: Range<usize>,
 }
 
 /// The canonical form of one function.
@@ -70,8 +77,9 @@ impl Shape {
     }
 }
 
-fn measure(ctx: &Ctx) -> Result<Series, String> {
+fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let mut kept = Vec::new();
+    let mut sources = BTreeMap::new();
     for (path, lines) in prodlines::measure(ctx)? {
         let shown = project::relative(&ctx.root, &path);
         // Zero production lines means a whole-file test module; fixtures are copies on purpose.
@@ -81,8 +89,132 @@ fn measure(ctx: &Ctx) -> Result<Series, String> {
         let source = std::fs::read_to_string(&path).map_err(|e| format!("reading {shown}: {e}"))?;
         let found = functions(&source, &shown).map_err(|e| format!("{shown}:{e}"))?;
         kept.extend(found.into_iter().filter(|f| f.shape.worth_comparing()));
+        sources.insert(shown, source);
     }
-    Ok(series(&families(kept)))
+    let families = families(kept);
+    Ok(Measurement {
+        series: series(&families),
+        findings: Vec::new(),
+        details: details(&families, &sources),
+    })
+}
+
+/// For each duplicated function, the other members of its family and how to merge them. Two
+/// functions under one key share the first one's detail, as they share its number.
+fn details(families: &[Vec<Function>], sources: &BTreeMap<String, String>) -> Details {
+    let mut details = Details::new();
+    for family in families {
+        for (index, member) in family.iter().enumerate() {
+            let others: Vec<&Function> = family
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != index)
+                .map(|(_, other)| other)
+                .collect();
+            let key = format!("{}#{}", member.file, member.name);
+            details
+                .entry(key)
+                .or_insert_with(|| detail(member, &others, sources));
+        }
+    }
+    details
+}
+
+fn detail(member: &Function, others: &[&Function], sources: &BTreeMap<String, String>) -> Detail {
+    let places = others
+        .iter()
+        .map(|other| {
+            let role = match other.shape.digest == member.shape.digest {
+                true => "copy".to_string(),
+                false => {
+                    let alike = similarity(&member.shape.nodes, &other.shape.nodes) / 100;
+                    format!("near copy, {alike}% alike")
+                }
+            };
+            Place::at(&role, &other.file, other.line)
+                .through(other.last)
+                .item(&other.name)
+        })
+        .collect();
+    Detail {
+        line: Some(member.line),
+        places,
+        fix: Some(merge(member, others, sources)),
+    }
+}
+
+/// Most differing pairs a fix line names; the rest are counted.
+const NAMED_PAIRS: usize = 4;
+
+/// How to make one function of `member` and its copies. An exact copy names what differs, so the
+/// parameters of the merged function are known; a near copy differs in shape as well.
+fn merge(member: &Function, others: &[&Function], sources: &BTreeMap<String, String>) -> String {
+    let saves = member.last.saturating_sub(member.line).saturating_add(1);
+    let Some(exact) = others
+        .iter()
+        .find(|other| other.shape.digest == member.shape.digest)
+    else {
+        return "move the part they share into one function that each of them calls".to_string();
+    };
+    let pairs = leaves(member, sources).zip(leaves(exact, sources));
+    match pairs.and_then(|(left, right)| differs(&left, &right)) {
+        Some(pairs) if pairs.is_empty() => format!(
+            "delete this copy and call `{}`; saves about {saves} line(s)",
+            exact.name
+        ),
+        Some(pairs) => format!(
+            "keep one function, with what differs as parameters ({}); saves about {saves} line(s)",
+            named(&pairs)
+        ),
+        None => format!("keep one function for both; saves about {saves} line(s)"),
+    }
+}
+
+fn named(pairs: &[(String, String)]) -> String {
+    let shown: Vec<String> = pairs
+        .iter()
+        .take(NAMED_PAIRS)
+        .map(|(here, there)| format!("{here} / {there}"))
+        .collect();
+    match pairs.len().saturating_sub(NAMED_PAIRS) {
+        0 => shown.join(", "),
+        more => format!("{}, and {more} more", shown.join(", ")),
+    }
+}
+
+/// The names and literal values of a body, in order, read again from its file.
+fn leaves(function: &Function, sources: &BTreeMap<String, String>) -> Option<Vec<String>> {
+    let text = sources.get(&function.file)?.get(function.bytes.clone())?;
+    let mut out = Vec::new();
+    flatten(text.parse().ok()?, &mut out);
+    Some(out)
+}
+
+fn flatten(tokens: TokenStream, out: &mut Vec<String>) {
+    for token in tokens {
+        match token {
+            TokenTree::Group(group) => flatten(group.stream(), out),
+            TokenTree::Ident(ident) => out.push(ident.to_string()),
+            TokenTree::Literal(literal) => out.push(literal.to_string()),
+            TokenTree::Punct(_) => {}
+        }
+    }
+}
+
+/// Each distinct pair of names or values where two bodies of one form differ, in order of first
+/// use, or `None` where their leaves do not line up one to one.
+fn differs(left: &[String], right: &[String]) -> Option<Vec<(String, String)>> {
+    if left.len() != right.len() {
+        return None;
+    }
+    let mut pairs = Vec::new();
+    for (here, there) in left.iter().zip(right) {
+        let pair = (here.clone(), there.clone());
+        if here != there && !pairs.contains(&pair) {
+            pairs.push(pair);
+        }
+    }
+    Some(pairs)
 }
 
 fn is_fixture(shown: &str) -> bool {
@@ -263,10 +395,14 @@ impl Collector<'_> {
         if gated_to_a_harness(attrs) {
             return;
         }
+        let braces = body.brace_token.span;
         self.found.push(Function {
             file: self.file.to_string(),
             name: sig.ident.to_string(),
             shape: shape(sig, body),
+            line: line_of(sig.fn_token.span.start().line),
+            last: line_of(braces.close().end().line),
+            bytes: braces.join().byte_range(),
         });
     }
 }
@@ -292,6 +428,10 @@ impl<'ast> Visit<'ast> for Collector<'_> {
             self.take(&node.attrs, &node.sig, body);
         }
     }
+}
+
+fn line_of(line: usize) -> u32 {
+    u32::try_from(line).unwrap_or(u32::MAX)
 }
 
 /// Attributes, matched by last path segment, that mark a test, bench or proof harness.
@@ -616,6 +756,7 @@ mod tests {
 
     use super::*;
     use crate::run::baseline::Baseline;
+    use crate::testdir::tree;
 
     fn found(source: &str) -> Vec<Function> {
         functions(source, "t.rs").unwrap()
@@ -702,6 +843,9 @@ mod tests {
                     .collect(),
                 statements: MINIMUM_STATEMENTS,
             },
+            line: 1,
+            last: 1,
+            bytes: 0..0,
         }
     }
 
@@ -732,17 +876,11 @@ mod tests {
         keyed(kept(files))
     }
 
-    fn tree(name: &str, files: &[(&str, &str)]) -> crate::testdir::Scratch {
-        let dir = crate::testdir::make(name);
-        for (path, source) in files {
-            let full = dir.join(path);
-            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
-            std::fs::write(full, source).unwrap();
-        }
-        dir
+    fn measured(root: &Path) -> Result<Series, String> {
+        read(root).map(|read| read.series)
     }
 
-    fn measured(root: &Path) -> Result<Series, String> {
+    fn read(root: &Path) -> Result<Measurement, String> {
         measure(&Ctx::for_root(root.to_path_buf(), Baseline::empty("0.1.0")))
     }
 
@@ -1141,6 +1279,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_series_gives_every_member_of_a_family_how_many_others_share_its_body() {
         let copies: Vec<String> = ["one", "two", "three"]
             .iter()
@@ -1162,6 +1301,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn two_functions_of_the_same_name_in_one_file_keep_the_worst() {
         let shared = format!(
             "struct A; impl A {{ {} }} struct B; impl B {{ {} }}",
@@ -1183,18 +1323,16 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_with_nothing_copied_measures_empty_rather_than_failing() {
-        let dir = tree(
-            "duplication-clean",
-            &[
-                ("src/a.rs", &wide("one", "out", "3", "")),
-                ("src/b.rs", &other("two")),
-            ],
-        );
+        let (one, two) = (wide("one", "out", "3", ""), other("two"));
+        let files = [("src/a.rs", one.as_str()), ("src/b.rs", two.as_str())];
+        let dir = tree("duplication-clean", &files);
         assert_eq!(measured(&dir).unwrap(), Series::new());
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_copy_under_a_test_module_or_a_fixture_directory_never_reaches_the_series() {
         let body = wide("one", "out", "3", "");
         let dir = tree(
@@ -1209,6 +1347,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_the_walk_passes_over_leaves_the_files_sorted_after_it_to_be_read() {
         let body = wide("one", "out", "3", "");
         let twin = wide("two", "kept", "3", "");
@@ -1229,14 +1368,130 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_the_parser_rejects_stops_the_measurement_rather_than_reading_as_clean() {
-        // The manifest matters: only a file some crate compiles stops the gate.
-        let dir = tree(
-            "duplication-broken",
-            &[("Cargo.toml", ""), ("src/a.rs", "fn f( { this is not rust")],
-        );
+        let dir = tree("duplication-broken", &crate::testdir::UNPARSABLE);
         let err = measured(&dir).unwrap_err();
-        assert!(err.contains("src/a.rs"), "{err}");
+        assert!(err.contains("src/lib.rs"), "{err}");
+    }
+
+    /// What a finding on `key` carries: its line, the other copies, and the fix.
+    fn detail_of(files: &[(&str, &str)], key: &str) -> Detail {
+        let dir = tree("duplication-detail", files);
+        read(&dir).unwrap().details.remove(key).unwrap()
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn an_exact_copy_names_the_other_place_and_each_name_and_value_that_differs() {
+        let (left, right) = (wide("left", "out", "3", ""), wide("right", "kept", "5", ""));
+        let found = detail_of(
+            &[("src/a.rs", left.as_str()), ("src/b.rs", right.as_str())],
+            "src/a.rs#left",
+        );
+        assert_eq!(found.line, Some(1));
+        let copy = Place::at("copy", "src/b.rs", 1).through(17).item("right");
+        assert_eq!(found.places, [copy]);
+        assert_eq!(
+            found.fix.as_deref(),
+            Some(
+                "keep one function, with what differs as parameters (out / kept, 3 / 5); saves about 17 line(s)"
+            )
+        );
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_copy_that_differs_in_nothing_is_deleted_for_a_call_to_the_other() {
+        let (one, two) = (wide("one", "out", "3", ""), wide("two", "out", "3", ""));
+        let found = detail_of(
+            &[("src/a.rs", one.as_str()), ("src/b.rs", two.as_str())],
+            "src/b.rs#two",
+        );
+        assert_eq!(
+            found.fix.as_deref(),
+            Some("delete this copy and call `one`; saves about 17 line(s)")
+        );
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_near_copy_says_how_alike_it_is_and_asks_for_the_shared_part_alone() {
+        let (plain, grown) = (
+            wide("one", "out", "3", ""),
+            wide("two", "out", "3", "out.reverse();"),
+        );
+        let found = detail_of(
+            &[("src/a.rs", plain.as_str()), ("src/b.rs", grown.as_str())],
+            "src/a.rs#one",
+        );
+        let alike = similarity(&found_shape(&plain), &found_shape(&grown)) / 100;
+        assert_eq!(found.places[0].role, format!("near copy, {alike}% alike"));
+        assert_eq!(
+            found.fix.as_deref(),
+            Some("move the part they share into one function that each of them calls")
+        );
+    }
+
+    fn found_shape(source: &str) -> Vec<u64> {
+        found(source).remove(0).shape.nodes
+    }
+
+    #[test]
+    fn copies_whose_names_do_not_line_up_still_get_one_function_to_keep() {
+        let (here, there) = (formed("a.rs", "f", 7, 80), formed("b.rs", "g", 7, 80));
+        assert_eq!(
+            merge(&here, &[&there], &BTreeMap::new()),
+            "keep one function for both; saves about 1 line(s)"
+        );
+        let short = ["a".to_string()];
+        assert_eq!(differs(&short, &[]), None);
+    }
+
+    #[test]
+    fn an_exact_copy_is_a_call_where_its_leaves_match_and_takes_parameters_where_they_differ() {
+        let sources = BTreeMap::from([
+            ("a.rs".to_string(), "x + 1".to_string()),
+            ("b.rs".to_string(), "x + 1".to_string()),
+            ("c.rs".to_string(), "y + 2".to_string()),
+        ]);
+        let body = |file: &str, name: &str| Function {
+            bytes: 0..5,
+            ..formed(file, name, 7, 80)
+        };
+        let (here, same, other) = (body("a.rs", "f"), body("b.rs", "g"), body("c.rs", "h"));
+        assert_eq!(
+            merge(&here, &[&same], &sources),
+            "delete this copy and call `g`; saves about 1 line(s)"
+        );
+        assert_eq!(
+            merge(&here, &[&other], &sources),
+            "keep one function, with what differs as parameters (x / y, 1 / 2); saves about 1 line(s)"
+        );
+    }
+
+    #[test]
+    fn each_differing_pair_is_named_once_in_order_of_first_use() {
+        let leaves = |words: &[&str]| words.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let pair = |here: &str, there: &str| (here.to_string(), there.to_string());
+        assert_eq!(
+            differs(
+                &leaves(&["a", "x", "a", "y"]),
+                &leaves(&["b", "x", "b", "z"])
+            ),
+            Some(vec![pair("a", "b"), pair("y", "z")])
+        );
+    }
+
+    #[test]
+    fn a_long_list_of_differences_names_the_first_four_and_counts_the_rest() {
+        let pairs: Vec<(String, String)> =
+            (0..6).map(|n| (format!("a{n}"), format!("b{n}"))).collect();
+        assert_eq!(
+            named(&pairs),
+            "a0 / b0, a1 / b1, a2 / b2, a3 / b3, and 2 more"
+        );
+        assert_eq!(named(&pairs[..1]), "a0 / b0");
     }
 
     #[test]

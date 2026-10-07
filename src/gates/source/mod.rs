@@ -1507,6 +1507,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_shared_test_module_a_target_declares_is_read_and_an_undeclared_one_is_not() {
         let dir = crate::testdir::make("source-shared-test-module");
         for (path, text) in [
@@ -1554,6 +1555,7 @@ mod tests {
     /// Declarations pop in reverse order, so finding `inside` shows the walk skips the escape and
     /// the known file and does not stop.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_module_a_path_attribute_places_outside_the_tree_is_not_read() {
         let outer = crate::testdir::make("source-declared-outside");
         let root = outer.join("project");
@@ -1611,16 +1613,7 @@ mod tests {
                           edition = \"2021\"\n";
 
     fn ctx_of(files: &[(&str, &str)]) -> crate::testdir::Held {
-        let dir = crate::testdir::make("source-gate");
-        for (name, src) in files {
-            let path = dir.join(name);
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            std::fs::write(path, src).unwrap();
-        }
-        let held = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
-        crate::testdir::Held::new(dir, held)
+        crate::testdir::Held::tree("source-gate", files)
     }
 
     #[test]
@@ -1933,6 +1926,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_gate_applies_the_projects_not_shipped_list() {
         let files = [
             ("Cargo.toml", WITH_MEMBER),
@@ -1971,6 +1965,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_gate_reads_a_real_tree_and_reports_paths_relative_to_its_root() {
         let ctx = ctx_of(&[
             ("Cargo.toml", MANIFEST),
@@ -1985,6 +1980,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_real_tree_with_every_suppression_accounted_for_passes() {
         let ctx = ctx_of(&[
             ("Cargo.toml", MANIFEST),
@@ -1996,46 +1992,35 @@ mod tests {
         assert_eq!(measure(&ctx).unwrap(), Series::new());
     }
 
+    /// A crate with a suppression in each of two places that sit behind `test-utils`.
+    fn gated_helpers(manifest: &str) -> crate::testdir::Held {
+        let suppression = "#[allow(clippy::unwrap_used, reason = \"a helper for tests\")]\n\
+                           pub fn helper() {}\n";
+        let gate = "#[cfg(any(test, feature = \"test-utils\"))]";
+        let lib = format!("{gate}\npub mod helpers;\n{gate}\n{suppression}");
+        ctx_of(&[
+            ("Cargo.toml", manifest),
+            ("src/lib.rs", &lib),
+            ("src/helpers.rs", suppression),
+        ])
+    }
+
     /// Only a dev-dependency enables `test-utils`, so both the item and `helpers` are test code.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_gate_excuses_a_suppression_no_shipped_build_can_reach() {
         let manifest = "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\
                         [workspace]\n[features]\ntest-utils = []\nsemantic = []\n\
                         [dev-dependencies]\nfixture = { path = \".\", features = [\"test-utils\"] }\n";
-        let suppression = "#[allow(clippy::unwrap_used, reason = \"a helper for tests\")]\n\
-                           pub fn helper() {}\n";
-        let ctx = ctx_of(&[
-            ("Cargo.toml", manifest),
-            (
-                "src/lib.rs",
-                &format!(
-                    "#[cfg(any(test, feature = \"test-utils\"))]\npub mod helpers;\n\
-                     #[cfg(any(test, feature = \"test-utils\"))]\n{suppression}"
-                ),
-            ),
-            ("src/helpers.rs", suppression),
-        ]);
-        assert_eq!(measure(&ctx).unwrap(), Series::new());
+        assert_eq!(measure(&gated_helpers(manifest)).unwrap(), Series::new());
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_gate_reports_a_suppression_a_shipped_feature_reaches() {
         let manifest = "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\
                         [workspace]\n[features]\ndefault = [\"test-utils\"]\ntest-utils = []\n";
-        let suppression = "#[allow(clippy::unwrap_used, reason = \"a helper for tests\")]\n\
-                           pub fn helper() {}\n";
-        let ctx = ctx_of(&[
-            ("Cargo.toml", manifest),
-            (
-                "src/lib.rs",
-                &format!(
-                    "#[cfg(any(test, feature = \"test-utils\"))]\npub mod helpers;\n\
-                     #[cfg(any(test, feature = \"test-utils\"))]\n{suppression}"
-                ),
-            ),
-            ("src/helpers.rs", suppression),
-        ]);
-        let series = measure(&ctx).unwrap();
+        let series = measure(&gated_helpers(manifest)).unwrap();
         assert_eq!(series.get(&format!("src/lib.rs#{SHIPPED_SAFETY}")), Some(1));
         assert_eq!(
             series.get(&format!("src/helpers.rs#{SHIPPED_SAFETY}")),
@@ -2044,6 +2029,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_source_file_that_is_not_text_is_stepped_over_rather_than_ending_the_gate() {
         let ctx = ctx_of(&[
             ("Cargo.toml", MANIFEST),
@@ -2056,12 +2042,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_tree_holding_a_file_the_parser_rejects_reports_that_it_could_not_run() {
         let ctx = ctx_of(&[("Cargo.toml", MANIFEST), ("src/lib.rs", "fn f( {\n")]);
         assert!(measure(&ctx).unwrap_err().starts_with("src/lib.rs: line 1"));
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_corpus_file_the_parser_rejects_does_not_stop_the_gate_reading_the_crate() {
         let ctx = ctx_of(&[
             ("Cargo.toml", MANIFEST),
@@ -2074,6 +2062,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_module_the_integration_tests_share_is_read_where_cargo_compiles_it() {
         let ctx = ctx_of(&[
             ("Cargo.toml", MANIFEST),
@@ -2150,6 +2139,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri did not end this test in 15 minutes")]
     fn chocks_own_source_trips_no_rule() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let here = Ctx::for_root(root.to_path_buf(), Baseline::empty("0.1.0"));

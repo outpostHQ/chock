@@ -263,6 +263,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn test_modules_test_directories_and_nested_crates_are_sorted_where_they_belong() {
         let dir = crate::testdir::make("placement-sorted");
         for (path, text) in [

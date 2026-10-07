@@ -432,6 +432,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn explain_reads_the_held_files_from_the_baseline() {
         let dir = crate::testdir::make("edited-behind-held");
         std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -572,6 +573,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_editor_hears_only_what_the_commit_would_refuse() {
         let dir = crate::testdir::make("edited-held");
         let file = dir.join("src/a.rs").to_string_lossy().into_owned();
@@ -602,6 +604,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_source_rule_reads_a_file_as_its_gate_does() {
         let dir = crate::testdir::make("edited-source");
         for manifest in ["Cargo.toml", "fuzz/Cargo.toml", "tests/fix/Cargo.toml"] {
@@ -674,6 +677,7 @@ mod tests {
 
     /// The editor names the file by its absolute path; `except` is written from the project root.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn phrases_come_from_the_project_config_less_those_it_allows_in_that_file() {
         let dir = crate::testdir::make("edited-forbidden");
         let named = |path: &str| dir.join(path).to_string_lossy().into_owned();
@@ -706,6 +710,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn an_edited_file_answers_to_the_project_it_sits_in_not_the_session() {
         let tree = [
             "/r/Cargo.toml",
@@ -774,6 +779,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        all(miri, target_os = "macos"),
+        ignore = "Miri cannot set a file's time on macOS"
+    )]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_second_firing_moves_the_record_the_first_one_left() {
         let dir = crate::testdir::make("edited-heartbeat");
         note_firing(&dir);
@@ -804,6 +814,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_whose_hook_never_fired_reports_no_firing_at_all() {
         let dir = crate::testdir::make("edited-no-heartbeat");
         assert_eq!(since_firing(&dir), None);

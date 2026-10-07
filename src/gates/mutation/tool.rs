@@ -131,6 +131,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_cargo_that_cannot_start_is_an_error_and_not_an_absent_tool() {
         // A file as the root, so the spawn itself fails.
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");

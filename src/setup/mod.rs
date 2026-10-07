@@ -8,6 +8,7 @@ pub mod hooks;
 pub mod init;
 pub mod miri;
 pub mod mutest;
+pub mod network;
 pub mod pins;
 mod repin;
 pub mod version;

@@ -3,6 +3,70 @@
 Notable changes to chock. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.2.0] - 2026-10-07
+
+No command or flag is removed or renamed. The JSON reports add fields and remove none.
+
+- **`splits`, a new gate.** It names a part of a file, 100 lines or more, that only one private
+  item uses. That part can be a module of its own. The finding gives the part's lines and the item
+  that leads into it. A `pub` item is never such a lead, because a move needs a re-export.
+- **`lean`, a new gate.** It counts the private functions that only pass their parameters on to
+  another call, unchanged and in order. The caller can make that call itself. The finding names
+  each such function and the call to make in its place.
+- **Leads that never trip a gate.** Where the source alone cannot settle a shape, `lean` reports
+  a finding with `grade` set to `candidate`: a function of up to five lines with one statement
+  and one caller, two arms next to each other with one body, a private trait with one `impl`.
+- **Findings say where and what to do.** A finding in the JSON report can carry `places`, the
+  other places it is about, and `fix`, the change that clears it. `duplication`, `complexity`,
+  `splits` and `lean` fill them in. `schema/run-v1.json` now names both fields and `grade`, and
+  a test holds the schema to the report.
+- **Both new gates are on for a new project.** A project set up before 0.2.0 keeps its list:
+  `chock enable splits lean` switches them on, and the next run outside CI writes their records.
+- **More gates keep their verdict.** `coverage`, `crap`, `miri` and `bsize` now keep a verdict
+  under a key of everything they read, as `test`, `mutest` and the other slow gates did. A later
+  run or a hook recalls it, and the row says `recalled`. `chock run --no-cache` judges every
+  gate again, and `chock cache clear` removes the kept verdicts. A project with its own coverage
+  command names the tools that command calls under `coverage_tools`.
+- **`chock run` writes the first record.** A gate with no record takes it from its first run
+  outside CI, and the run prints `wrote the first record for …`. `chock baseline` is no step of
+  the setup now; it stays for a record that you raise on purpose. CI writes no record, so a
+  ratchet with none is `CANNOT RUN` there.
+- **Touched files are held to zero from the first day.** `chock init --local` lists under
+  `clean_when_touched` each ratchet that it switched on, where the ratchet keeps a number for
+  each file and measures the same on every machine. A project that has a config keeps it.
+- **A `clean_when_touched` entry that can hold nothing is refused.** A gate whose record is for
+  the whole project, such as `binsize`, passed that list in silence before.
+- **`chock init --global` waits out a dropped link.** A rustup or git download that the network
+  fails is tried again after 10 s and after 30 s. A third failure names the command, the error and
+  what to check. The cargo-mutest build prints each step, so a long step does not look like a hang.
+- **Miri runs chock's own suite.** Each test that Miri cannot run, or did not end in 15 minutes,
+  is marked with the reason.
+- **`miri` names a stuck test.** Each test has five minutes under Miri. A test past that stops,
+  and the finding names it. Before, one stuck test used the whole run's limit and was not named.
+  A `default-miri` profile in the project's own nextest settings still wins.
+- **`mutest` joins its targets.** A mutation is a survivor only when every target that ran it
+  missed it. Before, a miss in one target counted even when another target detected it.
+- **`mutest` names each mutation that timed out.** Each one is a finding at its file and line,
+  with `grade` set to `candidate`. Before, one line gave only a count.
+- **`chock init --global` needs no project.** Outside a project, or in one with no
+  `tool-versions.env`, it installs the pins this chock ships. Before, it stopped with "cannot
+  read", so the first step that the README gives each machine failed.
+- **A release checks the runs on `main`, and does not repeat them.** A `v*` tag publishes only
+  when the `ci.yml` run on `main` for the tagged commit passed on the three systems and its
+  `corpus.yml` run passed on the nine projects. Each push to `main` starts both.
+- **`miri` runs one part of its suite.** `chock run --miri-partition=K/N` runs part K of N, as
+  nextest's `count:K/N` partition splits the tests. CI can run the N parts as jobs at once. Each
+  part keeps its verdict under a key of its own.
+- **`crap` leaves out `build.rs`.** No test can reach a build script, so its score says nothing
+  about the tests.
+- **The run lock names its holder.** A second run gives the first run's pid, command and how long
+  it has held the lock. It advises a delete of the lock only when that run may have exited.
+- **chock runs on code that its authors did not write.** The `corpus` workflow, started by hand,
+  runs every gate twice on nine public Rust projects at pinned commits. It fails on a crash, a
+  gate with no row, or a gate that passed and then tripped on the same tree.
+
 ## [0.1.1] - 2026-10-06
 
 No command or flag is removed or renamed, and the JSON reports keep their shape. The text that

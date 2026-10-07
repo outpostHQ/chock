@@ -13,6 +13,14 @@ A ratchet holds each file and function to its record. Two keys make it stricter.
 | `strict` | holds the ratchets it lists to zero: any finding trips, and no baseline is needed |
 | `clean_when_touched` | holds the ratchets it lists to zero in each file the change touches; the other files keep their record |
 
+`chock init --local` writes `clean_when_touched` with each ratchet that it switched on, where the
+ratchet keeps a number for each file and measures the same on every machine. Remove a name to hold
+that gate to its record only.
+
+`clean_when_touched` holds only a gate that keeps a number for each file or function. chock
+refuses a config that lists another gate there, such as `binsize`, whose record is for the whole
+project.
+
 In CI, `clean_when_touched` compares `HEAD` with its parent, so the checkout needs `fetch-depth: 2`.
 Without the parent, the gate cannot run.
 
@@ -25,7 +33,8 @@ Without the parent, the gate cannot run.
 | `message` | the widest commit subject and the longest body allowed |
 | `stage` | gates that run at another step than their default; `chock stage` writes it |
 | `local_only` | gates CI cannot run; `chock run --ci` leaves them out |
-| `runner_tools` | tools your `runner` calls, so a cached verdict knows to re-run when they change |
+| `runner_tools` | tools your `runner` calls; with them named, `test` keeps its verdict until one of them changes |
+| `coverage_tools` | tools your `coverage` command calls; with them named, `coverage` and `crap` keep their verdict until one of them changes |
 | `not_shipped` | members nobody receives (fuzz harnesses, benchmarks), held to test-code rules |
 | `miri` | which packages Miri runs over, and its flags |
 | `commands` | your own checks: a `name` and a `run` command; one that `counts` is ratcheted per item |

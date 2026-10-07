@@ -27,7 +27,9 @@ fn kept_as(gate: &str, system: &str) -> String {
     }
 }
 
-fn kept_here(gate: &str) -> String {
+/// The name this system keeps the gate's record under.
+#[must_use]
+pub fn kept_here(gate: &str) -> String {
     kept_as(gate, std::env::consts::OS)
 }
 
@@ -69,7 +71,7 @@ impl Keys {
 }
 
 /// One gate's numbers, lower always better. A `BTreeMap` so the file is sorted and diffs are small.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Series(pub BTreeMap<String, u64>);
 
 fn schema_url() -> String {
@@ -288,10 +290,13 @@ impl Baseline {
     /// the caller decides whether that means "record me" or "cannot run".
     #[must_use]
     pub fn gate(&self, name: &str) -> Series {
-        self.gates
-            .get(&kept_here(name))
-            .cloned()
-            .unwrap_or_default()
+        self.recorded(name).cloned().unwrap_or_default()
+    }
+
+    /// The series recorded for `gate`, or `None` where it has none yet.
+    #[must_use]
+    pub fn recorded(&self, name: &str) -> Option<&Series> {
+        self.gates.get(&kept_here(name))
     }
 
     #[must_use]
@@ -746,12 +751,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_missing_baseline_file_is_absence_rather_than_failure() {
         let dir = crate::testdir::make("baseline-missing");
         assert_eq!(document::read::<Baseline>(&dir), Ok(None));
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_written_baseline_reads_back_from_its_project_root() {
         let dir = crate::testdir::make("baseline-roundtrip");
         let mut base = Baseline::empty("0.1.0");
@@ -845,6 +852,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_that_keeps_its_own_record_names_what_that_record_holds() {
         let dir = crate::testdir::make("held-own-record");
         let file = dir.join(crate::gates::own_baseline("crap").unwrap());

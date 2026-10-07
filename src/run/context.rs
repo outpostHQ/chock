@@ -55,6 +55,10 @@ pub struct Ctx {
     pub ci: bool,
     /// Whether a gate that narrows a local run to the change must measure the whole tree.
     pub whole: bool,
+    /// Whether every gate is judged again, with no verdict recalled; the new one is still kept.
+    pub no_cache: bool,
+    /// The part of the Miri suite this run takes, from `--miri-partition`; `None` is all of it.
+    pub miri_part: Option<crate::gates::tools::miri::Part>,
 }
 
 impl Ctx {
@@ -86,6 +90,8 @@ impl Ctx {
             changed: std::sync::Arc::default(),
             ci: false,
             whole: false,
+            no_cache: false,
+            miri_part: None,
         }
     }
 
@@ -199,13 +205,21 @@ pub fn default_coverage() -> Coverage {
     // Not `--all-targets`: a `harness = false` bench refuses nextest's listing.
     let argv = "cargo llvm-cov nextest --workspace --no-tests=pass --lcov --output-path";
     let argv: Vec<String> = argv.split(' ').chain([LCOV]).map(str::to_string).collect();
-    argv.into()
+    Coverage {
+        // chock's own command, so chock knows what it calls. A project with its own must say.
+        tools: ["cargo", "cargo-llvm-cov", "cargo-nextest"]
+            .map(str::to_string)
+            .to_vec(),
+        ..argv.into()
+    }
 }
 
 /// The command and its invocation-local measurement stay together when a context is cloned.
 #[derive(Debug, Clone)]
 pub struct Coverage {
     pub argv: Vec<String>,
+    /// The commands `argv` calls, which chock cannot see in a project's own command.
+    pub tools: Vec<String>,
     pub(crate) report: std::sync::Arc<std::sync::OnceLock<Result<gates::coverage::Report, String>>>,
 }
 
@@ -213,6 +227,7 @@ impl From<Vec<String>> for Coverage {
     fn from(argv: Vec<String>) -> Self {
         Self {
             argv,
+            tools: Vec::new(),
             report: std::sync::Arc::default(),
         }
     }
@@ -262,7 +277,12 @@ pub fn runner_for(config: Option<&crate::project::config::Config>) -> Runner {
 #[must_use]
 pub fn coverage_for(config: Option<&crate::project::config::Config>) -> Coverage {
     if let Some(argv) = config.and_then(|set| set.coverage.clone()) {
-        return argv.into();
+        return Coverage {
+            tools: config
+                .and_then(|set| set.coverage_tools.clone())
+                .unwrap_or_default(),
+            ..argv.into()
+        };
     }
     let mut coverage = default_coverage();
     coverage
@@ -308,5 +328,43 @@ mod tests {
         };
         assert_eq!(Ctx::from_config(Some(&config)).accepted, vec![fixture]);
         assert!(Ctx::from_config(None).accepted.is_empty());
+    }
+
+    /// A project's own command hides what it calls, so the names it gives are all a key holds.
+    #[test]
+    fn the_tools_a_project_names_for_its_own_commands_reach_the_run() {
+        let named = Config {
+            runner: Some(vec!["bin/test-rust".to_string()]),
+            runner_tools: Some(vec!["cargo-nextest".to_string()]),
+            coverage: Some(vec!["bin/coverage-rust".to_string(), LCOV.to_string()]),
+            coverage_tools: Some(vec!["cargo-llvm-cov".to_string()]),
+            ..Config::of(["test"])
+        };
+        assert_eq!(runner_for(Some(&named)).tools, ["cargo-nextest"]);
+        assert_eq!(coverage_for(Some(&named)).tools, ["cargo-llvm-cov"]);
+        let unnamed = Config {
+            runner_tools: None,
+            coverage_tools: None,
+            ..named
+        };
+        assert!(runner_for(Some(&unnamed)).tools.is_empty());
+        assert!(coverage_for(Some(&unnamed)).tools.is_empty());
+    }
+
+    /// chock knows what its own commands call, so a list for a command the project did not
+    /// replace changes nothing.
+    #[test]
+    fn the_default_commands_keep_the_tools_chock_knows() {
+        let listed = Config {
+            runner_tools: Some(vec!["just".to_string()]),
+            coverage_tools: Some(vec!["just".to_string()]),
+            ..Config::of(["test"])
+        };
+        assert_eq!(runner_for(Some(&listed)).tools, default_runner().tools);
+        assert_eq!(coverage_for(Some(&listed)).tools, default_coverage().tools);
+        assert_eq!(
+            default_coverage().tools,
+            ["cargo", "cargo-llvm-cov", "cargo-nextest"]
+        );
     }
 }

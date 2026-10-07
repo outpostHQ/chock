@@ -240,6 +240,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_that_is_not_text_holds_no_block_rather_than_ending_the_walk() {
         let dir = tree(
             "slop-not-text",
@@ -444,6 +445,7 @@ mod tests {
 
     /// Each entry before `e_real.rs` is skipped for a different reason.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_skipped_candidate_does_not_end_the_walk_over_the_files_after_it() {
         let dir = tree(
             "slop-scan-skips",

@@ -482,6 +482,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_a_gate_produced_leaves_the_digest_where_it_was() {
         let dir = crate::testdir::make("project-digest");
         std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
@@ -546,45 +547,37 @@ mod tests {
         assert!(!is_crate_code("src/lib.rs", &[]));
     }
 
+    /// The `.rs` files the walk reaches under `dir`, shown from it.
+    fn reached(dir: &Path) -> Vec<String> {
+        let found = walk(dir, &|_| true, &|name, _| name.ends_with(".rs")).unwrap();
+        found.iter().map(|p| relative(dir, p)).collect()
+    }
+
     /// A name list cannot catch a renamed target directory; cargo's marker can.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_directory_that_marks_itself_a_build_cache_is_not_descended_however_it_is_named() {
-        let dir = crate::testdir::make("project-build-cache");
-        for held in ["target-coverage", "kept"] {
-            std::fs::create_dir_all(dir.join(held)).unwrap();
-            std::fs::write(dir.join(held).join("f.rs"), "").unwrap();
-        }
-        std::fs::write(
-            dir.join("target-coverage/CACHEDIR.TAG"),
-            "Signature: 8a477f597d28d172",
-        )
-        .unwrap();
-        let found = walk(&dir, &|_| true, &|name, _| name.ends_with(".rs")).unwrap();
-        let shown: Vec<String> = found.iter().map(|p| relative(&dir, p)).collect();
-        assert_eq!(shown, vec!["kept/f.rs".to_string()]);
+        let marker = "Signature: 8a477f597d28d172";
+        let tag = ("target-coverage/CACHEDIR.TAG", marker);
+        let files = [("target-coverage/f.rs", ""), ("kept/f.rs", ""), tag];
+        let dir = crate::testdir::tree("project-build-cache", &files);
+        assert_eq!(reached(&dir), ["kept/f.rs"]);
     }
 
     /// A target directory made before cargo runs has no marker, but the `.gitignore` names it.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_directory_the_project_gitignores_is_not_walked() {
-        let dir = crate::testdir::make("project-gitignored");
-        std::fs::write(dir.join(".gitignore"), "/target-coverage/\nnode_cache\n").unwrap();
-        for held in ["target-coverage", "node_cache", "kept"] {
-            std::fs::create_dir_all(dir.join(held)).unwrap();
-            std::fs::write(dir.join(held).join("f.rs"), "").unwrap();
-        }
         // An anchored pattern names the root's own directory and nothing deeper with that name.
-        std::fs::create_dir_all(dir.join("kept/target-coverage")).unwrap();
-        std::fs::write(dir.join("kept/target-coverage/f.rs"), "").unwrap();
-        let found = walk(&dir, &|_| true, &|name, _| name.ends_with(".rs")).unwrap();
-        let shown: Vec<String> = found.iter().map(|p| relative(&dir, p)).collect();
-        assert_eq!(
-            shown,
-            vec![
-                "kept/f.rs".to_string(),
-                "kept/target-coverage/f.rs".to_string()
-            ]
-        );
+        let files = [
+            (".gitignore", "/target-coverage/\nnode_cache\n"),
+            ("target-coverage/f.rs", ""),
+            ("node_cache/f.rs", ""),
+            ("kept/f.rs", ""),
+            ("kept/target-coverage/f.rs", ""),
+        ];
+        let dir = crate::testdir::tree("project-gitignored", &files);
+        assert_eq!(reached(&dir), ["kept/f.rs", "kept/target-coverage/f.rs"]);
     }
 
     #[test]
@@ -613,16 +606,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_that_ignores_nothing_is_walked_whole() {
         assert_eq!(ignored_dirs(""), Ignored::default());
-        let dir = crate::testdir::make("project-no-gitignore");
-        std::fs::create_dir_all(dir.join("build")).unwrap();
-        std::fs::write(dir.join("build/f.rs"), "").unwrap();
-        let found = walk(&dir, &|_| true, &|name, _| name.ends_with(".rs")).unwrap();
-        assert_eq!(
-            found.iter().map(|p| relative(&dir, p)).collect::<Vec<_>>(),
-            vec!["build/f.rs".to_string()]
-        );
+        let dir = crate::testdir::tree("project-no-gitignore", &[("build/f.rs", "")]);
+        assert_eq!(reached(&dir), ["build/f.rs"]);
     }
 
     #[test]
@@ -632,6 +620,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_the_walk_passes_over_does_not_end_the_listing_it_sits_in() {
         let dir = crate::testdir::make("project-walk-skip");
         std::fs::create_dir_all(dir.join("a_skipped")).unwrap();
@@ -670,6 +659,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_directory_that_cannot_be_listed_stops_the_walk_rather_than_being_skipped() {
         let dir = crate::testdir::make("project-walk-unreadable");
         std::fs::write(dir.join("kept.rs"), "").unwrap();
@@ -678,6 +668,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_rust_file_with_a_stderr_beside_it_is_a_compile_fail_fixture() {
         let dir = crate::testdir::make("project-fixture");
         std::fs::write(dir.join("bad.rs"), "fn broken( {").unwrap();
@@ -720,6 +711,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn find_reads_a_real_tree_and_not_only_the_injected_one() {
         let dir = crate::testdir::make("project-find");
         let deep = dir.join("a/b");
@@ -778,6 +770,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_that_does_not_decode_is_held_as_a_path_with_nothing_to_say() {
         let dir = crate::testdir::make("project-undecodable");
         std::fs::write(dir.join("good.rs"), "fn f() {}\n").unwrap();
@@ -802,6 +795,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_workspace_metadata_names_this_package() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let json = metadata(&root).unwrap();
@@ -809,6 +803,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_resolved_graph_carries_the_dependencies_the_workspace_one_leaves_out() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         assert!(
@@ -825,6 +820,7 @@ mod tests {
 
     /// cargo names the missing file below its first line, so the reason quotes past it.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_workspace_cargo_cannot_read_is_refused_with_the_file_it_could_not_find() {
         let dir = crate::testdir::make("project-missing-member");
         std::fs::write(

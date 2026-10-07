@@ -245,6 +245,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_gate_walks_every_source_file_and_refuses_with_nothing_listed() {
         let dir = crate::testdir::make("phrases-tree");
         std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -285,6 +286,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri prints the code of an OS error twice")]
     fn bytes_that_are_not_text_are_passed_over_and_a_file_that_cannot_be_read_refuses() {
         let dir = crate::testdir::make("phrases-unreadable");
         std::fs::create_dir_all(dir.join("src")).unwrap();

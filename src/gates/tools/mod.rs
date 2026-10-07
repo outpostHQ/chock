@@ -162,7 +162,7 @@ pub const BSIZE: Gate = Gate {
     about: "where the binary's bytes are — an instrument, not a gate",
     group: Group::Instrument,
     builds: true,
-    reads: None,
+    reads: Some(Reads::tree_and(&["cargo", "cargo-bsize"])),
     kind: Kind::Binary(binsize::bsize),
 };
 
@@ -340,14 +340,40 @@ fn failed_tests(text: &str) -> BTreeSet<String> {
 
 /// `FAIL [   0.005s] <binary-id> <test path>`. `FLAKY` is not a failure: the test passed on retry.
 fn failed_test(line: &str) -> Option<String> {
-    const VERDICTS: [&str; 5] = ["FAIL", "TIMEOUT", "ABORT", "SIGSEGV", "LEAK-FAIL"];
+    marked(line, &["FAIL", "TIMEOUT", "ABORT", "SIGSEGV", "LEAK-FAIL"])
+}
+
+/// Every test nextest stopped at its time limit, from both streams.
+pub(super) fn timed_out_tests(out: &exec::Output) -> BTreeSet<String> {
+    [&out.stdout, &out.stderr]
+        .into_iter()
+        .flat_map(|text| text.lines())
+        .filter_map(|line| marked(&exec::strip_colour(line), &["TIMEOUT"]))
+        .collect()
+}
+
+/// The test a nextest verdict line names, when the line starts with one of `verdicts`.
+fn marked(line: &str, verdicts: &[&str]) -> Option<String> {
     let trimmed = line.trim();
-    let rest = VERDICTS
+    let rest = verdicts
         .iter()
         .find_map(|mark| trimmed.strip_prefix(mark))?;
     let (_duration, named) = rest.trim_start().strip_prefix('[')?.split_once(']')?;
-    let named = named.trim();
+    let named = uncounted(named.trim());
     (!named.is_empty()).then(|| named.to_string())
+}
+
+/// The name after the progress count newer nextest prints first: `(  12/1783) chock tests::x`.
+fn uncounted(named: &str) -> &str {
+    let counted = named
+        .strip_prefix('(')
+        .and_then(|rest| rest.split_once(')'))
+        .filter(|(count, _)| {
+            count
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '/' || c == ' ')
+        });
+    counted.map_or(named, |(_count, after)| after.trim_start())
 }
 
 pub const IDEMPOTENT: Gate = Gate {
@@ -1182,6 +1208,28 @@ mod tests {
         assert_eq!(failed_test("nothing here"), None);
     }
 
+    /// As nextest 0.9.146 prints it: the count changes from run to run, and the name does not.
+    #[test]
+    fn the_progress_count_before_a_test_is_not_part_of_its_name() {
+        let line = "        FAIL [   2.319s] (  12/1783) chock cli::args::tests::one";
+        assert_eq!(
+            failed_test(line).as_deref(),
+            Some("chock cli::args::tests::one")
+        );
+        let out = exec::Output {
+            code: Some(100),
+            stdout: String::new(),
+            stderr: "     TIMEOUT [ 300.004s] (1783/1783) chock slow::hangs\n".to_string(),
+            truncated: false,
+        };
+        assert_eq!(
+            timed_out_tests(&out).into_iter().collect::<Vec<_>>(),
+            ["chock slow::hangs"]
+        );
+        assert_eq!(uncounted("(not a count) x"), "(not a count) x");
+        assert_eq!(uncounted("(12/1783 x"), "(12/1783 x");
+    }
+
     /// The shape `--output json` prints, from cargo-udeps 0.1.61's own `Outcome`.
     #[test]
     fn a_deep_unused_dependency_names_the_table_that_declares_it() {
@@ -1341,6 +1389,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_suite_is_started_by_the_command_the_project_named() {
         let mut ctx = ctx_here();
         ctx.runner.argv = vec!["true".to_string()];
@@ -1348,6 +1397,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_failing_runner_is_a_failing_suite_and_not_a_gate_that_could_not_run() {
         let mut ctx = ctx_here();
         ctx.runner.argv = vec!["false".to_string()];

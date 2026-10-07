@@ -1,6 +1,7 @@
 //! Reads survivors from the JSON mutest writes per target: parallel runs interleave its text
 //! output, so a verdict there cannot be matched to its mutation.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -33,28 +34,31 @@ impl Results {
         format!("--metadata-out-root-dir={}", self.directory.display())
     }
 
-    /// Every evaluated target's survivors, which must number the `expected` from the text totals,
-    /// or a target that wrote no results would read as clean.
-    pub(super) fn survivors(&self, expected: u64) -> Result<Vec<Survivor>, String> {
+    /// Every evaluated target's verdicts, joined per mutation. The undetected ones must number the
+    /// `expected` from the text totals, or a target that wrote no results would read as clean.
+    pub(super) fn survivors(&self, expected: u64) -> Result<Joined, String> {
         let read = |path: &Path| {
             std::fs::read_to_string(path)
                 .map_err(|error| format!("cannot read {}: {error}", path.display()))
         };
-        let mut survivors = Vec::new();
+        let mut judged = Vec::new();
         // A target no test reaches is analysed but never evaluated, so it has no evaluation.json.
         for evaluation in crate::project::walk(&self.directory, &|_| true, &|name, _| {
             name == "evaluation.json"
         })? {
             let mutations = read(&evaluation.with_file_name("mutations.json"))?;
-            survivors.extend(undetected(&mutations, &read(&evaluation)?)?);
+            judged.extend(verdicts(&mutations, &read(&evaluation)?)?);
         }
-        if u64::try_from(survivors.len()) != Ok(expected) {
+        let undetected = judged
+            .iter()
+            .filter(|(_, verdict)| *verdict == Verdict::Undetected)
+            .count();
+        if u64::try_from(undetected) != Ok(expected) {
             return Err(format!(
-                "mutest reported {expected} undetected mutations but its results name {}; the result is incomplete",
-                survivors.len()
+                "mutest reported {expected} undetected mutations but its results name {undetected}; the result is incomplete"
             ));
         }
-        Ok(survivors)
+        Ok(joined(judged))
     }
 
     /// Each target mutest analysed, as `package/lib` or `package/tests/cli`: where it wrote mutations.
@@ -80,6 +84,13 @@ impl Results {
     }
 }
 
+/// Each mutation every target missed, and each one only a time limit stopped.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct Joined {
+    pub survivors: Vec<Survivor>,
+    pub timed_out: Vec<Survivor>,
+}
+
 #[derive(Deserialize)]
 struct Mutations {
     mutations: Vec<Mutation>,
@@ -97,6 +108,54 @@ struct Mutation {
 struct Span {
     path: String,
     begin: (u32, u32),
+    end: (u32, u32),
+}
+
+/// The same change in every target that reaches it, since mutest numbers mutations per target.
+type Identity = (String, (u32, u32), (u32, u32), String, String);
+
+impl Mutation {
+    fn identity(&self) -> Identity {
+        let span = &self.origin_span;
+        let file = span.path.replace('\\', "/");
+        let (op, what) = (self.mutation_op.clone(), self.display_name.clone());
+        (file, span.begin, span.end, op, what)
+    }
+
+    fn survivor(self) -> Survivor {
+        Survivor {
+            operator: self.mutation_op,
+            file: self.origin_span.path.replace('\\', "/"),
+            line: self.origin_span.begin.0,
+            what: self.display_name,
+        }
+    }
+}
+
+/// One target's verdict on a mutation, weakest first: across targets the strongest one holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Verdict {
+    NotRun,
+    Undetected,
+    TimedOut,
+    Crashed,
+    Detected,
+}
+
+impl Verdict {
+    fn of(mark: u8) -> Result<Self, String> {
+        match mark {
+            b'.' => Ok(Self::NotRun),
+            b'-' => Ok(Self::Undetected),
+            b'T' => Ok(Self::TimedOut),
+            b'C' => Ok(Self::Crashed),
+            b'D' => Ok(Self::Detected),
+            _ => Err(format!(
+                "mutest wrote a verdict chock does not know: {:?}",
+                char::from(mark)
+            )),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -114,9 +173,9 @@ struct Matrix {
     overall_detections: String,
 }
 
-/// One target's undetected mutations. Verdicts are one character per mutation in id order, so a
-/// length mismatch or out-of-order ids is refused.
-fn undetected(mutations: &str, evaluation: &str) -> Result<Vec<Survivor>, String> {
+/// One target's mutations, each with its verdict. Verdicts are one character per mutation in id
+/// order, so a length mismatch or out-of-order ids is refused.
+fn verdicts(mutations: &str, evaluation: &str) -> Result<Vec<(Mutation, Verdict)>, String> {
     let unreadable =
         |error: serde_json::Error| format!("mutest wrote results chock cannot read: {error}");
     let mutations: Mutations = serde_json::from_str(mutations).map_err(unreadable)?;
@@ -131,18 +190,33 @@ fn undetected(mutations: &str, evaluation: &str) -> Result<Vec<Survivor>, String
     if verdicts.len() != mutations.mutations.len() || !in_order {
         return Err("mutest's verdicts do not line up with its mutations".to_string());
     }
-    Ok(mutations
+    mutations
         .mutations
         .into_iter()
         .zip(verdicts)
-        .filter(|(_, verdict)| **verdict == b'-')
-        .map(|(mutation, _)| Survivor {
-            operator: mutation.mutation_op,
-            file: mutation.origin_span.path.replace('\\', "/"),
-            line: mutation.origin_span.begin.0,
-            what: mutation.display_name,
-        })
-        .collect())
+        .map(|(mutation, mark)| Ok((mutation, Verdict::of(*mark)?)))
+        .collect()
+}
+
+/// Each mutation once, under the strongest verdict any target gave it: a test in any target that
+/// detects it settles it, so only a mutation every target missed survives.
+fn joined(judged: Vec<(Mutation, Verdict)>) -> Joined {
+    let mut strongest: BTreeMap<Identity, (Mutation, Verdict)> = BTreeMap::new();
+    for (mutation, verdict) in judged {
+        let held = strongest
+            .entry(mutation.identity())
+            .or_insert((mutation, verdict));
+        held.1 = held.1.max(verdict);
+    }
+    let mut joined = Joined::default();
+    for (mutation, verdict) in strongest.into_values() {
+        match verdict {
+            Verdict::Undetected => joined.survivors.push(mutation.survivor()),
+            Verdict::TimedOut => joined.timed_out.push(mutation.survivor()),
+            Verdict::NotRun | Verdict::Crashed | Verdict::Detected => {}
+        }
+    }
+    joined
 }
 
 #[cfg(test)]
@@ -180,9 +254,23 @@ mod tests {
         assert!(refused.contains("not under a project root"), "{refused}");
     }
 
+    /// One target's verdicts, joined as a run joins every target's.
+    fn judged(mutations: &str, evaluation: &str) -> Result<Joined, String> {
+        verdicts(mutations, evaluation).map(joined)
+    }
+
+    fn named(operator: &str, line: u32) -> Survivor {
+        Survivor {
+            operator: operator.into(),
+            file: "src/a.rs".into(),
+            line,
+            what: format!("change {line}"),
+        }
+    }
+
     #[test]
-    fn only_an_undetected_verdict_names_a_survivor() {
-        let found = undetected(
+    fn only_an_undetected_verdict_names_a_survivor_and_only_a_time_limit_a_timeout() {
+        let found = judged(
             &mutations(&[
                 "eq_op_invert",
                 "call_delete",
@@ -193,49 +281,91 @@ mod tests {
             &evaluation("D-TC."),
         )
         .unwrap();
-        assert_eq!(
-            found,
-            [Survivor {
-                operator: "call_delete".into(),
-                file: "src/a.rs".into(),
-                line: 2,
-                what: "change 2".into(),
-            }]
+        let expected = Joined {
+            survivors: vec![named("call_delete", 2)],
+            timed_out: vec![named("bool_expr_negate", 3)],
+        };
+        assert_eq!(found, expected);
+        let twice = judged(
+            &mutations(&["call_delete", "call_delete"]),
+            &evaluation("--"),
         );
+        assert_eq!(
+            twice.unwrap().survivors,
+            [named("call_delete", 1), named("call_delete", 2)]
+        );
+    }
+
+    /// As `report.rs:481` on 0.2.0: the `--lib` tests detected it, and a test in `tests/cli` that
+    /// only starts chock reached it and missed.
+    #[test]
+    fn a_mutation_one_target_settles_survives_in_no_other() {
+        let one = mutations(&["call_delete"]);
+        let joined_of = |marks: &[&str]| {
+            let mut judged = Vec::new();
+            for mark in marks {
+                judged.extend(verdicts(&one, &evaluation(mark)).unwrap());
+            }
+            joined(judged)
+        };
+        let survived = Joined {
+            survivors: vec![named("call_delete", 1)],
+            ..Joined::default()
+        };
+        let timed = Joined {
+            timed_out: vec![named("call_delete", 1)],
+            ..Joined::default()
+        };
+        for (marks, expected) in [
+            (&["D", "-"][..], Joined::default()),
+            (&["-", "C"], Joined::default()),
+            (&["T", "D"], Joined::default()),
+            (&[".", "."], Joined::default()),
+            (&["-", "T"], timed),
+            (&["-", "."], survived.clone()),
+            (&["-", "-"], survived),
+        ] {
+            assert_eq!(joined_of(marks), expected, "{marks:?}");
+        }
     }
 
     /// mutest names a file with the system's separator; keys must not differ between systems.
     #[test]
     fn a_survivor_is_named_with_forward_slashes_on_every_system() {
         let windows = mutations(&["bool_expr_negate"]).replace("src/a.rs", r"src\\gates\\a.rs");
-        let found = undetected(&windows, &evaluation("-")).unwrap();
-        assert_eq!(found[0].key(), "src/gates/a.rs#bool_expr_negate");
+        let found = judged(&windows, &evaluation("-")).unwrap();
+        assert_eq!(found.survivors[0].key(), "src/gates/a.rs#bool_expr_negate");
     }
 
     #[test]
     fn verdicts_that_cannot_be_paired_with_their_mutations_are_refused() {
         let two = mutations(&["a", "b"]);
         for verdicts in ["-", "D--"] {
-            let why = undetected(&two, &evaluation(verdicts)).unwrap_err();
+            let why = judged(&two, &evaluation(verdicts)).unwrap_err();
             assert!(why.contains("do not line up"), "{why}");
         }
         let reordered = two.replace(r#""mutation_id":1"#, r#""mutation_id":3"#);
-        assert!(undetected(&reordered, &evaluation("--")).is_err());
+        assert!(judged(&reordered, &evaluation("--")).is_err());
+        assert_eq!(
+            judged(&two, &evaluation("D?")).unwrap_err(),
+            "mutest wrote a verdict chock does not know: '?'"
+        );
         let none = r#"{"mutation_runs":[]}"#;
         assert!(
-            undetected(&two, none)
+            judged(&two, none)
                 .unwrap_err()
                 .contains("other than one evaluation")
         );
         assert!(
-            undetected("not json", &evaluation("--"))
+            judged("not json", &evaluation("--"))
                 .unwrap_err()
                 .contains("cannot read")
         );
-        assert!(undetected(&two, "{}").unwrap_err().contains("cannot read"));
+        assert!(judged(&two, "{}").unwrap_err().contains("cannot read"));
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn every_evaluated_target_is_read_and_the_directory_goes_with_the_run() {
         let root = crate::testdir::make("mutest-results");
         let results = Results::create(&root).unwrap();
@@ -252,20 +382,23 @@ mod tests {
         target("lib", &["eq_op_invert", "call_delete"], Some("-D"));
         target("tests/cli", &["bool_expr_negate"], Some("-"));
         target("bin", &["unary_op_delete"], None);
+        // The totals count each target's verdict, and the joined results name each mutation once.
+        target("tests/more", &["eq_op_invert"], Some("-"));
         let mut operators: Vec<String> = results
-            .survivors(2)
+            .survivors(3)
             .unwrap()
+            .survivors
             .into_iter()
             .map(|survivor| survivor.operator)
             .collect();
         operators.sort();
         assert_eq!(operators, ["bool_expr_negate", "eq_op_invert"]);
-        for expected in [1, 3] {
+        for expected in [2, 4] {
             let why = results.survivors(expected).unwrap_err();
-            assert!(why.contains("its results name 2"), "{why}");
+            assert!(why.contains("its results name 3"), "{why}");
         }
         std::fs::remove_file(directory.join("fixture/lib/mutations.json")).unwrap();
-        assert!(results.survivors(2).unwrap_err().contains("cannot read"));
+        assert!(results.survivors(3).unwrap_err().contains("cannot read"));
         assert!(
             results
                 .retained()
@@ -276,6 +409,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_root_nothing_can_be_written_under_is_refused() {
         let root = crate::testdir::make("mutest-results-file");
         let file = root.join("not-a-directory");

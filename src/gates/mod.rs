@@ -14,7 +14,8 @@ pub mod text;
 pub mod tools;
 pub mod wiring;
 
-use crate::run::{Gate, Group};
+use crate::run::baseline::Keys;
+use crate::run::{Gate, Group, Kind};
 
 static REGISTRY: &[Gate] = &[
     tools::TEST,
@@ -53,6 +54,8 @@ static REGISTRY: &[Gate] = &[
     tools::MSRV,
     text::slop::GATE,
     metrics::bigfiles::GATE,
+    metrics::splits::GATE,
+    metrics::lean::GATE,
     tools::binsize::GATE,
     metrics::complexity::GATE,
     metrics::nesting::GATE,
@@ -90,7 +93,7 @@ pub fn runs_on(gate: &str, os: &str) -> bool {
 
 /// Ratchets whose count is the same on every machine and system, because they read source text or
 /// every target's metadata. Only these lower their own record: the rest wait for `--lower`.
-const SETTLES_ANYWHERE: [&str; 19] = [
+const SETTLES_ANYWHERE: [&str; 21] = [
     "assertions",
     "bigfiles",
     "citations",
@@ -98,6 +101,7 @@ const SETTLES_ANYWHERE: [&str; 19] = [
     "dupdeps",
     "duplication",
     "features",
+    "lean",
     "manifest",
     "modcheck",
     "nesting",
@@ -106,6 +110,7 @@ const SETTLES_ANYWHERE: [&str; 19] = [
     "slop",
     "sort",
     "source",
+    "splits",
     "supply",
     "typos",
     "unsafety",
@@ -117,6 +122,27 @@ const SETTLES_ANYWHERE: [&str; 19] = [
 #[must_use]
 pub fn settles_anywhere(gate: &str) -> bool {
     SETTLES_ANYWHERE.contains(&gate)
+}
+
+/// Gates that count items but key each one by a name, not by the file it is in.
+const KEYED_BY_NAME: [&str; 6] = [
+    "boundaries",
+    "commands",
+    "commands-build",
+    "dupdeps",
+    "sort",
+    "supply",
+];
+
+/// Whether the gate keeps a number for each file, which is what `clean_when_touched` holds to zero.
+#[must_use]
+pub fn holds_each_file(name: &str) -> bool {
+    let by_item = find(name).is_some_and(|gate| match gate.kind {
+        Kind::Debt { .. } => true,
+        Kind::Ratchet { keys, .. } | Kind::AnnotatedRatchet { keys, .. } => keys == Keys::Items,
+        Kind::Binary(_) => false,
+    });
+    by_item && !KEYED_BY_NAME.contains(&name)
 }
 
 /// Gates that build in a cargo target directory of their own and run no test suite. Cargo locks
@@ -217,6 +243,36 @@ mod tests {
             assert!(
                 justfile.lines().any(|line| line.starts_with(&want)),
                 "the justfile has no `{want}` recipe"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_gate_with_a_number_for_each_file_is_held_where_a_change_touches() {
+        for name in KEYED_BY_NAME {
+            assert!(
+                find(name).is_some_and(|gate| gate.counts_in().is_some()),
+                "{name} is no gate recording a number"
+            );
+            assert!(!holds_each_file(name), "{name} keys its record by a name");
+        }
+        for by_file in ["complexity", "nesting", "coverage", "phrases", "modcheck"] {
+            assert!(
+                holds_each_file(by_file),
+                "{by_file} keeps a number for each file"
+            );
+        }
+        for whole in [
+            "binsize",
+            "codeslop",
+            "lenses",
+            "measures",
+            "test",
+            "no-such-gate",
+        ] {
+            assert!(
+                !holds_each_file(whole),
+                "{whole} keeps no number for each file"
             );
         }
     }

@@ -24,7 +24,7 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let series = graded(check)?;
     let mut findings = caveat(check);
     findings.extend(check.sites_over(&series, &ctx.record(GATE.name)));
-    Ok(Measurement { series, findings })
+    Ok(Measurement::of(series, findings))
 }
 
 /// A note when modularity is under Outpost's floor, where the totals move as files are added.

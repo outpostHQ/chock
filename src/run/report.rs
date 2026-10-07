@@ -5,6 +5,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::run::baseline::{Baseline, Series};
+
 /// Bumped only by adding a field, so a consumer written against v1 keeps working.
 pub const SCHEMA: u32 = 1;
 
@@ -70,6 +72,30 @@ pub struct Finding {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline: Option<u64>,
     pub message: String,
+    /// The other places it is about, each named by what it is to this one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub places: Vec<Place>,
+    /// The change that clears it, where the gate can name one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix: Option<String>,
+    #[serde(default, skip_serializing_if = "Grade::is_finding")]
+    pub grade: Grade,
+}
+
+/// How sure a gate is: a finding counts toward its verdict, a candidate is a lead the source alone
+/// cannot settle, and never trips a gate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Grade {
+    #[default]
+    Finding,
+    Candidate,
+}
+
+impl Grade {
+    fn is_finding(&self) -> bool {
+        *self == Self::Finding
+    }
 }
 
 impl Finding {
@@ -82,7 +108,16 @@ impl Finding {
             measured: None,
             baseline: None,
             message: message.to_string(),
+            places: Vec::new(),
+            fix: None,
+            grade: Grade::Finding,
         }
+    }
+
+    #[must_use]
+    pub fn candidate(mut self) -> Self {
+        self.grade = Grade::Candidate;
+        self
     }
 
     #[must_use]
@@ -118,6 +153,133 @@ impl Finding {
             _ => format!("{locus}: {}", self.message),
         }
     }
+
+    /// The line, other places and fix a gate knows for this finding's key.
+    #[must_use]
+    pub fn detailed(mut self, detail: Option<&Detail>) -> Self {
+        if let Some(detail) = detail {
+            self.line = detail.line.or(self.line);
+            self.places.clone_from(&detail.places);
+            self.fix.clone_from(&detail.fix);
+        }
+        self
+    }
+
+    /// The finding's line, then one indented line per other place and one for the fix.
+    #[must_use]
+    pub fn lines(&self) -> Vec<String> {
+        let places = self
+            .places
+            .iter()
+            .map(|place| format!("  {}", place.render()));
+        let fix = self.fix.iter().map(|fix| format!("  fix: {fix}"));
+        [self.render()]
+            .into_iter()
+            .chain(places)
+            .chain(fix)
+            .collect()
+    }
+
+    /// `lines`, with the code of each place under it, for `chock explain`.
+    #[must_use]
+    pub fn shown(&self, root: &std::path::Path) -> Vec<String> {
+        let mut out = vec![self.render()];
+        for place in &self.places {
+            out.push(format!("  {}", place.render()));
+            out.extend(
+                place
+                    .code(root)
+                    .into_iter()
+                    .map(|code| format!("    {code}")),
+            );
+        }
+        out.extend(self.fix.iter().map(|fix| format!("  fix: {fix}")));
+        out
+    }
+}
+
+/// What a gate knows about one key beyond its number. A finding about that key carries it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Detail {
+    pub line: Option<u32>,
+    pub places: Vec<Place>,
+    pub fix: Option<String>,
+}
+
+/// Most lines of code `chock explain` shows for one place; the rest are counted, not shown.
+const SHOWN_LINES: u32 = 12;
+
+/// Another place a finding is about, such as the other copy of a duplicated body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Place {
+    /// What this place is to the finding, such as `copy` or `caller`.
+    pub role: String,
+    pub file: String,
+    pub line: u32,
+    /// The last line, where the place spans more than one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+}
+
+impl Place {
+    #[must_use]
+    pub fn at(role: &str, file: &str, line: u32) -> Self {
+        Self {
+            role: role.to_string(),
+            file: file.to_string(),
+            line,
+            last: None,
+            item: None,
+        }
+    }
+
+    #[must_use]
+    pub fn through(mut self, last: u32) -> Self {
+        self.last = (last > self.line).then_some(last);
+        self
+    }
+
+    #[must_use]
+    pub fn item(mut self, item: &str) -> Self {
+        self.item = Some(item.to_string());
+        self
+    }
+
+    /// `role: file:line-last item`.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let span = match self.last {
+            Some(last) => format!("{}:{}-{last}", self.file, self.line),
+            None => format!("{}:{}", self.file, self.line),
+        };
+        match &self.item {
+            Some(item) => format!("{}: {span} {item}", self.role),
+            None => format!("{}: {span}", self.role),
+        }
+    }
+
+    /// The place's lines under `root`, numbered, at most `SHOWN_LINES` of them. A file that cannot
+    /// be read shows nothing, since the place line already names it.
+    #[must_use]
+    pub fn code(&self, root: &std::path::Path) -> Vec<String> {
+        let Ok(text) = std::fs::read_to_string(root.join(&self.file)) else {
+            return Vec::new();
+        };
+        let last = self.last.unwrap_or(self.line);
+        let shown_last = last.min(self.line.saturating_add(SHOWN_LINES - 1));
+        let mut out: Vec<String> = text
+            .lines()
+            .zip(1_u32..)
+            .filter(|(_, number)| (self.line..=shown_last).contains(number))
+            .map(|(code, number)| format!("{number:>5} | {code}"))
+            .collect();
+        if last > shown_last {
+            out.push(format!("      | {} more line(s)", last - shown_last));
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,10 +310,10 @@ pub struct GateReport {
     /// so a gate that did not run looks different.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub recalled: bool,
-    /// The lower record this run measured, for the run to write. Not serialised: a cached verdict
-    /// has nothing to lower with.
+    /// The record this run leaves the gate: its first, or a lower one. Not serialised: a cached
+    /// verdict has nothing to write.
     #[serde(skip)]
-    pub tightened: Option<crate::run::baseline::Series>,
+    pub tightened: Option<Series>,
     /// What to do about a gate that tripped, in one sentence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix: Option<String>,
@@ -195,23 +357,85 @@ pub fn remember(
     crate::project::document::write(&path, &record.render_json())
 }
 
-/// What a finished run leaves behind: its record for `chock explain`, and every gain it measured
-/// written into the baseline for the change to commit. CI writes no gain; it fails one left out.
+/// What a run leaves in the record file: each gate's first record, and each lower number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settled {
+    pub record: Baseline,
+    /// Gates that had no record before this run.
+    pub first: Vec<String>,
+    pub lowered: Vec<String>,
+}
+
+impl Settled {
+    fn take(&mut self, held: &Baseline, report: &GateReport, series: &Series) {
+        self.record.set(&report.gate, series.clone());
+        if held.has(&report.gate) {
+            self.lowered.push(report.gate.clone());
+            return;
+        }
+        // The unit goes beside a first record, as `chock baseline` writes it.
+        if let Some(unit) = &report.unit {
+            self.record.units.insert(report.gate.clone(), unit.clone());
+        }
+        self.first.push(report.gate.clone());
+    }
+
+    fn is_empty(&self) -> bool {
+        self.first.is_empty() && self.lowered.is_empty()
+    }
+
+    /// What was written, in the words the run prints: first records, then lowered ones.
+    #[must_use]
+    pub fn said(&self) -> String {
+        let part = |what: &str, gates: &[String]| {
+            (!gates.is_empty()).then(|| format!("{what} {}", gates.join(", ")))
+        };
+        [
+            part("wrote the first record for", &self.first),
+            part("lowered the record for", &self.lowered),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("; ")
+    }
+}
+
+/// What this run writes into the record: each first record and each lower number it measured;
+/// `None` when it has neither.
+#[must_use]
+pub fn locked_in(held: &Baseline, reports: &[GateReport]) -> Option<Settled> {
+    let mut settled = Settled {
+        record: held.clone(),
+        first: Vec::new(),
+        lowered: Vec::new(),
+    };
+    for report in reports {
+        if let Some(series) = &report.tightened {
+            settled.take(held, report, series);
+        }
+    }
+    (!settled.is_empty()).then_some(settled)
+}
+
+/// What a finished run leaves behind: its record for `chock explain`, and each first record and
+/// each gain written into the baseline for the change to commit. CI writes neither.
 pub fn settle(
     root: &std::path::Path,
-    held: &crate::run::baseline::Baseline,
+    held: &Baseline,
     reports: &[GateReport],
     chock_version: &str,
 ) {
     remember_or_say(root, reports, chock_version);
-    let Some((record, lowered)) = crate::run::locked_in(held, reports) else {
+    let Some(mut settled) = locked_in(held, reports) else {
         return;
     };
+    // The file names the chock that wrote it, as `chock baseline` leaves it.
+    settled.record.chock = chock_version.to_string();
     let file = crate::run::baseline::FILE;
-    let gates = lowered.join(", ");
-    let said = match crate::project::document::write(&root.join(file), &record.render()) {
-        Ok(()) => format!("lowered the record for {gates}; commit {file} with this change"),
-        Err(error) => format!("could not lower the record for {gates}: {error}"),
+    let said = match crate::project::document::write(&root.join(file), &settled.record.render()) {
+        Ok(()) => format!("{}; commit {file} with this change", settled.said()),
+        Err(error) => format!("could not write {file}, so this run recorded nothing: {error}"),
     };
     eprintln!("chock: {said}");
 }
@@ -279,7 +503,7 @@ impl GateReport {
         let fix = self.fix.iter().map(|fix| format!("fix: {fix}"));
         self.findings
             .iter()
-            .map(Finding::render)
+            .flat_map(|finding| finding.shown(root))
             .chain(fix)
             .collect()
     }
@@ -465,8 +689,8 @@ pub fn skipped(gate: &str, reason: &str) -> String {
 /// A gate's findings under a heading; a passing gate's findings are advisories.
 fn block(gate: &GateReport) -> String {
     let mut out = format!("\n{} — {}\n", gate.gate, headed(gate));
-    for finding in &gate.findings {
-        out.push_str(&format!("  {}\n", finding.render()));
+    for line in gate.findings.iter().flat_map(Finding::lines) {
+        out.push_str(&format!("  {line}\n"));
     }
     if let Some(fix) = &gate.fix {
         out.push_str(&format!("  fix: {fix}\n"));
@@ -525,6 +749,15 @@ fn rustc_refused(reason: &str) -> bool {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_verdict_taken_now_reads_without_the_recalled_mark() {
+        let mut report = GateReport::new("probe", Verdict::Pass, "chock run probe");
+        assert_eq!(report.summary(), "  probe      ok");
+        report.recalled = true;
+        let recalled = format!("  probe      ok{}recalled", " ".repeat(11));
+        assert_eq!(report.summary(), recalled);
+    }
 
     #[test]
     fn each_verdict_keeps_its_documented_exit_code() {
@@ -721,14 +954,9 @@ mod tests {
         let mut tripped = GateReport::new("slop", Verdict::Tripped, "chock run slop");
         tripped.findings = vec![Finding::at("src/a.rs", "block of 5 lines").line(4)];
         tripped.fix = Some("cut the comment to two lines".to_string());
-        let run = Run::new("0.1.0", vec![tripped.clone()]);
-        assert!(
-            run.render().contains(
-                "slop — chock run slop\n  src/a.rs:4: block of 5 lines\n  fix: cut the comment to two lines\n"
-            ),
-            "{}",
-            run.render()
-        );
+        let rendered = Run::new("0.1.0", vec![tripped.clone()]).render();
+        let told = "slop — chock run slop\n  src/a.rs:4: block of 5 lines\n  fix: cut the comment to two lines\n";
+        assert!(rendered.contains(told), "{rendered}");
         assert_eq!(
             tripped.explained(std::path::Path::new("/nowhere")),
             [
@@ -926,6 +1154,36 @@ mod tests {
     }
 
     #[test]
+    fn the_contract_names_every_field_a_finding_and_its_places_can_carry() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../schema/run-v1.json")).unwrap();
+        let place = Place::at("copy", "src/b.rs", 3).through(9).item("g");
+        let mut finding = Finding::at("src/a.rs", "m")
+            .line(1)
+            .item("f")
+            .numbers(2, Some(1));
+        finding.places = vec![place];
+        finding.fix = Some("merge them".to_string());
+        let written = serde_json::to_value(finding.candidate()).unwrap();
+        for (value, def) in [(&written, "finding"), (&written["places"][0], "place")] {
+            let names = |it: &serde_json::Value| -> std::collections::BTreeSet<String> {
+                it.as_object().unwrap().keys().cloned().collect()
+            };
+            let named = &schema["$defs"][def]["properties"];
+            assert_eq!(names(value), names(named), "{def}");
+        }
+        let grades = &schema["$defs"]["finding"]["properties"]["grade"]["enum"];
+        let spelled =
+            [Grade::Finding, Grade::Candidate].map(|grade| serde_json::to_value(grade).unwrap());
+        assert_eq!(grades.as_array().unwrap().as_slice(), spelled.as_slice());
+        assert!(
+            !serde_json::to_string(&Finding::at("a", "m"))
+                .unwrap()
+                .contains("grade")
+        );
+    }
+
+    #[test]
     fn an_absent_optional_field_is_left_out_rather_than_written_null() {
         let run = Run::new(
             "0.1.0",
@@ -1008,6 +1266,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_failing_report_explains_its_findings_and_a_pass_with_no_record_explains_nothing() {
         let mut tripped = GateReport::new("dupdeps", Verdict::Tripped, "chock run dupdeps");
         tripped.findings = vec![Finding::at("Cargo.toml", "built twice").item("syn")];
@@ -1015,6 +1274,70 @@ mod tests {
         assert_eq!(tripped.explained(&root), ["Cargo.toml: syn: built twice"]);
         let passed = GateReport::new("dupdeps", Verdict::Pass, "chock run dupdeps");
         assert_eq!(passed.explained(&root), Vec::<String>::new());
+        assert!(!passed.recalled);
+    }
+
+    #[test]
+    fn a_place_shows_its_span_where_it_has_more_than_one_line_and_its_item_where_named() {
+        assert_eq!(
+            Place::at("copy", "src/b.rs", 3).through(3).render(),
+            "copy: src/b.rs:3"
+        );
+        let span = Place::at("copy", "src/b.rs", 3).through(5);
+        assert_eq!(span.render(), "copy: src/b.rs:3-5");
+        assert_eq!(span.item("g").render(), "copy: src/b.rs:3-5 g");
+        assert_eq!(
+            Place::at("copy", "src/b.rs", 3).item("g").render(),
+            "copy: src/b.rs:3 g"
+        );
+    }
+
+    #[test]
+    fn a_finding_takes_the_line_places_and_fix_a_gate_knows_for_it() {
+        let detail = Detail {
+            line: Some(9),
+            places: vec![Place::at("copy", "src/b.rs", 2)],
+            fix: Some("merge them".to_string()),
+        };
+        let found = Finding::at("src/a.rs", "a copy")
+            .line(4)
+            .detailed(Some(&detail));
+        let lines = [
+            "src/a.rs:9: a copy",
+            "  copy: src/b.rs:2",
+            "  fix: merge them",
+        ];
+        assert_eq!(found.lines(), lines);
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn explain_shows_each_place_with_its_code_cut_at_twelve_lines() {
+        let text: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+        let root = crate::testdir::tree("report-shown", &[("src/b.rs", text.as_str())]);
+        let mut found = Finding::at("src/a.rs", "a copy").line(1);
+        found.places = vec![
+            Place::at("copy", "src/b.rs", 2).through(15),
+            Place::at("end", "src/b.rs", 20),
+            Place::at("gone", "src/none.rs", 1),
+        ];
+        found.fix = Some("merge them".to_string());
+        let mut shown = vec![
+            "src/a.rs:1: a copy".to_string(),
+            "  copy: src/b.rs:2-15".to_string(),
+        ];
+        shown.extend((2..=13).map(|n| format!("    {n:>5} | line {n}")));
+        shown.extend(
+            [
+                "          | 2 more line(s)",
+                "  end: src/b.rs:20",
+                "       20 | line 20",
+                "  gone: src/none.rs:1",
+                "  fix: merge them",
+            ]
+            .map(String::from),
+        );
+        assert_eq!(found.shown(&root), shown);
     }
 
     fn remembered(root: &std::path::Path) -> Run {
@@ -1022,6 +1345,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_remembered_report_says_when_it_ran_and_keeps_the_gates_this_one_did_not_touch() {
         let dir = crate::testdir::make("report-remember-merged");
         let earlier = GateReport::cannot_run("binsize", "chock run binsize", "no baseline");
@@ -1039,6 +1363,7 @@ mod tests {
 
     /// A call with nothing to keep is not a run that measured nothing, and must not stand for one.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn remembering_no_report_leaves_the_record_exactly_as_it_was() {
         let dir = crate::testdir::make("report-remember-nothing");
         let report = GateReport::cannot_run("probe", "chock run probe", "specific failure");
@@ -1056,6 +1381,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_record_with_nowhere_to_go_writes_nothing_and_touches_nothing() {
         let dir = crate::testdir::make("report-remember-no-room");
         std::fs::write(dir.join(".chock"), "not a directory").unwrap();
@@ -1069,21 +1395,73 @@ mod tests {
     }
 
     #[test]
+    fn nothing_lowered_writes_no_record() {
+        let report = GateReport::new("slop", Verdict::Pass, "chock run slop");
+        assert_eq!(locked_in(&Baseline::empty("0.1.0"), &[report]), None);
+    }
+
+    #[test]
+    fn a_run_says_the_first_records_it_wrote_before_the_ones_it_lowered() {
+        let mut held = Baseline::empty("0.1.0");
+        let mut was = Series::new();
+        was.set("src/a.rs", 9);
+        held.set("slop", was);
+        let wrote = |gate: &str, unit: Option<&str>| {
+            let mut report = GateReport::new(gate, Verdict::Pass, "chock run");
+            let mut now = Series::new();
+            now.set("src/a.rs", 4);
+            report.tightened = Some(now);
+            report.unit = unit.map(str::to_string);
+            report
+        };
+        let reports = [
+            wrote("slop", Some("lines")),
+            wrote("typos", Some("typo(s)")),
+            wrote("nesting", None),
+        ];
+        let settled = locked_in(&held, &reports).unwrap();
+        assert_eq!(
+            settled.said(),
+            "wrote the first record for typos, nesting; lowered the record for slop"
+        );
+        assert_eq!(settled.record.unit("typos"), Some("typo(s)"));
+        assert_eq!(settled.record.unit("nesting"), None);
+        assert_eq!(
+            settled.record.unit("slop"),
+            None,
+            "a lowered record keeps the unit it has"
+        );
+        assert_eq!(settled.record.gate("slop").get("src/a.rs"), Some(4));
+        assert_eq!(settled.record.gate("nesting").get("src/a.rs"), Some(4));
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gain_is_written_into_the_record_and_one_with_nowhere_to_go_writes_nothing() {
         let dir = crate::testdir::make("report-settle");
-        let mut held = crate::run::baseline::Baseline::empty("0.1.0");
+        let mut held = crate::run::baseline::Baseline::empty("0.0.9");
         let mut was = crate::run::baseline::Series::new();
         was.set("src/a.rs", 4);
-        held.set("slop", was);
+        held.set("slop", was.clone());
         let mut gained = GateReport::new("slop", Verdict::Pass, "chock run slop");
         let mut lower = crate::run::baseline::Series::new();
         lower.set("src/a.rs", 2);
         gained.tightened = Some(lower.clone());
+        let written = || -> crate::run::baseline::Baseline {
+            let text = std::fs::read_to_string(dir.join(crate::run::baseline::FILE)).unwrap();
+            crate::project::document::parse(&text, "baseline").unwrap()
+        };
         settle(&dir, &held, std::slice::from_ref(&gained), "0.1.0");
-        let written = std::fs::read_to_string(dir.join(crate::run::baseline::FILE)).unwrap();
-        let read: crate::run::baseline::Baseline =
-            crate::project::document::parse(&written, "baseline").unwrap();
-        assert_eq!(read.gate("slop"), lower);
+        assert_eq!(written().gate("slop"), lower);
+        assert_eq!(written().chock, "0.1.0", "the chock that wrote the file");
+        // A first record goes in with its unit, beside what the run held for the other gates.
+        let mut first = GateReport::new("typos", Verdict::Pass, "chock run typos");
+        first.tightened = Some(lower.clone());
+        first.unit = Some("typo(s)".to_string());
+        settle(&dir, &held, std::slice::from_ref(&first), "0.1.0");
+        assert_eq!(written().gate("typos"), lower);
+        assert_eq!(written().unit("typos"), Some("typo(s)"));
+        assert_eq!(written().gate("slop"), was);
         let blocked = crate::testdir::make("report-settle-blocked");
         std::fs::write(blocked.join(".chock"), "not a directory").unwrap();
         settle(&blocked, &held, &[gained], "0.1.0");
@@ -1094,6 +1472,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a directory")]
     fn a_record_that_cannot_be_written_in_place_is_an_error_not_a_silence() {
         let dir = crate::testdir::make("report-remember-occupied");
         std::fs::create_dir_all(dir.join(LAST_RUN)).unwrap();

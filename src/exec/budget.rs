@@ -339,6 +339,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_courtesy_is_tried_before_it_is_relied_on() {
         // Either answer, as long as it is the same twice and the prefix follows it.
         let tried = can_lower_priority();

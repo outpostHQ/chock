@@ -21,6 +21,8 @@ pub struct Reads {
     pub tools: &'static [&'static str],
     /// Whether the answer comes from the project's own runner, whose tools the project must name.
     pub runner: bool,
+    /// Whether the answer comes from the coverage command. Only chock's own names its tools.
+    pub coverage: bool,
     /// The version of the gate's reader. Raise it when the reading changes, since chock's own
     /// version may not.
     pub reader: &'static str,
@@ -36,6 +38,7 @@ impl Reads {
             tree: true,
             tools,
             runner: false,
+            coverage: false,
             reader: "",
             change_set: false,
         }
@@ -45,11 +48,17 @@ impl Reads {
     #[must_use]
     pub const fn tree_runner_and(tools: &'static [&'static str]) -> Self {
         Self {
-            tree: true,
-            tools,
             runner: true,
-            reader: "",
-            change_set: false,
+            ..Self::tree_and(tools)
+        }
+    }
+
+    /// The same inputs, and whatever the coverage command calls.
+    #[must_use]
+    pub const fn and_coverage(self) -> Self {
+        Self {
+            coverage: true,
+            ..self
         }
     }
 
@@ -72,57 +81,92 @@ impl Reads {
 /// What a gate reads when its answer comes from one `outpost` call over the tree.
 pub const OUTPOST: Reads = Reads::tree_and(&["outpost"]).versioned("sites-v1");
 
-/// A gate's last kept verdict, with the key it was kept under.
+/// One kept verdict, with the key it was kept under.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Kept {
     key: String,
     report: GateReport,
 }
 
-type Record = BTreeMap<String, Kept>;
+/// Each gate's kept verdicts, newest first.
+type Record = BTreeMap<String, Vec<Kept>>;
+
+/// How many verdicts a gate keeps, so a tree seen before, such as another branch, still answers.
+const KEPT_PER_GATE: usize = 4;
+
+/// What one run holds that a key reads beyond the gate's own declaration.
+pub struct Held<'a> {
+    pub root: &'a Path,
+    pub listed: &'a std::sync::OnceLock<Result<crate::project::Listing, String>>,
+    pub version_of: &'a dyn Fn(&str) -> Option<String>,
+    /// What the project's runner calls, where it named them.
+    pub runner_tools: &'a [String],
+    /// What the coverage command calls: known for chock's own, empty for a project's.
+    pub coverage_tools: &'a [String],
+    /// A digest of the gate's own record. No gate reads another's.
+    pub record: u64,
+}
 
 /// A digest of everything a gate's verdict depends on. `None` if any input cannot be read, since a
 /// partial key could match a tree it should not.
 #[must_use]
-pub fn key(
-    reads: Reads,
-    gate: &str,
-    root: &Path,
-    listed: &std::sync::OnceLock<Result<crate::project::Listing, String>>,
-    version_of: &dyn Fn(&str) -> Option<String>,
-    runner_tools: &[String],
-) -> Option<String> {
+pub fn key(reads: Reads, gate: &str, held: &Held) -> Option<String> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     // A new chock may judge the same tree differently.
     env!("CARGO_PKG_VERSION").hash(&mut hasher);
     gate.hash(&mut hasher);
+    held.record.hash(&mut hasher);
     for tool in reads.tools {
         tool.hash(&mut hasher);
-        version_of(tool)?.hash(&mut hasher);
+        (held.version_of)(tool)?.hash(&mut hasher);
     }
-    if reads.runner {
-        // A runner's tools do not show in its own bytes, so unnamed tools mean no key.
-        if runner_tools.is_empty() {
-            return None;
-        }
-        for tool in runner_tools {
+    // A command the project chose does not show its tools in its bytes, so none named means no key.
+    let chosen = [
+        reads.runner.then_some(held.runner_tools),
+        reads.coverage.then_some(held.coverage_tools),
+    ];
+    for tools in chosen {
+        for tool in named(tools)? {
             tool.hash(&mut hasher);
-            version_of(tool)?.hash(&mut hasher);
+            (held.version_of)(tool)?.hash(&mut hasher);
         }
     }
-    // Whole files: over-hashing costs a recall, under-hashing a wrong verdict. The walk prunes
-    // `.outpost/`, so its config is named here.
-    for named in [
-        crate::project::config::FILE,
-        crate::run::baseline::FILE,
-        ".outpost/config.toml",
-    ] {
-        std::fs::read(root.join(named)).ok().hash(&mut hasher);
-    }
+    settings(held.root).hash(&mut hasher);
+    // The walk prunes `.outpost/`, so its config is named here.
+    std::fs::read(held.root.join(".outpost/config.toml"))
+        .ok()
+        .hash(&mut hasher);
     if reads.tree {
-        tree(root, listed)?.hash(&mut hasher);
+        tree(held.root, held.listed)?.hash(&mut hasher);
     }
     Some(format!("{:016x}", hasher.finish()))
+}
+
+/// The tools of a command the gate runs: none where it runs no such command, and `None` where it
+/// does and the tools are not named.
+fn named(tools: Option<&[String]>) -> Option<&[String]> {
+    match tools {
+        None => Some(&[]),
+        Some([]) => None,
+        Some(tools) => Some(tools),
+    }
+}
+
+/// Config keys that choose which gates run and when. No gate reads them, so `chock enable` and
+/// `chock stage` keep every verdict.
+const CHOOSES: [&str; 5] = ["$schema", "enabled", "left_off", "local_only", "stage"];
+
+/// The config as a gate reads it: every key but those in `CHOOSES`. A file that is not a JSON
+/// object is taken whole, since over-hashing costs a recall and under-hashing a wrong verdict.
+fn settings(root: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(root.join(crate::project::config::FILE)).ok()?;
+    Some(judged_by(&text).unwrap_or(text))
+}
+
+fn judged_by(config: &str) -> Option<String> {
+    let mut held: serde_json::Map<String, serde_json::Value> = serde_json::from_str(config).ok()?;
+    held.retain(|name, _| !CHOOSES.contains(&name.as_str()));
+    Some(serde_json::Value::Object(held).to_string())
 }
 
 /// A digest of every file the run's walk sees, by path and content, or `None` if one is unreadable.
@@ -137,14 +181,32 @@ fn tree(
 #[must_use]
 pub fn recall(root: &Path, gate: &str, key: &str) -> Option<GateReport> {
     let kept = read(root)?.remove(gate)?;
-    (kept.key == key).then_some(kept.report)
+    kept.into_iter()
+        .find(|kept| kept.key == key)
+        .map(|kept| kept.report)
+}
+
+/// Forgets every kept verdict, and says how many there were. Nothing kept is not an error.
+pub fn clear(root: &Path) -> std::io::Result<usize> {
+    let kept = read(root).map_or(0, |held| held.values().map(Vec::len).sum());
+    match std::fs::remove_file(root.join(FILE)) {
+        Ok(()) => Ok(kept),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether something was measured and no record waits to be written.
+fn keepable(report: &GateReport) -> bool {
+    report.verdict != Verdict::CannotRun && report.tightened.is_none()
 }
 
 static KEEPING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Keeps a verdict for later runs. A `cannot_run` is never kept, since nothing was measured.
+/// Keeps a verdict for later runs. A `cannot_run` is never kept, since nothing was measured, nor
+/// a verdict that leaves a record to write: recalled, it would write nothing.
 pub fn keep(root: &Path, gate: &str, key: &str, report: &GateReport) {
-    if report.verdict == Verdict::CannotRun {
+    if !keepable(report) {
         return;
     }
     // Gates finish in parallel, and concurrent read-modify-writes would drop each other's verdicts.
@@ -152,8 +214,9 @@ pub fn keep(root: &Path, gate: &str, key: &str, report: &GateReport) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut held = read(root).unwrap_or_default();
-    held.insert(
-        gate.to_string(),
+    let kept = held.entry(gate.to_string()).or_default();
+    newest_first(
+        kept,
         Kept {
             key: key.to_string(),
             report: report.clone(),
@@ -161,6 +224,14 @@ pub fn keep(root: &Path, gate: &str, key: &str, report: &GateReport) {
     );
     // Best effort: an unwritten record only means the next run takes the verdict again.
     let _ = write(root, &held);
+}
+
+/// Puts a verdict in front of the gate's others, in place of one under the same key, and drops the
+/// oldest past `KEPT_PER_GATE`.
+fn newest_first(kept: &mut Vec<Kept>, new: Kept) {
+    kept.retain(|old| old.key != new.key);
+    kept.insert(0, new);
+    kept.truncate(KEPT_PER_GATE);
 }
 
 fn read(root: &Path) -> Option<Record> {
@@ -273,13 +344,20 @@ const EXECUTABLE_SUFFIXES: &[&str] = &["", ".exe"];
 const EXECUTABLE_SUFFIXES: &[&str] = &[""];
 
 /// The command that asks a tool its version. A cargo subcommand is asked through cargo, since
-/// `cargo-udeps --version` prints nothing.
+/// `cargo-udeps --version` prints nothing; `cargo +nightly miri` names the toolchain that holds it.
 #[must_use]
 fn asked(tool: &str) -> (String, Vec<String>) {
-    match tool.strip_prefix("cargo-") {
-        Some(sub) => (
+    let through_cargo = tool
+        .strip_prefix("cargo-")
+        .or_else(|| tool.strip_prefix("cargo "));
+    match through_cargo {
+        Some(words) => (
             "cargo".to_string(),
-            vec![sub.to_string(), "--version".to_string()],
+            words
+                .split(' ')
+                .chain(["--version"])
+                .map(str::to_string)
+                .collect(),
         ),
         None => (tool.to_string(), vec!["--version".to_string()]),
     }
@@ -311,19 +389,59 @@ mod tests {
         dir
     }
 
-    fn keyed(root: &Path, tools: &'static [&'static str]) -> Option<String> {
-        key(
-            Reads::tree_and(tools),
-            "probe",
+    #[test]
+    fn a_verdict_is_kept_only_where_it_measured_and_left_no_record_to_write() {
+        let mut passed = GateReport::new("crap", Verdict::Pass, "chock run crap");
+        assert!(keepable(&passed));
+        passed.tightened = Some(crate::run::baseline::Series::new());
+        assert!(!keepable(&passed));
+        let blocked = GateReport::new("crap", Verdict::CannotRun, "chock run crap");
+        assert!(!keepable(&blocked));
+    }
+
+    type Listed = std::sync::OnceLock<Result<crate::project::Listing, String>>;
+
+    fn one_version(tool: &str) -> Option<String> {
+        Some(format!("{tool} 1.0.0"))
+    }
+
+    /// What a run holds over `root`: every tool at one version, no tool the project named, no
+    /// record.
+    fn held<'a>(root: &'a Path, listed: &'a Listed) -> Held<'a> {
+        Held {
             root,
-            &std::sync::OnceLock::new(),
-            &|tool| Some(format!("{tool} 1.0.0")),
-            &[],
-        )
+            listed,
+            version_of: &one_version,
+            runner_tools: &[],
+            coverage_tools: &[],
+            record: 0,
+        }
+    }
+
+    fn keyed(root: &Path, tools: &'static [&'static str]) -> Option<String> {
+        key(Reads::tree_and(tools), "probe", &held(root, &Listed::new()))
     }
 
     fn passed() -> GateReport {
         GateReport::new("probe", Verdict::Pass, "chock run probe")
+    }
+
+    /// A verdict that measured nothing, or that leaves a record to write, is no answer to keep.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn only_a_measured_verdict_with_nothing_left_to_write_is_kept() {
+        let dir = tree_of(&[]);
+        let stopped = GateReport::new("probe", Verdict::CannotRun, "chock run probe");
+        let writes = GateReport {
+            tightened: Some(crate::run::baseline::Series::new()),
+            ..passed()
+        };
+        for report in [stopped, writes] {
+            keep(&dir, "probe", "k", &report);
+            assert_eq!(recall(&dir, "probe", "k"), None);
+        }
+        keep(&dir, "probe", "k", &passed());
+        assert_eq!(recall(&dir, "probe", "k"), Some(passed()));
     }
 
     #[test]
@@ -371,6 +489,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_that_reads_a_tool_keys_on_what_that_tool_answered() {
         let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
         let bare = keyed(&dir, &[]).unwrap();
@@ -381,6 +500,7 @@ mod tests {
 
     /// The way a shell resolves it, so the binary stamped is the one that runs.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tool_is_found_at_the_first_path_entry_that_holds_it() {
         let dir = tree_of(&[("early/outpost", ""), ("late/outpost", "")]);
         let listed = std::env::join_paths([dir.join("late"), dir.join("early")]).unwrap();
@@ -419,6 +539,10 @@ mod tests {
 
     /// Uses the real `PATH`, which holds `cargo` whenever this suite runs.
     #[test]
+    #[cfg_attr(
+        all(miri, windows),
+        ignore = "Miri finds no `PATH`: Windows spells it `Path`"
+    )]
     fn the_tool_a_run_would_start_is_the_one_stamped() {
         assert!(stamped("cargo").is_some());
         assert_eq!(stamped("nothing-installs-this-either"), None);
@@ -447,6 +571,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_changed_cargo_config_or_flag_changes_the_build_environment() {
         let dir = crate::testdir::make("verdicts-build-environment");
         let config = dir.join(".cargo/config.toml");
@@ -469,6 +594,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_stamp_is_the_binarys_own_size_and_a_missing_tool_has_none() {
         let dir = tree_of(&[("bin/outpost", "0123456789")]);
         let listed = dir.join("bin").into_os_string();
@@ -480,6 +606,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_that_has_not_moved_keys_the_same_and_one_that_has_does_not() {
         let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
         let first = keyed(&dir, &[]).unwrap();
@@ -490,6 +617,7 @@ mod tests {
 
     /// The digest is over the walk, not the index, so an untracked file counts.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_nothing_tracks_still_changes_the_key() {
         let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
         let first = keyed(&dir, &[]).unwrap();
@@ -498,6 +626,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn moving_a_file_without_changing_a_byte_changes_the_key() {
         let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
         let first = keyed(&dir, &[]).unwrap();
@@ -506,29 +635,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tool_that_reports_a_new_version_changes_the_key() {
         let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
-        let held = Reads::tree_and(&["cargo"]);
-        let said = |version: &str| {
-            let version = version.to_string();
-            move |_: &str| Some(version.clone())
+        let reads = Reads::tree_and(&["cargo"]);
+        let listed = Listed::new();
+        let at = |version: &'static str| {
+            let said = move |_: &str| Some(version.to_string());
+            let run = Held {
+                version_of: &said,
+                ..held(&dir, &listed)
+            };
+            key(reads, "probe", &run)
         };
-        let one = key(
-            held,
-            "probe",
-            &dir,
-            &std::sync::OnceLock::new(),
-            &said("cargo 1.90.0"),
-            &[],
-        );
-        let two = key(
-            held,
-            "probe",
-            &dir,
-            &std::sync::OnceLock::new(),
-            &said("cargo 1.91.0"),
-            &[],
-        );
+        let (one, two) = (at("cargo 1.90.0"), at("cargo 1.91.0"));
         assert!(one.is_some() && two.is_some());
         assert_ne!(one, two);
     }
@@ -543,28 +663,75 @@ mod tests {
             )
         );
         assert_eq!(
+            asked("cargo +nightly miri"),
+            (
+                "cargo".to_string(),
+                vec![
+                    "+nightly".to_string(),
+                    "miri".to_string(),
+                    "--version".to_string()
+                ]
+            )
+        );
+        assert_eq!(
             asked("kani"),
             ("kani".to_string(), vec!["--version".to_string()])
         );
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_reading_the_runner_has_no_key_until_its_tools_are_named() {
         let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
         let reads = Reads::tree_runner_and(&["cargo"]);
+        let listed = Listed::new();
         let keyed = |tools: &[String]| {
-            key(
-                reads,
-                "probe",
-                &dir,
-                &std::sync::OnceLock::new(),
-                &|tool| Some(format!("{tool} 1.0.0")),
-                tools,
-            )
+            let run = Held {
+                runner_tools: tools,
+                ..held(&dir, &listed)
+            };
+            key(reads, "probe", &run)
         };
         assert_eq!(keyed(&[]), None, "nothing named, so nothing to key on");
         let named = keyed(&["kani".to_string()]).unwrap();
         assert_ne!(keyed(&["clippy-driver".to_string()]).unwrap(), named);
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_gate_reading_the_coverage_command_has_no_key_until_its_tools_are_known() {
+        let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
+        let reads = Reads::tree_and(&["cargo"]).and_coverage();
+        let listed = Listed::new();
+        let keyed = |tools: &[String]| {
+            let run = Held {
+                coverage_tools: tools,
+                ..held(&dir, &listed)
+            };
+            key(reads, "probe", &run)
+        };
+        assert_eq!(keyed(&[]), None, "a project's own command names no tool");
+        let named = keyed(&["cargo-llvm-cov".to_string()]).unwrap();
+        assert_ne!(keyed(&["cargo-tarpaulin".to_string()]).unwrap(), named);
+        // A gate that runs no coverage command keys without them, and not as one that does.
+        let plain = key(Reads::tree_and(&["cargo"]), "probe", &held(&dir, &listed));
+        assert!(plain.is_some_and(|plain| plain != named));
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_named_tool_that_says_nothing_leaves_no_key() {
+        let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
+        let listed = Listed::new();
+        let only_cargo = |tool: &str| (tool == "cargo").then(|| "cargo 1.90.0".to_string());
+        let tools = ["kani".to_string()];
+        let run = Held {
+            version_of: &only_cargo,
+            runner_tools: &tools,
+            ..held(&dir, &listed)
+        };
+        assert_eq!(key(Reads::tree_runner_and(&["cargo"]), "probe", &run), None);
+        assert!(key(Reads::tree_and(&["cargo"]), "probe", &run).is_some());
     }
 
     fn said(code: i32, stdout: &str) -> crate::exec::Output {
@@ -589,31 +756,65 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tool_that_says_nothing_leaves_no_key_at_all() {
         let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
-        let none = key(
-            Reads::tree_and(&["cargo"]),
-            "probe",
-            &dir,
-            &std::sync::OnceLock::new(),
-            &|_| None,
-            &[],
-        );
-        assert_eq!(none, None);
+        let listed = Listed::new();
+        let silent = Held {
+            version_of: &|_| None,
+            ..held(&dir, &listed)
+        };
+        assert_eq!(key(Reads::tree_and(&["cargo"]), "probe", &silent), None);
     }
 
-    /// A ratchet's verdict is a comparison against the baseline.
+    /// A ratchet's verdict is a comparison against its record.
     #[test]
-    fn recording_a_new_baseline_changes_the_key() {
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_new_record_and_another_gate_each_change_the_key() {
         let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
-        let first = keyed(&dir, &[]).unwrap();
-        let at = dir.join(crate::run::baseline::FILE);
-        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
-        std::fs::write(at, "{\"version\":1,\"gates\":{}}").unwrap();
-        assert_ne!(keyed(&dir, &[]).unwrap(), first);
+        let listed = Listed::new();
+        let reads = Reads::tree_and(&[]);
+        let first = key(reads, "probe", &held(&dir, &listed)).unwrap();
+        let recorded = Held {
+            record: 7,
+            ..held(&dir, &listed)
+        };
+        assert_ne!(key(reads, "probe", &recorded).unwrap(), first);
+        assert_ne!(key(reads, "other", &held(&dir, &listed)).unwrap(), first);
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_config_key_a_gate_reads_changes_the_key_and_one_that_chooses_gates_does_not() {
+        let dir = tree_of(&[]);
+        // Without the tree, whose walk may see the config file too.
+        let apart = Reads {
+            tree: false,
+            ..Reads::tree_and(&[])
+        };
+        let with = |config: &str| {
+            let at = dir.join(crate::project::config::FILE);
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            std::fs::write(at, config).unwrap();
+            key(apart, "probe", &held(&dir, &Listed::new())).unwrap()
+        };
+        let first = with(r#"{"enabled":["slop"],"strict":["slop"]}"#);
+        let chosen = r#"{"enabled":["lint"],"stage":{"lint":"push"},"strict":["slop"]}"#;
+        assert_eq!(with(chosen), first);
+        assert_ne!(with(r#"{"enabled":["slop"],"strict":[]}"#), first);
+        // Not an object, so it is taken whole and any byte moves the key.
+        assert_ne!(with("[1]"), with("[1] "));
+    }
+
+    #[test]
+    fn only_the_keys_a_gate_reads_are_left_of_a_config() {
+        let config = r#"{"$schema":"s","enabled":["a"],"left_off":{},"strict":["b"]}"#;
+        assert_eq!(judged_by(config).as_deref(), Some(r#"{"strict":["b"]}"#));
+        assert_eq!(judged_by("not json"), None);
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_verdict_is_recalled_only_under_the_key_it_was_kept_with() {
         let dir = tree_of(&[]);
         keep(&dir, "probe", "abc", &passed());
@@ -626,6 +827,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_that_could_not_run_is_never_kept() {
         let dir = tree_of(&[]);
         let refused = GateReport::cannot_run("probe", "chock run probe", "no tool");
@@ -633,8 +835,57 @@ mod tests {
         assert_eq!(recall(&dir, "probe", "abc"), None);
     }
 
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_verdict_that_leaves_a_record_to_write_is_never_kept() {
+        let dir = tree_of(&[]);
+        let mut wrote = passed();
+        wrote.tightened = Some(crate::run::baseline::Series::new());
+        keep(&dir, "probe", "abc", &wrote);
+        assert_eq!(recall(&dir, "probe", "abc"), None);
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_gate_keeps_its_newest_verdicts_and_drops_the_oldest_past_the_limit() {
+        let dir = tree_of(&[]);
+        for key in ["k1", "k2", "k3", "k4", "k5"] {
+            keep(&dir, "probe", key, &passed());
+        }
+        assert_eq!(recall(&dir, "probe", "k1"), None, "five were kept");
+        assert!(recall(&dir, "probe", "k2").is_some() && recall(&dir, "probe", "k5").is_some());
+        // Kept again under a key the gate holds, a verdict takes that key's place.
+        keep(&dir, "probe", "k2", &passed());
+        assert!(recall(&dir, "probe", "k3").is_some(), "a rewrite evicted");
+        keep(&dir, "probe", "k6", &passed());
+        assert_eq!(recall(&dir, "probe", "k3"), None, "the oldest stayed");
+        assert!(recall(&dir, "probe", "k2").is_some());
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn clearing_removes_every_kept_verdict_and_says_how_many() {
+        let dir = tree_of(&[]);
+        assert_eq!(clear(&dir).unwrap(), 0, "nothing kept is not an error");
+        keep(&dir, "probe", "k1", &passed());
+        keep(&dir, "probe", "k2", &passed());
+        keep(&dir, "other", "k1", &passed());
+        assert_eq!(clear(&dir).unwrap(), 3);
+        assert_eq!(recall(&dir, "probe", "k1"), None);
+        assert!(!dir.join(FILE).exists());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a directory")]
+    fn a_record_that_cannot_be_removed_is_an_error() {
+        let dir = tree_of(&[]);
+        std::fs::create_dir_all(dir.join(FILE)).unwrap();
+        assert!(clear(&dir).is_err());
+    }
+
     /// Its findings hold until the tree moves, so re-running only fails the same way.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tripped_verdict_is_kept_like_a_passing_one() {
         let dir = tree_of(&[]);
         let mut tripped = GateReport::new("probe", Verdict::Tripped, "chock run probe");
@@ -652,6 +903,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_record_that_cannot_be_read_recalls_nothing_and_does_not_stop_the_run() {
         let dir = tree_of(&[]);
         let at = dir.join(FILE);

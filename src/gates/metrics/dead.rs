@@ -318,6 +318,7 @@ impl<'ast> Visit<'ast> for Definitions {
 )]
 mod tests {
     use super::*;
+    use crate::testdir::Held;
 
     fn defined(src: &str) -> Vec<String> {
         read(src)
@@ -352,8 +353,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_name_mentioned_in_both_a_source_and_a_test_file_is_counted_once_for_each() {
-        let ctx = tree(
+        let ctx = Held::tree(
             "dead-names-summed",
             &[
                 ("Cargo.toml", "[package]\nname = \"p\"\n"),
@@ -366,8 +368,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_name_only_a_source_file_mentions_is_counted_from_that_file_alone() {
-        let ctx = tree(
+        let ctx = Held::tree(
             "dead-names-source-only",
             &[
                 ("Cargo.toml", "[package]\nname = \"p\"\n"),
@@ -380,8 +383,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_with_no_source_at_all_mentions_nothing() {
-        let ctx = tree(
+        let ctx = Held::tree(
             "dead-names-empty",
             &[("Cargo.toml", "[package]\nname = \"p\"\n")],
         );
@@ -407,8 +411,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_gate_passes_a_function_only_a_sibling_test_file_calls() {
-        let ctx = tree(
+        let ctx = Held::tree(
             "dead-gate-sibling",
             &[
                 ("Cargo.toml", "[package]\nname = \"p\"\n"),
@@ -419,25 +424,10 @@ mod tests {
         assert_eq!(check(&ctx).unwrap(), crate::run::Outcome::passed());
     }
 
-    fn tree(name: &str, files: &[(&str, &str)]) -> crate::testdir::Held {
-        let dir = crate::testdir::make(name);
-        for (path, src) in files {
-            let at = dir.join(path);
-            if let Some(parent) = at.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            std::fs::write(at, src).unwrap();
-        }
-        let held = Ctx::for_root(
-            dir.to_path_buf(),
-            crate::run::baseline::Baseline::empty("0.1.0"),
-        );
-        crate::testdir::Held::new(dir, held)
-    }
-
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_gate_reports_a_function_no_sibling_names_and_passes_one_that_is_called() {
-        let ctx = tree(
+        let ctx = Held::tree(
             "dead-gate",
             &[
                 ("Cargo.toml", "[package]\nname = \"p\"\n"),
@@ -462,8 +452,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_gate_passes_a_crate_that_names_everything_it_defines() {
-        let ctx = tree(
+        let ctx = Held::tree(
             "dead-gate-clean",
             &[
                 ("Cargo.toml", "[package]\nname = \"p\"\n"),
@@ -475,8 +466,9 @@ mod tests {
 
     /// An empty tree measured nothing, which is not the same as nothing being dead.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_with_no_function_in_it_could_not_run() {
-        let ctx = tree(
+        let ctx = Held::tree(
             "dead-gate-empty",
             &[
                 ("Cargo.toml", "[package]\nname = \"p\"\n"),
@@ -534,13 +526,19 @@ mod tests {
         );
     }
 
+    /// A crate `p` with an empty `src/`, in its own scratch directory.
+    fn crate_p(name: &str) -> crate::testdir::Scratch {
+        let dir = crate::testdir::make(name);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"p\"\n").unwrap();
+        dir
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_test_file_that_cannot_be_opened_is_stepped_over_rather_than_ending_the_read() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = crate::testdir::make("dead-unreadable-tests");
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"p\"\n").unwrap();
+        let dir = crate_p("dead-unreadable-tests");
         let locked = dir.join("src/a_tests.rs");
         std::fs::write(&locked, "fn t() { hidden(); }\n").unwrap();
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -555,10 +553,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_test_file_that_does_not_parse_is_stepped_over_rather_than_ending_the_read() {
-        let dir = crate::testdir::make("dead-unparsable-tests");
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"p\"\n").unwrap();
+        let dir = crate_p("dead-unparsable-tests");
         std::fs::write(dir.join("src/a_tests.rs"), "fn broken( {\n").unwrap();
         std::fs::write(dir.join("src/z_tests.rs"), "fn t() { used(); }\n").unwrap();
         let named = names_in_test_files(&dir).unwrap();
@@ -566,10 +563,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_helper_called_only_from_a_sibling_test_file_is_reached() {
-        let dir = crate::testdir::make("dead-sibling-tests");
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"p\"\n").unwrap();
+        let dir = crate_p("dead-sibling-tests");
         std::fs::write(
             dir.join("src/lib.rs"),
             "fn helper() {}\nfn used() { helper(); }\n",

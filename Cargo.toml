@@ -1,9 +1,9 @@
 [package]
 name = "chock"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.99.0"
-description = "Quality gates for Rust: new code must be clean, and existing debt cannot grow. 53 gates, one command, JSON for agents."
+description = "Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers. 55 gates, one command, JSON for agents."
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/outpostHQ/chock"

@@ -10,6 +10,8 @@
     "bsize",
     "citations",
     "codeslop",
+    "commands",
+    "commands-build",
     "commits",
     "complexity",
     "coverage",
@@ -23,11 +25,14 @@
     "features",
     "fmt",
     "hazards",
+    "history",
     "hygiene",
     "idempotent",
     "lenses",
     "lint",
     "manifest",
+    "measures",
+    "miri",
     "modcheck",
     "msrv",
     "mutest",
@@ -56,11 +61,17 @@
     "boundaries",
     "duplicates",
     "hazards",
+    "history",
     "lenses",
+    "measures",
     "padding",
     "scan",
     "unread",
     "unreferenced"
+  ],
+  "commands": [
+    { "name": "package-list", "run": ["cargo", "package", "--locked", "--allow-dirty", "--list"] },
+    { "name": "package-builds", "run": ["cargo", "package", "--locked", "--allow-dirty"], "builds": true }
   ],
   "forbidden": [
     { "text": "utilize", "why": "Write \"use\".", "word": true },
@@ -81,5 +92,13 @@
     { "text": "comprehensive", "why": "A reader cannot check it. Name the property.", "word": true },
     { "text": "crucial", "why": "A reader cannot check it. Name the property.", "word": true },
     { "text": "delve", "why": "Write \"read\" or \"look at\".", "word": true }
-  ]
+  ],
+  "stage": {
+    "acl": "ci",
+    "binsize": "ci",
+    "bsize": "ci",
+    "miri": "ci",
+    "mutest": "ci",
+    "proof": "ci"
+  }
 }

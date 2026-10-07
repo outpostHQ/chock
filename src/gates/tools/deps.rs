@@ -164,6 +164,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_policy_file_that_is_absent_or_asks_for_nothing_cannot_be_measured() {
         let dir = crate::testdir::make("deps-no-policy");
         let ctx = Ctx::for_root(

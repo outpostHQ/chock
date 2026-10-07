@@ -99,7 +99,7 @@ fn lenses(ctx: &Ctx) -> Result<Measurement, String> {
     let check = super::once(ctx)?;
     let series = read_lenses(check)?;
     let findings = check.sites_over(&series, &ctx.record(LENSES.name));
-    Ok(Measurement { series, findings })
+    Ok(Measurement::of(series, findings))
 }
 
 /// The prefix of every hazard lens; the roster comes from Outpost's response, not a list here.
@@ -221,14 +221,16 @@ fn keyed(
 )]
 mod tests {
     use super::*;
+    use crate::testdir::Held;
 
     fn never(_path: &str, _name: &str) -> Result<bool, String> {
         Ok(false)
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_function_the_graph_and_the_tree_both_say_nothing_reaches_is_reported() {
-        let dir = tree(
+        let dir = Held::tree(
             "intel-unreferenced",
             &[
                 ("Cargo.toml", "[package]\nname = \"p\"\n"),
@@ -242,8 +244,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_function_the_tree_still_names_is_not_reported_however_the_graph_scored_it() {
-        let dir = tree(
+        let dir = Held::tree(
             "intel-corroborated",
             &[
                 ("Cargo.toml", "[package]\nname = \"p\"\n"),
@@ -256,8 +259,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_function_the_graph_says_only_tests_reach_is_reported_though_the_tree_names_it_twice() {
-        let dir = tree(
+        let dir = Held::tree(
             "intel-tests-only",
             &[
                 ("Cargo.toml", "[package]\nname = \"p\"\n"),
@@ -284,8 +288,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_method_reached_through_a_trait_is_not_reported() {
-        let dir = tree(
+        let dir = Held::tree(
             "intel-trait-method",
             &[
                 ("Cargo.toml", "[package]\nname = \"p\"\n"),
@@ -301,8 +306,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn an_entity_in_a_language_this_scan_cannot_read_is_left_alone() {
-        let dir = tree(
+        let dir = Held::tree(
             "intel-other-language",
             &[
                 ("Cargo.toml", "[package]\nname = \"p\"\n"),
@@ -315,8 +321,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_outpost_named_and_the_tree_does_not_hold_stops_the_gate() {
-        let dir = tree(
+        let dir = Held::tree(
             "intel-absent-file",
             &[
                 ("Cargo.toml", "[package]\nname = \"p\"\n"),
@@ -327,22 +334,6 @@ mod tests {
             {"path":"src/gone.rs","name":"helper","lines":3,"origin":"production"}]}"#;
         let err = read_unreferenced(&said(json), &dir).unwrap_err();
         assert!(err.starts_with("outpost indexed src/gone.rs"), "{err}");
-    }
-
-    fn tree(name: &str, files: &[(&str, &str)]) -> crate::testdir::Held {
-        let dir = crate::testdir::make(name);
-        for (path, src) in files {
-            let at = dir.join(path);
-            if let Some(parent) = at.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            std::fs::write(at, src).unwrap();
-        }
-        let held = Ctx::for_root(
-            dir.to_path_buf(),
-            crate::run::baseline::Baseline::empty("0.1.0"),
-        );
-        crate::testdir::Held::new(dir, held)
     }
 
     fn unreached(path: &str, name: &str, lines: u64, origin: &str) -> Unreached {

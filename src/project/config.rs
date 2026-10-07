@@ -68,6 +68,10 @@ pub struct Config {
     /// The tools `runner` calls, which chock cannot see; naming them lets `test` recall a verdict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runner_tools: Option<Vec<String>>,
+    /// The tools `coverage` calls, which chock cannot see; naming them lets `coverage` and `crap`
+    /// recall a verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage_tools: Option<Vec<String>>,
     /// Checks whose tool CI cannot install: the hooks still run them, `chock run --ci` does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_only: Option<Vec<String>>,
@@ -234,6 +238,7 @@ impl Config {
             vcs: None,
             stage: BTreeMap::new(),
             runner_tools: None,
+            coverage_tools: None,
             local_only: None,
             strict: None,
             clean_when_touched: None,
@@ -342,6 +347,18 @@ impl Config {
             .chain(self.clean_when_touched.iter().flatten())
             .chain(self.stage.keys())
             .filter(|name| !known.contains(&name.as_str()))
+            .cloned()
+            .collect()
+    }
+
+    /// Names under `clean_when_touched` that `holds` refuses. A gate with no number for each file
+    /// would pass that list in silence, so the run refuses the config.
+    #[must_use]
+    pub fn unheld_where_touched(&self, holds: &dyn Fn(&str) -> bool) -> Vec<String> {
+        self.clean_when_touched
+            .iter()
+            .flatten()
+            .filter(|name| !holds(name))
             .cloned()
             .collect()
     }
@@ -509,6 +526,18 @@ mod tests {
     }
 
     #[test]
+    fn a_name_held_where_touched_that_keeps_no_number_for_each_file_is_reported() {
+        let mut config = Config::of(["slop", "binsize"]);
+        assert!(config.unheld_where_touched(&|_| false).is_empty());
+        config.clean_when_touched = Some(vec!["slop".to_string(), "binsize".to_string()]);
+        assert_eq!(
+            config.unheld_where_touched(&|name| name == "slop"),
+            ["binsize"]
+        );
+        assert!(config.unheld_where_touched(&|_| true).is_empty());
+    }
+
+    #[test]
     fn the_features_a_project_names_are_spelled_the_way_cargo_spells_them() {
         let named = Config {
             features: Some(vec!["testkit".to_string(), "tabular".to_string()]),
@@ -542,12 +571,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_missing_config_is_absence_rather_than_failure() {
         let dir = crate::testdir::make("config-missing");
         assert_eq!(document::read::<Config>(&dir), Ok(None));
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_written_config_reads_back_from_its_project_root() {
         let dir = crate::testdir::make("config-roundtrip");
         let config = Config::of(["lint"]);
@@ -593,6 +624,19 @@ mod tests {
                 "--serial".to_string()
             ])
         );
+    }
+
+    /// A custom command with no tools named has no verdict key, so a lost list is a slow run.
+    #[test]
+    fn the_tools_a_project_names_for_its_commands_survive_a_round_trip() {
+        let written = Config {
+            runner_tools: Some(vec!["cargo-nextest".to_string()]),
+            coverage_tools: Some(vec!["cargo-llvm-cov".to_string()]),
+            ..Config::of(["test"])
+        };
+        let read = document::parse::<Config>(&written.render(), "c.json").unwrap();
+        assert_eq!(read, written);
+        assert!(!Config::of(["test"]).render().contains("_tools"));
     }
 
     #[test]

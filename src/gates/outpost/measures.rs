@@ -19,7 +19,7 @@ pub const GATE: Gate = Gate {
 
 fn measure(ctx: &Ctx) -> Result<Series, String> {
     let (ran, withheld) = counted(super::once(ctx)?)?;
-    judged(ran, &withheld, &ctx.baseline.gate(GATE.name))
+    judged(ran, &withheld, ctx.baseline.recorded(GATE.name))
 }
 
 /// Every measure's own total keyed by name, zeros included, and each withheld row with its reason.
@@ -45,14 +45,24 @@ fn counted(check: &super::Check) -> Result<(Series, Vec<(String, String)>), Stri
     Ok((series, withheld))
 }
 
-/// The census to compare. A regression among the rows that ran trips even beside a withheld row;
-/// otherwise any withheld row makes the census an error.
-fn judged(mut ran: Series, withheld: &[(String, String)], held: &Series) -> Result<Series, String> {
+/// The census to compare. Beside a withheld row, a regression among the rows that ran still trips;
+/// with none, or with no record to regress from, the census is an error.
+fn judged(
+    mut ran: Series,
+    withheld: &[(String, String)],
+    held: Option<&Series>,
+) -> Result<Series, String> {
     if withheld.is_empty() {
         return Ok(ran);
     }
+    let why: Vec<&str> = withheld.iter().map(|(_, why)| why.as_str()).collect();
+    let Some(held) = held else {
+        return Err(format!(
+            "{}; with no record, the census needs every measure",
+            why.join("; ")
+        ));
+    };
     if ran.regressions(held, Keys::Census).is_empty() {
-        let why: Vec<&str> = withheld.iter().map(|(_, why)| why.as_str()).collect();
         return Err(format!(
             "{}; the other {} measure(s) hold",
             why.join("; "),
@@ -99,8 +109,19 @@ mod tests {
         assert_eq!(series.get("sparse"), Some(122));
         assert_eq!(withheld, Vec::new());
         assert_eq!(
-            judged(series.clone(), &withheld, &Series::new()),
-            Ok(series)
+            judged(series.clone(), &withheld, Some(&Series::new())),
+            Ok(series.clone())
+        );
+        assert_eq!(judged(series.clone(), &withheld, None), Ok(series));
+    }
+
+    #[test]
+    fn a_census_with_a_withheld_row_is_no_first_record() {
+        let (ran, withheld) = counted(&checked_from(WITHHELD)).unwrap();
+        assert_eq!(
+            judged(ran, &withheld, None).unwrap_err(),
+            "outpost could not measure `commit_message_faults`: no remote named `origin`; \
+             with no record, the census needs every measure"
         );
     }
 
@@ -115,7 +136,7 @@ mod tests {
         let mut held = Series::new();
         held.set("sparse", 9);
         assert_eq!(
-            judged(ran, &withheld, &held).unwrap_err(),
+            judged(ran, &withheld, Some(&held)).unwrap_err(),
             "outpost could not measure `commit_message_faults`: no remote named `origin`; \
              the other 1 measure(s) hold"
         );
@@ -127,7 +148,7 @@ mod tests {
         let mut held = Series::new();
         held.set("sparse", 6);
         held.set("commit_message_faults", 2);
-        let now = judged(ran, &withheld, &held).unwrap();
+        let now = judged(ran, &withheld, Some(&held)).unwrap();
         assert_eq!(
             (now.get("sparse"), now.get("commit_message_faults")),
             (Some(9), Some(2))

@@ -204,7 +204,11 @@ fn build(start: Start, clone: &Path, channel: &str) -> Result<(), String> {
         ("RUSTUP_TOOLCHAIN", channel),
         ("CARGO_ENCODED_RUSTFLAGS", ""),
     ];
-    STEPS.iter().try_for_each(|step| {
+    STEPS.iter().zip(1..).try_for_each(|(step, at)| {
+        println!(
+            "  building  {CRATE} — step {at} of {}: `cargo {step}`",
+            STEPS.len()
+        );
         let args: Vec<&str> = step.split(' ').collect();
         exec::printed(start, "cargo", &args, clone, &env).map(drop)
     })
@@ -492,6 +496,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_machine_without_the_build_gets_the_fork_built_at_the_newest_commit() {
         let temp = crate::testdir::make("mutest-fresh");
         let newest = branch(NEWEST);
@@ -507,6 +512,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_machine_with_the_build_of_the_newest_commit_builds_nothing() {
         let temp = crate::testdir::make("mutest-current");
         let (newest, listing) = (branch(NEWEST), records(NEWEST));
@@ -529,6 +535,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn an_older_build_and_a_recorded_build_that_does_not_answer_are_both_built_again() {
         let newest = branch(NEWEST);
         for listing in [records(OLDER), records(NEWEST)] {
@@ -567,6 +574,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn each_step_that_fails_ends_the_install_with_its_command_and_deletes_the_clone() {
         let newest = branch(NEWEST);
         let stderr = "stderr (bounded output):\nerror: no\n";
@@ -618,6 +626,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_fork_with_no_main_a_clone_with_no_toolchain_and_a_cargo_that_cannot_answer_each_fail() {
         let temp = crate::testdir::make("mutest-odd");
         let newest = branch(NEWEST);
@@ -679,6 +688,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_recorded_build_that_stops_answering_between_the_two_questions_is_an_error() {
         let temp = crate::testdir::make("mutest-mute");
         let (newest, listing) = (branch(NEWEST), records(NEWEST));

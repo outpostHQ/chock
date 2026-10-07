@@ -9,7 +9,7 @@ use crate::run::baseline::Series;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Measurement};
 
-use super::results::Results;
+use super::results::{Joined, Results};
 use super::scope;
 use super::survivors::{self, Survivor};
 use super::tool;
@@ -125,8 +125,8 @@ fn invocation<'a>(
     argv
 }
 
-/// The survivors a run's results name, given how many its totals said there are.
-type Survivors<'a> = &'a dyn Fn(u64) -> Result<Vec<Survivor>, String>;
+/// What a run's results name once joined, given how many undetected verdicts its totals counted.
+type Survivors<'a> = &'a dyn Fn(u64) -> Result<Joined, String>;
 
 /// What one run measured: totals and exit from its output, survivors from what `results` read, and
 /// where each telling survivor past the record `was` is.
@@ -137,15 +137,15 @@ pub(super) fn read(
 ) -> Result<Measurement, String> {
     let found = read_survivors(out, results)?;
     let mut findings = ineligible(out);
-    findings.extend(timeouts(out));
-    findings.extend(survivors::sites_over(&found, was));
-    Ok(Measurement {
-        series: Series(survivors::telling(&found)),
+    findings.extend(timeouts(&found.timed_out));
+    findings.extend(survivors::sites_over(&found.survivors, was));
+    Ok(Measurement::of(
+        Series(survivors::telling(&found.survivors)),
         findings,
-    })
+    ))
 }
 
-fn read_survivors(out: &exec::Output, results: Survivors) -> Result<Vec<Survivor>, String> {
+fn read_survivors(out: &exec::Output, results: Survivors) -> Result<Joined, String> {
     if out.truncated {
         return Err("mutest printed more than chock keeps; the survivors would be partial".into());
     }
@@ -159,17 +159,17 @@ fn read_survivors(out: &exec::Output, results: Survivors) -> Result<Vec<Survivor
     survivor_counts(out, totals, results)
 }
 
-/// Every survivor the results name. A finished run is still refused if its results are unreadable or
-/// more than `TIMEOUT_LIMIT` percent of its mutations timed out.
+/// Every mutation the results name once joined. A finished run is still refused if its results are
+/// unreadable or more than `TIMEOUT_LIMIT` percent of its mutations timed out.
 fn survivor_counts(
     out: &exec::Output,
     totals: survivors::Totals,
     results: Survivors,
-) -> Result<Vec<Survivor>, String> {
+) -> Result<Joined, String> {
     let found = results(totals.undetected)?;
-    if out.code == Some(2) && found.is_empty() {
+    if out.code == Some(2) && totals.undetected == 0 {
         return Err(
-            "mutest reported missed mutations without naming a survivor; the result is incomplete"
+            "mutest's exit says it missed mutations but its totals count none; the result is incomplete"
                 .to_string(),
         );
     }
@@ -203,16 +203,17 @@ fn read_within(
     }
 }
 
-/// An advisory where mutations timed out within the limit: mutest counts each one as detected,
-/// so no survivor count shows them.
-fn timeouts(out: &exec::Output) -> Option<Finding> {
-    let totals = survivors::totals(&out.stdout).ok().flatten()?;
-    let (gave_up, attempted) = (totals.timed_out, totals.total);
-    let note = format!(
-        "{gave_up} of {attempted} mutation(s) timed out. mutest counts each one as detected, so \
-         the survivor count leaves them out; run again on an idle machine to judge them"
-    );
-    (gave_up > 0).then(|| Finding::at("", &note).item("timeouts"))
+/// Each mutation a time limit alone stopped, as a lead: mutest counts it as detected, so no
+/// survivor count shows it, and only a run on an idle machine can judge it.
+fn timeouts(timed_out: &[Survivor]) -> Vec<Finding> {
+    let lead = "timed out, so mutest counted it as detected";
+    let mut found = Vec::new();
+    for mutation in timed_out {
+        let (what, op, file) = (&mutation.what, &mutation.operator, &mutation.file);
+        let said = format!("{lead}: {what} ({op}); run again on an idle machine to judge it");
+        found.push(Finding::at(file, &said).line(mutation.line).candidate());
+    }
+    found
 }
 
 fn unmeasured(out: &exec::Output) -> String {
@@ -306,16 +307,19 @@ mod tests {
     }
 
     /// What the results of a run matching `TOTALS` name: its one survivor.
-    fn one(_expected: u64) -> Result<Vec<Survivor>, String> {
-        Ok(vec![survivor("eq_op_invert")])
+    fn one(_expected: u64) -> Result<Joined, String> {
+        Ok(Joined {
+            survivors: vec![survivor("eq_op_invert")],
+            ..Joined::default()
+        })
     }
 
-    fn none(_expected: u64) -> Result<Vec<Survivor>, String> {
-        Ok(Vec::new())
+    fn none(_expected: u64) -> Result<Joined, String> {
+        Ok(Joined::default())
     }
 
     fn counted(out: &exec::Output, results: Survivors) -> Result<Series, String> {
-        read_survivors(out, results).map(|found| Series(survivors::telling(&found)))
+        read_survivors(out, results).map(|found| Series(survivors::telling(&found.survivors)))
     }
 
     fn unrecorded(out: &exec::Output, results: Survivors) -> Result<Measurement, String> {
@@ -337,6 +341,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_local_run_keeps_the_record_when_no_rust_file_moved_and_mutates_when_one_did() {
         let kept = measure(&touched(&["README.md"])).map(|measured| measured.series);
         assert_eq!(
@@ -435,19 +440,26 @@ mod tests {
     }
 
     #[test]
-    fn a_scored_run_says_how_many_mutations_timed_out_and_nothing_when_none_did() {
+    fn a_scored_run_names_each_mutation_that_timed_out_and_nothing_when_none_did() {
         let totals =
             "mutations: 98%. 48 detected (1 timed out; 0 crashed); 1 undetected; 50 total\n";
         let was = Series([("src/a.rs#eq_op_invert".to_string(), 1)].into());
-        let some = read(&ran(totals, Some(3), false), &one, &was).unwrap();
+        let timed = |_: u64| {
+            Ok(Joined {
+                survivors: vec![survivor("eq_op_invert")],
+                timed_out: vec![survivor("call_delete")],
+            })
+        };
+        let some = read(&ran(totals, Some(3), false), &timed, &was).unwrap();
         let said: Vec<String> = some.findings.iter().map(Finding::render).collect();
         assert_eq!(
             said,
             [
-                "timeouts: 1 of 50 mutation(s) timed out. mutest counts each one as detected, so \
-                 the survivor count leaves them out; run again on an idle machine to judge them"
+                "src/a.rs:7: timed out, so mutest counted it as detected: does a thing \
+                 (call_delete); run again on an idle machine to judge it"
             ]
         );
+        assert_eq!(some.findings[0].grade, crate::run::report::Grade::Candidate);
         let none = read(&ran(TOTALS, Some(2), false), &one, &was).unwrap();
         assert!(none.findings.is_empty(), "{:?}", none.findings);
     }
@@ -523,10 +535,12 @@ mod tests {
         }
     }
 
+    /// The exit and totals count each target's misses, so a miss another target settles is no
+    /// survivor, and the run measures clean.
     #[test]
-    fn a_missed_mutation_exit_with_no_readable_survivors_is_not_a_clean_run() {
-        let why = unrecorded(&ran(TOTALS, Some(2), false), &none).unwrap_err();
-        assert!(why.contains("without naming a survivor"), "{why}");
+    fn a_missed_mutation_exit_whose_misses_another_target_settles_measures_clean() {
+        let measured = unrecorded(&ran(TOTALS, Some(2), false), &none).unwrap();
+        assert_eq!(measured.series, Series::new());
     }
 
     #[test]
@@ -643,7 +657,12 @@ mod tests {
 
     #[test]
     fn quiet_survivors_are_accounted_for_before_operator_filtering() {
-        let quiet = |_| Ok(vec![survivor("call_delete")]);
+        let quiet = |_| {
+            Ok(Joined {
+                survivors: vec![survivor("call_delete")],
+                ..Joined::default()
+            })
+        };
         assert_eq!(
             unrecorded(&ran(TOTALS, Some(2), false), &quiet)
                 .unwrap()
@@ -658,7 +677,7 @@ mod tests {
         assert!(
             unrecorded(&ran(out, Some(2), false), &none)
                 .unwrap_err()
-                .contains("without naming a survivor")
+                .contains("its totals count none")
         );
     }
 

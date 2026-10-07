@@ -234,6 +234,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_crate_the_workspace_excludes_is_not_charged_to_it() {
         let kept = workspace("unsafety-excluded", "exclude = [\"ffi/\"]\n");
         let ctx = Ctx::for_root(
@@ -253,6 +254,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a directory")]
     fn no_manifest_excludes_nothing_and_an_unreadable_one_refuses() {
         let bare = crate::testdir::make("unsafety-no-manifest");
         assert_eq!(excluded(&bare), Ok(Vec::new()));

@@ -39,11 +39,12 @@ every version: adding a tool means pinning it there, and `chock doctor` reads th
 
 ## Releasing
 
-A `v*` tag runs two workflows. `publish.yml` checks the tag against `Cargo.toml`, runs the fast
-checks and publishes, using a thirty-minute crates.io token exchanged for GitHub's OIDC identity, so
-no secret is stored; it skips a version crates.io already has. `release.yml` builds chock for Linux
-(x86_64 and aarch64), macOS (Apple Silicon and Intel) and Windows, and attaches the archives to the
-tag's GitHub release, where `cargo binstall chock` finds them.
+A `v*` tag runs `publish.yml`. It stops unless the `ci.yml` and `corpus.yml` runs on `main` for the
+tagged commit passed, so tag a commit only after both are green. It builds chock for Linux (x86_64 and
+aarch64), macOS (Apple Silicon and Intel) and Windows, checks that each archived binary names the
+tag, and attaches the archives to the tag's GitHub release, where `cargo binstall chock` finds them.
+Then it publishes, using a thirty-minute crates.io token exchanged for GitHub's OIDC identity, so no
+secret is stored; it skips a version crates.io already has.
 
 The first release is published by hand, because crates.io only offers trusted publishing for a crate
 that already exists:

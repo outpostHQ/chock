@@ -9,6 +9,7 @@ pub mod report;
 pub mod verdicts;
 
 mod context;
+mod workers;
 pub use context::{
     Coverage, Ctx, LCOV, Runner, coverage_for, default_coverage, default_runner, runner_for,
 };
@@ -16,8 +17,9 @@ pub use context::{
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
-use crate::run::baseline::{Baseline, Keys, Series};
-use crate::run::report::{Finding, GateReport, Run, Verdict};
+use crate::run::baseline::{Keys, Series};
+use crate::run::report::{Detail, Finding, GateReport, Run, Verdict};
+use workers::on_workers;
 
 /// What a pass/fail gate found. `passed` is the tool's own verdict rather than a count of
 /// findings, because a tool can warn about things that are not failures.
@@ -102,9 +104,24 @@ pub type Check = fn(&Ctx) -> Result<Outcome, String>;
 pub struct Measurement {
     pub series: Series,
     pub findings: Vec<Finding>,
+    /// What the gate knows about a key beyond its number, by key.
+    pub details: Details,
 }
 
+/// A gate's details, by the key they are about.
+pub type Details = std::collections::BTreeMap<String, Detail>;
+
 impl Measurement {
+    /// A series and its notes, with no details for any key.
+    #[must_use]
+    pub fn of(series: Series, findings: Vec<Finding>) -> Self {
+        Self {
+            series,
+            findings,
+            details: Details::new(),
+        }
+    }
+
     /// Baseline output keeps scope notes visible without recording them as measured debt.
     #[must_use]
     pub fn notes(&self, gate: &str) -> String {
@@ -165,7 +182,8 @@ pub type Inspect = fn(&Ctx) -> Result<Inspection, String>;
 pub enum Kind {
     /// The tool decides. chock normalises its exit code and nothing more.
     Binary(Check),
-    /// Without a baseline this preserves strict enforcement; recording debt is an explicit choice.
+    /// Debt on record passes. A local run takes the first record; CI, which writes none, holds a
+    /// gate without one to zero.
     Debt {
         inspect: Inspect,
         unit: &'static str,
@@ -239,10 +257,9 @@ pub fn measure(gate: &Gate, ctx: &Ctx) -> Result<Series, String> {
 /// Baseline recording and verdicts consume the same measurement, including scope exclusions.
 pub fn measured(gate: &Gate, ctx: &Ctx) -> Result<Measurement, String> {
     match gate.kind {
-        Kind::Ratchet { measure, .. } => measure(ctx).map(|series| Measurement {
-            series,
-            findings: Vec::new(),
-        }),
+        Kind::Ratchet { measure, .. } => {
+            measure(ctx).map(|series| Measurement::of(series, Vec::new()))
+        }
         Kind::AnnotatedRatchet { measure, .. } => measure(ctx),
         Kind::Debt { inspect, .. } => adoptable(inspect(ctx)?),
         Kind::Binary(_) => Err(format!("{} is not a ratchet; it has no number", gate.name)),
@@ -274,16 +291,41 @@ fn absent_tool(gate: &Gate, ctx: &Ctx) -> Option<&'static str> {
 /// could not be read. Either way there is then nothing to answer from, so the gate runs.
 fn keyed(gate: &Gate, ctx: &Ctx) -> Option<String> {
     let reads = gate.reads?;
-    let key = crate::run::verdicts::key(
-        reads,
-        gate.name,
-        &ctx.root,
-        &ctx.listing,
-        &|tool| crate::run::verdicts::installed(&ctx.root, tool),
-        &ctx.runner.tools,
-    );
-    key.map(|key| key_format(gate, reads.reader, &key))
+    let held = crate::run::verdicts::Held {
+        root: &ctx.root,
+        listed: &ctx.listing,
+        version_of: &|tool| crate::run::verdicts::installed(&ctx.root, tool),
+        runner_tools: &ctx.runner.tools,
+        coverage_tools: &ctx.coverage.tools,
+        record: own_record(gate, ctx),
+    };
+    let key = crate::run::verdicts::key(reads, gate.name, &held);
+    key.map(|key| key_format(gate, reads.reader, ctx.ci, &key))
+        .map(|key| with_part(gate, ctx, key))
         .and_then(|key| with_change_set(gate, ctx, key))
+}
+
+/// A verdict over one part of the Miri suite answers for that part alone.
+fn with_part(gate: &Gate, ctx: &Ctx, key: String) -> String {
+    match ctx
+        .miri_part
+        .filter(|_| gate.name == crate::gates::tools::miri::GATE.name)
+    {
+        Some(part) => format!("{key}:part-{}-of-{}", part.index, part.of),
+        None => key,
+    }
+}
+
+/// A digest of what the gate's verdict is held to: its record and unit, and the file a gate keeps
+/// for itself. Another gate's record is not in it, so a gain there keeps this verdict.
+fn own_record(gate: &Gate, ctx: &Ctx) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    ctx.baseline.recorded(gate.name).hash(&mut hasher);
+    ctx.baseline.unit(gate.name).hash(&mut hasher);
+    let own = crate::gates::own_baseline(gate.name);
+    own.map(|file| std::fs::read(ctx.root.join(file)).ok())
+        .hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The same tree can answer differently once the change set moves, so a gate held clean where
@@ -300,15 +342,18 @@ fn with_change_set(gate: &Gate, ctx: &Ctx, key: String) -> Option<String> {
 
 /// Reader and invocation changes must not reuse earlier answers while the package version is fixed.
 /// The gate names its own reader; carrying scope notes changes what any ratchet's answer holds.
-fn key_format(gate: &Gate, reader: &str, key: &str) -> String {
+fn key_format(gate: &Gate, reader: &str, ci: bool, key: &str) -> String {
     let scoped = matches!(gate.kind, Kind::AnnotatedRatchet { .. }).then_some("scope-v2");
     // A recalled pass lowers no record, so one kept before records were lowered must not answer.
     let lowers = gate.counts_in().map(|_| "lowers-v1");
+    // CI fails a gain the record lacks where a local run writes it, so the two share no verdict.
+    let mode = ci.then_some("ci");
     let parts: Vec<&str> = [reader]
         .into_iter()
         .filter(|reader| !reader.is_empty())
         .chain(scoped)
         .chain(lowers)
+        .chain(mode)
         .chain([key])
         .collect();
     parts.join(":")
@@ -324,10 +369,12 @@ pub fn run_one(gate: &Gate, ctx: &Ctx) -> GateReport {
     }
     let started = Instant::now();
     let key = keyed(gate, ctx);
-    if let Some(mut report) = key
+    // `--no-cache` recalls nothing; the verdict this run takes is still kept under the key.
+    let kept = key
         .as_deref()
-        .and_then(|key| crate::run::verdicts::recall(&ctx.root, gate.name, key))
-    {
+        .filter(|_| !ctx.no_cache)
+        .and_then(|key| crate::run::verdicts::recall(&ctx.root, gate.name, key));
+    if let Some(mut report) = kept {
         // Marked, so a recalled verdict never reads as one taken now.
         report.recalled = true;
         report.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -336,10 +383,19 @@ pub fn run_one(gate: &Gate, ctx: &Ctx) -> GateReport {
     let mut report = judged(gate, ctx);
     report.fix = advice(&report);
     report.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    if let Some(key) = key.as_deref() {
-        crate::run::verdicts::keep(&ctx.root, gate.name, key, &report);
+    if let Some(key) = kept_under(gate, ctx, key) {
+        crate::run::verdicts::keep(&ctx.root, gate.name, &key, &report);
     }
     report
+}
+
+/// The key a judged verdict is kept under. A gate that keeps its own record may have written its
+/// first one while judging, so its key is read again and names the record it was held to.
+fn kept_under(gate: &Gate, ctx: &Ctx, asked: Option<String>) -> Option<String> {
+    match crate::gates::own_baseline(gate.name) {
+        Some(_) => keyed(gate, ctx),
+        None => asked,
+    }
 }
 
 /// What to do next: the fix for a gate that tripped, the install for one a tool stopped.
@@ -432,45 +488,6 @@ fn side_by_side(gates: &[&Gate], ctx: &Ctx, workers: usize) -> Vec<Option<GateRe
     on_workers(gates, &quick, workers, &|gate| run_one(gate, ctx))
 }
 
-/// Runs `lanes`, indexes into `items`, on `workers` threads: each lane on one thread in order. An
-/// item in no lane keeps an empty slot.
-fn on_workers<T: Sync, R: Send>(
-    items: &[T],
-    lanes: &[Vec<usize>],
-    workers: usize,
-    run: &(dyn Fn(&T) -> R + Sync),
-) -> Vec<Option<R>> {
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let slots: Vec<std::sync::Mutex<Option<R>>> =
-        items.iter().map(|_| std::sync::Mutex::default()).collect();
-    std::thread::scope(|scope| {
-        for _ in 0..workers.min(lanes.len()) {
-            scope.spawn(|| {
-                while let Some(lane) =
-                    lanes.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
-                {
-                    for (item, slot) in lane
-                        .iter()
-                        .filter_map(|at| Some((items.get(*at)?, slots.get(*at)?)))
-                    {
-                        let done = run(item);
-                        *slot
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(done);
-                    }
-                }
-            });
-        }
-    });
-    slots
-        .into_iter()
-        .map(|slot| {
-            slot.into_inner()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        })
-        .collect()
-}
-
 /// What every gate can measure about a tree, not how it compares to a record. It reads no baseline,
 /// recalls or keeps no verdict, and writes nothing, so a tree chock does not own stays as it is.
 pub fn survey_all(gates: &[&Gate], ctx: &Ctx, chock_version: &str) -> Run {
@@ -531,10 +548,7 @@ fn adoptable(inspection: Inspection) -> Result<Measurement, String> {
                 .join("; ")
         ));
     }
-    Ok(Measurement {
-        series: inspection.series(),
-        findings: inspection.debt,
-    })
+    Ok(Measurement::of(inspection.series(), inspection.debt))
 }
 
 fn debt_report(gate: &Gate, ctx: &Ctx, inspect: Inspect, unit: &str) -> GateReport {
@@ -542,13 +556,10 @@ fn debt_report(gate: &Gate, ctx: &Ctx, inspect: Inspect, unit: &str) -> GateRepo
         Ok(inspection) => inspection,
         Err(why) => return outcome_report(gate, Err(why)),
     };
-    if !inspection.blockers.is_empty() || !ctx.baseline.has(gate.name) {
+    if !inspection.blockers.is_empty() || held_to_zero(gate, ctx) {
         return outcome_report(gate, Ok(inspection.outcome()));
     }
-    let read = Measurement {
-        series: inspection.series(),
-        findings: inspection.debt,
-    };
+    let read = Measurement::of(inspection.series(), inspection.debt);
     measured_ratchet(gate, ctx, read, Keys::Items, unit)
 }
 
@@ -645,8 +656,66 @@ fn rekeyed(now: &Series, was: &Series, keys: Keys) -> Option<String> {
     ))
 }
 
-/// The ratchet, in the only place it is written. A gate with no recorded baseline cannot rule on
-/// the tree, so it reports what it measured and says it could not run.
+/// Whether the gate is held to a record it does not have yet.
+fn lacks_record(gate: &Gate, ctx: &Ctx) -> bool {
+    !ctx.baseline.has(gate.name) && !strict(gate, ctx)
+}
+
+/// Whether this run takes the gate's first record. CI writes no record, so it takes none.
+fn takes_first(gate: &Gate, ctx: &Ctx) -> bool {
+    !ctx.ci && lacks_record(gate, ctx)
+}
+
+/// No record and none to take: a strict gate, or any gate in CI, holds the tree to zero.
+fn held_to_zero(gate: &Gate, ctx: &Ctx) -> bool {
+    !ctx.baseline.has(gate.name) && !takes_first(gate, ctx)
+}
+
+/// What CI says of a gate whose record no change committed.
+fn uncommitted(gate: &str) -> String {
+    format!(
+        "no record `{}` is committed — `chock run {gate}` outside CI takes the first one and \
+         writes {}",
+        crate::run::baseline::kept_here(gate),
+        crate::run::baseline::FILE
+    )
+}
+
+/// A report with its two numbers and what they count.
+fn numbered(gate: &Gate, verdict: Verdict, now: u64, was: u64, unit: &str) -> GateReport {
+    let mut report = GateReport::new(gate.name, verdict, rerun(gate.name).as_str());
+    report.measured = Some(now);
+    report.baseline = Some(was);
+    report.unit = Some(unit.to_string());
+    report
+}
+
+/// What a first record says beside its number. An annotated ratchet names each site past its
+/// record, and with none every site is past it, so only its notes, which name no file, stay.
+fn first_notes(gate: &Gate, findings: Vec<Finding>) -> Vec<Finding> {
+    let sited = matches!(gate.kind, Kind::AnnotatedRatchet { .. });
+    findings
+        .into_iter()
+        .filter(|found| !sited || found.file.is_empty())
+        .collect()
+}
+
+/// A gate's first local run: what it measured is its record from here on, written whatever the
+/// verdict. A file the change touched is still held to zero where the project asks that.
+fn first_record(gate: &Gate, ctx: &Ctx, read: Measurement, keys: Keys, unit: &str) -> GateReport {
+    let now = read.series;
+    let total = now.0.values().sum();
+    let mut report = numbered(gate, Verdict::Pass, total, total, unit);
+    report.findings = first_notes(gate, read.findings);
+    if let Err(why) = touched(&mut report, gate, ctx, &now, &now, keys) {
+        return GateReport::cannot_run(gate.name, rerun(gate.name).as_str(), &why);
+    }
+    report.tightened = Some(now);
+    report
+}
+
+/// The ratchet, in the only place it is written. A local run takes a gate's first record from what
+/// it measured. CI writes no record, so there a gate without one cannot rule on the tree.
 fn ratchet(gate: &Gate, ctx: &Ctx, keys: Keys, unit: &str) -> GateReport {
     // A missing tool is said before a missing baseline: recording one would not help.
     if let Some(missing) = absent_tool(gate, ctx) {
@@ -659,14 +728,11 @@ fn ratchet(gate: &Gate, ctx: &Ctx, keys: Keys, unit: &str) -> GateReport {
         return report;
     }
     // Asked before measuring, which can take minutes of release builds.
-    if !ctx.baseline.has(gate.name) && !strict(gate, ctx) {
+    if ctx.ci && lacks_record(gate, ctx) {
         let mut report = GateReport::cannot_run(
             gate.name,
             rerun(gate.name).as_str(),
-            &format!(
-                "no baseline recorded — `chock baseline {}` records one, or says why it cannot",
-                gate.name
-            ),
+            &uncommitted(gate.name),
         );
         report.unit = Some(unit.to_string());
         return report;
@@ -687,38 +753,22 @@ fn measured_ratchet(
     keys: Keys,
     unit: &str,
 ) -> GateReport {
-    let now = read.series;
-    if let Err(why) = portable(&now) {
+    if let Err(why) = portable(&read.series) {
         return GateReport::cannot_run(gate.name, rerun(gate.name).as_str(), &why);
     }
+    if takes_first(gate, ctx) {
+        return first_record(gate, ctx, read, keys, unit);
+    }
+    let now = read.series;
     let total = now.0.values().sum();
     let was = held_against(gate, ctx, &now);
-    // A reader that re-keys makes every old key absent and every new one look like new debt.
-    if !matches!(gate.kind, Kind::Debt { .. })
-        && let Some(reason) = rekeyed(&now, &was, keys)
-    {
+    let regroup = regrouped(gate, &now, &was, keys);
+    let recount = recounted(ctx.baseline.unit(gate.name), unit);
+    if let Some(reason) = regroup.or(recount) {
         return GateReport::cannot_run(gate.name, rerun(gate.name).as_str(), &reason);
     }
-    // A gate that changes what it counts keeps its keys, so only the unit tells the numbers apart.
-    if let Some(before) = ctx
-        .baseline
-        .unit(gate.name)
-        .filter(|before| *before != unit)
-    {
-        return GateReport::cannot_run(
-            gate.name,
-            rerun(gate.name).as_str(),
-            &format!(
-                "this run counts {unit} where the record holds {before}, so the numbers are not \
-                 comparable — re-record with `chock baseline <gate>`"
-            ),
-        );
-    }
-    let (verdict, findings) = compared(&now, &was, keys, gate.name, unit);
-    let mut report = GateReport::new(gate.name, verdict, rerun(gate.name).as_str());
-    report.measured = Some(total);
-    report.baseline = Some(was.0.values().sum());
-    report.unit = Some(unit.to_string());
+    let (verdict, findings) = compared(&now, &was, keys, gate.name, unit, &read.details);
+    let mut report = numbered(gate, verdict, total, was.0.values().sum(), unit);
     report.findings = findings;
     report.findings.extend(read.findings);
     if let Err(why) = touched(&mut report, gate, ctx, &now, &was, keys) {
@@ -726,6 +776,23 @@ fn measured_ratchet(
     }
     lock_in(&mut report, gate, ctx, now.tightened(&was, keys), &was);
     report
+}
+
+/// A reader that re-keys makes every old key absent and every new one look like new debt.
+fn regrouped(gate: &Gate, now: &Series, was: &Series, keys: Keys) -> Option<String> {
+    if matches!(gate.kind, Kind::Debt { .. }) {
+        return None;
+    }
+    rekeyed(now, was, keys)
+}
+
+/// A gate that changes what it counts keeps its keys, so only the unit tells the numbers apart.
+fn recounted(held: Option<&str>, unit: &str) -> Option<String> {
+    let before = held.filter(|before| *before != unit)?;
+    Some(format!(
+        "this run counts {unit} where the record holds {before}, so the numbers are not \
+         comparable — re-record with `chock baseline <gate>`"
+    ))
 }
 
 /// Debt the record allows in a file the change touched, where the project holds such files to zero.
@@ -818,21 +885,6 @@ fn unrecorded(tighter: &Series, was: &Series, unit: &str) -> Vec<Finding> {
         .collect()
 }
 
-/// The record with every lower number this run measured written in, and the gates it lowered;
-/// `None` when no gate went down.
-#[must_use]
-pub fn locked_in(held: &Baseline, reports: &[GateReport]) -> Option<(Baseline, Vec<String>)> {
-    let mut record = held.clone();
-    let mut lowered = Vec::new();
-    for report in reports {
-        if let Some(series) = &report.tightened {
-            record.set(&report.gate, series.clone());
-            lowered.push(report.gate.clone());
-        }
-    }
-    (!lowered.is_empty()).then_some((record, lowered))
-}
-
 /// What the comparison says, once it is known to be possible. Each of its three questions goes
 /// only to the key kinds it fits, and only the first two can fail the gate.
 fn compared(
@@ -841,6 +893,7 @@ fn compared(
     keys: Keys,
     gate: &str,
     unit: &str,
+    details: &Details,
 ) -> (Verdict, Vec<Finding>) {
     let regressions = now.regressions(was, keys);
     // A census row on record that this run did not produce is a check that stopped happening, and
@@ -860,7 +913,7 @@ fn compared(
     };
     let findings = regressions
         .iter()
-        .map(|change| finding_for(change, was, unit))
+        .map(|change| finding_for(change, was, unit).detailed(details.get(change.key())))
         .chain(dropped.iter().map(|key| dropped_finding(key, was, unit)))
         .chain(added.iter().map(|key| added_finding(key, now, gate, unit)))
         .collect();
@@ -929,6 +982,9 @@ fn dropped_finding(key: &str, was: &Series, unit: &str) -> Finding {
 mod tests {
     use super::*;
     use crate::gates;
+    use crate::gates::tools::miri::Part;
+    use crate::run::baseline::Baseline;
+    use crate::run::report::locked_in;
     use std::path::PathBuf;
 
     fn ctx_with(gate: &str, pairs: &[(&str, u64)]) -> Ctx {
@@ -993,14 +1049,44 @@ mod tests {
     }
 
     #[test]
-    fn absent_debt_baselines_preserve_strict_enforcement_without_writing_anything() {
+    fn a_debt_gate_takes_its_first_record_in_a_local_run_and_ci_holds_it_to_zero() {
         let ctx = ctx_with("another", &[]);
         let report = run_one(&debt_gate(existing_debt), &ctx);
-        assert_eq!(report.verdict, Verdict::Tripped);
+        assert_eq!(report.verdict, Verdict::Pass);
+        assert_eq!((report.measured, report.baseline), (Some(1), Some(1)));
         assert_eq!(report.findings, existing_debt(&ctx).unwrap().debt);
-        assert!(!ctx.baseline.has("probe"));
+        let mut first = Series::new();
+        first.set("src/unused.rs", 1);
+        assert_eq!(report.tightened, Some(first));
+        // CI writes no record, so there the same debt fails and only a clean tree passes.
+        let ci = Ctx {
+            ci: true,
+            ..ctx_with("another", &[])
+        };
+        let held = run_one(&debt_gate(existing_debt), &ci);
+        assert_eq!(
+            (held.verdict, held.tightened.clone()),
+            (Verdict::Tripped, None)
+        );
+        assert_eq!(held.findings, existing_debt(&ci).unwrap().debt);
         let clean = debt_gate(|_| Ok(Inspection::default()));
-        assert_eq!(run_one(&clean, &ctx).verdict, Verdict::Pass);
+        assert_eq!(run_one(&clean, &ci).verdict, Verdict::Pass);
+        // A clean tree's first record is empty, and it is still a record.
+        assert_eq!(run_one(&clean, &ctx).tightened, Some(Series::new()));
+    }
+
+    #[test]
+    fn a_blocker_or_a_strict_debt_gate_takes_no_first_record() {
+        let ctx = ctx_with("another", &[]);
+        let blocked = run_one(&debt_gate(blocked_debt), &ctx);
+        assert_eq!(
+            (blocked.verdict, blocked.tightened),
+            (Verdict::Tripped, None)
+        );
+        let mut strict = ctx_with("another", &[]);
+        strict.strict = vec!["probe".to_string()];
+        let held = run_one(&debt_gate(existing_debt), &strict);
+        assert_eq!((held.verdict, held.tightened), (Verdict::Tripped, None));
     }
 
     #[test]
@@ -1212,13 +1298,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_survey_still_refuses_a_gate_whose_tool_is_not_installed() {
         let ctx = ctx_with("probe", &[]);
-        let mut gate = ratchet_gate();
-        gate.reads = Some(crate::run::verdicts::Reads::tree_and(&[
-            "a-tool-nothing-installs",
-        ]));
-        let report = survey_one(&gate, &ctx);
+        let report = survey_one(&gate_without_its_tool(), &ctx);
         assert_eq!(report.verdict, Verdict::CannotRun);
         assert!(
             report
@@ -1234,6 +1317,15 @@ mod tests {
             keys: Keys::Items,
             unit: "lines",
         })
+    }
+
+    /// A ratchet that reads a tool no machine holds.
+    fn gate_without_its_tool() -> Gate {
+        let mut gate = ratchet_gate();
+        gate.reads = Some(crate::run::verdicts::Reads::tree_and(&[
+            "a-tool-nothing-installs",
+        ]));
+        gate
     }
 
     fn a_key_from_another_tree(_ctx: &Ctx) -> Result<Series, String> {
@@ -1257,13 +1349,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_ratchet_whose_tool_is_absent_names_the_tool_and_not_the_baseline() {
         let ctx = ctx_with("probe", &[]);
-        let mut gate = ratchet_gate();
-        gate.reads = Some(crate::run::verdicts::Reads::tree_and(&[
-            "a-tool-nothing-installs",
-        ]));
-        let report = run_one(&gate, &ctx);
+        let report = run_one(&gate_without_its_tool(), &ctx);
         assert_eq!(report.verdict, Verdict::CannotRun);
         let why = report.cannot_run_reason.unwrap_or_default();
         assert!(why.contains("a-tool-nothing-installs"), "{why}");
@@ -1376,11 +1465,13 @@ mod tests {
         lower.set("src/a.rs", 10);
         lower.set("src/b.rs", 5);
         assert_eq!(report.tightened, Some(lower.clone()));
-        let (record, lowered) = locked_in(&ctx.baseline, &[report]).unwrap();
+        let settled = locked_in(&ctx.baseline, &[report]).unwrap();
+        assert_eq!(settled.record.gate("slop"), lower);
         assert_eq!(
-            (record.gate("slop"), lowered),
-            (lower, vec!["slop".to_string()])
+            (settled.first.clone(), settled.lowered.clone()),
+            (Vec::new(), vec!["slop".to_string()])
         );
+        assert_eq!(settled.said(), "lowered the record for slop");
         let unmoved = ctx_with("probe", &[("src/a.rs", 12), ("src/b.rs", 5)]);
         assert_eq!(
             run_one(&ratchet_gate(), &unmoved).tightened,
@@ -1478,9 +1569,105 @@ mod tests {
     }
 
     #[test]
-    fn nothing_lowered_writes_no_record() {
-        let report = GateReport::new("slop", Verdict::Pass, "chock run slop");
-        assert_eq!(locked_in(&Baseline::empty("0.1.0"), &[report]), None);
+    fn a_part_of_the_miri_suite_keeps_its_verdict_under_a_key_of_its_own() {
+        let miri = gates::tools::miri::GATE;
+        let mut ctx = Ctx::for_root(PathBuf::from("/w"), Baseline::empty("0.1.0"));
+        assert_eq!(with_part(&miri, &ctx, "k".to_string()), "k");
+        ctx.miri_part = Some(Part { index: 2, of: 12 });
+        assert_eq!(with_part(&miri, &ctx, "k".to_string()), "k:part-2-of-12");
+        let other = gates::tools::binsize::GATE;
+        assert_eq!(with_part(&other, &ctx, "k".to_string()), "k");
+    }
+
+    #[test]
+    fn a_verdict_is_keyed_on_the_record_of_its_own_gate_and_of_no_other() {
+        let gate = ratchet_gate();
+        let same = own_record(&gate, &ctx_with("probe", &[("src/a.rs", 10)]));
+        let mut other = ctx_with("probe", &[("src/a.rs", 10)]);
+        other.baseline.set("slop", Series::new());
+        assert_eq!(own_record(&gate, &other), same);
+        let lower = ctx_with("probe", &[("src/a.rs", 9)]);
+        assert_ne!(own_record(&gate, &lower), same);
+        let mut united = ctx_with("probe", &[("src/a.rs", 10)]);
+        united
+            .baseline
+            .units
+            .insert("probe".to_string(), "lines".to_string());
+        assert_ne!(own_record(&gate, &united), same);
+        // No record takes a first one and an empty record holds zero, so the two key apart.
+        assert_ne!(
+            own_record(&gate, &ctx_with("another", &[])),
+            own_record(&gate, &ctx_with("probe", &[]))
+        );
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_gate_that_keeps_its_own_record_is_keyed_again_after_it_was_judged() {
+        let dir = crate::testdir::make("run-kept-under");
+        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+        let ctx = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
+        let plain = declaring(agreeable);
+        let asked = Some("asked".to_string());
+        assert_eq!(kept_under(&plain, &ctx, asked.clone()), asked);
+        assert_eq!(kept_under(&plain, &ctx, None), None);
+        let own = Gate {
+            name: "crap",
+            ..declaring(agreeable)
+        };
+        let before = keyed(&own, &ctx);
+        assert!(before.is_some());
+        assert_eq!(kept_under(&own, &ctx, asked), before);
+        // Once the gate wrote its first record, the key names that record.
+        let file = dir.join(crate::gates::own_baseline("crap").unwrap());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, "{}").unwrap();
+        let after = kept_under(&own, &ctx, before.clone());
+        assert!(after.is_some());
+        assert_ne!(after, before);
+    }
+
+    /// Recalled, a verdict writes nothing, so one that leaves a record to write is judged again.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_verdict_that_took_a_first_record_is_not_recalled() {
+        let dir = crate::testdir::make("run-first-record");
+        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+        let ctx = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
+        let gate = Gate {
+            reads: Some(crate::run::verdicts::Reads::tree_and(&[])),
+            ..ratchet_gate()
+        };
+        assert!(
+            keyed(&gate, &ctx).is_some(),
+            "the gate has a key to keep under"
+        );
+        let first = run_one(&gate, &ctx);
+        assert_eq!(first.tightened, Some(two_items(&ctx).unwrap()));
+        let again = run_one(&gate, &ctx);
+        assert!(!again.recalled);
+        assert_eq!(again.tightened, first.tightened);
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_run_told_not_to_recall_judges_again_and_still_keeps_its_verdict() {
+        fn broken(_ctx: &Ctx) -> Result<Outcome, String> {
+            Ok(Outcome::failed(vec![Finding::at("a.rs", "broken")]))
+        }
+        let dir = crate::testdir::make("run-no-cache");
+        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+        let ctx = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
+        assert!(!run_one(&declaring(agreeable), &ctx).recalled);
+        let fresh = Ctx {
+            no_cache: true,
+            ..Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"))
+        };
+        let judged = run_one(&declaring(broken), &fresh);
+        assert_eq!((judged.verdict, judged.recalled), (Verdict::Tripped, false));
+        // What it judged took the place of the verdict kept before.
+        let later = run_one(&declaring(never_checked), &ctx);
+        assert_eq!((later.verdict, later.recalled), (Verdict::Tripped, true));
     }
 
     /// Passes without reading anything, so the first run has a verdict worth keeping.
@@ -1500,8 +1687,22 @@ mod tests {
         }
     }
 
+    /// CI fails a gain that a local run writes, so the two keep their verdicts apart.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_ci_run_keeps_its_verdict_under_its_own_key() {
+        let dir = crate::testdir::make("run-ci-key");
+        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+        let local = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
+        let here = keyed(&declaring(agreeable), &local).unwrap();
+        let ci = Ctx { ci: true, ..local };
+        let there = keyed(&declaring(agreeable), &ci).unwrap();
+        assert_eq!(there, format!("ci:{here}"));
+    }
+
     /// The case the verdict record exists for; the report says it was recalled.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_that_names_its_inputs_answers_the_second_time_without_running() {
         let dir = crate::testdir::make("run-recalled");
         std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
@@ -1555,6 +1756,7 @@ mod tests {
 
     /// A verdict kept for one change set never answers for another, and none is kept without one.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_held_clean_where_touched_runs_again_when_the_change_set_moves() {
         let dir = crate::testdir::make("run-touched-key");
         std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
@@ -1572,6 +1774,7 @@ mod tests {
 
     /// A tree that moved is a verdict that no longer describes it, however recently it was taken.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_changing_puts_the_gate_back_to_running() {
         let dir = crate::testdir::make("run-recalled-moved");
         std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
@@ -1591,12 +1794,15 @@ mod tests {
     }
 
     fn never_reached(_ctx: &Ctx) -> Result<Series, String> {
-        panic!("a ratchet with no baseline must refuse before it measures anything")
+        panic!("in CI a ratchet with no record must refuse before it measures anything")
     }
 
     #[test]
-    fn a_ratchet_with_no_baseline_refuses_before_it_measures() {
-        let ctx = Ctx::for_root(PathBuf::from("/w"), Baseline::empty("0.1.0"));
+    fn in_ci_a_ratchet_with_no_record_refuses_before_it_measures() {
+        let ctx = Ctx {
+            ci: true,
+            ..Ctx::for_root(PathBuf::from("/w"), Baseline::empty("0.1.0"))
+        };
         let gate = gate_of(Kind::Ratchet {
             measure: never_reached,
             keys: Keys::Items,
@@ -1607,12 +1813,101 @@ mod tests {
         assert_eq!(
             report.cannot_run_reason.as_deref(),
             Some(
-                "no baseline recorded — `chock baseline probe` records one, or says why it cannot"
+                "no record `probe` is committed — `chock run probe` outside CI takes the first \
+                 one and writes .chock/baseline.json"
             )
         );
         // No number, because none was taken. A zero here would read as a clean measurement.
         assert_eq!(report.measured, None);
         assert_eq!(report.unit.as_deref(), Some("lines"));
+    }
+
+    #[test]
+    fn only_a_local_run_of_a_gate_held_to_a_record_it_lacks_takes_the_first_one() {
+        let gate = ratchet_gate();
+        let asked = |ctx: &Ctx| (lacks_record(&gate, ctx), takes_first(&gate, ctx));
+        assert_eq!(asked(&ctx_with("another", &[])), (true, true));
+        let ci = Ctx {
+            ci: true,
+            ..ctx_with("another", &[])
+        };
+        assert_eq!(asked(&ci), (true, false), "CI writes no record");
+        assert_eq!(asked(&ctx_with("probe", &[])), (false, false));
+        let mut strict = ctx_with("another", &[]);
+        strict.strict = vec!["probe".to_string()];
+        assert_eq!(
+            asked(&strict),
+            (false, false),
+            "held to zero, not to a record"
+        );
+    }
+
+    #[test]
+    fn a_local_run_takes_a_ratchets_first_record_from_what_it_measured() {
+        let ctx = ctx_with("another", &[]);
+        let report = run_one(&ratchet_gate(), &ctx);
+        assert_eq!(report.verdict, Verdict::Pass);
+        assert_eq!((report.measured, report.baseline), (Some(15), Some(15)));
+        assert_eq!(report.unit.as_deref(), Some("lines"));
+        assert_eq!(report.findings, Vec::new());
+        let counted = two_items(&ctx).unwrap();
+        assert_eq!(report.tightened, Some(counted.clone()));
+        let settled = locked_in(&ctx.baseline, &[report]).unwrap();
+        assert_eq!(settled.record.gate("probe"), counted);
+        assert_eq!(settled.record.unit("probe"), Some("lines"));
+        assert!(settled.record.has("another"), "the other records stay");
+        assert_eq!(
+            (settled.first.clone(), settled.lowered.clone()),
+            (vec!["probe".to_string()], Vec::new())
+        );
+        assert_eq!(settled.said(), "wrote the first record for probe");
+    }
+
+    #[test]
+    fn a_first_record_of_an_annotated_ratchet_names_no_site_and_keeps_its_notes() {
+        fn sited(ctx: &Ctx) -> Result<Measurement, String> {
+            let mut read = scoped_measurement(ctx)?;
+            read.findings
+                .push(Finding::at("src/a.rs", "survived").item("eq_op_invert"));
+            Ok(read)
+        }
+        let gate = gate_of(Kind::AnnotatedRatchet {
+            measure: sited,
+            keys: Keys::Items,
+            unit: "survivors",
+        });
+        let ctx = ctx_with("another", &[]);
+        let report = run_one(&gate, &ctx);
+        let scoped = scoped_measurement(&ctx).unwrap();
+        assert_eq!(report.verdict, Verdict::Pass);
+        assert_eq!(report.findings, scoped.findings);
+        assert_eq!(report.tightened, Some(scoped.series));
+    }
+
+    #[test]
+    fn a_first_record_is_written_also_where_a_touched_file_trips_the_gate() {
+        let with_no_record = |changed: Result<Vec<String>, String>| Ctx {
+            baseline: Baseline::empty("0.1.0"),
+            ..kept_clean(changed)
+        };
+        let ctx = with_no_record(Ok(vec!["src/a.rs".to_string()]));
+        let report = run_one(&ratchet_gate(), &ctx);
+        assert_eq!((report.verdict, report.exit_code), (Verdict::Tripped, 1));
+        let said: Vec<String> = report.findings.iter().map(Finding::render).collect();
+        assert_eq!(
+            said,
+            [
+                "src/a.rs: 10 lines in a file this change touched: `clean_when_touched` holds it to zero"
+            ]
+        );
+        assert_eq!(report.tightened, Some(two_items(&ctx).unwrap()));
+        // The changed files could not be read, so nothing was judged and nothing is recorded.
+        let unread = with_no_record(Err("no repository".to_string()));
+        let refused = run_one(&ratchet_gate(), &unread);
+        assert_eq!(
+            (refused.verdict, refused.tightened),
+            (Verdict::CannotRun, None)
+        );
     }
 
     #[test]
@@ -1827,16 +2122,14 @@ mod tests {
     fn scoped_measurement(_ctx: &Ctx) -> Result<Measurement, String> {
         let mut series = Series::new();
         series.set("src/a.rs#eq_op_invert", 1);
-        Ok(Measurement {
+        let note = Finding::at(
+            "",
+            "not applicable to linked-crate mutation; not mutation-covered",
+        );
+        Ok(Measurement::of(
             series,
-            findings: vec![
-                Finding::at(
-                    "",
-                    "not applicable to linked-crate mutation; not mutation-covered",
-                )
-                .item("integration test commands"),
-            ],
-        })
+            vec![note.item("integration test commands")],
+        ))
     }
 
     fn scoped_ratchet() -> Gate {
@@ -1848,12 +2141,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn an_unannotated_cached_verdict_cannot_answer_for_a_scope_aware_measurement() {
         let dir = crate::testdir::make("scope-key");
         let gate = scoped_ratchet();
         let old = GateReport::new("probe", Verdict::Pass, "chock run probe");
         crate::run::verdicts::keep(&dir, "probe", "same-inputs", &old);
-        let key = key_format(&gate, "", "same-inputs");
+        let key = key_format(&gate, "", false, "same-inputs");
         assert_eq!(key, "scope-v2:lowers-v1:same-inputs");
         assert_eq!(crate::run::verdicts::recall(&dir, "probe", &key), None);
         let ctx = ctx_with("probe", &[("src/a.rs#eq_op_invert", 1)]);
@@ -1864,11 +2158,11 @@ mod tests {
             Some(annotated)
         );
         assert_eq!(
-            key_format(&ratchet_gate(), "", "same-inputs"),
+            key_format(&ratchet_gate(), "", false, "same-inputs"),
             "lowers-v1:same-inputs"
         );
         assert_eq!(
-            key_format(&gates::tools::TEST, "", "same-inputs"),
+            key_format(&gates::tools::TEST, "", false, "same-inputs"),
             "same-inputs"
         );
     }
@@ -1923,7 +2217,7 @@ mod tests {
         ];
         for (gate, expected) in cases {
             let reader = gate.reads.map_or("", |reads| reads.reader);
-            assert_eq!(key_format(gate, reader, "input"), expected);
+            assert_eq!(key_format(gate, reader, false, "input"), expected);
         }
     }
 

@@ -151,13 +151,17 @@ fn mutest_still_reports_a_survivor_where_the_survivor_gate_reads_it() {
 }
 
 /// A record every real score is above, so cargo-crap must report regressions for the gate to read.
+/// The build script is in that record too, and the gate leaves it out: no test can reach it.
 #[test]
 #[ignore = "runs cargo-llvm-cov and the installed cargo-crap"]
 fn cargo_crap_still_reports_a_regression_the_crap_gate_can_name() {
     let lib = "pub fn branchy(x: u32) -> u32 {\n    if x > 1 { 1 } else { 2 }\n}\n\n\
                pub fn seven() -> u32 {\n    7\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    \
                fn seven_is_seven() {\n        assert_eq!(super::seven(), 7);\n    }\n}\n";
-    let dir = scratch_crate("contract-crap", "", &[("src/lib.rs", lib)]);
+    let build = "fn main() {\n    if std::env::var(\"X\").is_ok() {\n        println!(\"x\");\n    \
+                 }\n}\n";
+    let files = [("src/lib.rs", lib), ("build.rs", build)];
+    let dir = scratch_crate("contract-crap", "", &files);
     let ctx = Ctx::for_root(dir.clone(), Baseline::empty("0.1.0"));
     chock::gates::coverage::ensure(&ctx).unwrap();
     let args = [
@@ -170,7 +174,15 @@ fn cargo_crap_still_reports_a_regression_the_crap_gate_can_name() {
     ];
     let out = chock::exec::run("cargo", &args, &dir).unwrap();
     let mut record: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
-    for entry in record["entries"].as_array_mut().unwrap() {
+    let entries = record["entries"].as_array_mut().unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["file"].as_str().unwrap().ends_with("build.rs")),
+        "{}",
+        out.stdout
+    );
+    for entry in entries {
         entry["crap"] = serde_json::json!(0.5);
     }
     let held = chock::run::baseline::relativize(&record.to_string(), &dir);
@@ -184,6 +196,13 @@ fn cargo_crap_still_reports_a_regression_the_crap_gate_can_name() {
             .findings
             .iter()
             .any(|finding| finding.render().contains("branchy")),
+        "{report:?}"
+    );
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|finding| finding.render().contains("build.rs")),
         "{report:?}"
     );
     done(&dir);

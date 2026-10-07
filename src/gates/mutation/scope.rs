@@ -58,15 +58,12 @@ pub(super) fn within(measured: Measurement, was: &Series, files: &[String]) -> M
     series.0.extend(measured.series.0);
     let mut findings = measured.findings;
     findings.push(note(files.len()));
-    Measurement { series, findings }
+    Measurement::of(series, findings)
 }
 
 /// The record as it stands, for a change that touched no Rust source.
 pub(super) fn unchanged(was: Series) -> Measurement {
-    Measurement {
-        series: was,
-        findings: vec![note(0)],
-    }
+    Measurement::of(was, vec![note(0)])
 }
 
 /// What the run of `files` alone measured, set in the record. Where that run left the verdict to
@@ -207,10 +204,7 @@ mod tests {
             ("src/a.rs#eq_op_invert", 2),
             ("src/b.rs#bool_expr_negate", 1),
         ]);
-        let measured = Measurement {
-            series: series(&[("src/b.rs#eq_op_invert", 1)]),
-            findings: Vec::new(),
-        };
+        let measured = Measurement::of(series(&[("src/b.rs#eq_op_invert", 1)]), Vec::new());
         let merged = within(measured, &was, &paths(&["src/b.rs"]));
         assert_eq!(
             merged.series,
@@ -224,10 +218,7 @@ mod tests {
     fn files_that_cannot_be_judged_alone_give_way_to_the_whole_crate() {
         let was = series(&[("src/a.rs#eq_op_invert", 2)]);
         let files = paths(&["src/b.rs", "src/c.rs"]);
-        let measuring = |key: &str| Measurement {
-            series: series(&[(key, 1)]),
-            findings: Vec::new(),
-        };
+        let measuring = |key: &str| Measurement::of(series(&[(key, 1)]), Vec::new());
         let unasked = || Err("the whole crate was not asked for".to_string());
         let only = Some(measuring("src/b.rs#eq_op_invert"));
         let alone = widened(only, &was, &files, unasked).unwrap();

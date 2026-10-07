@@ -303,6 +303,14 @@ mod tests {
         move |_| Some(text.to_string())
     }
 
+    /// The context of a tree whose files git lists.
+    fn listed_by_git(root: &Path) -> Ctx {
+        Ctx {
+            vcs: crate::project::vcs::live_holder(root),
+            ..Ctx::for_root(root.to_path_buf(), Baseline::empty("0.1.0"))
+        }
+    }
+
     fn rendered(findings: &[Finding]) -> Vec<String> {
         findings.iter().map(Finding::render).collect()
     }
@@ -603,6 +611,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_path_that_is_not_a_regular_file_is_not_read() {
         let root = crate::testdir::make("hygiene-read");
         std::fs::create_dir_all(root.join("deploy")).unwrap();
@@ -611,6 +620,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_exactly_at_the_size_limit_is_read_and_one_byte_past_it_is_not() {
         let root = crate::testdir::make("hygiene-size");
         let limit = usize::try_from(MAX_FILE_BYTES).unwrap();
@@ -633,16 +643,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_enumeration_is_what_git_tracks_and_not_what_the_directory_holds() {
         let root = crate::testdir::make("hygiene-tracked");
         std::fs::write(root.join("server.pem"), "placeholder\n").unwrap();
         std::fs::write(root.join(".env"), "TOKEN=placeholder\n").unwrap();
         git(&root, &["init", "--quiet"]);
         git(&root, &["add", "server.pem"]);
-        let ctx = Ctx {
-            vcs: crate::project::vcs::live_holder(&root),
-            ..Ctx::for_root(root.to_path_buf(), Baseline::empty("0.1.0"))
-        };
+        let ctx = listed_by_git(&root);
         let outcome = check(&ctx).unwrap();
         assert!(!outcome.passed);
         assert_eq!(
@@ -657,6 +665,7 @@ mod tests {
 
     /// `git ls-files` reads the index, so the test writes the entries into it, not to disk.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_tree_of_exactly_what_one_pass_reads_is_enumerated_rather_than_refused() {
         let root = crate::testdir::make("hygiene-cap");
         git(&root, &["init", "--quiet"]);
@@ -683,26 +692,22 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_tracked_tree_with_nothing_to_report_passes() {
         let root = crate::testdir::make("hygiene-clean");
         std::fs::write(root.join(".env.example"), "TOKEN=\n").unwrap();
         git(&root, &["init", "--quiet"]);
         git(&root, &["add", "-A"]);
-        let ctx = Ctx {
-            vcs: crate::project::vcs::live_holder(&root),
-            ..Ctx::for_root(root.to_path_buf(), Baseline::empty("0.1.0"))
-        };
+        let ctx = listed_by_git(&root);
         assert_eq!(check(&ctx).unwrap(), Outcome::passed());
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn outside_a_git_repository_the_gate_cannot_run_rather_than_passing() {
         let root = crate::testdir::make("hygiene-no-repo");
         std::fs::write(root.join(".git"), "gitdir: /nowhere-chock-hygiene\n").unwrap();
-        let ctx = Ctx {
-            vcs: crate::project::vcs::live_holder(&root),
-            ..Ctx::for_root(root.to_path_buf(), Baseline::empty("0.1.0"))
-        };
+        let ctx = listed_by_git(&root);
         let reason = check(&ctx).unwrap_err();
         assert!(
             reason.starts_with("git ls-files read no repository here:"),

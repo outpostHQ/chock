@@ -68,6 +68,7 @@ mod tests {
     use crate::setup::init::local_pin_file;
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_pin_file_an_older_chock_wrote_takes_this_chocks_pins_and_keeps_the_projects_own() {
         let (dir, running) = (
             crate::testdir::make("init-repin"),
@@ -103,6 +104,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_pin_file_naming_a_newer_chock_or_none_is_not_moved() {
         let (dir, running) = (
             crate::testdir::make("init-repin-kept"),

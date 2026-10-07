@@ -897,21 +897,13 @@ mod tests {
     }
 
     fn ctx_of(files: &[(&str, &str)]) -> crate::testdir::Held {
-        let dir = crate::testdir::make("gate-features");
-        for (name, src) in files {
-            let path = dir.join(name);
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            std::fs::write(path, src).unwrap();
-        }
-        let held = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
-        crate::testdir::Held::new(dir, held)
+        crate::testdir::Held::tree("gate-features", files)
     }
 
     const CRATE: &str = "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_gate_runs_cargo_against_a_real_tree_and_reports_what_it_finds() {
         let ctx = ctx_of(&[
             (
@@ -927,6 +919,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_real_tree_whose_features_are_all_read_passes() {
         let ctx = ctx_of(&[
             (
@@ -939,6 +932,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_cfg_inside_a_fixture_directory_is_not_the_surrounding_crates_own() {
         let ctx = ctx_of(&[
             (MANIFEST, &format!("{CRATE}\n[workspace]\n")),
@@ -953,6 +947,7 @@ mod tests {
 
     /// chock declares no feature, so its own tree must come out clean.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn chocks_own_tree_invents_nothing() {
         let ctx = Ctx::for_root(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),

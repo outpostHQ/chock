@@ -536,7 +536,6 @@ fn declared_module(window: &[proc_macro2::TokenTree]) -> Option<String> {
 )]
 mod tests {
     use super::*;
-    use crate::run::baseline::Baseline;
 
     fn names(src: &str) -> Vec<String> {
         decls(src).into_iter().map(|decl| decl.name).collect()
@@ -1141,19 +1140,11 @@ mod tests {
     }
 
     fn ctx_of(files: &[(&str, &str)]) -> crate::testdir::Held {
-        let dir = crate::testdir::make("gate-modcheck");
-        for (name, src) in files {
-            let path = dir.join(name);
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            std::fs::write(path, src).unwrap();
-        }
-        let held = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
-        crate::testdir::Held::new(dir, held)
+        crate::testdir::Held::tree("gate-modcheck", files)
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_gate_reads_a_real_tree_and_reports_paths_relative_to_its_root() {
         let ctx = ctx_of(&[("Cargo.toml", ""), ("src/lib.rs", "mod parser;\n")]);
         let inspection = inspect(&ctx).unwrap();
@@ -1163,6 +1154,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_real_tree_whose_modules_all_resolve_passes() {
         let ctx = ctx_of(&[
             ("Cargo.toml", ""),
@@ -1173,6 +1165,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_fixture_directory_under_src_is_not_judged_as_the_crates_own_modules() {
         let ctx = ctx_of(&[
             ("Cargo.toml", ""),
@@ -1183,6 +1176,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri did not end this test in 19 minutes")]
     fn chocks_own_tree_resolves_in_both_directions() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let found = faults(&Tree(read(root).unwrap())).unwrap();

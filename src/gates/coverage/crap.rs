@@ -7,6 +7,7 @@ use std::path::Path;
 use crate::exec;
 use crate::run::debt::{Debt, Held};
 use crate::run::report::Finding;
+use crate::run::verdicts::Reads;
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
 
 /// Under `.chock/` with chock's other committed state, so it never overwrites a project's own file.
@@ -32,7 +33,8 @@ pub const GATE: Gate = Gate {
     about: "complexity x uncoverage per function, against this system's .chock/crap-baseline",
     group: Group::Quality,
     builds: true,
-    reads: None,
+    // Its record is under `.chock/`, which the walk prunes; the run's key reads that file by name.
+    reads: Some(Reads::tree_and(&["cargo", "cargo-crap"]).and_coverage()),
     kind: Kind::Binary(check),
 };
 
@@ -45,26 +47,87 @@ const UNIT: &str = "function(s) over CRAP 30";
 /// Both inputs are in place before cargo-crap runs, since it reads a missing lcov as an empty one.
 fn check(ctx: &Ctx) -> Result<Outcome, String> {
     let baseline = baseline();
-    missing(&ctx.root, &baseline, "run `chock baseline`")?;
-    let record = recorded(&ctx.root)?;
+    let held = held_by(&ctx.root, &baseline, ctx.ci)?;
     crate::gates::coverage::ensure(ctx)?;
-    let out = exec::run(
-        "cargo",
-        &[
-            "crap",
-            "--lcov",
-            COVERAGE,
-            "--workspace",
-            "--baseline",
-            &baseline,
-            "--fail-regression",
-            "--format",
-            "json",
-        ],
-        &ctx.root,
-    )
-    .map_err(|e| e.to_string())?;
+    let record = or_first(held, &ctx.root, &baseline, &|| scores(ctx))?;
+    let out = crap(&ctx.root, &["--baseline", &baseline, "--fail-regression"])?;
     judged(&out.stdout, out.success(), &ctx.root, &record)
+}
+
+/// cargo-crap over the run's coverage report, as JSON; `more` asks for a comparison or an order.
+/// A build script runs only while cargo builds, so no coverage run reaches it and it stays out.
+fn crap(root: &Path, more: &[&str]) -> Result<exec::Output, String> {
+    let report = [
+        "crap",
+        "--lcov",
+        COVERAGE,
+        "--workspace",
+        "--exclude",
+        "build.rs",
+        "--format",
+        "json",
+    ];
+    exec::run("cargo", &[&report, more].concat(), root).map_err(|e| e.to_string())
+}
+
+/// The record this run is held to, or `None` where a local run has none and writes the first one.
+/// CI writes no record, so there a missing one stops the gate before anything is built.
+fn held_by(root: &Path, name: &str, ci: bool) -> Result<Option<Vec<Scored>>, String> {
+    if root.join(name).is_file() {
+        return recorded(root).map(Some);
+    }
+    match ci {
+        true => Err(format!(
+            "no {name} is committed — `chock run crap` outside CI writes the first one"
+        )),
+        false => Ok(None),
+    }
+}
+
+/// The record held, or the first one: the scores `today` gives, written under `root`.
+fn or_first(
+    held: Option<Vec<Scored>>,
+    root: &Path,
+    name: &str,
+    today: &dyn Fn() -> Result<String, String>,
+) -> Result<Vec<Scored>, String> {
+    match held {
+        Some(record) => Ok(record),
+        None => written(root, name, &today()?),
+    }
+}
+
+/// Every function's score today as cargo-crap reports it, each path relative: what a record holds.
+pub fn scores(ctx: &Ctx) -> Result<String, String> {
+    as_record(&crap(&ctx.root, &["--sort", "file"])?, &ctx.root)
+}
+
+fn as_record(report: &exec::Output, root: &Path) -> Result<String, String> {
+    produced(report, "cargo crap")?;
+    Ok(crate::run::baseline::relativize(&report.stdout, root))
+}
+
+/// Whether a captured run produced something to record. Split from the spawning because a test that
+/// ran the real one would start the suite from inside the suite.
+fn produced(out: &exec::Output, what: &str) -> Result<(), String> {
+    if !out.success() {
+        // A file written from a crashed run looks like a baseline and holds no measurement, which is
+        // worse than having none.
+        return Err(format!("{what} failed; the baseline would measure nothing"));
+    }
+    if out.truncated {
+        return Err(format!("{what} printed more than chock keeps"));
+    }
+    Ok(())
+}
+
+/// Writes `scores` as the first record under `root` and reads it back. It says so on stderr, where
+/// the run's other record lines go.
+fn written(root: &Path, name: &str, scores: &str) -> Result<Vec<Scored>, String> {
+    crate::project::document::write(&root.join(name), scores)
+        .map_err(|e| format!("{name}: {e}"))?;
+    eprintln!("chock: wrote the first record for crap; commit {name} with this change");
+    recorded(root)
 }
 
 /// cargo-crap's JSON report, and its record file, which has the same shape: only the fields read.
@@ -362,13 +425,6 @@ pub fn debt(root: &Path) -> Result<Option<Debt>, String> {
     }))
 }
 
-fn missing(root: &Path, name: &str, remedy: &str) -> Result<(), String> {
-    if root.join(name).is_file() {
-        return Ok(());
-    }
-    Err(format!("no {name} — {remedy}"))
-}
-
 /// What a pass says where the record lacks functions: nothing holds one until it is over 30.
 fn unheld(delta: &Delta) -> Vec<Finding> {
     let new = delta.entries.iter().filter(|entry| entry.status == "new");
@@ -425,25 +481,134 @@ mod tests {
         Ctx::for_root(dir, Baseline::empty("0.1.0"))
     }
 
+    fn ran(code: Option<i32>, stdout: &str, truncated: bool) -> exec::Output {
+        exec::Output {
+            code,
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+            truncated,
+        }
+    }
+
+    const NO_RECORD_IN_CI: &str = "is committed — `chock run crap` outside CI writes the first one";
+
     #[test]
-    /// Only a missing baseline stops the gate early; the gate makes coverage itself.
-    fn a_tree_with_no_baseline_says_which_step_was_skipped() {
-        let dir = crate::testdir::make("crap-no-baseline-file");
-        let ctx = ctx_in(dir.to_path_buf());
+    /// CI writes no record, so a missing one stops the gate before it makes coverage.
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn in_ci_a_tree_with_no_record_says_where_the_first_one_comes_from() {
+        let dir = crate::testdir::make("crap-no-record-in-ci");
+        let ctx = Ctx {
+            ci: true,
+            ..ctx_in(dir.to_path_buf())
+        };
         assert_eq!(
             check(&ctx),
-            Err(format!("no {} — run `chock baseline`", baseline()))
+            Err(format!("no {} {NO_RECORD_IN_CI}", baseline()))
+        );
+        // A coverage report beside it changes nothing: the record is what CI lacks.
+        std::fs::write(dir.join(COVERAGE), "TN:\n").unwrap();
+        assert_eq!(
+            check(&ctx),
+            Err(format!("no {} {NO_RECORD_IN_CI}", baseline()))
+        );
+    }
+
+    const ONE_FUNCTION: &str =
+        r#"{"entries": [{"file": "src/a.rs", "function": "f", "line": 1, "crap": 4.0}]}"#;
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_local_run_with_no_record_writes_the_first_one_and_is_held_to_it() {
+        let dir = crate::testdir::make("crap-first-record");
+        let name = baseline();
+        assert!(matches!(held_by(&dir, &name, false), Ok(None)));
+        std::fs::create_dir_all(dir.join(".chock")).unwrap();
+        let scored = |held: &[Scored]| -> Vec<(String, f64)> {
+            let one = |entry: &Scored| (entry.function.clone(), entry.crap);
+            held.iter().map(one).collect()
+        };
+        let record = written(&dir, &name, ONE_FUNCTION).unwrap();
+        assert_eq!(scored(&record), [("f".to_string(), 4.0)]);
+        assert_eq!(
+            std::fs::read_to_string(dir.join(&name)).unwrap(),
+            ONE_FUNCTION
+        );
+        // From here on the file is the record, in CI as on this machine.
+        for ci in [false, true] {
+            let held = held_by(&dir, &name, ci).unwrap().unwrap();
+            assert_eq!(scored(&held), [("f".to_string(), 4.0)]);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_first_record_with_nowhere_to_go_stops_the_gate_and_names_the_file() {
+        // No `.chock/` here, so the write fails.
+        let dir = crate::testdir::make("crap-first-record-unwritable");
+        let name = baseline();
+        let why = written(&dir, &name, ONE_FUNCTION).err().unwrap();
+        assert!(why.starts_with(&format!("{name}: ")), "{why}");
+        assert!(!dir.join(&name).exists());
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_held_record_is_kept_and_only_a_missing_one_asks_for_the_scores_of_today() {
+        let dir = crate::testdir::make("crap-or-first");
+        std::fs::create_dir_all(dir.join(".chock")).unwrap();
+        let name = baseline();
+        let today = || -> Result<String, String> { Ok(ONE_FUNCTION.to_string()) };
+        let held = or_first(Some(Vec::new()), &dir, &name, &today);
+        assert!(held.unwrap().is_empty());
+        assert!(!dir.join(&name).exists());
+        // Scores that cargo-crap could not give leave no record.
+        let failed = or_first(None, &dir, &name, &|| Err("cargo crap failed".to_string()));
+        assert_eq!(failed.err(), Some("cargo crap failed".to_string()));
+        assert!(!dir.join(&name).exists());
+        let first = or_first(None, &dir, &name, &today).unwrap();
+        let scored: Vec<&str> = first.iter().map(|one| one.function.as_str()).collect();
+        assert_eq!(scored, ["f"]);
+        assert!(dir.join(&name).is_file());
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_record_holds_what_cargo_crap_reported_with_each_path_relative() {
+        let dir = crate::testdir::make("crap-as-record");
+        let file = dir.join("src").join("a.rs").display().to_string();
+        let report = serde_json::json!({
+            "entries": [{"file": file, "function": "f", "line": 1, "crap": 4.0}]
+        })
+        .to_string();
+        let record = as_record(&ran(Some(0), &report, false), &dir).unwrap();
+        assert_eq!(read(&record).unwrap().entries[0].file, "src/a.rs");
+        assert_eq!(
+            as_record(&ran(Some(101), &report, false), &dir),
+            Err("cargo crap failed; the baseline would measure nothing".to_string())
         );
     }
 
     #[test]
-    fn a_tree_with_coverage_but_no_baseline_asks_for_the_baseline() {
-        let dir = crate::testdir::make("crap-no-baseline");
-        std::fs::write(dir.join(COVERAGE), "TN:\n").unwrap();
+    fn a_run_that_failed_produced_no_baseline() {
+        let out = ran(Some(101), "", false);
         assert_eq!(
-            check(&ctx_in(dir.to_path_buf())),
-            Err(format!("no {} — run `chock baseline`", baseline()))
+            produced(&out, "cargo crap"),
+            Err("cargo crap failed; the baseline would measure nothing".to_string())
         );
+    }
+
+    #[test]
+    fn a_run_chock_had_to_cut_short_produced_no_baseline() {
+        let out = ran(Some(0), "{}", true);
+        assert_eq!(
+            produced(&out, "the coverage run"),
+            Err("the coverage run printed more than chock keeps".to_string())
+        );
+    }
+
+    #[test]
+    fn a_clean_whole_run_produced_a_baseline() {
+        assert_eq!(produced(&ran(Some(0), "{}", false), "cargo crap"), Ok(()));
     }
 
     #[test]
@@ -807,6 +972,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_record_lists_what_it_holds_over_the_threshold_worst_first() {
         let dir = kept("crap-record", RECORD);
         assert_eq!(
@@ -830,6 +996,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_project_with_no_record_or_nothing_over_the_threshold_holds_no_crap_debt() {
         let bare = crate::testdir::make("crap-no-record").to_path_buf();
         assert_eq!(debt(&bare), Ok(None));
@@ -838,6 +1005,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_record_chock_cannot_read_stops_the_gate_and_names_the_file() {
         let dir = kept("crap-bad-record", "not json");
         let why = check(&ctx_in(dir.clone())).unwrap_err();

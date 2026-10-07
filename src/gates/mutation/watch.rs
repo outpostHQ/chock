@@ -386,6 +386,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a file with O_NONBLOCK")]
     fn watchdog_dispatch_reads_appends_and_correlates_the_header() {
         let (_root, mut watch, file) = setup();
         header(&watch, &file);
@@ -412,6 +413,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a file with O_NONBLOCK")]
     fn watchdog_dispatch_rejects_a_stale_header_before_completion() {
         let (_root, mut watch, file) = setup();
         append(
@@ -491,6 +493,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a file with O_NONBLOCK")]
     fn non_utf8_records_cannot_become_progress() {
         let (_root, mut watch, file) = setup();
         header(&watch, &file);
@@ -505,6 +508,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a file with O_NONBLOCK")]
     fn observed_journals_reject_truncation_permissions_and_additional_links() {
         for change in ["truncate", "permissions", "hard-link"] {
             let (root, mut watch, file) = setup();
@@ -532,6 +536,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a file with O_NONBLOCK")]
     fn journal_size_limit_accepts_the_boundary_at_an_existing_read_offset() {
         use std::io::{Seek, SeekFrom};
         let (_root, watch, file) = setup();
@@ -552,6 +557,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a file with O_NONBLOCK")]
     fn a_partial_record_can_reach_but_not_cross_its_last_accepted_byte() {
         let (_root, watch, file) = setup();
         let mut writer = OpenOptions::new()
@@ -602,6 +608,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a file with O_NONBLOCK")]
     fn current_completed_records_are_accepted_and_removed_after_use() {
         let (_root, mut watch, file) = setup();
         header(&watch, &file);
@@ -621,6 +628,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a file with O_NONBLOCK")]
     fn missing_partial_and_incomplete_records_never_establish_completion() {
         let (_root, mut watch, file) = setup();
         assert!(
@@ -651,6 +659,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a file with O_NONBLOCK")]
     fn symlinks_and_special_progress_files_are_refused_without_blocking() {
         let (_root, mut watch, file) = setup();
         let target = watch.directory.join("other");
@@ -661,6 +670,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a file with O_NONBLOCK")]
     fn observed_files_cannot_be_removed_or_replaced() {
         let (_root, mut watch, file) = setup();
         header(&watch, &file);
@@ -675,6 +685,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a file with O_NONBLOCK")]
     fn progress_permissions_and_size_limits_are_checked() {
         let (_root, mut watch, file) = setup();
         header(&watch, &file);
@@ -725,6 +736,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a file with O_NONBLOCK")]
     fn changed_private_directory_and_header_names_are_refused() {
         let (_root, mut watch, file) = setup();
         header(&watch, &file);
@@ -770,6 +782,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a file with O_NONBLOCK")]
     fn too_many_journals_and_overlong_records_are_refused() {
         let (_root, mut watch, _) = setup();
         for i in 0..=FILES_LIMIT {
@@ -815,6 +828,7 @@ mod tests {
 
     /// `waitid` with `NOWAIT` makes the child a zombie deterministically, with no polling.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn an_exited_unreaped_process_can_finish_its_journal() {
         use rustix::process::{Pid, WaitId, WaitIdOptions};
         let mut child = std::process::Command::new("sh")
@@ -857,6 +871,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot open a file with O_NONBLOCK")]
     fn active_test_deadlines_do_not_wait_for_the_outer_build_limit() {
         let (_root, mut watch, file) = setup();
         header(&watch, &file);

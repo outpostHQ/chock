@@ -1,6 +1,6 @@
 # The gates
 
-`chock gates` prints this list from the binary: 53 gates, 31 on by default and 22 opt-in.
+`chock gates` prints this list from the binary: 55 gates, 33 on by default and 22 opt-in.
 `chock gates --json` gives the same list to a program.
 
 A gate is one of two kinds.
@@ -40,6 +40,8 @@ A gate is one of two kinds.
 | `source` | ✓ | one more lint is allowed crate-wide or suppressed without a reason |
 | `slop` | ✓ | one more comment block runs past two lines |
 | `bigfiles` | ✓ | a file over 1000 production lines grows, or another one crosses 1000 |
+| `splits` | ✓ | a file gains a part of 100 lines or more that only one private item uses |
+| `lean` | ✓ | a file gains a private function that only passes its parameters on to another call |
 | `complexity` | ✓ | a function's cognitive complexity rises |
 | `nesting` | ✓ | a function nests deeper, past four levels |
 | `codeslop` | ✓ | one of clippy's code-shape lints fires more often, or fires for the first time |

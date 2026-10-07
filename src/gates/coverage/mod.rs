@@ -9,6 +9,7 @@ use std::path::Path;
 use crate::project;
 use crate::run::baseline::{Keys, Series};
 use crate::run::report::Finding;
+use crate::run::verdicts::Reads;
 use crate::run::{Ctx, Gate, Group, Kind, Measurement};
 
 pub const FILE: &str = "lcov.info";
@@ -18,7 +19,8 @@ pub const GATE: Gate = Gate {
     about: "lines no test executed, per file, against the count recorded",
     group: Group::Quality,
     builds: true,
-    reads: None,
+    // The command that writes the report names its own tools; a project's own says `coverage_tools`.
+    reads: Some(Reads::tree_and(&["cargo"]).and_coverage()),
     kind: Kind::AnnotatedRatchet {
         measure,
         keys: Keys::Items,
@@ -139,10 +141,7 @@ impl Uncovered {
                 Finding::at(file, &format!("no test ran {}", runs(lines))).line(first)
             })
             .collect();
-        Measurement {
-            series: self.series,
-            findings,
-        }
+        Measurement::of(self.series, findings)
     }
 }
 
@@ -273,6 +272,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_run_that_wrote_no_report_is_refused_rather_than_read() {
         let dir = crate::testdir::make("coverage-absent");
         let err = wrote(&dir.join(FILE)).unwrap_err();
@@ -283,6 +283,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_report_the_run_wrote_is_accepted() {
         let dir = crate::testdir::make("coverage-written");
         std::fs::write(dir.join(FILE), "").unwrap();
@@ -290,6 +291,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_directory_where_the_report_should_be_is_not_a_report() {
         let dir = crate::testdir::make("coverage-directory");
         std::fs::create_dir_all(dir.join(FILE)).unwrap();
@@ -443,6 +445,7 @@ mod tests {
     const WRITE: &str = "printf 'measured\\n' >> calls; printf 'SF:src/lib.rs\\nDA:1,0\\nend_of_record\\n' > lcov.info";
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_lines_are_named_against_the_record_the_project_keeps() {
         let mut dir = held("coverage-named");
         writer(&mut dir, WRITE);
@@ -456,6 +459,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn an_existing_report_is_replaced_before_the_first_measurement() {
         let mut dir = held("coverage-current");
         std::fs::write(dir.root.join(FILE), TWO).unwrap();
@@ -468,6 +472,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn consumers_and_cloned_contexts_share_one_completed_measurement() {
         let mut dir = held("coverage-shared");
         writer(&mut dir, WRITE);
@@ -482,6 +487,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_new_command_context_measures_again_without_any_rust_change() {
         let mut dir = held("coverage-fresh");
         writer(&mut dir, WRITE);
@@ -495,6 +501,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_failed_measurement_is_shared_instead_of_retried() {
         let mut dir = held("coverage-shared-failure");
         std::fs::write(dir.root.join(FILE), TWO).unwrap();
@@ -513,6 +520,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_successful_command_cannot_reuse_the_report_it_did_not_write() {
         let mut dir = held("coverage-no-output");
         std::fs::write(dir.root.join(FILE), TWO).unwrap();
@@ -527,6 +535,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_report_replaced_or_deleted_between_consumers_is_refused() {
         let mut dir = held("coverage-replaced");
         writer(&mut dir, WRITE);
@@ -545,6 +554,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_context_with_changed_root_or_command_cannot_share_another_measurement() {
         let mut dir = held("coverage-context-changed");
         writer(&mut dir, WRITE);
@@ -564,6 +574,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_report_that_cannot_be_removed_stops_before_the_command_runs() {
         let mut dir = held("coverage-cannot-remove");
         std::fs::create_dir(dir.root.join(FILE)).unwrap();
@@ -577,6 +588,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_coverage_command_must_name_an_executable() {
         let mut dir = held("coverage-empty-command");
         dir.coverage = Vec::new().into();

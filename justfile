@@ -11,7 +11,7 @@ default:
 gates: test lint doc modcheck
 
 # Shape. Ratchets against a committed baseline, and the supply chain.
-quality: manifest placement profile features hygiene source deps unused typos msrv slop bigfiles complexity duplication codeslop crap
+quality: manifest placement profile features hygiene source deps unused typos msrv slop bigfiles splits lean complexity duplication codeslop crap
 
 test:
     chock run test
@@ -112,6 +112,12 @@ slop:
 
 bigfiles:
     chock run bigfiles
+
+splits:
+    chock run splits
+
+lean:
+    chock run lean
 
 complexity:
     chock run complexity

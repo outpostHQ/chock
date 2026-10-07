@@ -4,12 +4,22 @@
 [![ci](https://github.com/outpostHQ/chock/actions/workflows/ci.yml/badge.svg)](https://github.com/outpostHQ/chock/actions/workflows/ci.yml)
 [![licence](https://img.shields.io/crates/l/chock.svg)](LICENSE)
 
-**Quality gates for Rust: new code must be clean, and existing debt cannot grow.**
+**Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers.**
 
-chock runs 53 gates over a Rust project and gives one result and one exit code. The gates cover
+chock runs 55 gates over a Rust project and gives one result and one exit code. The gates cover
 your tests, clippy, rustfmt, coverage, mutation testing, the supply chain, complexity and
-duplication. chock records today's numbers in a file that you commit. From then on, a change passes
-only when it makes no number worse.
+duplication.
+
+Most projects hold debt on the day they adopt chock. chock records that debt as a limit for each
+file and function, in a file that you commit. The limit is where the project starts. It is not the
+goal:
+
+- New code starts at zero. A new file or function with any debt trips its gate.
+- Old debt cannot grow, and debt that you removed cannot come back.
+- Each fix lowers the limit in the same run. No run raises it.
+- `chock explain` lists all the debt that is left, largest first, with the fix for each kind.
+- You decide how fast the rest must go: [in each file that a change touches, or in the whole tree
+  at once](#how-old-debt-goes-down).
 
 ```
 $ chock run test lint modcheck complexity
@@ -26,8 +36,8 @@ complexity — chock run complexity
 ```
 
 [Install](#install) · [Use it](#use-it) · [How chock decides](#how-chock-decides) ·
-[Commands](#commands) · [For agents](#for-agents) · [The gates](#the-gates) ·
-[Documentation](#documentation)
+[Old debt](#how-old-debt-goes-down) · [Commands](#commands) · [For agents](#for-agents) ·
+[The gates](#the-gates) · [Documentation](#documentation)
 
 ## Install
 
@@ -41,8 +51,8 @@ chock init --global            # the tools chock runs, prebuilt, at pinned versi
 
 # once in each repository
 cd your-project
-chock init --local             # measures the tree, switches on the gates that pass, installs the hooks
-chock baseline                 # records today's numbers in .chock/baseline.json
+chock init --local             # measures the tree, chooses the gates, installs the hooks
+chock run                      # judges the tree and writes each gate's first record
 ```
 
 Commit the files that chock wrote. After that, chock runs at each commit and each push. The
@@ -65,6 +75,11 @@ Commit the files that chock wrote. After that, chock runs at each commit and eac
 | see all the debt on record, largest first | `chock explain` |
 | see every gate, and whether it is on | `chock gates` |
 | know whether this machine has the tools | `chock doctor` |
+
+chock keeps the verdict of each slow gate: tests, coverage, mutation testing, Miri, binary size
+and more. The next run recalls it when nothing that the gate reads has changed: the files, the
+tools, the config and the record. The row then says `recalled`.
+`chock run --no-cache` judges every gate again, and `chock cache clear` removes the kept verdicts.
 
 When a gate does not pass, the result says what to do:
 
@@ -100,6 +115,47 @@ A gate is one of two kinds.
 A run exits with the highest code among its gates: `0` every gate passed, `1` a gate tripped, `2` a
 gate could not run.
 
+## How old debt goes down
+
+When `chock init --local` switches a ratchet on, the ratchet starts with the numbers that the tree
+has today. The first `chock run` writes them to `.chock/baseline.json` as the first record. After
+that, the record moves in one direction:
+
+```
+   adoption              you fix one function           the debt comes back
+   record 6    ───────►  run: 3 against 6     ───────►  run: 6 against 3
+                         the record becomes 3           TRIPPED, exit 1
+```
+
+```
+$ chock run nesting
+  nesting    ok          3 against 6
+chock: lowered the record for nesting; commit .chock/baseline.json with this change
+```
+
+Only `chock baseline GATE` raises a record. A person runs it, and a reviewer sees the number rise
+in the diff.
+
+chock does not make you repair a file that no change touches. Two keys in `.chock/config.json`
+say how much a change must repair, for the ratchets that you list in them:
+
+| key | a change passes when | use it |
+|---|---|---|
+| `clean_when_touched` | each file it touches has no debt left | `chock init --local` writes it, so the debt leaves each file that the team changes |
+| neither | it adds no debt | remove a gate from `clean_when_touched` when its old files are too large to clean in one change |
+| `strict` | the tree has no debt | for a gate that must be at zero now |
+
+```json
+"clean_when_touched": ["complexity", "nesting"],
+"strict": ["unsafety"]
+```
+
+`clean_when_touched` holds only a gate that keeps a number for each file. chock refuses a config
+that lists another gate there, such as `binsize`, because the key would do nothing for that gate.
+
+`chock explain` lists the debt that is left, with the fix for each kind, so a person or an agent
+can work through it. chock measures and refuses. It does not rewrite your code.
+
 ## Commands
 
 | command | what it does |
@@ -110,6 +166,8 @@ gate could not run.
 | `chock run [GATE...]` | runs the named gates; no name means every gate that is on |
 | `chock run --fast` | runs only the gates staged for a commit; they need no compiler |
 | `chock run --ci` | runs the gates a CI job runs |
+| `chock run --no-cache` | judges every gate again; no kept verdict answers |
+| `chock cache clear` | removes every kept verdict, so the next run judges every gate |
 | `chock explain [GATE]` | shows the findings of the last run of one gate; with no name, all the debt on record |
 | `chock gates` | lists every gate: what it measures, its stage, and whether it is on |
 | `chock enable GATE...` | switches gates on |
@@ -148,7 +206,7 @@ with each field explained.
 
 ## The gates
 
-53 gates: 31 are on by default and 22 are opt-in. `chock gates` prints the list from the binary,
+55 gates: 33 are on by default and 22 are opt-in. `chock gates` prints the list from the binary,
 and [docs/gates.md](docs/gates.md) says when each one trips.
 
 | topic | on by default | opt-in |
@@ -156,7 +214,7 @@ and [docs/gates.md](docs/gates.md) says when each one trips.
 | Tests | `test`, `coverage`, `crap`, `assertions` | `mutest`, `idempotent`, `miri`, `proof` |
 | Lints and format | `lint`, `codeslop`, `source`, `typos` | `fmt` |
 | Docs and comments | `doc`, `slop`, `citations` | `phrases` |
-| Code shape | `complexity`, `nesting`, `bigfiles`, `duplication`, `unsafety`, `modcheck` | `duplicates`, `dead` |
+| Code shape | `complexity`, `nesting`, `bigfiles`, `splits`, `lean`, `duplication`, `unsafety`, `modcheck` | `duplicates`, `dead` |
 | Dependencies | `deps`, `manifest`, `placement`, `features`, `sort`, `dupdeps`, `unused`, `supply` | `unused-deep`, `acl` |
 | Build and release | `msrv`, `profile`, `binsize` | `bsize` |
 | Repository | `commits`, `hygiene`, `wiring` | `history` |

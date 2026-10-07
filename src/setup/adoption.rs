@@ -134,7 +134,7 @@ fn attention(rows: &[(&str, Decision)]) -> String {
 
 /// The config `init` saves: every check its decision enables, and each `Found` one recorded as
 /// left off with what it found.
-pub(crate) fn selected(rows: &[(&str, Decision)]) -> Config {
+fn selected(rows: &[(&str, Decision)]) -> Config {
     let mut config = Config::of(
         rows.iter()
             .filter(|(_, decision)| decision.enables())
@@ -148,6 +148,51 @@ pub(crate) fn selected(rows: &[(&str, Decision)]) -> Config {
         }
     }
     config
+}
+
+/// `config` with each gate it switched on held to zero in the files a change touches. It lists only
+/// a gate that keeps a number for each file and counts alike on every machine.
+fn clean_where_touched(mut config: Config) -> Config {
+    let held: Vec<String> = config
+        .enabled
+        .iter()
+        .filter(|name| crate::gates::holds_each_file(name) && crate::gates::settles_anywhere(name))
+        .cloned()
+        .collect();
+    config.clean_when_touched = (!held.is_empty()).then_some(held);
+    config
+}
+
+/// What `init` says of that list and how to shorten it, or nothing where it wrote none.
+fn touched_note(config: &Config) -> String {
+    let Some(held) = &config.clean_when_touched else {
+        return String::new();
+    };
+    format!(
+        "  touched   a file that a change touches must hold no debt for: {}. Remove a name from \
+         `clean_when_touched` in {} to hold that gate to its record only.\n",
+        held.join(", "),
+        crate::project::config::FILE
+    )
+}
+
+/// The config `init` saves and what it prints of each decision. The changed files come from the
+/// repository, so a tree that none holds gets no `clean_when_touched` list.
+pub(crate) fn decided(
+    rows: &[(&str, Decision)],
+    in_repository: bool,
+    coverage: Option<&[String]>,
+) -> (Config, String) {
+    let chosen = match in_repository {
+        true => clean_where_touched(selected(rows)),
+        false => selected(rows),
+    };
+    let config = match coverage {
+        Some(argv) => chosen.with_coverage(argv),
+        None => chosen,
+    };
+    let report = format!("{}{}", render_decisions(rows), touched_note(&config));
+    (config, report)
 }
 
 #[cfg(test)]
@@ -298,6 +343,52 @@ mod tests {
         );
         let report = render_decisions(&rows);
         assert!(report.contains("`chock run test lint` shows"), "{report}");
+    }
+
+    #[test]
+    fn init_holds_each_gate_with_a_number_for_each_file_to_zero_where_a_change_touches() {
+        let on = |why: &str| Decision::On(why.to_string());
+        let rows = [
+            ("nesting", on("ratchet: 2 items today")),
+            ("phrases", on("ratchet: 0 findings today")),
+            // Keyed by crate name, counted by machine, and kept for the whole project.
+            ("dupdeps", on("ratchet: 1 item today")),
+            ("coverage", on("a ratchet")),
+            ("binsize", on("a ratchet")),
+            ("lint", on("already green")),
+            ("slop", Decision::Found("3 findings".to_string())),
+        ];
+        let (config, report) = decided(&rows, true, None);
+        assert_eq!(
+            config.clean_when_touched,
+            Some(vec!["nesting".to_string(), "phrases".to_string()])
+        );
+        assert_eq!(config.coverage, None);
+        let note = "  touched   a file that a change touches must hold no debt for: nesting, \
+                    phrases. Remove a name from `clean_when_touched` in .chock/config.json to hold \
+                    that gate to its record only.\n";
+        assert_eq!(report, format!("{}{note}", render_decisions(&rows)));
+    }
+
+    #[test]
+    fn a_tree_no_repository_holds_gets_no_list_of_gates_held_where_touched() {
+        let rows = [(
+            "nesting",
+            Decision::On("ratchet: 2 items today".to_string()),
+        )];
+        let argv = ["./coverage.sh".to_string()];
+        let (config, report) = decided(&rows, false, Some(&argv));
+        assert_eq!(config.clean_when_touched, None);
+        assert_eq!(config.coverage, Some(argv.to_vec()));
+        assert_eq!(report, render_decisions(&rows));
+    }
+
+    #[test]
+    fn a_project_with_no_gate_to_hold_where_touched_gets_no_empty_list() {
+        let rows = [("lint", Decision::On("already green".to_string()))];
+        let (config, report) = decided(&rows, true, None);
+        assert_eq!(config.clean_when_touched, None);
+        assert_eq!(report, render_decisions(&rows));
     }
 
     #[test]

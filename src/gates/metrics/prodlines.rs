@@ -236,7 +236,7 @@ fn gated_paths(file: &Path, mods: &[TestMod]) -> Vec<PathBuf> {
 
 /// Where `file`'s submodules live: the crate's `src/` for a root, the directory beside a `foo.rs`,
 /// the parent of a `mod.rs`. A `foo.rs` with no `foo/` beside it owns nothing on disk.
-fn module_dir(file: &Path) -> Option<PathBuf> {
+pub(crate) fn module_dir(file: &Path) -> Option<PathBuf> {
     let stem = file.file_stem()?.to_str()?;
     let parent = file.parent()?;
     if stem == "mod" {
@@ -350,6 +350,7 @@ fn walked(ctx: &crate::run::Ctx) -> Result<(Vec<PathBuf>, Vec<String>), String> 
 )]
 mod tests {
     use super::*;
+    use crate::testdir::tree;
 
     fn count(src: &str) -> Result<usize, String> {
         Ok(scan(src)?.0)
@@ -359,17 +360,8 @@ mod tests {
         count(src).unwrap_or_else(|e| panic!("{src:?} did not parse: {e}"))
     }
 
-    fn tree(name: &str, files: &[(&str, &str)]) -> crate::testdir::Scratch {
-        let root = crate::testdir::make(name);
-        for (rel, body) in files {
-            let path = root.join(rel);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, body).unwrap();
-        }
-        root
-    }
-
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_cargo_never_compiles_that_the_parser_rejects_is_passed_over() {
         let root = tree(
             "prodlines-corpus",
@@ -444,6 +436,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_module_gated_in_its_parent_is_test_code_wherever_its_file_lives() {
         let root = tree(
             "prodlines-gated-parent",
@@ -461,6 +454,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn an_ungated_module_is_production_wherever_its_file_lives() {
         let root = tree(
             "prodlines-ungated-parent",
@@ -473,6 +467,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_redirected_gated_module_is_found_by_its_path_not_its_name() {
         let root = tree(
             "prodlines-redirected",
@@ -488,6 +483,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_last_path_attribute_is_the_one_that_redirects() {
         let root = tree(
             "prodlines-two-paths",
@@ -504,6 +500,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn an_integration_test_directory_is_not_production() {
         let root = tree(
             "prodlines-integration",
@@ -534,6 +531,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_test_file_and_the_build_directory_are_left_out_of_the_walk() {
         let root = tree(
             "prodlines-walk",
@@ -549,6 +547,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_mod_rs_gates_the_modules_of_its_own_directory() {
         let root = tree(
             "prodlines-modrs",
@@ -562,6 +561,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn main_owns_the_source_directory_only_when_it_is_the_one_crate_root() {
         let alone = tree(
             "prodlines-main-alone",
@@ -587,17 +587,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_the_parser_rejects_names_itself_rather_than_measuring_zero() {
-        // The manifest matters: only a file some crate compiles stops the gate.
-        let root = tree(
-            "prodlines-unparsable",
-            &[("Cargo.toml", ""), ("src/lib.rs", "fn broken( {\n")],
-        );
+        let root = tree("prodlines-unparsable", &crate::testdir::UNPARSABLE);
         let err = measure(&ctx_at(&root)).unwrap_err();
         assert!(err.starts_with("src/lib.rs: line 1:"), "{err}");
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_root_that_is_not_there_is_a_failure_and_not_an_empty_tree() {
         let root = crate::testdir::make("prodlines-missing").join("gone");
         let err = measure(&ctx_at(&root)).unwrap_err();

@@ -176,6 +176,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn settings_chock_cannot_read_are_left_untouched_and_reported() {
         assert!(matches!(merge_editor_hook("{not json"), Hook::Unreadable));
         let dir = crate::testdir::make("init-editor-unreadable");
@@ -190,6 +191,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn settings_that_are_not_utf8_are_left_byte_for_byte_and_absent_ones_are_created() {
         let dir = crate::testdir::make("init-editor-not-utf8");
         std::fs::create_dir_all(dir.join(".claude")).unwrap();
@@ -206,6 +208,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_contract_an_agent_needs_is_written_where_it_will_be_read() {
         let dir = crate::testdir::make("init-agents");
         write_agent_contract(&dir).unwrap();
@@ -218,6 +221,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_host_file_the_project_keeps_gains_a_pointer_and_one_it_does_not_is_not_created() {
         let dir = crate::testdir::make("init-agents-pointer");
         fs::write(dir.join("CLAUDE.md"), "# house rules\n").unwrap();
@@ -228,29 +232,30 @@ mod tests {
         assert!(!dir.join("GEMINI.md").exists());
     }
 
+    /// What a `CLAUDE.md` holding `before` reads as once the contract is written beside it.
+    fn pointed(name: &str, before: &str) -> String {
+        let dir = crate::testdir::make(name);
+        fs::write(dir.join("CLAUDE.md"), before).unwrap();
+        write_agent_contract(&dir).unwrap();
+        fs::read_to_string(dir.join("CLAUDE.md")).unwrap()
+    }
+
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_host_file_with_no_trailing_newline_still_gets_the_pointer_on_its_own_line() {
-        let dir = crate::testdir::make("init-agents-no-newline");
-        fs::write(dir.join("CLAUDE.md"), "# house rules").unwrap();
-        write_agent_contract(&dir).unwrap();
-        assert_eq!(
-            fs::read_to_string(dir.join("CLAUDE.md")).unwrap(),
-            format!("# house rules\n\n{}\n", pointer())
-        );
+        let after = pointed("init-agents-no-newline", "# house rules");
+        assert_eq!(after, format!("# house rules\n\n{}\n", pointer()));
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_host_file_that_ends_in_a_newline_gains_exactly_one_blank_line_before_the_pointer() {
-        let dir = crate::testdir::make("init-agents-newline");
-        fs::write(dir.join("CLAUDE.md"), "# house rules\n").unwrap();
-        write_agent_contract(&dir).unwrap();
-        assert_eq!(
-            fs::read_to_string(dir.join("CLAUDE.md")).unwrap(),
-            format!("# house rules\n\n{}\n", pointer())
-        );
+        let after = pointed("init-agents-newline", "# house rules\n");
+        assert_eq!(after, format!("# house rules\n\n{}\n", pointer()));
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_second_run_does_not_add_the_pointer_again() {
         let dir = crate::testdir::make("init-agents-twice");
         fs::write(dir.join("AGENTS.md"), "# house rules\n").unwrap();

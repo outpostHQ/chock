@@ -150,18 +150,23 @@ pub fn git_hooks(installed: &[(String, Option<String>)]) -> Vec<Row> {
         .collect()
 }
 
-/// Commands the toolchain itself ships. Nobody pins these; `cargo` stands for the toolchain.
-const TOOLCHAIN: [&str; 4] = ["cargo", "rustfmt", "clippy-driver", "rustdoc"];
+/// Commands a toolchain itself ships, the nightly's miri among them. Nobody pins these; `cargo`
+/// stands for the toolchain.
+const TOOLCHAIN: [&str; 5] = [
+    "cargo",
+    "rustfmt",
+    "clippy-driver",
+    "rustdoc",
+    "cargo +nightly miri",
+];
 
 /// Tools a gate runs without declaring them for its verdict cache. `test` and `coverage` are absent
 /// on purpose: a project may replace either command, and then the default tool is not needed.
-const UNDECLARED: [(&str, &str); 6] = [
+const UNDECLARED: [(&str, &str); 4] = [
     ("sort", "cargo-sort"),
     ("typos", "typos"),
     ("unused", "cargo-machete"),
     ("deps", "cargo-deny"),
-    ("crap", "cargo-crap"),
-    ("bsize", "cargo-bsize"),
 ];
 
 /// Every tool a gate needs installed, from what it declares plus the list above.
@@ -905,6 +910,16 @@ mod tests {
         assert_eq!(unpinned(&|_| false, &[]), Vec::new());
     }
 
+    /// The nightly ships miri, and a project may replace the coverage command, so neither is a
+    /// pin. What `miri`, `crap` and `bsize` run beside them is.
+    #[test]
+    fn a_gate_that_keeps_a_verdict_needs_a_pin_for_each_tool_no_toolchain_ships() {
+        let on = |gate: &str| matches!(gate, "miri" | "crap" | "bsize" | "coverage");
+        let rows = unpinned(&on, &[]);
+        let named: Vec<&str> = rows.iter().map(|row| row.command.as_str()).collect();
+        assert_eq!(named, ["cargo-bsize", "cargo-crap", "cargo-nextest"]);
+    }
+
     /// A manual gate is the project's choice, so its row passes; naming it keeps it in sight.
     #[test]
     fn a_manual_gate_that_is_on_is_named_and_one_that_is_off_is_not() {
@@ -964,6 +979,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn machine_health_without_toolchains_or_a_repository_needs_no_process() {
         let root = crate::testdir::make("doctor-no-machine-queries");
         assert_eq!(
@@ -977,6 +993,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn machine_health_queries_a_named_toolchain_instead_of_silently_skipping_it() {
         let dir = crate::testdir::make("doctor-positive-query");
         let extra = crate::setup::pins::AdditionalPins {
@@ -1024,6 +1041,7 @@ mod tests {
 
     /// A tool cargo did not install, such as `cargo` itself, answers through its own `--version`.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn one_reading_of_this_machine_answers_for_each_pin_it_is_asked_about() {
         let installed = installed_on_this_machine();
         let here = std::env::current_dir().unwrap();

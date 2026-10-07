@@ -1,5 +1,5 @@
-//! chock — one-way quality gates for Rust projects. The rules live here rather than in the binary
-//! so each one is unit-tested, and so a hook or a harness can call chock instead of reimplementing.
+//! chock: quality gates for Rust, with a limit on old debt that each fix lowers. The rules live
+//! here, not in the binary, so each one is unit-tested and a hook or a harness can call them.
 
 pub mod cli;
 pub mod edited;

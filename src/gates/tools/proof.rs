@@ -836,6 +836,7 @@ VERIFICATION:- SUCCESSFUL
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_listing_is_read_only_from_a_file_created_after_old_state_is_removed() {
         let root = crate::testdir::make("proof-listing");
         std::fs::write(root.join(LISTING), ONE).unwrap();
@@ -850,6 +851,7 @@ VERIFICATION:- SUCCESSFUL
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_listing_that_cannot_be_removed_is_a_refusal() {
         let root = crate::testdir::make("proof-listing-directory");
         std::fs::create_dir(root.join(LISTING)).unwrap();

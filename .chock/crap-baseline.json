@@ -1240,19 +1240,13 @@
       "line": 447
     },
     {
-      "coverage": 71.42857142857143,
-      "crap": 5.5830903790087465,
+      "coverage": 100.0,
+      "crap": 6.0,
       "crate": "chock",
-      "cyclomatic": 5.0,
+      "cyclomatic": 6.0,
       "file": "src/exec/mod.rs",
       "function": "Stage::fmt",
-      "line": 42,
-      "uncovered": [
-        {
-          "end": 46,
-          "start": 45
-        }
-      ]
+      "line": 42
     },
     {
       "coverage": 100.0,

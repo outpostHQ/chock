@@ -45,6 +45,15 @@ impl Held {
     pub fn new(dir: Scratch, ctx: crate::run::Ctx) -> Self {
         Self { ctx, _dir: dir }
     }
+
+    /// `tree` under a `Ctx` whose baseline holds nothing.
+    #[must_use]
+    pub fn tree(name: &str, files: &[(&str, &str)]) -> Self {
+        let dir = tree(name, files);
+        let baseline = crate::run::baseline::Baseline::empty("0.1.0");
+        let ctx = crate::run::Ctx::for_root(dir.to_path_buf(), baseline);
+        Self::new(dir, ctx)
+    }
 }
 
 impl std::ops::Deref for Held {
@@ -61,6 +70,10 @@ impl std::ops::DerefMut for Held {
     }
 }
 
+/// A crate whose one source the parser rejects. The manifest matters: only a file some crate
+/// compiles stops a gate.
+pub const UNPARSABLE: [(&str, &str); 2] = [("Cargo.toml", ""), ("src/lib.rs", "fn broken( {\n")];
+
 /// A fresh empty scratch directory, named for the caller so a leftover says who left it.
 #[must_use]
 pub fn make(name: &str) -> Scratch {
@@ -74,6 +87,22 @@ pub fn make(name: &str) -> Scratch {
     Scratch(dir)
 }
 
+/// A scratch directory that holds `files`; a path that names directories gets them made.
+#[must_use]
+#[allow(
+    clippy::unwrap_used,
+    reason = "a fixture that was not written is the test failing"
+)]
+pub fn tree(name: &str, files: &[(&str, &str)]) -> Scratch {
+    let dir = make(name);
+    for (path, text) in files {
+        let at = dir.join(path);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(at, text).unwrap();
+    }
+    dir
+}
+
 #[allow(
     clippy::panic,
     clippy::unwrap_used,
@@ -83,6 +112,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_directory_whose_test_panicked_is_left_where_it_can_be_read() {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
         let inside = std::sync::Arc::clone(&seen);
@@ -101,6 +131,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_directory_whose_test_passed_is_removed_with_the_guard() {
         let path = {
             let dir = make("testdir-passing");

@@ -1,5 +1,7 @@
 //! chock as a process: each case runs the built binary and checks its stdout, stderr and code.
 
+// Every test here starts the `chock` binary, and Miri cannot start a process.
+#![cfg(not(miri))]
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
@@ -26,8 +28,10 @@ const IMPOSSIBLE_PIN: &str = "CHOCK_NOT_A_REAL_TOOL_VERSION=9.9.9\n";
 const IMPOSSIBLE_TOOL: &str = "chock-not-a-real-tool";
 
 /// Every subcommand and exit code the usage must name; the prose around them is free.
-const USAGE_LINES: [&str; 11] = [
+const USAGE_LINES: [&str; 13] = [
     "chock run [GATE...]",
+    "chock run --no-cache",
+    "chock cache clear",
     "chock gates",
     "chock explain GATE",
     "chock baseline [GATE...]",
@@ -89,11 +93,14 @@ struct Ran {
 
 /// `CARGO_BIN_EXE_chock` is this build's binary, never an installed chock.
 fn chock(cwd: &Path, args: &[&str]) -> Ran {
-    let done = Command::new(env!("CARGO_BIN_EXE_chock"))
+    ran(Command::new(env!("CARGO_BIN_EXE_chock"))
         .args(args)
-        .current_dir(cwd)
-        .output()
-        .unwrap();
+        .current_dir(cwd))
+}
+
+/// The exit code and both streams of a command that ended on its own.
+fn ran(command: &mut Command) -> Ran {
+    let done = command.output().unwrap();
     Ran {
         code: done.status.code().unwrap(),
         out: String::from_utf8(done.stdout).unwrap(),
@@ -448,20 +455,46 @@ fn explain_refuses_a_name_that_is_not_a_gate() {
 }
 
 #[test]
-fn recording_a_baseline_turns_a_gate_that_could_not_run_into_one_that_passes() {
-    let dir = project("baseline-slop", &[("src/legacy.rs", OVER_LIMIT)]);
+fn explain_refuses_a_last_run_that_lacks_the_gate_or_does_not_read() {
+    let dir = project("explain-other-records", &[("src/legacy.rs", OVER_LIMIT)]);
+    let ran = chock(&dir, &["run", "slop"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.out, ran.err);
+    let absent = chock(&dir, &["explain", "fmt"]);
+    assert_eq!(absent.code, 2, "{}", absent.out);
+    says(&absent.err, "chock: the last run did not include `fmt`");
 
-    let before = chock(&dir, &["run", "slop"]);
-    assert_eq!(before.code, 2, "{}", before.err);
+    put(&dir, ".chock/last-run.json", "not a record");
+    let unread = chock(&dir, &["explain", "slop"]);
+    assert_eq!(unread.code, 2, "{}", unread.out);
     says(
-        &before.out,
-        "slop       CANNOT RUN  no baseline recorded — `chock baseline slop` records one",
+        &unread.err,
+        ".chock/last-run.json is not a chock run record",
+    );
+}
+
+#[test]
+fn the_first_run_of_a_gate_writes_its_record_and_ci_writes_none() {
+    let dir = project("first-record-slop", &[("src/legacy.rs", OVER_LIMIT)]);
+
+    let ci = chock(&dir, &["run", "slop", "--ci"]);
+    assert_eq!(ci.code, 2, "{}", ci.err);
+    says(
+        &ci.out,
+        "slop       CANNOT RUN  no record `slop` is committed — `chock run slop` outside CI takes \
+         the first one and writes .chock/baseline.json",
+    );
+    assert!(
+        !dir.join(".chock/baseline.json").exists(),
+        "CI writes nothing"
     );
 
-    let recording = chock(&dir, &["baseline", "slop"]);
-    assert_eq!(recording.code, 0, "{}", recording.err);
-    says(&recording.out, "recorded  slop         1 item");
-    says(&recording.out, "wrote .chock/baseline.json");
+    let first = chock(&dir, &["run", "slop"]);
+    assert_eq!(first.code, 0, "{}{}", first.out, first.err);
+    says(&first.out, "slop       ok          1 against 1");
+    says(
+        &first.err,
+        "chock: wrote the first record for slop; commit .chock/baseline.json with this change",
+    );
 
     let written = std::fs::read_to_string(dir.join(".chock/baseline.json")).unwrap();
     let recorded = chock::project::document::parse::<chock::run::baseline::Baseline>(
@@ -472,10 +505,79 @@ fn recording_a_baseline_turns_a_gate_that_could_not_run_into_one_that_passes() {
     assert_eq!(recorded.version, chock::run::baseline::SCHEMA);
     assert_eq!(recorded.chock, VERSION);
     assert_eq!(recorded.gate("slop").get("src/legacy.rs"), Some(1));
+    assert_eq!(recorded.unit("slop"), Some("over-long comment block(s)"));
 
+    let held = chock(&dir, &["run", "slop", "--ci"]);
+    assert_eq!(held.code, 0, "{}", held.err);
+    says(&held.out, "slop       ok          1 against 1");
+    // The record is there, so a later run writes nothing and says nothing of it.
+    let later = chock(&dir, &["run", "--no-cache", "slop"]);
+    assert_eq!(later.code, 0, "{}", later.err);
+    assert!(!later.err.contains("record for slop"), "{}", later.err);
+    assert_eq!(
+        std::fs::read_to_string(dir.join(".chock/baseline.json")).unwrap(),
+        written
+    );
+}
+
+#[test]
+fn baseline_still_records_a_gate_by_name() {
+    let dir = project("baseline-slop", &[("src/legacy.rs", OVER_LIMIT)]);
+
+    let recording = chock(&dir, &["baseline", "slop"]);
+    assert_eq!(recording.code, 0, "{}", recording.err);
+    says(&recording.out, "recorded  slop         1 item");
+    says(&recording.out, "wrote .chock/baseline.json");
     let after = chock(&dir, &["run", "slop"]);
     assert_eq!(after.code, 0, "{}", after.err);
     says(&after.out, "slop       ok          1 against 1");
+    assert!(!after.err.contains("record for slop"), "{}", after.err);
+}
+
+#[test]
+fn cache_clear_removes_every_kept_verdict_and_cache_alone_is_refused() {
+    let dir = project("cache-clear", &[]);
+    let none = chock(&dir, &["cache", "clear"]);
+    assert_eq!(none.code, 0, "{}", none.err);
+    assert_eq!(
+        none.out,
+        "chock: removed 0 kept verdict(s); the next run judges every gate again\n"
+    );
+
+    let passed = chock::run::report::GateReport::new(
+        "fmt",
+        chock::run::report::Verdict::Pass,
+        "chock run fmt",
+    );
+    chock::run::verdicts::keep(&dir, "fmt", "one", &passed);
+    chock::run::verdicts::keep(&dir, "lint", "one", &passed);
+    let two = chock(&dir, &["cache", "clear"]);
+    assert_eq!(two.code, 0, "{}", two.err);
+    assert_eq!(
+        two.out,
+        "chock: removed 2 kept verdict(s); the next run judges every gate again\n"
+    );
+    assert!(!dir.join(chock::run::verdicts::FILE).exists());
+
+    let bare = chock(&dir, &["cache"]);
+    assert_eq!(bare.code, 2);
+    says(&bare.err, "chock: cache takes one word: clear");
+}
+
+#[test]
+fn cache_clear_says_why_it_cannot_take_the_lock_or_remove_the_file() {
+    // `.chock` is a file here, so no lock can be made in it.
+    let blocked = project("cache-no-lock", &[(".chock", "")]);
+    let refused = chock(&blocked, &["cache", "clear"]);
+    assert_eq!(refused.code, 2, "{}", refused.out);
+    says(&refused.err, "chock: cannot make ");
+
+    // A directory where the kept verdicts go: nothing removes it as a file.
+    let dir = project("cache-no-remove", &[]);
+    std::fs::create_dir_all(dir.join(chock::run::verdicts::FILE)).unwrap();
+    let kept = chock(&dir, &["cache", "clear"]);
+    assert_eq!(kept.code, 2, "{}", kept.out);
+    says(&kept.err, "chock: cannot remove .chock/verdicts.json: ");
 }
 
 #[test]
@@ -908,6 +1010,27 @@ fn init_refuses_what_it_cannot_do_before_writing_anything() {
     );
 }
 
+/// `--global` reads its pins before any install, so a pin file it cannot read or parse stops it
+/// on every system with no tool started. A directory of that name is a file no system can read.
+#[test]
+fn init_global_stops_at_a_pin_file_it_cannot_read_or_parse() {
+    let dir = project("init-pins", &[]);
+    std::fs::create_dir_all(dir.join("tool-versions.env")).unwrap();
+    let ran = chock(&dir, &["init", "--global"]);
+    assert_eq!(ran.code, 2, "{}{}", ran.out, ran.err);
+    says(&ran.err, "chock init: cannot read ");
+    says(&ran.err, "tool-versions.env: ");
+
+    std::fs::remove_dir(dir.join("tool-versions.env")).unwrap();
+    put(&dir, "tool-versions.env", "CARGO_MUTEST_VERSION\n");
+    let ran = chock(&dir, &["init", "--global"]);
+    assert_eq!(ran.code, 2, "{}{}", ran.out, ran.err);
+    says(
+        &ran.err,
+        "tool-versions.env: line 1: expected KEY=VALUE, found `CARGO_MUTEST_VERSION`",
+    );
+}
+
 /// Read from the binary, so the gate reference cannot drift from the registry.
 #[test]
 fn the_gate_reference_names_every_gate_the_binary_has() {
@@ -1038,11 +1161,15 @@ fn ci_runs_every_gate_rather_than_a_list_that_goes_stale() {
         Vec::<&str>::new(),
         "CI names gates instead of running them all"
     );
-    // `--ci` leaves out only what the config's `local_only` names.
+    // `--ci` leaves out only what the config's `local_only` names; the job with every gate takes
+    // part 1 of the Miri suite, and jobs of their own take the other parts.
     assert!(
-        workflow
-            .lines()
-            .any(|line| matches!(line.trim(), "run: chock run" | "run: chock run --ci")),
+        workflow.lines().any(|line| matches!(
+            line.trim(),
+            "run: chock run"
+                | "run: chock run --ci"
+                | "run: chock run --ci --miri-partition=1/${{ matrix.parts }}"
+        )),
         "no job runs the whole set its tier can"
     );
 }
@@ -1419,18 +1546,11 @@ exit "$FIXTURE_EXIT"
 
 #[cfg(unix)]
 fn with_tools(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Ran {
-    let done = Command::new(env!("CARGO_BIN_EXE_chock"))
+    ran(Command::new(env!("CARGO_BIN_EXE_chock"))
         .args(args)
         .current_dir(dir)
         .env("PATH", dir.join("bin"))
-        .envs(env.iter().copied())
-        .output()
-        .unwrap();
-    Ran {
-        code: done.status.code().unwrap(),
-        out: String::from_utf8(done.stdout).unwrap(),
-        err: String::from_utf8(done.stderr).unwrap(),
-    }
+        .envs(env.iter().copied()))
 }
 
 #[cfg(unix)]
@@ -1455,7 +1575,8 @@ printf 'SF:src/lib.rs\nDA:1,%s\nend_of_record\n' "$FIXTURE_HITS" > "$1"
         r#"#!/bin/sh
 nothing='{"entries":[]}'
 case "$*" in
-  'crap --lcov lcov.info --workspace --format json --sort file' | 'crap --lcov lcov.info --workspace --baseline .chock/crap-baseline'*'.json --fail-regression --format json')
+  --version | 'crap --version') printf 'cargo fixture\n';;
+  'crap --lcov lcov.info --workspace --exclude build.rs --format json --sort file' | 'crap --lcov lcov.info --workspace --exclude build.rs --format json --baseline .chock/crap-baseline'*'.json --fail-regression')
     printf 'crap\n' >> calls
     printf '%s\n' "${FIXTURE_CRAP:-$nothing}";;
   *) printf 'unexpected invocation\n' >&2; exit 1;;
@@ -1541,22 +1662,49 @@ fn baseline_crap_keeps_a_higher_score_on_record_until_lower_asks_for_the_measure
     assert_eq!(on_record(), Some(6.0));
 }
 
+#[cfg(unix)]
 #[test]
-fn orphan_debt_is_explicitly_adopted_without_weakening_missing_module_checks() {
+fn a_local_run_with_no_crap_record_writes_the_first_one_from_the_scores_of_today() {
+    let dir = coverage_project("crap-first-record");
+    let record = dir.join(chock::gates::coverage::crap::baseline());
+    std::fs::remove_file(&record).unwrap();
+    let measured = r#"{"entries":[{"file":"src/lib.rs","function":"f","line":1,"crap":6.0}]}"#;
+    let env = [("FIXTURE_HITS", "0"), ("FIXTURE_CRAP", measured)];
+    let first = with_tools(&dir, &["run", "coverage", "crap"], &env);
+    assert_eq!(first.code, 0, "{}{}", first.out, first.err);
+    says(
+        &first.err,
+        "chock: wrote the first record for crap; commit ",
+    );
+    let held = std::fs::read_to_string(&record).unwrap();
+    let held: serde_json::Value = serde_json::from_str(&held).unwrap();
+    assert_eq!(held["entries"][0]["crap"].as_f64(), Some(6.0));
+}
+
+#[test]
+fn a_local_run_adopts_orphan_debt_without_weakening_missing_module_checks() {
     let dir = project(
         "adopt-orphans",
         &[
-            ("src/lib.rs", "pub fn f() {}\n"),
+            ("src/lib.rs", "mod missing;\n"),
             ("src/orphan.rs", "pub fn old() {}\n"),
         ],
     );
     let config = chock::project::config::Config::of(["modcheck"]);
     put(&dir, chock::project::config::FILE, &config.render());
-    let before = chock(&dir, &["run", "modcheck", "--json"]);
-    assert_eq!(before.code, 1, "{}{}", before.out, before.err);
+    // A module that names no file is no debt to record, so it fails with no record written.
+    let unresolved = chock(&dir, &["run", "modcheck", "--json"]);
+    assert_eq!(unresolved.code, 1, "{}{}", unresolved.out, unresolved.err);
+    says(&unresolved.out, "names no file");
     assert!(!dir.join(chock::run::baseline::FILE).exists());
-    let recorded = chock(&dir, &["baseline", "modcheck"]);
-    assert_eq!(recorded.code, 0, "{}{}", recorded.out, recorded.err);
+    put(&dir, "src/lib.rs", "pub fn f() {}\n");
+    // CI writes no record, so there the orphan fails.
+    let ci = chock(&dir, &["run", "modcheck", "--ci", "--json"]);
+    assert_eq!(ci.code, 1, "{}{}", ci.out, ci.err);
+    assert!(!dir.join(chock::run::baseline::FILE).exists());
+    let first = chock(&dir, &["run", "modcheck", "--json"]);
+    assert_eq!(first.code, 0, "{}{}", first.out, first.err);
+    says(&first.err, "chock: wrote the first record for modcheck");
     let baseline = std::fs::read_to_string(dir.join(chock::run::baseline::FILE)).unwrap();
     let adopted = chock(&dir, &["run", "modcheck", "--json"]);
     assert_eq!(adopted.code, 0, "{}{}", adopted.out, adopted.err);
@@ -1598,7 +1746,7 @@ fn feature_debt_can_be_adopted_but_a_new_feature_issue_cannot_hide_in_it() {
         chock::project::config::FILE,
         &chock::project::config::Config::of(["features"]).render(),
     );
-    let before = chock(&dir, &["run", "features", "--json"]);
+    let before = chock(&dir, &["run", "features", "--ci", "--json"]);
     assert_eq!(before.code, 1, "{}{}", before.out, before.err);
     let baseline = chock(&dir, &["baseline", "features"]);
     assert_eq!(baseline.code, 0, "{}{}", baseline.out, baseline.err);

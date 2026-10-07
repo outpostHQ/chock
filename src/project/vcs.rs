@@ -111,13 +111,14 @@ pub fn tracked(root: &Path, held: Option<Kind>) -> Result<Vec<String>, String> {
 
 /// Every path, or an error past `MAX_TRACKED` rather than a silently truncated list.
 fn enumerated<'a>(paths: impl Iterator<Item = &'a str>) -> Result<Vec<String>, String> {
-    let held: Vec<String> = paths.take(MAX_TRACKED + 1).map(str::to_string).collect();
+    // Counted before any is copied, so a refusal allocates no path.
+    let held: Vec<&str> = paths.take(MAX_TRACKED + 1).collect();
     if held.len() > MAX_TRACKED {
         return Err(format!(
             "this repository tracks more than {MAX_TRACKED} files, which chock will not enumerate"
         ));
     }
-    Ok(held)
+    Ok(held.into_iter().map(str::to_string).collect())
 }
 
 /// `git ls-files -z`, separated by NUL so a path holding a newline stays one path.
@@ -492,35 +493,93 @@ pub fn unpushed(root: &Path, held: Option<Kind>) -> Result<Vec<(String, String)>
 }
 
 /// The files this change touched, relative to the root: since the fork from the upstream, or in CI
-/// the commit under test. An untracked file is not listed; its debt is new, and new debt fails.
+/// the commit under test. A local file nothing tracks yet counts, as it will once it is committed.
 pub fn changed(root: &Path, held: Option<Kind>, ci: bool) -> Result<Vec<String>, String> {
     match held {
         None => Err(NO_REPOSITORY.to_string()),
-        Some(Kind::Git) => {
-            let fork = if ci {
-                "HEAD^1".to_string()
-            } else {
-                git_fork(root)?
-            };
-            let mut args = vec!["diff", "--name-only", "--relative", "-z", fork.as_str()];
-            // A CI checkout has no upstream, so the commit is compared with its parent.
-            args.extend(ci.then_some("HEAD"));
-            let out = exec::run("git", &args, root).map_err(|e| e.to_string())?;
-            read_changed(&out)
-        }
+        Some(Kind::Git) if ci => git_committed(root),
+        Some(Kind::Git) => git_local(root),
         Some(Kind::Outpost) => outpost_changed(root),
     }
 }
 
-/// Where the local change starts: the fork from the upstream, or HEAD on a branch without one.
-fn git_fork(root: &Path) -> Result<String, String> {
-    let fork = exec::run("git", &["merge-base", "@{upstream}", "HEAD"], root)
-        .map_err(|e| e.to_string())?;
-    Ok(if fork.success() {
-        fork.stdout.trim().to_string()
-    } else {
-        "HEAD".to_string()
+/// What the local tree changed since its fork, with each file that git does not track yet.
+fn git_local(root: &Path) -> Result<Vec<String>, String> {
+    let mut found = match git_fork(root)? {
+        Some(fork) => git_diff(root, &[fork.as_str()])?,
+        // Before the first commit, every file is the change.
+        None => tracked(root, Some(Kind::Git))?,
+    };
+    found.extend(git_untracked(root)?);
+    found.sort();
+    found.dedup();
+    Ok(found)
+}
+
+/// What the commit under test changed. A CI checkout has no upstream, so the commit is compared
+/// with its parent. A repository's first commit has none, and every file it holds is the change.
+fn git_committed(root: &Path) -> Result<Vec<String>, String> {
+    let commit = exec::run("git", &["cat-file", "-p", "HEAD"], root).map_err(|e| e.to_string())?;
+    match has_parent(&commit.stdout) {
+        true => git_diff(root, &["HEAD^1", "HEAD"]),
+        false => tracked(root, Some(Kind::Git)),
+    }
+}
+
+/// Whether a raw commit names a parent. A shallow checkout cuts the parent off and still names it
+/// here, so a commit that names none is the repository's first.
+fn has_parent(commit: &str) -> bool {
+    commit
+        .lines()
+        .take_while(|line| !line.is_empty())
+        .any(|line| line.starts_with("parent "))
+}
+
+/// `git diff --name-only` over these revisions; one alone is compared with the working tree.
+fn git_diff(root: &Path, revisions: &[&str]) -> Result<Vec<String>, String> {
+    let mut args = vec!["diff", "--name-only", "--relative", "-z"];
+    args.extend(revisions);
+    read_changed(&exec::run("git", &args, root).map_err(|e| e.to_string())?)
+}
+
+/// The files under the root that git neither tracks nor ignores.
+fn git_untracked(root: &Path) -> Result<Vec<String>, String> {
+    let args = ["ls-files", "--others", "--exclude-standard", "-z"];
+    read_untracked(&exec::run("git", &args, root).map_err(|e| e.to_string())?)
+}
+
+fn read_untracked(out: &exec::Output) -> Result<Vec<String>, String> {
+    if !out.success() {
+        return Err(reason(
+            "git could not list the files it does not track",
+            out,
+        ));
+    }
+    let paths = out.stdout.split('\0').filter(|path| !path.is_empty());
+    enumerated(paths).map_err(|_| {
+        format!(
+            "git neither tracks nor ignores more than {MAX_TRACKED} files here, which chock will \
+             not enumerate"
+        )
     })
+}
+
+/// Where the local change starts: the fork from the upstream, or HEAD on a branch without one.
+/// `None` in a repository that has no commit yet.
+fn git_fork(root: &Path) -> Result<Option<String>, String> {
+    let args = ["merge-base", "@{upstream}", "HEAD"];
+    let fork = exec::run("git", &args, root).map_err(|e| e.to_string())?;
+    if fork.success() {
+        return Ok(Some(fork.stdout.trim().to_string()));
+    }
+    git_head(root)
+}
+
+/// `HEAD` where the repository has a commit.
+fn git_head(root: &Path) -> Result<Option<String>, String> {
+    let args = ["rev-parse", "--verify", "--quiet", "HEAD"];
+    let head = exec::run("git", &args, root).map_err(|e| e.to_string())?;
+    Ok(head.success().then(|| "HEAD".to_string()))
 }
 
 fn read_changed(out: &exec::Output) -> Result<Vec<String>, String> {
@@ -704,6 +763,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_message_git_is_composing_is_named_by_git_and_nowhere_else() {
         let root = repo("vcs-editmsg");
         let path = root.join(".git").join("COMMIT_EDITMSG");
@@ -719,6 +779,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_commits_a_push_would_carry_are_the_ones_the_upstream_lacks() {
         let root = repo("vcs-upstream");
         let bare = crate::testdir::make("vcs-upstream-remote");
@@ -751,6 +812,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_both_systems_hold_names_both_of_them() {
         let dir = crate::testdir::make("vcs-holders");
         assert_eq!(holders(&dir), Vec::new());
@@ -787,6 +849,7 @@ mod tests {
 
     /// A scratch directory sits inside chock's repository, whose config `git config` would write.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_git_does_not_hold_is_never_written_to() {
         let dir = crate::testdir::make("vcs-not-a-repo");
         assert!(!declare_hook(
@@ -799,6 +862,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_declared_hook_is_recorded_without_touching_the_hooks_directory() {
         let root = repo("vcs-declared");
         assert!(declare_hook(
@@ -866,8 +930,7 @@ mod tests {
 
     #[test]
     fn a_repository_with_more_files_than_chock_enumerates_is_refused() {
-        let many: Vec<String> = (0..=MAX_TRACKED).map(|n| format!("src/f{n}.rs")).collect();
-        let err = enumerated(many.iter().map(String::as_str)).unwrap_err();
+        let err = enumerated(std::iter::repeat_n("src/f.rs", MAX_TRACKED + 1)).unwrap_err();
         assert_eq!(
             err,
             format!(
@@ -876,15 +939,48 @@ mod tests {
         );
     }
 
+    /// A list cut short would leave new debt out of the change, so no failure reads as none.
+    #[test]
+    fn untracked_files_that_git_cannot_list_are_refused_and_a_list_is_read_whole() {
+        let err = read_untracked(&refused("fatal: not a git repository")).unwrap_err();
+        assert!(
+            err.starts_with("git could not list the files it does not track: "),
+            "{err}"
+        );
+        assert!(err.contains("not a git repository"), "{err}");
+        assert_eq!(
+            read_untracked(&said("a.rs\0b/c.rs\0")),
+            Ok(vec!["a.rs".to_string(), "b/c.rs".to_string()])
+        );
+        assert_eq!(read_untracked(&said("")), Ok(Vec::new()));
+    }
+
+    /// Miri still checks the limit itself, in the test of `enumerated` above.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "splitting 50,001 names took over seven minutes under Miri"
+    )]
+    fn untracked_files_that_pass_the_limit_are_refused() {
+        let many = "a.rs\0".repeat(MAX_TRACKED + 1);
+        assert_eq!(
+            read_untracked(&said(&many)).unwrap_err(),
+            format!(
+                "git neither tracks nor ignores more than {MAX_TRACKED} files here, which chock \
+                 will not enumerate"
+            )
+        );
+    }
+
     #[test]
     fn a_repository_at_the_limit_is_still_enumerated_whole() {
-        let many: Vec<String> = (0..MAX_TRACKED).map(|n| format!("src/f{n}.rs")).collect();
-        let held = enumerated(many.iter().map(String::as_str)).unwrap();
-        assert_eq!(held.first().map(String::as_str), Some("src/f0.rs"));
-        assert_eq!(
-            held.last().map(String::as_str),
-            Some(format!("src/f{}.rs", MAX_TRACKED - 1).as_str())
-        );
+        // Empty names between the ends copy without an allocation, which Miri makes costly.
+        let between = std::iter::repeat_n("", MAX_TRACKED - 2);
+        let many = std::iter::once("src/first.rs")
+            .chain(between)
+            .chain(["src/last.rs"]);
+        let want: Vec<&str> = many.clone().collect();
+        assert_eq!(enumerated(many).unwrap(), want);
     }
 
     #[test]
@@ -946,6 +1042,9 @@ mod tests {
         let root = repo(name);
         let bare = root.join("remote.git");
         git(&root, &["init", "--bare", "--quiet", "remote.git"]);
+        // The remote sits inside the work tree, so git is told that it is no untracked work.
+        std::fs::create_dir_all(root.join(".git/info")).unwrap();
+        std::fs::write(root.join(".git/info/exclude"), "remote.git/\n").unwrap();
         git(
             &root,
             &["remote", "add", "origin", &bare.display().to_string()],
@@ -965,6 +1064,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_crate_below_its_repository_root_is_read_as_its_own_part_of_it() {
         let (root, crate_dir) = nested("vcs-nested");
         assert_eq!(
@@ -991,6 +1091,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_root_a_clone_starts_from_is_found_for_either_system_and_none_without_one() {
         let root = repo("vcs-repository-root");
         let inner = root.join("crates/inner");
@@ -1008,6 +1109,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_git_tree_is_recognised_and_a_bare_directory_is_not() {
         let root = repo("vcs-kind");
         assert_eq!(Kind::of(&root), Some(Kind::Git));
@@ -1016,6 +1118,7 @@ mod tests {
 
     /// `.cargo/config.toml` sets a git ceiling at the scratch root.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn git_run_in_a_scratch_directory_cannot_reach_the_repository_around_it() {
         let dir = crate::testdir::make("vcs-fenced");
         let out = exec::run("git", &["rev-parse", "--git-dir"], &dir).unwrap();
@@ -1028,6 +1131,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_changed_files_are_those_since_the_upstream_fork_and_in_ci_those_of_the_commit() {
         let (root, crate_dir) = nested("vcs-changed");
         std::fs::write(crate_dir.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
@@ -1048,6 +1152,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_branch_without_an_upstream_changes_only_what_is_not_committed() {
         let root = repo("vcs-changed-local");
         assert_eq!(
@@ -1056,22 +1161,76 @@ mod tests {
         );
         std::fs::write(root.join("a.rs"), "fn f() -> u8 { 4 }\n").unwrap();
         assert_eq!(changed(&root, Some(Kind::Git), false).unwrap(), ["a.rs"]);
+        // A file nothing tracks yet is part of the change; one that git ignores is not.
+        std::fs::create_dir_all(root.join(".git/info")).unwrap();
+        std::fs::write(root.join(".git/info/exclude"), "kept.log\n").unwrap();
+        std::fs::write(root.join("kept.log"), "").unwrap();
+        std::fs::write(root.join("new.rs"), "").unwrap();
+        assert_eq!(
+            changed(&root, Some(Kind::Git), false).unwrap(),
+            ["a.rs", "new.rs"]
+        );
     }
 
-    #[test]
-    fn a_ci_checkout_of_one_commit_cannot_say_what_changed() {
-        let root = crate::testdir::make("vcs-changed-shallow");
+    /// A repository with a name for its committer and no commit.
+    fn unborn(name: &str) -> crate::testdir::Scratch {
+        let root = crate::testdir::make(name);
         git(&root, &["init", "--quiet"]);
         git(&root, &["config", "user.email", "t@example.com"]);
         git(&root, &["config", "user.name", "t"]);
-        std::fs::write(root.join("a.rs"), "").unwrap();
-        git(&root, &["add", "a.rs"]);
-        git(&root, &["commit", "--quiet", "-m", "only"]);
+        root
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_ci_checkout_cut_off_from_its_parent_cannot_say_what_changed() {
+        let root = repo("vcs-changed-shallow");
+        // What `fetch-depth: 1` leaves: the commit is there, and git may not read past it.
+        let head = exec::run("git", &["rev-parse", "HEAD"], &root).unwrap();
+        std::fs::write(root.join(".git/shallow"), &head.stdout).unwrap();
         let why = changed(&root, Some(Kind::Git), true).unwrap_err();
         assert!(why.contains("fetch-depth: 2"), "{why}");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn in_ci_the_first_commit_of_a_repository_changes_every_file_it_holds() {
+        let root = unborn("vcs-changed-first");
+        std::fs::write(root.join("a.rs"), "").unwrap();
+        std::fs::write(root.join("b.rs"), "").unwrap();
+        git(&root, &["add", "a.rs", "b.rs"]);
+        git(&root, &["commit", "--quiet", "-m", "only"]);
+        assert_eq!(
+            changed(&root, Some(Kind::Git), true).unwrap(),
+            ["a.rs", "b.rs"]
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn before_the_first_commit_every_file_is_the_change() {
+        let root = unborn("vcs-changed-unborn");
+        std::fs::write(root.join("b.rs"), "").unwrap();
+        git(&root, &["add", "b.rs"]);
+        std::fs::write(root.join("a.rs"), "").unwrap();
+        assert_eq!(
+            changed(&root, Some(Kind::Git), false).unwrap(),
+            ["a.rs", "b.rs"]
+        );
+    }
+
+    #[test]
+    fn a_commit_names_its_parent_in_its_header_and_not_in_its_message() {
+        let first = "tree 4b825dc\nauthor t\n\nparent of all later work\n";
+        assert!(!has_parent(first), "the message is no header");
+        assert!(has_parent(
+            "tree 4b825dc\nparent 9fceb02\nauthor t\n\nsecond\n"
+        ));
+        assert!(!has_parent(""));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn outpost_changes_are_the_edits_since_head() {
         // Skipped where outpost is not installed; `read_diff` is held without it.
         let Some(root) = outpost_repo("vcs-changed-outpost") else {
@@ -1095,6 +1254,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_branch_with_no_upstream_reports_no_unpushed_commits_rather_than_all_of_them() {
         assert_eq!(
             unpushed(&repo("vcs-unpushed"), Some(Kind::Git)).unwrap(),
@@ -1103,6 +1263,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_bare_outpost_directory_is_not_taken_for_a_repository() {
         let root = crate::testdir::make("vcs-outpost-bare");
         std::fs::create_dir_all(root.join(".outpost")).unwrap();
@@ -1133,11 +1294,13 @@ mod tests {
 
     /// CI runners have no outpost, so this arm decides whether the outpost tests run.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_tool_nothing_installed_makes_no_repository_rather_than_failing() {
         assert!(made_by("outpost-that-nothing-installs", "vcs-no-such-tool").is_none());
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_repository_holding_no_commit_refuses_every_question_rather_than_answering_empty() {
         // Skipped where outpost is not installed.
         if let Some(root) = outpost_repo("vcs-outpost-empty") {
@@ -1153,6 +1316,7 @@ mod tests {
 
     /// Out of outpost's reach, an empty answer would read as clean, so each question is refused.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn an_outpost_out_of_reach_refuses_every_question_rather_than_answering_empty() {
         let gone = crate::testdir::make("vcs-outpost-gone").join("gone");
         assert!(tracked(&gone, Some(Kind::Outpost)).is_err());
@@ -1163,6 +1327,7 @@ mod tests {
 
     /// A sole holder is the answer without counting, so this runs without outpost installed.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_repository_outpost_really_made_is_recognised_by_its_marker() {
         let root = crate::testdir::make("vcs-outpost-marked");
         std::fs::create_dir_all(root.join(".outpost")).unwrap();
@@ -1188,6 +1353,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_tree_both_hold_is_read_as_whichever_of_them_answers() {
         let root = repo("vcs-both");
         pretend_outpost_holds(&root);
@@ -1197,6 +1363,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_directory_that_is_no_repository_is_refused_by_every_question() {
         let root = crate::testdir::make("vcs-bare");
         assert!(tracked(&root, None).is_err());
@@ -1215,6 +1382,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_real_declared_hook_reaches_machine_health_without_being_executed() {
         let dir = repo("declared-health");
         git(
@@ -1265,6 +1433,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn pointing_a_real_repository_at_hooks_reports_the_persisted_setting() {
         let dir = repo("point-hooks");
         assert!(point_hooks_at(&dir, ".chock/fixture-hooks"));
@@ -1324,6 +1493,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_declaration_query_cannot_read_an_ancestor_repository() {
         let dir = crate::testdir::make("hook-no-repository");
         assert_eq!(git_hook_declarations(&dir).unwrap(), Vec::new());
@@ -1369,6 +1539,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_commits_behind_head_are_counted_in_the_repository_that_holds_them() {
         assert_eq!(commits(&repo("vcs-commits"), Some(Kind::Git)), Ok(2));
         assert_eq!(
@@ -1570,6 +1741,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_tree_with_no_repository_under_it_is_not_claimed_by_either() {
         let dir = crate::testdir::make("vcs-none");
         assert_eq!(live_holder(&dir), None);
@@ -1577,6 +1749,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_git_checkout_is_answered_by_git_and_an_outpost_one_by_outpost() {
         let git = crate::testdir::make("vcs-git");
         std::fs::create_dir_all(git.join(".git")).unwrap();
@@ -1590,6 +1763,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_worktree_whose_git_is_a_file_is_still_a_git_checkout() {
         let dir = crate::testdir::make("vcs-worktree");
         std::fs::write(dir.join(".git"), "gitdir: /elsewhere\n").unwrap();

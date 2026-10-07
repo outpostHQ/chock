@@ -65,7 +65,7 @@ fn installing(tool: &str) -> &'static str {
     }
 }
 
-const FIXES: [(&str, &str); 53] = [
+const FIXES: [(&str, &str); 55] = [
     (
         "test",
         "run the rerun command, read each failing test's output, and fix the code or the test; a crate with no tests needs one",
@@ -207,6 +207,15 @@ const FIXES: [(&str, &str); 53] = [
     (
         "bigfiles",
         "split the file along a concern into modules of under 1000 production lines",
+    ),
+    (
+        "splits",
+        "move the part the finding names into a child module; only its owner, with the fields and \
+         methods the file uses, needs `pub(super)`",
+    ),
+    (
+        "lean",
+        "call what the forwarder calls where the forwarder is called, then remove the forwarder",
     ),
     (
         "binsize",

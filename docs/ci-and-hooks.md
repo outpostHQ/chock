@@ -78,8 +78,27 @@ platform is compiled. [`SECURITY.md`](../SECURITY.md) says what that trades.
 A run that measures less than the record lowers `.chock/baseline.json`. CI fails a change that does
 not commit the lower number, so the record in the repository is always the true one.
 
+CI writes no record. A ratchet whose first record no change committed is `CANNOT RUN` there:
+run `chock run GATE` outside CI and commit `.chock/baseline.json`. A gate that keeps a record for
+each system, such as `coverage@macos`, needs that run on that system.
+
 Two branches that both lower the record can conflict in `.chock/baseline.json`. Keep the lower
 number for each key.
+
+### A long Miri suite
+
+`miri` interprets each test, tens of times slower than a normal run. Where the whole suite does not
+fit one CI job, split it into parts: `--miri-partition=K/N` runs part K of N, as nextest's
+`count:K/N` partition splits the tests. One job runs every gate with part 1, and one job each runs
+only `miri` for the other parts:
+
+```yaml
+- run: chock run --ci --miri-partition=1/4                       # every gate, and part 1 of 4
+- run: chock run --ci --miri-partition=${{ matrix.part }}/4 miri # parts 2 to 4, one job each
+```
+
+Each part keeps its verdict under a key of its own. chock's own
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs its suite this way.
 
 ## Update chock
 

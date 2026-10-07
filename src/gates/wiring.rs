@@ -65,6 +65,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_that_passes_and_is_switched_off_is_reported_by_name() {
         let config = Config::of(["slop"]);
         let (held, _dir) = ctx();
@@ -76,6 +77,7 @@ mod tests {
 
     /// A failing gate is debt that `init --local` deliberately leaves off.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_that_would_fail_is_not_reported() {
         let (held, _dir) = ctx();
         let found = unwired(&Config::of([""; 0]), &held, &|_, _| Verdict::Tripped);
@@ -83,6 +85,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_that_could_not_run_is_not_reported() {
         let (held, _dir) = ctx();
         let found = unwired(&Config::of([""; 0]), &held, &|_, _| Verdict::CannotRun);
@@ -90,6 +93,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_that_costs_a_compile_is_never_offered() {
         let (held, _dir) = ctx();
         let found = unwired(&Config::of([""; 0]), &held, &|_, _| Verdict::Pass);
@@ -100,6 +104,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn an_opt_in_gate_is_never_demanded() {
         let (held, _dir) = ctx();
         let found = unwired(&Config::of([""; 0]), &held, &|_, _| Verdict::Pass);
@@ -110,6 +115,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn this_gate_never_reports_itself() {
         let (held, _dir) = ctx();
         let found = unwired(&Config::of([""; 0]), &held, &|_, _| Verdict::Pass);

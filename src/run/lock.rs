@@ -83,28 +83,45 @@ fn once(root: &Path) -> Result<Held, Refused> {
     }
 }
 
-/// Creates the lock holding this process's pid. `create_new` means two racing processes cannot
-/// both succeed.
+/// Creates the lock holding this process's pid, then its command. `create_new` means two racing
+/// processes cannot both succeed.
 fn write_new(path: &Path) -> std::io::Result<()> {
     use std::io::Write as _;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)?;
-    write!(file, "{}", std::process::id())
+    write!(file, "{}\n{}", std::process::id(), command())
+}
+
+/// This process's command on one line, so a run it holds back can say which run is in the way.
+fn command() -> String {
+    let words: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|word| word.to_string_lossy().replace('\n', " "))
+        .collect();
+    format!("chock {}", words.join(" ")).trim_end().to_string()
+}
+
+/// The pid and the command a lock names; a lock an older chock wrote names only the pid.
+fn holder(text: &str) -> (&str, &str) {
+    let (pid, command) = text.split_once('\n').unwrap_or((text, ""));
+    (pid.trim(), command.trim())
 }
 
 /// Whether no live run holds the lock: its writer has exited, or it outlived a run's deadline.
 fn stale(path: &Path) -> bool {
     let who = std::fs::read_to_string(path).unwrap_or_default();
-    if gone(who.trim()) == Some(true) {
+    if gone(holder(&who).0) == Some(true) {
         return true;
     }
-    let Ok(held) = std::fs::metadata(path).and_then(|about| about.modified()) else {
-        return false;
-    };
-    held.elapsed()
-        .is_ok_and(|age| age > crate::exec::deadline())
+    age(path).is_some_and(|age| age > crate::exec::deadline())
+}
+
+/// How long ago the lock was written, or `None` if its time cannot be read.
+fn age(path: &Path) -> Option<std::time::Duration> {
+    let written = std::fs::metadata(path).and_then(|about| about.modified());
+    written.ok()?.elapsed().ok()
 }
 
 /// Whether the lock's writer has exited, or `None` if that cannot be known. Only ESRCH counts.
@@ -123,15 +140,38 @@ fn gone(_pid: &str) -> Option<bool> {
 
 fn held_by(path: &Path) -> String {
     let who = std::fs::read_to_string(path).unwrap_or_default();
-    let who = who.trim();
-    let named = if who.is_empty() {
-        String::new()
-    } else {
-        format!(" (pid {who})")
+    let (pid, command) = holder(&who);
+    told(pid, command, age(path), gone(pid))
+}
+
+/// The refusal. Deleting the lock is advised only where the holder may have exited, since two
+/// runs at once would share the coverage report and the suite.
+fn told(
+    pid: &str,
+    command: &str,
+    age: Option<std::time::Duration>,
+    exited: Option<bool>,
+) -> String {
+    let mut named: Vec<String> = Vec::new();
+    named.extend((!pid.is_empty()).then(|| format!("pid {pid}")));
+    named.extend((!command.is_empty()).then(|| format!("`{command}`")));
+    named.extend(age.map(|age| match age.as_secs() {
+        seconds @ 0..60 => format!("for {seconds} s"),
+        seconds => format!("for {} min", seconds / 60),
+    }));
+    let named = match named.is_empty() {
+        true => String::new(),
+        false => format!(" ({})", named.join(", ")),
     };
-    format!(
-        "another chock run holds this tree{named}; wait for it, or delete {FILE} if nothing is running"
-    )
+    match exited {
+        Some(false) => format!(
+            "another chock run holds this tree{named} and is still running; run again when it ends"
+        ),
+        _ => format!(
+            "another chock run holds this tree{named}; wait for it, or delete {FILE} if nothing is \
+             running"
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -143,6 +183,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot ask whether a process is alive")]
     fn a_run_that_lets_go_while_we_wait_hands_the_tree_over_rather_than_refusing() {
         let dir = crate::testdir::make("lock-waited");
         let first = std::cell::RefCell::new(Some(once(&dir).unwrap()));
@@ -150,14 +191,13 @@ mod tests {
             first.borrow_mut().take();
         })
         .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(dir.join(FILE)).unwrap().trim(),
-            std::process::id().to_string()
-        );
+        let text = std::fs::read_to_string(dir.join(FILE)).unwrap();
+        assert_eq!(holder(&text).0, std::process::id().to_string());
         drop(held);
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot ask whether a process is alive")]
     fn a_holder_that_never_lets_go_is_refused_once_the_turns_run_out() {
         let dir = crate::testdir::make("lock-impatient");
         let first = once(&dir).unwrap();
@@ -170,6 +210,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot ask whether a process is alive")]
     fn a_second_run_in_the_same_tree_is_refused_while_the_first_holds_it() {
         let dir = crate::testdir::make("lock-contended");
         let first = once(&dir).unwrap();
@@ -182,10 +223,17 @@ mod tests {
             refused.contains(&std::process::id().to_string()),
             "{refused}"
         );
+        // Only here can chock see that the holder is alive, so only here is the delete advice gone.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert!(
+            refused.contains("is still running") && !refused.contains("delete"),
+            "{refused}"
+        );
         drop(first);
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_tree_is_free_again_once_the_holder_is_dropped() {
         let dir = crate::testdir::make("lock-released");
         drop(take(&dir).unwrap());
@@ -194,6 +242,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot ask whether a process is alive")]
     fn a_lock_older_than_a_run_could_live_is_taken_over() {
         let dir = crate::testdir::make("lock-stale");
         let path = dir.join(FILE);
@@ -202,15 +251,11 @@ mod tests {
         let long_ago = std::time::SystemTime::now() - crate::exec::deadline() * 2;
         set_modified(&path, long_ago);
         assert!(stale(&path), "the fixture is not old enough to be stale");
-        let taken = take(&dir).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            std::process::id().to_string()
-        );
-        drop(taken);
+        assert_eq!(new_holder(&dir, &path), std::process::id().to_string());
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot ask whether a process is alive")]
     fn a_lock_written_just_now_is_not_stale() {
         let dir = crate::testdir::make("lock-fresh");
         let held = take(&dir).unwrap();
@@ -219,18 +264,49 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_lock_naming_no_pid_still_refuses_the_tree() {
         let dir = crate::testdir::make("lock-anonymous");
         let path = dir.join(FILE);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "").unwrap();
         let refused = once(&dir).unwrap_err().why();
+        assert!(
+            refused.starts_with("another chock run holds this tree (for "),
+            "{refused}"
+        );
+        assert!(
+            refused.ends_with(&format!(
+                "; wait for it, or delete {FILE} if nothing is running"
+            )),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_names_the_holder_and_advises_a_delete_only_when_it_may_have_exited() {
+        let twelve = Some(std::time::Duration::from_secs(12 * 60 + 5));
         assert_eq!(
-            refused,
+            told("41", "chock pre-push", twelve, Some(false)),
+            "another chock run holds this tree (pid 41, `chock pre-push`, for 12 min) and is \
+             still running; run again when it ends"
+        );
+        assert_eq!(
+            told("41", "", Some(std::time::Duration::from_secs(9)), None),
+            format!(
+                "another chock run holds this tree (pid 41, for 9 s); wait for it, or delete \
+                 {FILE} if nothing is running"
+            )
+        );
+        assert_eq!(
+            told("", "", None, None),
             format!(
                 "another chock run holds this tree; wait for it, or delete {FILE} if nothing is running"
             )
         );
+        assert_eq!(holder(" 41 \nchock pre-push\n"), ("41", "chock pre-push"));
+        assert_eq!(holder("41"), ("41", ""), "a lock an older chock wrote");
+        assert!(command().starts_with("chock"), "{}", command());
     }
 
     /// Only `AlreadyExists` means another run holds the lock.
@@ -251,6 +327,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_with_no_room_for_the_lock_says_which_path_is_in_the_way() {
         let dir = crate::testdir::make("lock-no-room");
         std::fs::write(dir.join(".chock"), "not a directory").unwrap();
@@ -261,6 +338,7 @@ mod tests {
 
     /// A missing file has no age, and guessing "old" would hand one run's lock to another.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_lock_that_is_not_there_is_not_stale() {
         let dir = crate::testdir::make("lock-absent");
         assert!(!stale(&dir.join(FILE)));
@@ -269,22 +347,19 @@ mod tests {
     /// A killed run never reaches `Drop`, so its lock outlives it.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot ask whether a process is alive")]
     fn a_lock_whose_holder_has_exited_is_taken_over_without_waiting() {
         let dir = crate::testdir::make("lock-dead-holder");
         let path = dir.join(FILE);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, exited_pid()).unwrap();
         assert!(stale(&path), "a pid nothing is running is not held");
-        let taken = take(&dir).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            std::process::id().to_string()
-        );
-        drop(taken);
+        assert_eq!(new_holder(&dir, &path), std::process::id().to_string());
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot ask whether a process is alive")]
     fn a_lock_whose_holder_is_this_very_process_is_not_stale() {
         assert_eq!(gone(&std::process::id().to_string()), Some(false));
     }
@@ -310,6 +385,14 @@ mod tests {
         let mut perms = std::fs::metadata(dir).unwrap().permissions();
         perms.set_mode(mode);
         std::fs::set_permissions(dir, perms).unwrap();
+    }
+
+    /// Takes the lock in `dir` and gives the pid that its file names from then on.
+    fn new_holder(dir: &Path, path: &Path) -> String {
+        let taken = take(dir).unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        drop(taken);
+        holder(&text).0.to_string()
     }
 
     fn set_modified(path: &Path, to: std::time::SystemTime) {

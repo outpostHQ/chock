@@ -410,6 +410,7 @@ mod tests {
 
     /// A second `init` neither rewrites it nor reports it.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_hook_file_already_current_is_left_where_it_is() {
         let dir = git_repo("hooks-already-current");
         install_git_hooks(&dir, false).unwrap();
@@ -421,6 +422,7 @@ mod tests {
 
     /// Goes through the wiring rather than `said`, since the dispatch is what can be wrong.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_hooks_path_chock_set_is_kept_for_an_older_git_and_cleared_once_hooks_are_declared() {
         let dir = git_repo("hooks-path-ours");
         let set = std::process::Command::new("git")
@@ -443,6 +445,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_hooks_path_somebody_else_set_survives_declaring() {
         let dir = git_repo("hooks-path-theirs");
         let set = std::process::Command::new("git")
@@ -514,6 +517,7 @@ mod tests {
 
     /// Told git cannot declare hooks, rather than finding such a git.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_git_that_cannot_declare_a_hook_gets_a_file_for_each_of_them() {
         let dir = git_repo("hooks-older-git");
         let report = install_git_hooks(&dir, false).unwrap();
@@ -534,6 +538,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_tree_outpost_holds_gets_the_hook_outpost_will_actually_run() {
         let dir = crate::testdir::make("init-outpost-held");
         crate::project::vcs::pretend_outpost_holds(&dir);
@@ -553,6 +558,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_declaration_file_chock_cannot_read_is_left_byte_for_byte_and_refused() {
         let dir = crate::testdir::make("init-outpost-unreadable");
         crate::project::vcs::pretend_outpost_holds(&dir);
@@ -569,6 +575,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_declaration_file_already_there_is_added_to_or_left_exactly_alone() {
         let dir = crate::testdir::make("init-outpost-existing");
         crate::project::vcs::pretend_outpost_holds(&dir);
@@ -595,6 +602,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_tree_git_and_outpost_both_hold_is_wired_for_each_of_them() {
         let dir = git_repo("init-both-hold");
         crate::project::vcs::pretend_outpost_holds(&dir);
@@ -664,12 +672,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_no_repository_holds_is_told_nothing_about_commit_hooks() {
         let dir = crate::testdir::make("init-unheld");
         assert_eq!(install_hooks(&dir).unwrap(), String::new());
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_git_that_declares_its_hooks_is_left_no_file_to_go_stale() {
         let dir = git_repo("init-hooks");
         let report = install_hooks(&dir).unwrap();
@@ -681,6 +691,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_hook_file_an_older_chock_wrote_is_retired_and_somebody_elses_is_kept() {
         let dir = git_repo("init-retire");
         let hooks = dir.join(DIR);
@@ -706,6 +717,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn declaring_records_every_hook_and_names_them() {
         let dir = git_repo("init-declare");
         let said = declare_each(&dir);
@@ -729,6 +741,7 @@ mod tests {
 
     /// git ships `.sample` files in every new repository.
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_samples_git_ships_are_not_hooks_a_project_wrote() {
         let dir = crate::testdir::make("init-hooks-samples");
         let hooks = dir.join(".git/hooks");
@@ -741,12 +754,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_with_no_hooks_directory_holds_no_hooks_of_its_own() {
         let dir = crate::testdir::make("init-hooks-none");
         assert_eq!(hooks_already_in_git(&dir), None);
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn every_hook_a_project_wrote_is_named() {
         let dir = crate::testdir::make("init-hooks-several");
         let hooks = dir.join(".git/hooks");
@@ -760,6 +775,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_project_with_its_own_hooks_keeps_them_untouched() {
         let dir = git_repo("init-hooks-theirs");
         std::fs::create_dir_all(dir.join(".git/hooks")).unwrap();
@@ -802,6 +818,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn executable_lookup_resolves_relative_paths_without_running_them() {
         let dir = crate::testdir::make("hook-executable");
         let bin = dir.join("bin");
@@ -849,6 +866,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_that_is_not_a_git_repository_gets_no_hooks_and_no_complaint() {
         let dir = crate::testdir::make("init-nogit");
         assert_eq!(install_hooks(&dir).unwrap(), String::new());

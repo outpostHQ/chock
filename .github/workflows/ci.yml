@@ -4,8 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  # A release tag calls this file: publish.yml lets no crate out before these jobs pass.
-  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -62,9 +60,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, system: linux }
-          - { os: macos-latest, system: macos }
-          - { os: windows-latest, system: windows }
+          # `parts`: how many jobs share the Miri suite on that system. This job runs part 1.
+          - { os: ubuntu-latest, system: linux, parts: 6 }
+          - { os: macos-latest, system: macos, parts: 15 }
+          - { os: windows-latest, system: windows, parts: 12 }
     env:
       SYSTEM: ${{ matrix.system }}
     defaults:
@@ -84,12 +83,13 @@ jobs:
           cache: false
 
       # mutest-driver links librustc_driver from one exact compiler build, so it only runs with the
-      # nightly it was built against. rustc-dev carries that library; cargo-udeps needs any nightly.
+      # nightly it was built against, and rustc-dev carries that library.
       - name: Install the nightly toolchains
         run: |
           . ./tool-versions.env
           rustup toolchain install "$MUTEST_NIGHTLY" --profile minimal --component rustc-dev --component llvm-tools
-          rustup toolchain install nightly --profile minimal
+          # cargo-udeps takes any nightly; the `miri` gate needs miri and the standard library's source.
+          rustup toolchain install nightly --profile minimal --component miri --component rust-src
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -155,7 +155,7 @@ jobs:
       # Not `chock doctor`: it checks every pin, including the opt-in tools this job deliberately
       # does not install. `chock run` is the proof — a gate whose tool is absent cannot pass.
       - name: Every gate this project has switched on
-        run: chock run --ci
+        run: chock run --ci --miri-partition=1/${{ matrix.parts }}
 
       # A gate that could not run says why in its own output, which these keep for reading.
       - name: Processes still running
@@ -170,3 +170,68 @@ jobs:
           name: mutest-results-${{ matrix.system }}
           path: target/test-scratch/mutest-results-*
           if-no-files-found: ignore
+
+  # Miri over the whole suite takes hours on one runner, so the job above runs part 1 and these
+  # jobs run the other parts at the same time. `parts` must match the job above.
+  miri:
+    name: Miri part ${{ matrix.part }} of ${{ matrix.parts }} on ${{ matrix.system }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        system: [linux, macos, windows]
+        part: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        include:
+          - { system: linux, os: ubuntu-latest, parts: 6 }
+          - { system: macos, os: macos-latest, parts: 15 }
+          - { system: windows, os: windows-latest, parts: 12 }
+        exclude:
+          - { system: linux, part: 7 }
+          - { system: linux, part: 8 }
+          - { system: linux, part: 9 }
+          - { system: linux, part: 10 }
+          - { system: linux, part: 11 }
+          - { system: linux, part: 12 }
+          - { system: linux, part: 13 }
+          - { system: linux, part: 14 }
+          - { system: linux, part: 15 }
+          - { system: windows, part: 13 }
+          - { system: windows, part: 14 }
+          - { system: windows, part: 15 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+
+      - name: Install nightly with Miri
+        run: rustup toolchain install nightly --profile minimal --component miri --component rust-src
+
+      # One cache for every part on a system, saved by one part only.
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: miri
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.part == 2 }}
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install cargo-nextest
+        run: |
+          . ./tool-versions.env
+          cargo binstall -y --locked cargo-nextest@"$CARGO_NEXTEST_VERSION"
+
+      - name: Install chock from this checkout
+        run: cargo install --locked --path .
+
+      # One gate by name here: the job above runs every gate, and chock refuses a name it lacks.
+      - name: This part of the Miri suite
+        run: chock run --ci --miri-partition=${{ matrix.part }}/${{ matrix.parts }} miri

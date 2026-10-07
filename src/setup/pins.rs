@@ -390,6 +390,26 @@ fn systems(list: &str) -> Vec<String> {
         .collect()
 }
 
+/// The command of each pin in the shipped file, in the file's order.
+#[cfg(test)]
+pub const SHIPPED: [&str; 15] = [
+    "cargo-binstall",
+    "just",
+    "cargo-nextest",
+    "cargo-llvm-cov",
+    "cargo-crap",
+    "cargo-deny",
+    "cargo-sort",
+    "cargo-acl",
+    "cargo-machete",
+    "cargo-udeps",
+    "cargo-bsize",
+    "typos",
+    "cargo-mutest",
+    "kani",
+    "outpost",
+];
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -652,26 +672,8 @@ mod tests {
     #[test]
     fn the_shipped_file_parses_to_the_tools_doctor_reports() {
         let got = parse(include_str!("../../tool-versions.env")).unwrap();
-        assert_eq!(
-            got.iter().map(|p| p.command.as_str()).collect::<Vec<_>>(),
-            [
-                "cargo-binstall",
-                "just",
-                "cargo-nextest",
-                "cargo-llvm-cov",
-                "cargo-crap",
-                "cargo-deny",
-                "cargo-sort",
-                "cargo-acl",
-                "cargo-machete",
-                "cargo-udeps",
-                "cargo-bsize",
-                "typos",
-                "cargo-mutest",
-                "kani",
-                "outpost",
-            ]
-        );
+        let commands: Vec<&str> = got.iter().map(|p| p.command.as_str()).collect();
+        assert_eq!(commands, SHIPPED);
     }
 
     #[test]

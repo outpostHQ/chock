@@ -1,7 +1,12 @@
 //! The test suite under miri, an interpreter that detects undefined behaviour. Most of this file
 //! separates a setup failure from a finding and names the setting to change.
 
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+
 use crate::exec;
+use crate::run::report::Finding;
+use crate::run::verdicts::Reads;
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
 
 pub const GATE: Gate = Gate {
@@ -9,17 +14,39 @@ pub const GATE: Gate = Gate {
     about: "the suite runs clean under an interpreter that detects undefined behaviour",
     group: Group::OptIn,
     builds: true,
-    reads: None,
+    // Asked through the nightly that holds it, so a new nightly is a new key.
+    reads: Some(Reads::tree_and(&["cargo +nightly miri", "cargo-nextest"])),
     kind: Kind::Binary(checked),
 };
 
+/// One part of the suite, from `--miri-partition=K/N`, so CI can run the parts at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Part {
+    pub index: u32,
+    pub of: u32,
+}
+
+impl Part {
+    /// `K/N` with K from 1 to N, the form of nextest's `count:` partition.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let wrong = || format!("`--miri-partition` takes K/N with K from 1 to N, not `{text}`");
+        let (index, of) = text.split_once('/').ok_or_else(wrong)?;
+        let index: u32 = index.parse().map_err(|_| wrong())?;
+        let of: u32 = of.parse().map_err(|_| wrong())?;
+        if index == 0 || index > of {
+            return Err(wrong());
+        }
+        Ok(Self { index, of })
+    }
+}
+
 fn checked(ctx: &Ctx) -> Result<Outcome, String> {
-    asked(ctx).and_then(|asked| miri(ctx, &asked))
+    let prepared = asked(ctx).and_then(|asked| limited(ctx, &asked));
+    prepared.and_then(|(_limit, args)| miri(ctx, &args))
 }
 
 /// Runs the suite under miri; opt-in, since interpreting costs tens of times a normal run.
-fn miri(ctx: &Ctx, asked: &[String]) -> Result<Outcome, String> {
-    let args = invocation(&ctx.miri, asked);
+fn miri(ctx: &Ctx, args: &[String]) -> Result<Outcome, String> {
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let flags = miriflags(&ctx.miri);
     let out = exec::run_env("cargo", &argv, &ctx.root, &[("MIRIFLAGS", flags.as_str())])
@@ -27,8 +54,72 @@ fn miri(ctx: &Ctx, asked: &[String]) -> Result<Outcome, String> {
     if let Some(why) = never_ran(&out.stderr) {
         return Err(why);
     }
-    Ok(super::verdict(&out, &ctx.root))
+    Ok(judged(&out, &ctx.root))
 }
+
+/// nextest's Miri profile only warns about a slow test, so one test could use up the run's
+/// deadline unnamed. A project's own `default-miri` setting still wins over this one.
+const PER_TEST: &str =
+    "[profile.default-miri]\nslow-timeout = { period = \"60s\", terminate-after = 5 }\n";
+
+/// The per-test limit, in a file of this run's own, removed when the run ends.
+struct Limit(PathBuf);
+
+impl Drop for Limit {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_file(&self.0) {
+            let path = self.0.display();
+            eprintln!("chock: cannot remove miri's per-test limit {path}: {error}");
+        }
+    }
+}
+
+/// The arguments, with the limit written where nextest reads a tool's own settings.
+fn limited(ctx: &Ctx, asked: &[String]) -> Result<(Limit, Vec<String>), String> {
+    let failed = |error: std::io::Error| format!("cannot write miri's per-test limit: {error}");
+    let parent = ctx.root.join("target/test-scratch");
+    crate::project::document::rooted(&parent).map_err(failed)?;
+    std::fs::create_dir_all(&parent).map_err(failed)?;
+    let path = parent.join(format!(
+        "miri-limit-{}-{}.toml",
+        std::process::id(),
+        stamp()
+    ));
+    // A new file only, so a path already there, or a link planted there, is never written through.
+    let mut file = std::fs::File::create_new(&path).map_err(failed)?;
+    let limit = Limit(path);
+    file.write_all(PER_TEST.as_bytes()).map_err(failed)?;
+    let mut args = invocation(&ctx.miri, asked);
+    args.extend(
+        ctx.miri_part
+            .map(|part| format!("--partition=count:{}/{}", part.index, part.of)),
+    );
+    args.push(format!("--tool-config-file=chock:{}", limit.0.display()));
+    Ok((limit, args))
+}
+
+/// Nanoseconds since the epoch, so a crashed run's file under a reused pid is never in the way.
+fn stamp() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_nanos())
+        .unwrap_or_default()
+}
+
+/// The suite's verdict, naming each test the limit stopped: nextest prints no span for one.
+fn judged(out: &exec::Output, root: &Path) -> Outcome {
+    let mut outcome = super::verdict(out, root);
+    outcome.findings.extend(
+        super::timed_out_tests(out)
+            .iter()
+            .map(|test| Finding::at("", STOPPED).item(test)),
+    );
+    outcome
+}
+
+const STOPPED: &str = "ran past its limit under miri, five minutes unless the project's \
+                       `[profile.default-miri]` sets one, so it was stopped; give it a smaller \
+                       input when `cfg(miri)` holds, or `#[cfg_attr(miri, ignore = \"too slow\")]`";
 
 /// The feature and build flags to pass on; a cargo profile is refused, since miri cannot take one.
 fn asked(ctx: &Ctx) -> Result<Vec<String>, String> {
@@ -118,7 +209,8 @@ fn instead(what: &str) -> String {
              `\"miri\": {{\"flags\": [\"-Zmiri-disable-isolation\", \"-Zmiri-tree-borrows\"]}}`."
         ),
         None => "Name the crates it can run over in .chock/config.json: \
-                 `\"miri\": {\"packages\": [\"a\", \"b\"]}`, or `\"exclude\"` the ones it cannot."
+                 `\"miri\": {\"packages\": [\"a\", \"b\"]}`, or `\"exclude\"` the ones it cannot. \
+                 For one test, write `#[cfg_attr(miri, ignore)]` above it."
             .to_string(),
     }
 }
@@ -217,6 +309,82 @@ mod tests {
         assert!(!said.contains(exec::TIMEOUT), "{said}");
     }
 
+    fn ctx_at(root: &Path) -> Ctx {
+        Ctx::for_root(
+            root.to_path_buf(),
+            crate::run::baseline::Baseline::empty("0.1.0"),
+        )
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn the_per_test_limit_is_a_file_of_the_runs_own_and_goes_when_the_run_ends() {
+        let root = crate::testdir::make("miri-limit");
+        let (limit, args) = limited(&ctx_at(&root), &["--all-features".to_string()]).unwrap();
+        let named = args.last().unwrap();
+        let path = named.strip_prefix("--tool-config-file=chock:").unwrap();
+        assert_eq!(Path::new(path), limit.0);
+        assert!(limit.0.starts_with(root.join("target/test-scratch")));
+        assert_eq!(std::fs::read_to_string(&limit.0).unwrap(), PER_TEST);
+        assert!(args.contains(&"--all-features".to_string()));
+        let kept = limit.0.clone();
+        drop(limit);
+        assert!(!kept.exists(), "removed when the run ends");
+        drop(Limit(kept.clone()));
+        assert!(!kept.exists(), "a file already gone is only reported");
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_part_of_the_suite_goes_to_nextest_as_its_partition() {
+        let root = crate::testdir::make("miri-part");
+        let mut ctx = ctx_at(&root);
+        let (_whole_limit, whole) = limited(&ctx, &[]).unwrap();
+        assert!(
+            !whole.iter().any(|arg| arg.starts_with("--partition")),
+            "{whole:?}"
+        );
+        ctx.miri_part = Some(Part { index: 2, of: 12 });
+        let (_part_limit, part) = limited(&ctx, &[]).unwrap();
+        assert!(
+            part.contains(&"--partition=count:2/12".to_string()),
+            "{part:?}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_limit_that_cannot_be_written_stops_the_gate_before_the_interpreter() {
+        let root = crate::testdir::tree("miri-limit-blocked", &[("target", "a file")]);
+        let said = limited(&ctx_at(&root), &[]).err().unwrap();
+        assert!(
+            said.starts_with("cannot write miri's per-test limit: "),
+            "{said}"
+        );
+        let said = limited(&ctx_at(Path::new("w")), &[]).err().unwrap();
+        assert!(said.ends_with("is not under a project root"), "{said}");
+    }
+
+    #[test]
+    fn a_test_the_limit_stopped_is_named_with_how_to_shorten_it() {
+        let out = exec::Output {
+            code: Some(100),
+            stdout: String::new(),
+            stderr: "     TIMEOUT [ 300.004s] (2/2) chock vcs::tests::slow\n".to_string(),
+            truncated: false,
+        };
+        let outcome = judged(&out, Path::new("/w"));
+        assert!(!outcome.passed);
+        assert_eq!(
+            outcome
+                .findings
+                .iter()
+                .map(Finding::render)
+                .collect::<Vec<_>>(),
+            [format!("chock vcs::tests::slow: {STOPPED}")]
+        );
+    }
+
     #[test]
     fn miri_runs_over_the_packages_a_project_named_and_the_workspace_when_it_named_none() {
         use crate::project::config::Scope;
@@ -264,6 +432,10 @@ mod tests {
         let why = never_ran(stderr).unwrap();
         assert!(why.contains("mi_malloc_aligned"), "{why}");
         assert!(why.contains(r#""miri": {"packages": ["a", "b"]}"#), "{why}");
+        assert!(
+            why.ends_with("write `#[cfg_attr(miri, ignore)]` above it."),
+            "{why}"
+        );
     }
 
     #[test]

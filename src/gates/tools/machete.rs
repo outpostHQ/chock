@@ -169,20 +169,11 @@ mod tests {
     }
 
     fn ctx_of(files: &[(&str, &str)]) -> crate::testdir::Held {
-        let dir = crate::testdir::make("gate-machete");
-        for (name, text) in files {
-            let path = dir.join(name);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, text).unwrap();
-        }
-        let held = Ctx::for_root(
-            dir.to_path_buf(),
-            crate::run::baseline::Baseline::empty("0.1.0"),
-        );
-        crate::testdir::Held::new(dir, held)
+        crate::testdir::Held::tree("gate-machete", files)
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_crates_sources_are_read_from_its_own_directories_and_no_neighbours() {
         let ctx = ctx_of(&[
             ("Cargo.toml", ""),
@@ -201,6 +192,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_sources_read_for_a_run_are_keyed_by_the_manifest_they_belong_to() {
         let ctx = ctx_of(&[
             ("crates/a/Cargo.toml", ""),

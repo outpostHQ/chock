@@ -1,4 +1,8 @@
-//! Argument parsing and dispatch, kept out of `main` so every branch is reachable from a test.
+//! What each command does, kept out of `main` so every branch is reachable from a test.
+
+mod args;
+use args::split_json;
+pub use args::{Command, parse};
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -15,48 +19,6 @@ use crate::slop;
 use crate::usage::USAGE;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// The parsed command line, kept apart from dispatch so a test can check it without a process.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Command<'a> {
-    Run {
-        names: Vec<&'a str>,
-        json: bool,
-        fast: bool,
-        /// Set in CI, where checks whose tool CI cannot install are left out.
-        ci: bool,
-    },
-    Gates {
-        json: bool,
-    },
-    /// `enable`, `disable` and `stage`: one change to each named gate in the config.
-    Configure {
-        names: Vec<&'a str>,
-        change: Change<'a>,
-    },
-    /// One gate's last findings, or with no gate all the debt on record.
-    Explain {
-        name: Option<&'a str>,
-        json: bool,
-    },
-    Baseline(Vec<&'a str>),
-    Doctor {
-        json: bool,
-    },
-    /// Measures a tree that chock does not own: no config, no baseline, no writes.
-    Survey {
-        json: bool,
-    },
-    Message(&'a str),
-    /// What a git hook runs. The body lives in chock, so an upgrade updates every hook.
-    Hook(&'a [&'a str]),
-    Edited(&'a [&'a str]),
-    Slop(&'a [&'a str]),
-    Init(&'a [&'a str]),
-    Version,
-    Help,
-    Usage(String),
-}
 
 /// What `enable`, `disable` and `stage` change for each gate they name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,78 +59,6 @@ impl Change<'_> {
     }
 }
 
-/// `--help` or `-h` anywhere after a command; `init` answers it with its own text.
-fn asks_for_help(rest: &[&str]) -> bool {
-    rest.iter().any(|arg| matches!(*arg, "--help" | "-h"))
-}
-
-/// Accepts `--json` anywhere after the subcommand.
-fn split_json<'a>(args: &[&'a str]) -> (Vec<&'a str>, bool) {
-    let json = args.contains(&"--json");
-    (
-        args.iter().copied().filter(|a| *a != "--json").collect(),
-        json,
-    )
-}
-
-/// A command whose one option is `--json`, and which refuses any other argument.
-fn json_only<'a>(cmd: &str, rest: &[&str], made: impl FnOnce(bool) -> Command<'a>) -> Command<'a> {
-    match split_json(rest) {
-        (extra, json) if extra.is_empty() => made(json),
-        (extra, _) => Command::Usage(format!("{cmd} takes no argument `{}`", extra[0])),
-    }
-}
-
-/// The change for the named gates, or a usage error when the command names none.
-fn configures<'a>(cmd: &str, names: Vec<&'a str>, change: Change<'a>) -> Command<'a> {
-    if names.is_empty() {
-        return Command::Usage(format!("{cmd} needs at least one gate name"));
-    }
-    Command::Configure { names, change }
-}
-
-/// `run`: the gates it names, with `--fast`, `--ci` and `--json` wherever they stand.
-fn to_run<'a>(rest: &[&'a str]) -> Command<'a> {
-    let (names, json) = split_json(rest);
-    let known = |n: &&str| *n == "--fast" || *n == "--ci";
-    match names.iter().find(|n| n.starts_with('-') && !known(n)) {
-        Some(flag) => Command::Usage(format!("unknown option `{flag}`")),
-        None => Command::Run {
-            fast: names.contains(&"--fast"),
-            ci: names.contains(&"--ci"),
-            names: names.into_iter().filter(|n| !known(n)).collect(),
-            json,
-        },
-    }
-}
-
-#[must_use]
-pub fn parse<'a>(args: &'a [&'a str]) -> Command<'a> {
-    match args {
-        [cmd, rest @ ..] if *cmd != "init" && asks_for_help(rest) => Command::Help,
-        ["run", rest @ ..] => to_run(rest),
-        ["gates", rest @ ..] => json_only("gates", rest, |json| Command::Gates { json }),
-        ["enable", rest @ ..] => configures("enable", rest.to_vec(), Change::On),
-        ["disable", rest @ ..] => switched_off(rest),
-        ["stage", rest @ ..] => restaged(rest),
-        ["message", file] => Command::Message(file),
-        ["hook", rest @ ..] => Command::Hook(rest),
-        ["message", ..] => Command::Usage("message takes exactly one file".to_string()),
-        ["explain", rest @ ..] => explained(rest),
-        ["baseline", rest @ ..] => Command::Baseline(rest.to_vec()),
-        ["doctor", rest @ ..] => json_only("doctor", rest, |json| Command::Doctor { json }),
-        ["survey", rest @ ..] => json_only("survey", rest, |json| Command::Survey { json }),
-        ["edited", rest @ ..] => Command::Edited(rest),
-        ["slop", rest @ ..] => Command::Slop(rest),
-        ["init", rest @ ..] => Command::Init(rest),
-        ["--version" | "-V"] => Command::Version,
-        ["help", "init"] => Command::Init(&["--help"]),
-        ["--help" | "-h"] | ["help", ..] => Command::Help,
-        [] => Command::Usage("no command given".to_string()),
-        [cmd, ..] => Command::Usage(format!("unknown command `{cmd}`")),
-    }
-}
-
 pub fn dispatch(args: &[&str]) -> ExitCode {
     match parse(args) {
         Command::Run {
@@ -176,7 +66,18 @@ pub fn dispatch(args: &[&str]) -> ExitCode {
             json,
             fast,
             ci,
-        } => run_gates(&names, json, tier_for(fast, ci)),
+            no_cache,
+            miri_part,
+        } => {
+            let how = How {
+                json,
+                no_cache,
+                hook: false,
+                miri_part,
+            };
+            run_gates(&names, tier_for(fast, ci), how)
+        }
+        Command::CacheClear => clear_cache(),
         Command::Gates { json } => list_gates(json),
         Command::Configure { names, change } => configure(&names, change),
         Command::Explain { name, json } => explain_or_owe(name, json),
@@ -188,12 +89,8 @@ pub fn dispatch(args: &[&str]) -> ExitCode {
         Command::Edited(rest) => run_edited(rest),
         Command::Slop(rest) => run_slop(rest),
         Command::Init(rest) => init::run(rest),
-        Command::Version => {
-            emit(&format!("chock {VERSION}\n"));
-            ExitCode::SUCCESS
-        }
-        Command::Help => {
-            emit(USAGE);
+        Command::Print(text) => {
+            emit(text);
             ExitCode::SUCCESS
         }
         Command::Usage(problem) => usage(&problem),
@@ -343,7 +240,11 @@ fn run_hook(args: &[&str]) -> ExitCode {
 }
 
 fn hooked(tier: Tier, when: &str, fix: &str) -> ExitCode {
-    gated(run_gates_code(&[], false, tier, true), when, fix)
+    let how = How {
+        hook: true,
+        ..How::default()
+    };
+    gated(run_gates_code(&[], tier, how), when, fix)
 }
 
 /// A hook runs in the tree it gates, so the current directory is the fallback root.
@@ -362,13 +263,32 @@ fn gated(code: u8, when: &str, fix: &str) -> ExitCode {
     ExitCode::from(code)
 }
 
-fn run_gates(names: &[&str], json: bool, tier: Tier) -> ExitCode {
-    ExitCode::from(run_gates_code(names, json, tier, false))
+/// How a run was asked for, beyond the gates it names and the tier that asks.
+#[derive(Debug, Clone, Copy, Default)]
+struct How {
+    json: bool,
+    /// A git hook asked, for which no gate staged is not a refusal.
+    hook: bool,
+    /// Every gate is judged again; no kept verdict answers.
+    no_cache: bool,
+    /// The part of the Miri suite this run takes; `None` is all of it.
+    miri_part: Option<crate::gates::tools::miri::Part>,
 }
 
-fn run_gates_code(names: &[&str], json: bool, tier: Tier, hook: bool) -> u8 {
+fn run_gates(names: &[&str], tier: Tier, how: How) -> ExitCode {
+    ExitCode::from(run_gates_code(names, tier, how))
+}
+
+fn run_gates_code(names: &[&str], tier: Tier, how: How) -> u8 {
     let (ctx, config) = match context(tier.meets_an_absent_tool()) {
-        Ok(pair) => pair,
+        Ok((ctx, config)) => (
+            Ctx {
+                no_cache: how.no_cache,
+                miri_part: how.miri_part,
+                ..ctx
+            },
+            config,
+        ),
         Err(e) => return refused(&e),
     };
     // Two runs in one tree would write the same coverage report and run the same suite.
@@ -381,16 +301,37 @@ fn run_gates_code(names: &[&str], json: bool, tier: Tier, hook: bool) -> u8 {
         Err(e) => return refused(&e),
     };
     if chosen.is_empty() {
-        return no_work(hook);
+        return no_work(how.hook);
     }
     let result = run::run_all(&chosen, &ctx, VERSION, &|done| {
         eprintln!("{}", done.progress())
     });
-    emit_run(&result, json);
+    emit_run(&result, how.json);
     run::report::settle(&ctx.root, &ctx.baseline, &result.gates, VERSION);
     let code = result.verdict().code();
     crate::run::evidence::record(&ctx.root, &invocation(names), code);
     code
+}
+
+/// `chock cache clear`. It takes the run lock, since a run in this tree keeps a verdict as each
+/// gate ends.
+fn clear_cache() -> ExitCode {
+    let kept = match cleared() {
+        Ok(kept) => kept,
+        Err(e) => return cannot_run(&e),
+    };
+    emit(&format!(
+        "chock: removed {kept} kept verdict(s); the next run judges every gate again\n"
+    ));
+    ExitCode::SUCCESS
+}
+
+/// The count of kept verdicts removed, with the run lock held.
+fn cleared() -> Result<usize, String> {
+    let root = root()?;
+    let _held = crate::run::lock::take(&root)?;
+    crate::run::verdicts::clear(&root)
+        .map_err(|e| format!("cannot remove {}: {e}", crate::run::verdicts::FILE))
 }
 
 fn emit_run(result: &Run, json: bool) {
@@ -481,16 +422,22 @@ fn stage_of(gate: &run::Gate, config: Option<&Config>) -> Stage {
 
 /// A name that is not a gate is a typo, refused rather than run as an empty set.
 fn select(names: &[&str], config: Option<&Config>) -> Result<Vec<&'static run::Gate>, String> {
+    config.map_or(Ok(()), held_where_touched)?;
     if names.is_empty() {
-        return match config {
-            Some(config) => enabled_by(config),
-            None => Ok(gates::enforced()),
-        };
+        return all_on(config);
     }
     names
         .iter()
         .map(|name| gates::find(name).ok_or_else(|| unknown_gate(name)))
         .collect()
+}
+
+/// With no name given: the gates the config switches on, or the enforced ones where there is none.
+fn all_on(config: Option<&Config>) -> Result<Vec<&'static run::Gate>, String> {
+    match config {
+        Some(config) => enabled_by(config),
+        None => Ok(gates::enforced()),
+    }
 }
 
 fn unknown_gate(name: &str) -> String {
@@ -513,6 +460,20 @@ fn enabled_by(config: &Config) -> Result<Vec<&'static run::Gate>, String> {
         .iter()
         .filter(|gate| config.is_on(gate.name))
         .collect())
+}
+
+/// Refuses a config that lists under `clean_when_touched` a gate with no number for each file:
+/// the key would do nothing for that gate, and say nothing.
+fn held_where_touched(config: &Config) -> Result<(), String> {
+    let unheld = config.unheld_where_touched(&gates::holds_each_file);
+    if unheld.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} lists under `clean_when_touched` what keeps no number for each file: {}",
+        project::config::FILE,
+        unheld.join(", ")
+    ))
 }
 
 /// Changes each named gate in the config, says what changed, and writes the config back. It
@@ -686,52 +647,6 @@ fn switched_on(gate: &run::Gate, config: Option<&Config>) -> bool {
     match config {
         Some(config) => config.is_on(gate.name),
         None => gates::enforced().iter().any(|held| held.name == gate.name),
-    }
-}
-
-/// `disable`'s gates, and the `--reason` that the config records in place of the default reason.
-fn switched_off<'a>(rest: &'a [&'a str]) -> Command<'a> {
-    let mut names = Vec::new();
-    let mut why = None;
-    let mut args = rest.iter().copied();
-    while let Some(arg) = args.next() {
-        match arg {
-            "--reason" => match args.next() {
-                Some(text) if !text.trim().is_empty() => why = Some(text),
-                _ => return Command::Usage("--reason needs the reason after it".to_string()),
-            },
-            flag if flag.starts_with('-') => {
-                return Command::Usage(format!("unknown option `{flag}`"));
-            }
-            name => names.push(name),
-        }
-    }
-    configures("disable", names, Change::Off(why))
-}
-
-/// `stage`'s gates, then the stage they move to.
-fn restaged<'a>(rest: &'a [&'a str]) -> Command<'a> {
-    match rest.split_last() {
-        Some((last, names)) if !names.is_empty() => match Stage::named(last) {
-            Some(stage) => Command::Configure {
-                names: names.to_vec(),
-                change: Change::Stage(stage),
-            },
-            None => Command::Usage(format!(
-                "`{last}` is not a stage; the stages are commit, push, ci and manual"
-            )),
-        },
-        _ => Command::Usage("stage needs gate names, then commit, push, ci or manual".to_string()),
-    }
-}
-
-fn explained<'a>(rest: &'a [&'a str]) -> Command<'a> {
-    match split_json(rest) {
-        (names, json) if names.len() < 2 => Command::Explain {
-            name: names.first().copied(),
-            json,
-        },
-        _ => Command::Usage("explain takes one gate, or none for all the debt".to_string()),
     }
 }
 
@@ -1140,108 +1055,6 @@ mod tests {
     }
 
     #[test]
-    fn each_subcommand_parses_to_its_own_action() {
-        assert_eq!(parse(&["doctor"]), Command::Doctor { json: false });
-        assert_eq!(parse(&["baseline"]), Command::Baseline(vec![]));
-        assert_eq!(parse(&["gates"]), Command::Gates { json: false });
-        assert_eq!(parse(&["--version"]), Command::Version);
-        assert_eq!(parse(&["-V"]), Command::Version);
-        assert_eq!(parse(&["--help"]), Command::Help);
-        assert_eq!(parse(&["-h"]), Command::Help);
-        assert_eq!(parse(&["help"]), Command::Help);
-        assert_eq!(parse(&["help", "run"]), Command::Help);
-        assert_eq!(parse(&["help", "init"]), Command::Init(&["--help"]));
-    }
-
-    #[test]
-    fn a_subcommand_keeps_the_arguments_after_it() {
-        assert_eq!(parse(&["init", "--global"]), Command::Init(&["--global"]));
-        assert_eq!(parse(&["slop", "src"]), Command::Slop(&["src"]));
-        assert_eq!(parse(&["init"]), Command::Init(&[]));
-        assert_eq!(parse(&["slop"]), Command::Slop(&[]));
-    }
-
-    #[test]
-    fn run_with_no_name_means_every_enforced_gate() {
-        assert_eq!(
-            parse(&["run"]),
-            Command::Run {
-                names: vec![],
-                json: false,
-                fast: false,
-                ci: false
-            }
-        );
-    }
-
-    /// A commit hook cannot list gate names, because the enabled set changes.
-    #[test]
-    fn fast_is_a_flag_on_run_rather_than_a_list_of_names() {
-        assert_eq!(
-            parse(&["run", "--fast"]),
-            Command::Run {
-                names: vec![],
-                json: false,
-                fast: true,
-                ci: false
-            }
-        );
-        assert_eq!(
-            parse(&["run", "--fast", "--json"]),
-            Command::Run {
-                names: vec![],
-                json: true,
-                fast: true,
-                ci: false
-            }
-        );
-    }
-
-    #[test]
-    fn run_keeps_the_gate_names_it_was_given_in_order() {
-        assert_eq!(
-            parse(&["run", "lint", "slop"]),
-            Command::Run {
-                names: vec!["lint", "slop"],
-                json: false,
-                fast: false,
-                ci: false
-            }
-        );
-    }
-
-    #[test]
-    fn the_json_flag_is_accepted_before_or_after_the_gate_names() {
-        let expected = Command::Run {
-            names: vec!["lint"],
-            json: true,
-            fast: false,
-            ci: false,
-        };
-        assert_eq!(parse(&["run", "--json", "lint"]), expected);
-        assert_eq!(parse(&["run", "lint", "--json"]), expected);
-    }
-
-    #[test]
-    fn json_is_accepted_by_every_command_that_reports() {
-        assert_eq!(parse(&["doctor", "--json"]), Command::Doctor { json: true });
-        assert_eq!(parse(&["gates", "--json"]), Command::Gates { json: true });
-        assert_eq!(parse(&["slop", "--json"]), Command::Slop(&["--json"]));
-    }
-
-    #[test]
-    fn an_unknown_option_to_run_is_named_rather_than_ignored() {
-        assert_eq!(
-            parse(&["run", "--deep"]),
-            Command::Usage("unknown option `--deep`".to_string())
-        );
-        assert_eq!(
-            parse(&["run", "--all"]),
-            Command::Usage("unknown option `--all`".to_string())
-        );
-    }
-
-    #[test]
     fn explain_takes_one_gate_or_none_for_all_the_debt() {
         let asked = |name, json| Command::Explain { name, json };
         assert_eq!(parse(&["explain", "crap"]), asked(Some("crap"), false));
@@ -1254,39 +1067,10 @@ mod tests {
     }
 
     #[test]
-    fn a_command_that_takes_no_argument_says_so_rather_than_ignoring_one() {
-        assert_eq!(
-            parse(&["gates", "all"]),
-            Command::Usage("gates takes no argument `all`".to_string())
-        );
-        assert_eq!(
-            parse(&["doctor", "--global"]),
-            Command::Usage("doctor takes no argument `--global`".to_string())
-        );
-    }
-
-    #[test]
-    fn no_arguments_and_an_unknown_command_each_say_which_it_was() {
-        assert_eq!(parse(&[]), Command::Usage("no command given".to_string()));
-        assert_eq!(
-            parse(&["doctr"]),
-            Command::Usage("unknown command `doctr`".to_string())
-        );
-    }
-
-    #[test]
-    fn baseline_can_be_narrowed_to_named_gates() {
-        assert_eq!(
-            parse(&["baseline", "slop"]),
-            Command::Baseline(vec!["slop"])
-        );
-    }
-
-    #[test]
     fn the_usage_text_lists_every_subcommand_that_parses() {
         for name in [
-            "run", "gates", "enable", "disable", "explain", "baseline", "doctor", "message",
-            "edited", "slop", "init",
+            "run", "gates", "enable", "disable", "explain", "baseline", "cache", "doctor",
+            "message", "edited", "slop", "init",
         ] {
             assert!(
                 USAGE.contains(&format!("chock {name}")),
@@ -1326,6 +1110,25 @@ mod tests {
         let err = select(&[], Some(&config)).unwrap_err();
         assert!(err.contains("codeslope"), "{err}");
         assert!(err.contains(project::config::FILE), "{err}");
+    }
+
+    /// `binsize` keeps one number for the project and `sort` one for each package.
+    #[test]
+    fn a_config_holding_where_touched_a_gate_with_no_number_for_each_file_is_refused() {
+        let mut config = Config::of(["nesting", "binsize", "sort"]);
+        config.clean_when_touched = Some(vec!["nesting".to_string()]);
+        let mut chosen = names_of(&select(&[], Some(&config)).unwrap());
+        chosen.sort_unstable();
+        assert_eq!(chosen, ["binsize", "nesting", "sort"]);
+        config.clean_when_touched =
+            Some(["nesting", "binsize", "sort"].map(str::to_string).to_vec());
+        let refusal = format!(
+            "{} lists under `clean_when_touched` what keeps no number for each file: binsize, sort",
+            project::config::FILE
+        );
+        assert_eq!(select(&[], Some(&config)).unwrap_err(), refusal);
+        // A named run reads the same config, so it is refused alike.
+        assert_eq!(select(&["nesting"], Some(&config)).unwrap_err(), refusal);
     }
 
     #[test]
@@ -1400,35 +1203,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn enable_and_disable_take_the_gates_they_are_given() {
-        assert_eq!(
-            parse(&["enable", "crap", "typos"]),
-            Command::Configure {
-                names: vec!["crap", "typos"],
-                change: Change::On
-            }
-        );
-        assert_eq!(
-            parse(&["disable", "crap"]),
-            Command::Configure {
-                names: vec!["crap"],
-                change: Change::Off(None)
-            }
-        );
-        assert_eq!(
-            parse(&["disable", "crap", "--reason", "too slow here", "typos"]),
-            Command::Configure {
-                names: vec!["crap", "typos"],
-                change: Change::Off(Some("too slow here"))
-            }
-        );
-        assert_eq!(
-            parse(&["enable"]),
-            Command::Usage("enable needs at least one gate name".to_string())
-        );
-    }
-
     /// Each change says what it set, or that the gate had it already, and what to do next.
     #[test]
     fn a_change_says_what_it_set_and_what_comes_next() {
@@ -1450,62 +1224,6 @@ mod tests {
         );
         assert_eq!(ci.advice(&[]), "");
         assert_eq!(Change::Off(None).advice(&[]), "");
-    }
-
-    #[test]
-    fn stage_takes_gates_and_then_the_stage() {
-        assert_eq!(
-            parse(&["stage", "binsize", "bsize", "ci"]),
-            Command::Configure {
-                names: vec!["binsize", "bsize"],
-                change: Change::Stage(Stage::Ci)
-            }
-        );
-        assert_eq!(
-            parse(&["stage", "binsize", "later"]),
-            Command::Usage(
-                "`later` is not a stage; the stages are commit, push, ci and manual".into()
-            )
-        );
-        let short =
-            Command::Usage("stage needs gate names, then commit, push, ci or manual".into());
-        assert_eq!(parse(&["stage", "ci"]), short);
-        assert_eq!(parse(&["stage"]), short);
-    }
-
-    /// The reason is the record of a hand decision, so an empty or a missing one is refused.
-    #[test]
-    fn a_reason_needs_its_text_and_other_options_are_refused() {
-        let missing = Command::Usage("--reason needs the reason after it".to_string());
-        assert_eq!(parse(&["disable", "crap", "--reason"]), missing);
-        assert_eq!(parse(&["disable", "crap", "--reason", " "]), missing);
-        assert_eq!(
-            parse(&["disable", "crap", "--why"]),
-            Command::Usage("unknown option `--why`".to_string())
-        );
-        assert_eq!(
-            parse(&["disable", "--reason", "slow"]),
-            Command::Usage("disable needs at least one gate name".to_string())
-        );
-    }
-
-    /// `--help` after any command in the usage prints usage; `init` answers it with its own text.
-    #[test]
-    fn help_after_any_command_prints_usage() {
-        let commands = USAGE
-            .lines()
-            .filter_map(|line| line.strip_prefix("  chock ")?.split_whitespace().next())
-            .filter(|command| *command != "init");
-        for command in commands {
-            for help in ["--help", "-h"] {
-                assert_eq!(parse(&[command, help]), Command::Help, "{command} {help}");
-                assert_eq!(
-                    parse(&[command, "x", help]),
-                    Command::Help,
-                    "{command} x {help}"
-                );
-            }
-        }
     }
 
     fn names_of(gates: &[&'static run::Gate]) -> Vec<&'static str> {
@@ -1631,19 +1349,6 @@ mod tests {
         let config = staged(&["lint"], Stage::Commit);
         let named = names_of(&for_tier(every, Tier::Committing, Some(&config)));
         assert!(named.contains(&"lint"), "{named:?}");
-    }
-
-    /// An empty switch would report success and change nothing.
-    #[test]
-    fn switching_with_no_gate_named_is_refused() {
-        assert_eq!(
-            parse(&["enable"]),
-            Command::Usage("enable needs at least one gate name".to_string())
-        );
-        assert_eq!(
-            parse(&["disable"]),
-            Command::Usage("disable needs at least one gate name".to_string())
-        );
     }
 
     #[test]

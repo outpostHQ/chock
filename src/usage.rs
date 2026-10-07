@@ -1,7 +1,11 @@
 //! The text `chock --help` prints, and every refused command beneath its reason.
 
+/// What `chock --version` prints.
+pub(crate) const VERSION_LINE: &str = concat!("chock ", env!("CARGO_PKG_VERSION"), "\n");
+
 pub(crate) const USAGE: &str = "\
-▰ chock — quality gates for Rust: new code must be clean, and existing debt cannot grow.
+▰ chock — quality gates for Rust
+  New code must be clean, and old debt has a limit that each fix lowers.
 
 Set up
   chock init                      set up this project, then install the tools it pins
@@ -14,6 +18,9 @@ Every day
   chock run [GATE...]             run the named gates; no name means every gate that is on
   chock run --fast                only the gates staged for a commit; they need no compile
   chock run --ci                  the gates a CI job runs: staged for commit, push or ci
+  chock run --no-cache            judge every gate again; no kept verdict answers
+  chock run --miri-partition=K/N  run only part K of N of the Miri suite
+  chock cache clear               remove every kept verdict, so the next run judges every gate
   chock explain GATE              the findings of the last run, without a new run
   chock explain                   all the debt in the record, largest first, with the fix for each
 
