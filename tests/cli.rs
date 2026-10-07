@@ -1725,7 +1725,7 @@ esac
         assert_eq!(acl.code, 0, "{}{}", acl.out, acl.err);
     } else {
         assert_eq!(acl.code, 2, "{}", acl.err);
-        says(&acl.err, "this system: acl");
+        says(&acl.err, "this system leaves out what you named: acl;");
     }
     let result = with_tools(&dir, &["run", "doc", "--json"], &[]);
     assert_eq!(result.code, 0, "{}{}", result.out, result.err);
@@ -1823,6 +1823,7 @@ fn init_global_takes_a_prebuilt_release_through_binstall_and_compiles_when_it_ca
 }
 
 /// A rustup whose `nightly` holds what `RUSTUP_HAS` names, and that installs where `RUSTUP_ADDS` is 0.
+#[cfg(unix)]
 const LOGGING_RUSTUP: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> rustup.log
 case "$1 $2 $RUSTUP_HAS" in
@@ -1899,6 +1900,7 @@ fn init_global_builds_the_fork_of_mutest_from_its_repository_and_fails_where_it_
 }
 
 /// A cargo that has no `mutest` command and no installed crate.
+#[cfg(unix)]
 const BARE_CARGO: &str = r#"#!/bin/sh
 case "$1" in
   mutest) echo 'error: no such command: `mutest`' >&2; exit 101 ;;

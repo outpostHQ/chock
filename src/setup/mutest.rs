@@ -362,6 +362,12 @@ mod tests {
         format!("{commit}\trefs/heads/main\n")
     }
 
+    /// Where an install under `temp` clones `NEWEST`, joined part by part as `install` joins it.
+    fn clone_under(temp: &Path) -> std::path::PathBuf {
+        let scratch = temp.join(format!("chock-{}", std::process::id()));
+        scratch.join(format!("mutest-rs-{NEWEST}"))
+    }
+
     fn records(commit: &str) -> String {
         format!(
             "cargo-deny v0.20.2:\n    cargo-deny\n\
@@ -615,7 +621,7 @@ mod tests {
     fn a_fork_with_no_main_a_clone_with_no_toolchain_and_a_cargo_that_cannot_answer_each_fail() {
         let temp = crate::testdir::make("mutest-odd");
         let newest = branch(NEWEST);
-        let clone = temp.join(format!("chock-{}/mutest-rs-{NEWEST}", std::process::id()));
+        let clone = clone_under(&temp);
         let file = clone.join("rust-toolchain.toml");
 
         let no_branch = Machine::new(&[]);
@@ -664,7 +670,7 @@ mod tests {
         let blocked = temp.join("a-file");
         std::fs::write(&blocked, "").unwrap();
         let failed = installing(&Machine::new(&rules), &blocked).unwrap_err();
-        let clone = blocked.join(format!("chock-{}/mutest-rs-{NEWEST}", std::process::id()));
+        let clone = clone_under(&blocked);
         let cannot_create = format!(
             "  FAILED    cargo-mutest — cannot create {}: ",
             clone.display()
