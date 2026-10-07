@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+use crate::exec::Start;
 use crate::gates;
 use crate::project;
 use crate::project::config::Config;
@@ -173,7 +174,7 @@ pub fn run(args: &[&str]) -> ExitCode {
                 return ExitCode::from(2);
             }
         };
-        if let Err(e) = install_global(&parsed) {
+        if let Err(e) = install_global(&parsed, &crate::exec::run_env) {
             eprintln!("chock init: {e}");
             return ExitCode::from(1);
         }
@@ -826,16 +827,16 @@ fn run_setup(pin: &Pin) -> bool {
     }
 }
 
-fn install_global(pins: &[Pin]) -> Result<(), Error> {
+fn install_global(pins: &[Pin], start: Start) -> Result<(), Error> {
     let installed = crate::setup::doctor::installed_on_this_machine();
     // Asked per pin: the pin file installs cargo-binstall first, and every tool after it uses it.
     let mut failed: Vec<String> = pins
         .iter()
-        .filter(|pin| !installs(pin, &installed))
+        .filter(|pin| !installs(pin, &installed, start))
         .map(|pin| pin.crate_name.clone())
         .collect();
     // Miri is no pin: it is a part of the `nightly` toolchain, so every machine gets it.
-    let miri = crate::setup::miri::install(&crate::exec::run_env, Path::new("."));
+    let miri = crate::setup::miri::install(start, Path::new("."));
     failed.extend((!reported(&miri)).then(|| crate::setup::miri::NAME.to_string()));
     if failed.is_empty() {
         Ok(())
@@ -845,13 +846,12 @@ fn install_global(pins: &[Pin]) -> Result<(), Error> {
 }
 
 /// One pin: Outpost's fork of mutest-rs is built from its repository, any other tool is fetched.
-fn installs(pin: &Pin, installed: &dyn Fn(&Pin) -> Option<String>) -> bool {
+fn installs(pin: &Pin, installed: &dyn Fn(&Pin) -> Option<String>, start: Start) -> bool {
     if !crate::setup::mutest::is_pin(pin, std::env::consts::OS) {
         return install_one(pin, installed, binstall_here());
     }
     println!("{}", crate::setup::mutest::starting());
-    let temp = std::env::temp_dir();
-    reported(&crate::setup::mutest::install(&crate::exec::run_env, &temp))
+    reported(&crate::setup::mutest::install(start, &std::env::temp_dir()))
 }
 
 /// Prints what an install that is no crate fetch did; `false` is one that failed.
@@ -1329,6 +1329,46 @@ mod tests {
             setup: None,
             systems: None,
         }
+    }
+
+    /// What one command gives back.
+    type Answer = Result<crate::exec::Output, crate::exec::ExecError>;
+
+    /// A machine where each command ends at `stage` with no output.
+    fn no_answer(
+        stage: crate::exec::Stage,
+    ) -> impl Fn(&str, &[&str], &Path, &[(&str, &str)]) -> Answer {
+        move |program: &str, _: &[&str], _: &Path, _: &[(&str, &str)]| {
+            Err(crate::exec::ExecError {
+                program: program.to_string(),
+                stage,
+                reason: "no answer".to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn an_install_that_is_no_crate_fetch_fails_only_as_an_err() {
+        assert!(reported(&Ok("  current   miri".to_string())));
+        assert!(!reported(&Err("  FAILED    miri".to_string())));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_global_install_names_the_fork_and_miri_when_neither_was_installed() {
+        let fork = version_pinned(crate::setup::mutest::CRATE, pins::UNPUBLISHED);
+        assert!(crate::setup::mutest::is_pin(&fork, std::env::consts::OS));
+        let unanswered = no_answer(crate::exec::Stage::Wait);
+        let failed = Error::NotInstalled(vec!["cargo-mutest".into(), "miri".into()]);
+        assert_eq!(install_global(&[fork], &unanswered), Err(failed));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_tool_built_from_its_checkout_and_a_machine_without_rustup_fail_no_install() {
+        let local = version_pinned("outpost", pins::UNPUBLISHED);
+        let no_rustup = no_answer(crate::exec::Stage::Spawn);
+        assert_eq!(install_global(&[local], &no_rustup), Ok(()));
     }
 
     fn pinned(setup: Option<&str>) -> Pin {

@@ -142,6 +142,12 @@ fn project(name: &str, files: &[(&str, &str)]) -> Scratch {
     dir
 }
 
+/// Whether `chock doctor` printed a row for `tool`: the name is the second word of a row.
+fn has_row(out: &str, tool: &str) -> bool {
+    out.lines()
+        .any(|row| row.split_whitespace().nth(1) == Some(tool))
+}
+
 fn says(haystack: &str, needle: &str) {
     assert!(
         haystack.contains(needle),
@@ -349,6 +355,22 @@ fn doctor_without_a_pin_file_says_to_run_chock_init_local() {
     says(&ran.err, "tool-versions.env");
     says(&ran.err, "run `chock init --local` to write one");
     assert_eq!(ran.out, "");
+}
+
+#[test]
+fn doctor_has_a_row_for_miri_only_where_the_check_is_on() {
+    let dir = project("doctor-miri", &[("tool-versions.env", IMPOSSIBLE_PIN)]);
+
+    let off = chock(&dir, &["doctor"]);
+    assert!(!has_row(&off.out, "miri"), "{}", off.out);
+
+    put(
+        &dir,
+        ".chock/config.json",
+        r#"{"version": 1, "enabled": ["miri"]}"#,
+    );
+    let on = chock(&dir, &["doctor"]);
+    assert!(has_row(&on.out, "miri"), "{}{}", on.out, on.err);
 }
 
 #[test]
