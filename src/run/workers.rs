@@ -2,7 +2,7 @@
 
 /// Runs `lanes`, indexes into `items`, on `workers` threads: each lane on one thread in order. An
 /// item in no lane keeps an empty slot.
-pub(super) fn on_workers<T: Sync, R: Send>(
+pub(crate) fn on_workers<T: Sync, R: Send>(
     items: &[T],
     lanes: &[Vec<usize>],
     workers: usize,

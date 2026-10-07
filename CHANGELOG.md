@@ -50,9 +50,18 @@ No command or flag is removed or renamed. The JSON reports add fields and remove
   that stops, and the finding names it. Before, one stuck test used the whole run's limit and was
   not named. A failed assertion is named too; before, the gate said that it could not run. A
   `default-miri` profile in the project's own nextest settings still wins.
+- **`miri` compiles the crate once for each group of tests, not once for each test.** Under
+  nextest, each test started its own Miri process, and each process compiled the crate again. Now
+  one Miri process runs up to 32 tests of one binary, and the groups run at the same time on the
+  lane's cores. The tests and flags are the same. A group that fails or stops runs again under
+  nextest, one test to a process, so the finding names each test as before. On 53 of chock's own
+  tests, the work went from 169 s to 74 s.
 - **`miri` has no limit on the whole run.** The run stops only when no test ends and no crate
   builds for `CHOCK_TIMEOUT` (30 minutes). Before, a suite or a CI part with many tests failed at
   30 minutes in all, even when each test kept to its own limit.
+- **`mutest` has no limit on the whole run.** The run stops only when mutest prints no line for
+  `CHOCK_TIMEOUT` (30 minutes). Before, chock's own mutest on macOS stopped at 30 minutes in all,
+  while it still confirmed its timeouts one by one.
 - **A run longer than the deadline keeps its lock.** The holder refreshes the lock while it runs.
   Before, a second run took over the lock of a live run after 30 minutes.
 - **`mutest` trusts a timeout that it confirmed.** A mutest that re-runs each timed-out mutation

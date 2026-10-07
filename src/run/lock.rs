@@ -296,6 +296,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        all(miri, target_os = "macos"),
+        ignore = "Miri cannot set a file's time on macOS"
+    )]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_held_lock_stays_fresh_past_the_deadline_and_goes_when_dropped() {
         let dir = crate::testdir::make("lock-beat");
         let path = dir.join(FILE);

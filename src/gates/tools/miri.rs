@@ -9,6 +9,8 @@ use crate::run::report::Finding;
 use crate::run::verdicts::Reads;
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
 
+mod groups;
+
 pub const GATE: Gate = Gate {
     name: "miri",
     about: "the suite runs clean under an interpreter that detects undefined behaviour",
@@ -41,21 +43,56 @@ impl Part {
 }
 
 fn checked(ctx: &Ctx) -> Result<Outcome, String> {
-    let prepared = asked(ctx).and_then(|asked| limited(ctx, &asked));
-    prepared.and_then(|(_limit, args)| miri(ctx, &args))
+    let prepared = asked(ctx).and_then(|asked| limited(ctx, &asked).map(|made| (asked, made)));
+    prepared
+        .and_then(|(asked, (_limit, args))| suite(ctx, &asked, &args, &|argv| interpret(ctx, argv)))
 }
 
-/// Runs the suite under miri; opt-in, since interpreting costs tens of times a normal run.
-fn miri(ctx: &Ctx, args: &[String]) -> Result<Outcome, String> {
+/// One cargo command under miri: its output, or why it stopped.
+type Interpret<'a> = dyn Fn(&[String]) -> Result<exec::Output, String> + Sync + 'a;
+
+/// Runs one command under miri; opt-in, since interpreting costs tens of times a normal run.
+fn interpret(ctx: &Ctx, args: &[String]) -> Result<exec::Output, String> {
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let flags = miriflags(&ctx.miri);
     let env = [("MIRIFLAGS", flags.as_str())];
-    let out = exec::run_paced("cargo", &argv, &ctx.root, &env, moving)
-        .map_err(|failed| advice(failed.hung(), &failed.to_string()))?;
+    exec::run_paced("cargo", &argv, &ctx.root, &env, moving)
+        .map_err(|failed| advice(failed.hung(), &failed.to_string()))
+}
+
+/// The suite in groups, one interpreter each, as many at once as the lane's cores; a group that
+/// fails runs again under nextest, which names each test. With no list to group, one nextest run.
+fn suite(ctx: &Ctx, asked: &[String], args: &[String], run: &Interpret) -> Result<Outcome, String> {
+    let listed = run(&groups::listing(args))
+        .ok()
+        .filter(exec::Output::success);
+    let Some((listed, grouped)) =
+        listed.and_then(|out| groups::grouped(&out.stdout).map(|grouped| (out, grouped)))
+    else {
+        return judge(&ctx.root, &run(args)?);
+    };
+    let lanes: Vec<Vec<usize>> = grouped.iter().enumerate().map(|(at, _)| vec![at]).collect();
+    let passed = crate::run::workers::on_workers(&grouped, &lanes, exec::budget::cap(), &|group| {
+        run(&groups::command(group, asked)).is_ok_and(|out| out.success())
+    });
+    let failed: Vec<&groups::Group> = grouped
+        .iter()
+        .zip(passed)
+        .filter(|(_, passed)| *passed != Some(true))
+        .map(|(group, _)| group)
+        .collect();
+    if failed.is_empty() {
+        return Ok(super::verdict(&listed, &ctx.root));
+    }
+    judge(&ctx.root, &run(&groups::rerun(args, &failed))?)
+}
+
+/// nextest's verdict, or why miri never tested the code.
+fn judge(root: &Path, out: &exec::Output) -> Result<Outcome, String> {
     if let Some(why) = never_ran(&out.stderr) {
         return Err(why);
     }
-    Ok(judged(&out, &ctx.root))
+    Ok(judged(out, root))
 }
 
 /// Progress under miri: any line but nextest's note that a test still runs, which a hung test
@@ -442,6 +479,88 @@ mod tests {
                 .collect::<Vec<_>>(),
             [format!("chock watch::tests::reused: {FAILED}")]
         );
+    }
+
+    fn said(code: i32, stdout: &str, stderr: &str) -> exec::Output {
+        exec::Output {
+            code: Some(code),
+            stdout: stdout.to_string(),
+            stderr: stderr.to_string(),
+            truncated: false,
+        }
+    }
+
+    const LISTED: &str = r#"{"rust-suites": {"chock": {"package-name": "chock",
+        "binary-name": "chock", "kind": "lib", "testcases": {
+        "a": {"ignored": false, "filter-match": {"status": "matches"}},
+        "b": {"ignored": false, "filter-match": {"status": "matches"}}}}}}"#;
+
+    /// `suite` against canned answers: the list, each group (`None` stops it), then nextest's run.
+    fn suite_with(
+        list: &exec::Output,
+        group: Option<i32>,
+        nextest: &exec::Output,
+    ) -> (Result<Outcome, String>, Vec<Vec<String>>) {
+        let asked = std::sync::Mutex::new(Vec::new());
+        let run = |argv: &[String]| {
+            asked.lock().unwrap().push(argv.to_vec());
+            match (argv[2].as_str(), argv[3].as_str()) {
+                ("nextest", "list") => Ok(list.clone()),
+                ("test", _) => group
+                    .map(|code| said(code, "", ""))
+                    .ok_or("stopped".to_string()),
+                _ => Ok(nextest.clone()),
+            }
+        };
+        let args = invocation(&crate::project::config::Scope::default(), &[]);
+        let ctx = ctx_at(Path::new("/w"));
+        let outcome = suite(&ctx, &[], &args, &run);
+        (outcome, asked.into_inner().unwrap())
+    }
+
+    fn verbs(asked: &[Vec<String>]) -> Vec<&str> {
+        asked.iter().map(|argv| argv[3].as_str()).collect()
+    }
+
+    #[test]
+    fn groups_that_pass_are_the_whole_run_and_nextest_never_starts() {
+        let (outcome, asked) = suite_with(&said(0, LISTED, ""), Some(0), &said(1, "", ""));
+        assert!(outcome.unwrap().passed);
+        assert_eq!(verbs(&asked), ["list", "-p"], "one group for both tests");
+        assert!(asked[1].ends_with(&["a".to_string(), "b".to_string()]));
+    }
+
+    #[test]
+    fn a_group_that_fails_or_stops_runs_again_under_nextest_which_names_the_test() {
+        let fail = "        FAIL [  1.000s] (1/2) chock a\n";
+        for group in [Some(1), None] {
+            let (outcome, asked) = suite_with(&said(0, LISTED, ""), group, &said(100, "", fail));
+            let outcome = outcome.unwrap();
+            assert!(!outcome.passed);
+            assert_eq!(
+                outcome
+                    .findings
+                    .iter()
+                    .map(Finding::render)
+                    .collect::<Vec<_>>(),
+                [format!("chock a: {FAILED}")]
+            );
+            assert_eq!(verbs(&asked), ["list", "-p", "run"]);
+            let filter = "(binary_id(=chock) & (test(=a) | test(=b)))";
+            assert!(asked[2].ends_with(&["-E".to_string(), filter.to_string()]));
+        }
+    }
+
+    #[test]
+    fn a_list_that_fails_or_holds_no_group_leaves_the_one_nextest_run() {
+        for list in [said(101, LISTED, ""), said(0, "{}", "")] {
+            let (outcome, asked) = suite_with(&list, Some(0), &said(0, "", ""));
+            assert!(outcome.unwrap().passed);
+            assert_eq!(verbs(&asked), ["list", "run"]);
+        }
+        let absent = said(101, "", "error: 'cargo-miri' is not installed");
+        let (outcome, _) = suite_with(&absent, Some(0), &absent);
+        assert_eq!(outcome.unwrap_err(), ABSENT);
     }
 
     #[test]

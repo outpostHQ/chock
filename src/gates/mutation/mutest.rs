@@ -70,6 +70,7 @@ fn mutated<T>(ctx: &Ctx, filter: Option<&str>, was: &Series, judge: Judge<T>) ->
         &ctx.root,
         &env,
         &mut watch,
+        moving,
     )
     .map_err(|error| format!("{error}{}{}", watch.retained(), results.retained()))?;
     let measured = judge(&output, &|expected| results.survivors(expected), was)
@@ -89,11 +90,14 @@ fn accounted(ctx: &Ctx, out: &exec::Output, results: &Results) -> Result<(), Str
 #[cfg(not(target_os = "linux"))]
 fn mutated<T>(ctx: &Ctx, filter: Option<&str>, was: &Series, judge: Judge<T>) -> Result<T, String> {
     let results = Results::create(&ctx.root)?;
-    let output = exec::tool(
-        &ctx.root,
+    let output = exec::run_paced(
         "cargo",
         &invocation(&ctx.features, &results.flag(), filter),
-    )?;
+        &ctx.root,
+        &[],
+        moving,
+    )
+    .map_err(|error| error.to_string())?;
     let measured = judge(&output, &|expected| results.survivors(expected), was)
         .and_then(|measured| accounted(ctx, &output, &results).map(|()| measured))
         .map_err(|error| format!("{error}{}", results.retained()))?;
@@ -191,6 +195,12 @@ fn over_limit(totals: &survivors::Totals) -> bool {
 
 /// What mutest prints once it has re-run each timed-out mutation alone with a longer limit.
 const CONFIRMED: &str = "timeouts confirmed:";
+
+/// Progress under mutest: any line, such as `ran 3 out of 57 tests` after each mutation. So a
+/// large crate stops only when nothing ends for the deadline, not when the run is long.
+fn moving(line: &str) -> bool {
+    !exec::strip_colour(line).trim().is_empty()
+}
 
 /// Whether mutest re-ran its timeouts alone, so each one left is a hang and not load.
 fn confirmed(out: &exec::Output) -> bool {
@@ -348,6 +358,14 @@ mod tests {
 
     fn unrecorded(out: &exec::Output, results: Survivors) -> Result<Measurement, String> {
         read(out, results, &Series::default())
+    }
+
+    #[test]
+    fn each_line_mutest_prints_shows_progress_and_a_blank_one_does_not() {
+        assert!(moving("ran 3 out of 57 tests"));
+        assert!(moving("\u{1b}[1m\u{1b}[92m   Compiling\u{1b}[0m chock"));
+        assert!(!moving("   "));
+        assert!(!moving("\u{1b}[0m"));
     }
 
     /// A file as the root, so asking cargo which tool it has fails before a run starts.

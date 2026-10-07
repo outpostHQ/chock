@@ -9,7 +9,7 @@ pub mod report;
 pub mod verdicts;
 
 mod context;
-mod workers;
+pub(crate) mod workers;
 pub use context::{
     Coverage, Ctx, LCOV, Runner, coverage_for, default_coverage, default_runner, runner_for,
 };

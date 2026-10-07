@@ -271,6 +271,7 @@ impl Watchdog for () {
     }
 }
 
+/// `run_paced` with the caller's watchdog polled as well.
 #[cfg(target_os = "linux")]
 pub(crate) fn run_watched(
     program: &str,
@@ -278,8 +279,9 @@ pub(crate) fn run_watched(
     cwd: &Path,
     env: &[(&str, &str)],
     watchdog: &mut dyn Watchdog,
+    moving: Moving,
 ) -> Result<Output, ExecError> {
-    run_full(program, args, cwd, MAX_CAPTURE, env, watchdog, None)
+    run_full(program, args, cwd, MAX_CAPTURE, env, watchdog, Some(moving))
 }
 
 /// Whether an output line shows a tool still moving; each such line restarts a paced deadline.
@@ -1389,7 +1391,8 @@ mod tests {
         }
         let script = "printf 'error: internal compiler error: boom\\n' >&2; \
                       head -c 6000 /dev/zero | tr '\\0' x >&2";
-        let failed = run_watched("sh", &["-c", script], &here(), &[], &mut NoRecords).unwrap_err();
+        let failed =
+            run_watched("sh", &["-c", script], &here(), &[], &mut NoRecords, never).unwrap_err();
         assert!(
             failed
                 .reason
@@ -1425,8 +1428,10 @@ mod tests {
     fn a_counted_pipe_keeps_only_the_start_of_a_long_line() {
         let moved = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let long = format!("{}\n", "x".repeat(LINE_START * 2));
-        let mut pipe = counted(Some(long.as_bytes()), whole_start, &moved).unwrap();
-        std::io::copy(&mut pipe, &mut std::io::sink()).unwrap();
+        let mut pipe = counted(Some(std::io::empty()), whole_start, &moved).unwrap();
+        for byte in long.bytes() {
+            pipe.feed(byte);
+        }
         assert_eq!(moved.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
