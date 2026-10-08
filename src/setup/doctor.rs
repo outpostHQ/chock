@@ -1514,10 +1514,10 @@ mod tests {
         // failure, and only the first is a version tool-versions.env pins.
         let mut rows = check(
             &[
-                pin("just", "1.58.0"),
+                pin("cargo-sort", "1.58.0"),
                 pin("outpost", crate::setup::pins::UNPUBLISHED),
             ],
-            &|p| (p.command == "just").then(|| "1.58.0".to_string()),
+            &|p| (p.command == "cargo-sort").then(|| "1.58.0".to_string()),
         );
         rows.extend(editor_hook(true, Some(std::time::Duration::from_secs(60))));
         assert_eq!(verdict(&rows), Verdict::Pass);
@@ -1530,11 +1530,13 @@ mod tests {
 
     #[test]
     fn the_json_carries_every_row_and_not_only_the_failures() {
-        let rows = check(&[pin("just", "1.58.0")], &|_| Some("1.58.0".to_string()));
+        let rows = check(&[pin("cargo-sort", "1.58.0")], &|_| {
+            Some("1.58.0".to_string())
+        });
         let doc: serde_json::Value = serde_json::from_str(&render_json(&rows, "0.1.0")).unwrap();
         let gate = &doc["gates"][0];
         assert_eq!(gate["verdict"], serde_json::json!("passed"));
-        assert_eq!(gate["findings"][0]["item"], serde_json::json!("just"));
+        assert_eq!(gate["findings"][0]["item"], serde_json::json!("cargo-sort"));
         assert_eq!(
             gate["findings"][0]["message"],
             serde_json::json!("matches the pin at 1.58.0")
@@ -1590,7 +1592,7 @@ mod tests {
         let pins = [
             pin("cargo-mutest", "0.0.0"),
             pin("outpost", "0.0.0"),
-            pin("just", "1.58.0"),
+            pin("cargo-sort", "1.58.0"),
         ];
         let here = |pin: &Pin| (pin.command != "outpost").then(|| "0.0.0".to_string());
         assert_eq!(
@@ -1602,7 +1604,7 @@ mod tests {
                     status: Status::Unbuilt,
                 },
                 Row {
-                    command: "just".into(),
+                    command: "cargo-sort".into(),
                     status: Status::Drifted {
                         have: "0.0.0".into(),
                         want: "1.58.0".into(),
@@ -1655,11 +1657,11 @@ mod tests {
 
     #[test]
     fn a_matching_version_is_the_only_passing_outcome() {
-        let pins = [pin("just", "1.58.0")];
+        let pins = [pin("cargo-sort", "1.58.0")];
         assert_eq!(
             check(&pins, &|_| Some("1.58.0".to_string())),
             vec![Row {
-                command: "just".to_string(),
+                command: "cargo-sort".to_string(),
                 status: Status::Matches("1.58.0".to_string()),
             }]
         );
@@ -1692,11 +1694,11 @@ mod tests {
 
     #[test]
     fn a_different_version_reports_both_sides_rather_than_only_failing() {
-        let pins = [pin("just", "1.58.0")];
+        let pins = [pin("cargo-sort", "1.58.0")];
         assert_eq!(
             check(&pins, &|_| Some("1.40.0".to_string())),
             vec![Row {
-                command: "just".to_string(),
+                command: "cargo-sort".to_string(),
                 status: Status::Drifted {
                     have: "1.40.0".to_string(),
                     want: "1.58.0".to_string(),
@@ -1707,11 +1709,11 @@ mod tests {
 
     #[test]
     fn a_version_that_could_not_be_read_is_missing_and_never_a_pass() {
-        let pins = [pin("just", "1.58.0")];
+        let pins = [pin("cargo-sort", "1.58.0")];
         assert_eq!(
             check(&pins, &|_| None),
             vec![Row {
-                command: "just".to_string(),
+                command: "cargo-sort".to_string(),
                 status: Status::Missing {
                     want: "1.58.0".to_string()
                 },
@@ -1745,20 +1747,24 @@ mod tests {
 
     #[test]
     fn a_green_report_names_the_file_that_was_matched_against() {
-        let rows = check(&[pin("just", "1.58.0")], &|_| Some("1.58.0".to_string()));
+        let rows = check(&[pin("cargo-sort", "1.58.0")], &|_| {
+            Some("1.58.0".to_string())
+        });
         assert_eq!(
             render(&rows),
-            "  ok       just             1.58.0\n\
+            "  ok       cargo-sort       1.58.0\n\
              1 check ok. Versions that match tool-versions.env: 1.\n"
         );
     }
 
     #[test]
     fn a_red_report_names_both_versions_and_the_command_that_fixes_it() {
-        let rows = check(&[pin("just", "1.58.0")], &|_| Some("1.40.0".to_string()));
+        let rows = check(&[pin("cargo-sort", "1.58.0")], &|_| {
+            Some("1.40.0".to_string())
+        });
         assert_eq!(
             render(&rows),
-            "  DRIFTED  just             have 1.40.0     want 1.58.0\n\
+            "  DRIFTED  cargo-sort       have 1.40.0     want 1.58.0\n\
              Needs attention: 1 of 1 check. `chock init --global` installs the crates; a tool in tool-versions.env that is not a crate is yours to install.\n"
         );
     }

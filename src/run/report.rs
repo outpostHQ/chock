@@ -866,7 +866,7 @@ mod tests {
 
     #[test]
     fn a_gate_that_could_not_run_carries_the_reason_and_the_code() {
-        let report = GateReport::cannot_run("crap", "just crap", "no lcov.info");
+        let report = GateReport::cannot_run("crap", "chock run crap", "no lcov.info");
         assert_eq!(report.verdict, Verdict::CannotRun);
         assert_eq!(report.exit_code, 2);
         assert_eq!(report.cannot_run_reason.as_deref(), Some("no lcov.info"));
@@ -874,7 +874,7 @@ mod tests {
 
     #[test]
     fn a_summary_shows_the_measurement_against_the_baseline() {
-        let mut report = GateReport::new("bigfiles", Verdict::Tripped, "just bigfiles");
+        let mut report = GateReport::new("bigfiles", Verdict::Tripped, "chock run bigfiles");
         report.measured = Some(12);
         report.baseline = Some(9);
         assert_eq!(report.summary(), "  bigfiles   TRIPPED     12 against 9");
@@ -882,7 +882,7 @@ mod tests {
 
     #[test]
     fn a_trip_at_or_under_the_recorded_total_says_how_many_findings_tripped_it() {
-        let mut report = GateReport::new("bigfiles", Verdict::Tripped, "just bigfiles");
+        let mut report = GateReport::new("bigfiles", Verdict::Tripped, "chock run bigfiles");
         report.measured = Some(9);
         report.baseline = Some(9);
         report.findings = vec![Finding::at("src/a.rs", "not in the baseline")];
@@ -896,7 +896,7 @@ mod tests {
 
     #[test]
     fn a_gate_with_no_baseline_yet_says_so_rather_than_showing_a_zero() {
-        let mut report = GateReport::new("slop", Verdict::Pass, "just slop");
+        let mut report = GateReport::new("slop", Verdict::Pass, "chock run slop");
         report.measured = Some(3);
         assert_eq!(
             report.summary(),
@@ -907,7 +907,7 @@ mod tests {
     #[test]
     fn a_pass_fail_gate_summarises_to_its_name_and_verdict_alone() {
         assert_eq!(
-            GateReport::new("lint", Verdict::Pass, "just lint").summary(),
+            GateReport::new("lint", Verdict::Pass, "chock run lint").summary(),
             "  lint       ok"
         );
     }
@@ -984,17 +984,20 @@ mod tests {
 
     #[test]
     fn a_run_renders_a_line_per_gate_then_the_findings_beneath() {
-        let mut tripped = GateReport::new("slop", Verdict::Tripped, "just slop");
+        let mut tripped = GateReport::new("slop", Verdict::Tripped, "chock run slop");
         tripped.findings = vec![Finding::at("src/a.rs", "block of 5 lines").line(4)];
         let run = Run::new(
             "0.1.0",
-            vec![GateReport::new("lint", Verdict::Pass, "just lint"), tripped],
+            vec![
+                GateReport::new("lint", Verdict::Pass, "chock run lint"),
+                tripped,
+            ],
         );
         assert_eq!(
             run.render(),
             "  lint       ok\n  \
              slop       TRIPPED\n\n\
-             slop — just slop\n  \
+             slop — chock run slop\n  \
              src/a.rs:4: block of 5 lines\n\n\
              1 of 2 gates tripped.\n"
         );
@@ -1137,8 +1140,8 @@ mod tests {
         let run = Run::new(
             "0.1.0",
             vec![
-                GateReport::new("lint", Verdict::Pass, "just lint"),
-                GateReport::cannot_run("crap", "just crap", "no lcov"),
+                GateReport::new("lint", Verdict::Pass, "chock run lint"),
+                GateReport::cannot_run("crap", "chock run crap", "no lcov"),
             ],
         );
         assert_eq!(run.verdict(), Verdict::CannotRun);
@@ -1148,7 +1151,7 @@ mod tests {
     fn a_run_round_trips_through_its_json() {
         let run = Run::new(
             "0.1.0",
-            vec![GateReport::new("lint", Verdict::Pass, "just lint")],
+            vec![GateReport::new("lint", Verdict::Pass, "chock run lint")],
         );
         let text = run.render_json();
         assert_eq!(serde_json::from_str::<Run>(&text).unwrap(), run);
@@ -1164,7 +1167,7 @@ mod tests {
         assert_eq!(named.as_array().unwrap().as_slice(), written.as_slice());
         let run = Run::new(
             "0.1.0",
-            vec![GateReport::cannot_run("crap", "just crap", "no lcov")],
+            vec![GateReport::cannot_run("crap", "chock run crap", "no lcov")],
         );
         assert!(run.render_json().contains("\"verdict\": \"cannot_run\""));
     }
@@ -1203,7 +1206,7 @@ mod tests {
     fn an_absent_optional_field_is_left_out_rather_than_written_null() {
         let run = Run::new(
             "0.1.0",
-            vec![GateReport::new("lint", Verdict::Pass, "just lint")],
+            vec![GateReport::new("lint", Verdict::Pass, "chock run lint")],
         );
         let text = run.render_json();
         assert!(!text.contains("null"));

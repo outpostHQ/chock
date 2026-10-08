@@ -10,7 +10,7 @@ pub(crate) const USAGE: &str = "\
 Set up
   chock init                      set up this project, then install the tools it pins
   chock init --global             only the tools, once per machine
-  chock init --local              only this project: justfile, pins, config and hooks
+  chock init --local              only this project: pins, config and hooks
   chock baseline [GATE...]        accept today's numbers as the record, also where they got worse
   chock doctor                    does this machine have the tools this project pins?
 

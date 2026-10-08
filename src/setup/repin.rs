@@ -77,7 +77,7 @@ mod tests {
         let (ours, path) = (local_pin_file(running), dir.join(project::PIN_FILE));
         fs::write(
             &path,
-            "JUST_VERSION=0.1.0\nOWN_REV=abc\nCHOCK_VERSION=0.0.1\n",
+            "CARGO_SORT_VERSION=0.1.0\nOWN_REV=abc\nCHOCK_VERSION=0.0.1\n",
         )
         .unwrap();
         let said = install_pins(&dir, &ours).unwrap().to_string();
@@ -94,12 +94,12 @@ mod tests {
             "{said}"
         );
         let text = fs::read_to_string(&path).unwrap();
-        let just = ours
+        let sort = ours
             .lines()
-            .find(|line| line.starts_with("JUST_VERSION="))
+            .find(|line| line.starts_with("CARGO_SORT_VERSION="))
             .unwrap();
         assert!(
-            text.starts_with(&format!("{just}\nOWN_REV=abc\nCHOCK_VERSION={running}\n\n")),
+            text.starts_with(&format!("{sort}\nOWN_REV=abc\nCHOCK_VERSION={running}\n\n")),
             "{text}"
         );
         for pin in ours.lines().filter(|line| line.contains('=')) {
@@ -133,7 +133,7 @@ mod tests {
             );
             assert_eq!(fs::read_to_string(&path).unwrap(), held);
         }
-        fs::write(&path, "JUST_VERSION=0.1.0\n").unwrap();
+        fs::write(&path, "CARGO_SORT_VERSION=0.1.0\n").unwrap();
         assert_eq!(
             install_pins(&dir, &ours).unwrap(),
             Pinned::File(Written::Conflict {

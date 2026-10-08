@@ -465,11 +465,11 @@ mod tests {
                 subject: Some(72),
                 body: Some(12),
             }),
-            runner: Some(vec!["just".to_string(), "test".to_string()]),
+            runner: Some(vec!["make".to_string(), "test".to_string()]),
             stage: [("binsize".to_string(), crate::project::config::Stage::Ci)].into(),
             commands: Some(vec![crate::project::config::Command {
                 name: "doc-check".to_string(),
-                run: vec!["just".to_string(), "doc-check".to_string()],
+                run: vec!["make".to_string(), "doc-check".to_string()],
                 counts: true,
                 builds: true,
             }]),
@@ -488,7 +488,7 @@ mod tests {
                 }],
             }),
             ..crate::project::config::Config::of(["slop"])
-                .with_coverage(["just", "coverage", "{lcov}"])
+                .with_coverage(["make", "coverage", "{lcov}"])
         };
         let mut gate = crate::run::report::GateReport::new(
             "slop",

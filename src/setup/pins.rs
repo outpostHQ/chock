@@ -426,9 +426,8 @@ fn systems(list: &str) -> Vec<String> {
 
 /// The command of each pin in the shipped file, in the file's order.
 #[cfg(test)]
-pub const SHIPPED: [&str; 15] = [
+pub const SHIPPED: [&str; 14] = [
     "cargo-binstall",
-    "just",
     "cargo-nextest",
     "cargo-llvm-cov",
     "cargo-crap",
@@ -510,8 +509,8 @@ mod tests {
 
     #[test]
     fn a_pin_naming_its_systems_is_of_no_use_elsewhere_and_one_naming_none_runs_anywhere() {
-        let parsed = parse("CARGO_ACL_VERSION=0.9.0\nCARGO_ACL_OS=linux\nKANI_VERIFIER_VERSION=0.68.0\nKANI_VERIFIER_OS=\"linux, macos\"\nJUST_VERSION=1.58.0\n").unwrap();
-        let (acl, kani, just) = (&parsed[0], &parsed[1], &parsed[2]);
+        let parsed = parse("CARGO_ACL_VERSION=0.9.0\nCARGO_ACL_OS=linux\nKANI_VERIFIER_VERSION=0.68.0\nKANI_VERIFIER_OS=\"linux, macos\"\nTOOL_VERSION=1.58.0\n").unwrap();
+        let (acl, kani, tool) = (&parsed[0], &parsed[1], &parsed[2]);
         assert_eq!(acl.systems, Some(vec!["linux".to_string()]));
         assert_eq!(acl.elsewhere("linux"), None);
         assert_eq!(
@@ -528,7 +527,7 @@ mod tests {
             Some("runs only on linux, macos, so windows has no use for it")
         );
         assert_eq!(
-            (just.systems.clone(), just.elsewhere("windows")),
+            (tool.systems.clone(), tool.elsewhere("windows")),
             (None, None)
         );
     }
@@ -603,8 +602,8 @@ mod tests {
     #[test]
     fn a_comment_after_a_value_is_not_part_of_the_value() {
         assert_eq!(
-            parse("JUST_VERSION=1.58.0  # the build runner\n").unwrap(),
-            vec![pin("JUST_VERSION", "just", "just", "1.58.0")]
+            parse("TOOL_VERSION=1.58.0  # why this version\n").unwrap(),
+            vec![pin("TOOL_VERSION", "tool", "tool", "1.58.0")]
         );
     }
 
@@ -631,8 +630,8 @@ mod tests {
     #[test]
     fn a_comment_is_opened_by_what_precedes_the_hash_and_not_by_what_follows_it() {
         assert_eq!(
-            before_comment("JUST_VERSION=1.58.0 #why"),
-            "JUST_VERSION=1.58.0"
+            before_comment("TOOL_VERSION=1.58.0 #why"),
+            "TOOL_VERSION=1.58.0"
         );
         assert_eq!(before_comment("A=a# b"), "A=a# b");
     }
@@ -652,8 +651,8 @@ mod tests {
     #[test]
     fn comments_and_blank_lines_contribute_nothing() {
         assert_eq!(
-            parse("# a comment\n\n   \n  # indented\nJUST_VERSION=1.58.0\n").unwrap(),
-            vec![pin("JUST_VERSION", "just", "just", "1.58.0")]
+            parse("# a comment\n\n   \n  # indented\nTOOL_VERSION=1.58.0\n").unwrap(),
+            vec![pin("TOOL_VERSION", "tool", "tool", "1.58.0")]
         );
     }
 
@@ -674,7 +673,7 @@ mod tests {
     #[test]
     fn a_line_that_is_not_key_equals_value_names_its_line_number() {
         assert_eq!(
-            parse("JUST_VERSION=1.58.0\nthis is not a pin\n"),
+            parse("TOOL_VERSION=1.58.0\nthis is not a pin\n"),
             Err(ParseError::Unreadable {
                 line: 2,
                 text: "this is not a pin".to_string()
@@ -685,10 +684,10 @@ mod tests {
     #[test]
     fn a_version_key_with_no_value_is_an_error_rather_than_an_empty_pin() {
         assert_eq!(
-            parse("JUST_VERSION=\n"),
+            parse("TOOL_VERSION=\n"),
             Err(ParseError::EmptyVersion {
                 line: 1,
-                key: "JUST_VERSION".to_string()
+                key: "TOOL_VERSION".to_string()
             })
         );
     }
@@ -696,7 +695,7 @@ mod tests {
     #[test]
     fn a_bin_override_naming_no_pin_is_an_error_rather_than_ignored() {
         assert_eq!(
-            parse("JUST_VERSION=1.58.0\nARBORIST_CLI_BIN=arborist\n"),
+            parse("TOOL_VERSION=1.58.0\nARBORIST_CLI_BIN=arborist\n"),
             Err(ParseError::Orphan {
                 line: 2,
                 key: "ARBORIST_CLI".to_string(),
@@ -708,8 +707,8 @@ mod tests {
     #[test]
     fn surrounding_whitespace_is_not_part_of_the_key_or_the_version() {
         assert_eq!(
-            parse("  JUST_VERSION = 1.58.0  ").unwrap(),
-            vec![pin("JUST_VERSION", "just", "just", "1.58.0")]
+            parse("  TOOL_VERSION = 1.58.0  ").unwrap(),
+            vec![pin("TOOL_VERSION", "tool", "tool", "1.58.0")]
         );
     }
 
@@ -773,8 +772,8 @@ mod tests {
 
     #[test]
     fn empty_pin_values_and_additional_comments_have_explicit_results() {
-        let empty = parse("JUST_VERSION=\n").unwrap_err();
-        assert_eq!(empty.to_string(), "line 1: JUST_VERSION pins no version");
+        let empty = parse("TOOL_VERSION=\n").unwrap_err();
+        assert_eq!(empty.to_string(), "line 1: TOOL_VERSION pins no version");
         assert_eq!(
             additional("# only a comment\n\n").unwrap(),
             AdditionalPins::default()
@@ -783,7 +782,7 @@ mod tests {
 
     #[test]
     fn a_tool_with_no_setup_line_carries_none() {
-        let pins = parse("JUST_VERSION=1.58.0\n").unwrap();
+        let pins = parse("TOOL_VERSION=1.58.0\n").unwrap();
         assert_eq!(pins[0].setup, None);
     }
 

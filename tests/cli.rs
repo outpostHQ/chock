@@ -1009,7 +1009,7 @@ fn init_refuses_what_it_cannot_do_before_writing_anything() {
     let ran = exits(&dir, &["init", "--deep"], 2);
     says(&ran.err, "chock init: unknown option `--deep`");
     assert!(
-        !dir.join("justfile").exists(),
+        !dir.join("deny.toml").exists(),
         "init wrote a file despite refusing the option"
     );
 

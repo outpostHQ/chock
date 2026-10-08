@@ -291,7 +291,7 @@ pub fn measured(gate: &Gate, ctx: &Ctx) -> Result<Measurement, String> {
 pub const MAX_DEPTH: u32 = 2;
 
 /// How to run this one check again. It must mean the same everywhere: in chock's first adopter,
-/// `just deps` ran a different tool than the `deps` gate.
+/// a recipe named `deps` ran a different tool than the `deps` gate.
 #[must_use]
 pub fn rerun(name: &str) -> String {
     format!("chock run {name}")

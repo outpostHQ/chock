@@ -129,8 +129,8 @@ kani-verifier v0.67.0:
     #[test]
     fn the_four_formats_the_pinned_tools_actually_print() {
         assert_eq!(
-            from_version_output("just 1.58.0"),
-            Some("1.58.0".to_string())
+            from_version_output("cargo-deny 0.20.2"),
+            Some("0.20.2".to_string())
         );
         assert_eq!(
             from_version_output("Version: 0.0.2"),

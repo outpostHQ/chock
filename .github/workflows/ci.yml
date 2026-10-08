@@ -81,9 +81,10 @@ jobs:
           components: clippy, rustfmt, llvm-tools-preview
           cache: false
 
-      # cargo-udeps takes any nightly.
+      # cargo-udeps takes any nightly. A nightly download can fail on the runner's network, so
+      # each nightly install in this file tries 3 times.
       - name: Install a nightly toolchain
-        run: rustup toolchain install nightly --profile minimal
+        run: for attempt in 1 2 3; do rustup toolchain install nightly --profile minimal && break; [ "$attempt" = 3 ] && exit 1; sleep 30; done
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -109,7 +110,6 @@ jobs:
           cargo binstall -y --locked cargo-udeps@"$CARGO_UDEPS_VERSION"
           cargo binstall -y --locked cargo-bsize@"$CARGO_BSIZE_VERSION"
           cargo binstall -y --locked typos-cli@"$TYPOS_CLI_VERSION"
-          cargo binstall -y --locked just@"$JUST_VERSION"
           if here "$KANI_VERIFIER_OS"; then cargo binstall -y --locked kani-verifier@"$KANI_VERIFIER_VERSION"; fi
 
       # Installing the crate is half of it: the solver bundle and the nightly kani needs are fetched
@@ -176,7 +176,11 @@ jobs:
       - name: Install mutest's nightly
         run: |
           . ./tool-versions.env
-          rustup toolchain install "$MUTEST_NIGHTLY" --profile minimal --component rustc-dev --component llvm-tools
+          for attempt in 1 2 3; do
+            rustup toolchain install "$MUTEST_NIGHTLY" --profile minimal --component rustc-dev --component llvm-tools && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 30
+          done
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -300,7 +304,7 @@ jobs:
           cache: false
 
       - name: Install nightly with Miri
-        run: rustup toolchain install nightly --profile minimal --component miri --component rust-src
+        run: for attempt in 1 2 3; do rustup toolchain install nightly --profile minimal --component miri --component rust-src && break; [ "$attempt" = 3 ] && exit 1; sleep 30; done
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2

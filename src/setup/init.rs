@@ -21,7 +21,6 @@ use crate::setup::version;
 
 /// chock's own files are the template, because chock runs its own gates on itself; a separate
 /// template would drift.
-const JUSTFILE: &str = include_str!("../../justfile");
 const PIN_FILE: &str = include_str!("../../tool-versions.env");
 const DENY: &str = include_str!("../../deny.toml");
 
@@ -90,7 +89,7 @@ pub const USAGE: &str = "\
 chock init [--global] [--local] [--fast]
 
   --global   install the pinned tools, once per machine: this project's pins, or chock's own
-  --local    write this project's hooks, justfile, pins and config
+  --local    write this project's hooks, pins and config
   --fast     measure only the gates that need no compiler; skips the builds
   --help     this text
 
@@ -586,7 +585,7 @@ answers on every edit, and `chock run` in CI is the backstop.\n";
 fn install_files(root: &Path) -> Result<String, Error> {
     let pin_file = local_pin_file(env!("CARGO_PKG_VERSION"));
     let pins = super::repin::install_pins(root, &pin_file)?;
-    let files = install_all(root, &[("justfile", JUSTFILE), ("deny.toml", DENY)])?;
+    let files = install_all(root, &[("deny.toml", DENY)])?;
     Ok(format!("{pins}\n{files}"))
 }
 
@@ -694,7 +693,7 @@ fn manifest_notes_for(manifest: &str) -> Vec<String> {
         ),
         (
             !has_key("license") && !has_key("license-file"),
-            "no license field — `just deps` fails until there is one. Add e.g. license = \
+            "no license field — the `deps` gate fails until there is one. Add e.g. license = \
              \"MIT OR Apache-2.0\".",
         ),
     ]
@@ -1529,20 +1528,20 @@ mod tests {
     #[test]
     fn each_outcome_says_what_a_reader_has_to_do_about_it() {
         assert_eq!(
-            Written::Created("justfile".into()).to_string(),
-            "  created   justfile"
+            Written::Created("deny.toml".into()).to_string(),
+            "  created   deny.toml"
         );
         assert_eq!(
-            Written::Unchanged("justfile".into()).to_string(),
-            "  unchanged justfile"
+            Written::Unchanged("deny.toml".into()).to_string(),
+            "  unchanged deny.toml"
         );
         assert_eq!(
             Written::Conflict {
-                name: "justfile".into(),
-                kept: "justfile.chock".into()
+                name: "deny.toml".into(),
+                kept: "deny.toml.chock".into()
             }
             .to_string(),
-            "  conflict  justfile differs — wrote justfile.chock, merge it yourself"
+            "  conflict  deny.toml differs — wrote deny.toml.chock, merge it yourself"
         );
     }
 
@@ -1550,9 +1549,9 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_that_is_not_there_is_created_with_our_content() {
         let dir = crate::testdir::make("init-create");
-        let made = install_file(&dir, "justfile", "recipe:\n");
-        assert_eq!(made, Ok(Written::Created("justfile".to_string())));
-        let text = std::fs::read_to_string(dir.join("justfile")).unwrap();
+        let made = install_file(&dir, "deny.toml", "recipe:\n");
+        assert_eq!(made, Ok(Written::Created("deny.toml".to_string())));
+        let text = std::fs::read_to_string(dir.join("deny.toml")).unwrap();
         assert_eq!(text, "recipe:\n");
     }
 
@@ -1560,19 +1559,19 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_already_holding_our_content_is_left_exactly_as_it_was() {
         let dir = crate::testdir::make("init-unchanged");
-        std::fs::write(dir.join("justfile"), "recipe:\n").unwrap();
-        let kept = install_file(&dir, "justfile", "recipe:\n");
-        assert_eq!(kept, Ok(Written::Unchanged("justfile".to_string())));
+        std::fs::write(dir.join("deny.toml"), "recipe:\n").unwrap();
+        let kept = install_file(&dir, "deny.toml", "recipe:\n");
+        assert_eq!(kept, Ok(Written::Unchanged("deny.toml".to_string())));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     }
 
-    /// Installs `text` as the justfile and asserts it lands beside the project's own, as `kept`.
+    /// Installs `text` as deny.toml and asserts it lands beside the project's own, as `kept`.
     fn lands_beside(dir: &Path, text: &str, kept: &str) {
         let written = Written::Conflict {
-            name: "justfile".to_string(),
+            name: "deny.toml".to_string(),
             kept: kept.to_string(),
         };
-        assert_eq!(install_file(dir, "justfile", text), Ok(written));
+        assert_eq!(install_file(dir, "deny.toml", text), Ok(written));
         assert_eq!(std::fs::read_to_string(dir.join(kept)).unwrap(), text);
     }
 
@@ -1580,10 +1579,10 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_holding_something_else_keeps_its_content_and_ours_lands_beside_it() {
         let dir = crate::testdir::make("init-conflict");
-        std::fs::write(dir.join("justfile"), "theirs\n").unwrap();
-        lands_beside(&dir, "ours\n", "justfile.chock");
+        std::fs::write(dir.join("deny.toml"), "theirs\n").unwrap();
+        lands_beside(&dir, "ours\n", "deny.toml.chock");
         assert_eq!(
-            std::fs::read_to_string(dir.join("justfile")).unwrap(),
+            std::fs::read_to_string(dir.join("deny.toml")).unwrap(),
             "theirs\n"
         );
     }
@@ -1592,11 +1591,11 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_second_conflict_does_not_overwrite_the_first_unmerged_copy() {
         let dir = crate::testdir::make("init-conflict-twice");
-        std::fs::write(dir.join("justfile"), "theirs\n").unwrap();
-        std::fs::write(dir.join("justfile.chock"), "first upgrade\n").unwrap();
-        lands_beside(&dir, "second upgrade\n", "justfile.chock.1");
+        std::fs::write(dir.join("deny.toml"), "theirs\n").unwrap();
+        std::fs::write(dir.join("deny.toml.chock"), "first upgrade\n").unwrap();
+        lands_beside(&dir, "second upgrade\n", "deny.toml.chock.1");
         assert_eq!(
-            std::fs::read_to_string(dir.join("justfile.chock")).unwrap(),
+            std::fs::read_to_string(dir.join("deny.toml.chock")).unwrap(),
             "first upgrade\n"
         );
     }
@@ -1605,10 +1604,10 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_third_conflict_counts_past_the_copies_already_there() {
         let dir = crate::testdir::make("init-conflict-thrice");
-        std::fs::write(dir.join("justfile"), "theirs\n").unwrap();
-        std::fs::write(dir.join("justfile.chock"), "first\n").unwrap();
-        std::fs::write(dir.join("justfile.chock.1"), "second\n").unwrap();
-        lands_beside(&dir, "third\n", "justfile.chock.2");
+        std::fs::write(dir.join("deny.toml"), "theirs\n").unwrap();
+        std::fs::write(dir.join("deny.toml.chock"), "first\n").unwrap();
+        std::fs::write(dir.join("deny.toml.chock.1"), "second\n").unwrap();
+        lands_beside(&dir, "third\n", "deny.toml.chock.2");
     }
 
     #[test]
@@ -1647,15 +1646,15 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_conflict_copy_already_holding_our_content_is_reused_so_a_re_run_adds_nothing() {
         let dir = crate::testdir::make("init-conflict-idempotent");
-        std::fs::write(dir.join("justfile"), "theirs\n").unwrap();
-        lands_beside(&dir, "ours\n", "justfile.chock");
-        lands_beside(&dir, "ours\n", "justfile.chock");
+        std::fs::write(dir.join("deny.toml"), "theirs\n").unwrap();
+        lands_beside(&dir, "ours\n", "deny.toml.chock");
+        lands_beside(&dir, "ours\n", "deny.toml.chock");
         let mut names: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| Some(e.ok()?.file_name().to_string_lossy().into_owned()))
             .collect();
         names.sort();
-        assert_eq!(names, ["justfile", "justfile.chock"]);
+        assert_eq!(names, ["deny.toml", "deny.toml.chock"]);
     }
 
     #[cfg(unix)]
@@ -1663,8 +1662,8 @@ mod tests {
     fn a_dangling_symlink_is_the_projects_content_and_is_never_written_through() {
         let dir = crate::testdir::make("init-symlink");
         let outside = dir.join("outside-the-project");
-        std::os::unix::fs::symlink(&outside, dir.join("justfile")).unwrap();
-        lands_beside(&dir, "ours\n", "justfile.chock");
+        std::os::unix::fs::symlink(&outside, dir.join("deny.toml")).unwrap();
+        lands_beside(&dir, "ours\n", "deny.toml.chock");
         assert!(
             !outside.exists(),
             "wrote through the link to {}",
@@ -1704,10 +1703,10 @@ mod tests {
     #[test]
     fn a_tool_built_from_a_checkout_or_made_for_another_system_is_not_fetched() {
         let parsed = pins::parse(
-            "CARGO_ACL_VERSION=0.9.0\nCARGO_ACL_OS=linux\nOUTPOST_VERSION=0.0.0\nJUST_VERSION=1.58.0\n",
+            "CARGO_ACL_VERSION=0.9.0\nCARGO_ACL_OS=linux\nOUTPOST_VERSION=0.0.0\nCARGO_SORT_VERSION=2.1.4\n",
         )
         .unwrap();
-        let (acl, outpost, just) = (&parsed[0], &parsed[1], &parsed[2]);
+        let (acl, outpost, sort) = (&parsed[0], &parsed[1], &parsed[2]);
         assert_eq!(not_fetched(acl, "linux"), None);
         assert_eq!(
             not_fetched(acl, "macos").as_deref(),
@@ -1717,7 +1716,7 @@ mod tests {
             not_fetched(outpost, "linux").as_deref(),
             Some("  local     outpost — not on crates.io; build it from its checkout")
         );
-        assert_eq!(not_fetched(just, "windows"), None);
+        assert_eq!(not_fetched(sort, "windows"), None);
     }
 
     #[test]
@@ -2083,7 +2082,6 @@ mod tests {
             format!(
                 "chock init --local: {}\n\
                  \x20 created   tool-versions.env\n\
-                 \x20 created   justfile\n\
                  \x20 created   deny.toml\n\
                  \x20 created   .chock/config.json\n\
                  \x20 gitignore 9 lines added\n\
@@ -2100,8 +2098,8 @@ mod tests {
             )
         );
         assert_eq!(
-            std::fs::read_to_string(dir.join("justfile")).unwrap(),
-            JUSTFILE
+            std::fs::read_to_string(dir.join("deny.toml")).unwrap(),
+            DENY
         );
         assert_eq!(
             std::fs::read_to_string(dir.join(project::PIN_FILE)).unwrap(),
@@ -2120,11 +2118,7 @@ mod tests {
     }
 
     #[test]
-    fn the_embedded_template_is_this_project_s_own_justfile() {
-        assert!(
-            JUSTFILE.contains("\ndoctor:"),
-            "the template lost the doctor recipe: {JUSTFILE}"
-        );
+    fn the_embedded_pin_file_is_this_project_s_own() {
         assert!(
             PIN_FILE.contains("CARGO_NEXTEST_VERSION="),
             "the template lost the nextest pin: {PIN_FILE}"

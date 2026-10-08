@@ -40,7 +40,6 @@ Then commit the files that chock wrote.
 | `.chock/config.json` | which gates are on, and your settings |
 | `.chock/baseline.json` | the recorded numbers |
 | `.chock/agents.md` | how an agent calls chock and reads its answer |
-| `justfile` | one recipe per gate |
 | `tool-versions.env` | the tool versions this project expects |
 | `deny.toml` | `cargo deny` configuration |
 | `.claude/settings.json` | the editor hook, merged into any settings already there |
@@ -264,7 +263,7 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 |---|---|
 | `chock init` | sets up this project, then installs the tools it pins |
 | `chock init --global` | only the tools, once per machine |
-| `chock init --local` | only this project: justfile, pins, config and hooks |
+| `chock init --local` | only this project: pins, config and hooks |
 | `chock baseline [GATE...]` | accepts today's numbers as the record, also where they got worse |
 | `chock baseline --lower GATE...` | records a gain on a gate that measures differently by machine |
 | `chock doctor` | says whether this machine has the tools this project pins |

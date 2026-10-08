@@ -63,6 +63,13 @@ changes its unit, so a project that recorded `lean` runs `chock baseline lean` o
   corrected in the README, the gate list, the configuration keys and the agent skill.
 - **Tests that start git stay out of Miri.** Miri cannot start a process, so these tests are
   ignored under Miri, as the other tests that start a process are.
+- **`chock init --local` writes no `justfile`, and `just` is not pinned.** chock is the runner:
+  `chock run <gate>` runs each gate. A project can delete the `justfile` that init wrote before.
+- **`fmt` leaves out files outside the project.** `cargo fmt --all` also checks path dependencies,
+  and one in another repository is not this project's to format. If the output was cut before it
+  named a file in the project, the gate cannot run.
+- **CI tries each nightly install 3 times.** A download from static.rust-lang.org failed once on
+  a runner's network.
 
 The tests and flags of the other gates do not change.
 

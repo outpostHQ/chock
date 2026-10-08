@@ -9,13 +9,12 @@ readme = "README.md"
 repository = "https://github.com/outpostHQ/chock"
 keywords = ["testing", "quality", "coverage", "mutation", "ci"]
 categories = ["development-tools::cargo-plugins", "development-tools::testing"]
-# The binary compiles `docs/agents.md`, `justfile`, `tool-versions.env` and `deny.toml` into
+# The binary compiles `docs/agents.md`, `tool-versions.env` and `deny.toml` into
 # `chock init`; everything else a published crate needs is its source, schemas and licence.
 include = [
   "/src/**/*.rs",
   "/schema/*.json",
   "/docs/agents.md",
-  "/justfile",
   "/tool-versions.env",
   "/deny.toml",
   "/README.md",

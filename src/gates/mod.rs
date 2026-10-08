@@ -229,25 +229,13 @@ mod tests {
     use crate::run::rerun;
 
     /// `rerun` is the one command AGENTS.md tells an agent to run, so it has to mean the same thing
-    /// in every project. `just deps` meant `cargo machete` in the first tree that adopted chock.
+    /// in every project. A recipe named `deps` ran `cargo machete` in the first tree to adopt chock.
     #[test]
     fn every_gate_reruns_through_chock_rather_than_a_recipe_the_project_defines() {
         for gate in registry() {
             let said = rerun(gate.name);
             assert_eq!(said, format!("chock run {}", gate.name));
             assert!(find(gate.name).is_some(), "{} does not resolve", gate.name);
-        }
-    }
-
-    #[test]
-    fn the_justfile_keeps_a_recipe_for_every_gate() {
-        let justfile = include_str!("../../justfile");
-        for gate in registry() {
-            let want = format!("{}:", gate.name);
-            assert!(
-                justfile.lines().any(|line| line.starts_with(&want)),
-                "the justfile has no `{want}` recipe"
-            );
         }
     }
 

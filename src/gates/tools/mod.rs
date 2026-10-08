@@ -483,27 +483,38 @@ fn fmt(ctx: &Ctx) -> Result<Outcome, String> {
     formatted(&out, &ctx.root)
 }
 
-/// A failure naming no file is rustfmt refusing to run, such as a missing component, not a finding.
 fn formatted(out: &exec::Output, root: &Path) -> Result<Outcome, String> {
     if out.success() {
         return Ok(Outcome::passed());
     }
     let findings = unformatted(&out.stdout, root);
     if findings.is_empty() {
-        return Err(format!(
-            "cargo fmt named no file: {}",
-            out.failure_details()
-        ));
+        return named_elsewhere(out);
     }
     Ok(Outcome::failed(whole(findings, out)))
 }
 
-/// One finding per file, not per hunk: the fix is a single command.
+/// A failure naming no file is rustfmt refusing to run, such as a missing component, not a finding.
+/// One naming only files outside the root passes, unless the output was cut before the rest.
+fn named_elsewhere(out: &exec::Output) -> Result<Outcome, String> {
+    if out.truncated || !out.stdout.lines().any(|line| diffed_file(line).is_some()) {
+        return Err(format!(
+            "cargo fmt named no file in this tree: {}",
+            out.failure_details()
+        ));
+    }
+    Ok(Outcome::passed())
+}
+
+/// One finding per file, not per hunk: the fix is a single command. `--all` also checks path
+/// dependencies, and a file outside the root belongs to another repository.
 fn unformatted(stdout: &str, root: &Path) -> Vec<Finding> {
     let files: BTreeSet<String> = stdout
         .lines()
         .filter_map(diffed_file)
-        .map(|path| crate::project::relative(root, Path::new(path)))
+        .map(Path::new)
+        .filter(|path| !path.has_root() || path.starts_with(root))
+        .map(|path| crate::project::relative(root, path))
         .collect();
     files
         .into_iter()
@@ -1730,6 +1741,31 @@ mod tests {
                 format!("src/a.rs: {UNFORMATTED}"),
                 format!("src/b.rs: {UNFORMATTED}"),
             ]
+        );
+    }
+
+    #[test]
+    fn a_file_outside_the_root_is_not_a_finding_but_one_inside_or_relative_is() {
+        let out = "Diff in /o/x.rs:3:\nDiff in /w/src/a.rs:9:\nDiff in src/c.rs:1:\n";
+        assert_eq!(
+            Finding::rendered(&unformatted(out, Path::new("/w"))),
+            vec![
+                format!("src/a.rs: {UNFORMATTED}"),
+                format!("src/c.rs: {UNFORMATTED}"),
+            ]
+        );
+    }
+
+    /// seed's `cargo fmt --all` named only `../outpost`, a path dependency in another repository.
+    #[test]
+    fn hunks_only_in_another_repository_pass_unless_the_output_was_cut() {
+        let elsewhere = ran("Diff in /o/x.rs:3:\n", Some(1), false);
+        assert!(formatted(&elsewhere, Path::new("/w")).unwrap().passed);
+        let cut = ran("Diff in /o/x.rs:3:\n", Some(1), true);
+        let refused = formatted(&cut, Path::new("/w")).unwrap_err();
+        assert!(
+            refused.starts_with("cargo fmt named no file in this tree"),
+            "{refused}"
         );
     }
 

@@ -364,8 +364,8 @@ mod tests {
     #[test]
     fn the_default_commands_keep_the_tools_chock_knows() {
         let listed = Config {
-            runner_tools: Some(vec!["just".to_string()]),
-            coverage_tools: Some(vec!["just".to_string()]),
+            runner_tools: Some(vec!["make".to_string()]),
+            coverage_tools: Some(vec!["make".to_string()]),
             ..Config::of(["test"])
         };
         assert_eq!(runner_for(Some(&listed)).tools, default_runner().tools);
