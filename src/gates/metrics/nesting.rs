@@ -34,7 +34,7 @@ fn measure(ctx: &Ctx) -> Result<Series, String> {
 /// Each named function and the depth of its deepest block; the body itself is depth one.
 pub fn depths(src: &str) -> Result<Vec<(String, u32)>, String> {
     let file = crate::gates::metrics::prodlines::parse_rust(src)?;
-    Ok(crate::gates::metrics::complexity::bodies(&file)
+    Ok(crate::gates::metrics::complexity::bodies(&file, &|_| false)
         .into_iter()
         .map(|found| (found.name, deepest(found.body, 1)))
         .collect())

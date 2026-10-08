@@ -780,8 +780,8 @@ impl<'ast> Visit<'ast> for Walk<'_> {
 /// The names a statement or arm binds, and whether it leaves its function or a loop around it.
 /// A labelled `break` or `continue` counts as leaving, whichever loop it names.
 #[derive(Debug, Default)]
-struct Facts {
-    bound: Vec<String>,
+pub(super) struct Facts {
+    pub(super) bound: Vec<String>,
     escapes: bool,
     loops: u32,
     closures: u32,

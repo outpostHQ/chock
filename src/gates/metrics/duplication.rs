@@ -11,7 +11,7 @@ use proc_macro2::{TokenStream, TokenTree};
 use syn::visit::Visit;
 use syn::{Attribute, Block, Meta, Path, Signature};
 
-use crate::gates::metrics::prodlines;
+use crate::gates::metrics::{complexity, prodlines};
 use crate::project;
 use crate::run::baseline::{Keys, Series};
 use crate::run::report::{Detail, Place};
@@ -366,8 +366,8 @@ impl Linked {
     }
 }
 
-/// Every production function in `source`, canonicalised. `file` is only a label; an `Err` reads
-/// `line: reason` for the caller to prefix with the path.
+/// Every production function in `source`, canonicalised; tests repeat their setup on purpose. `file`
+/// is only a label; an `Err` reads `line: reason` for the caller to prefix with the path.
 pub fn functions(source: &str, file: &str) -> Result<Vec<Function>, String> {
     let parsed = syn::parse_file(source).map_err(|e| {
         format!(
@@ -375,59 +375,21 @@ pub fn functions(source: &str, file: &str) -> Result<Vec<Function>, String> {
             u32::try_from(e.span().start().line).unwrap_or(u32::MAX)
         )
     })?;
-    let mut collector = Collector {
-        file,
-        found: Vec::new(),
-    };
-    collector.visit_file(&parsed);
-    Ok(collector.found)
-}
-
-/// Collects item functions, methods, and trait methods with a body. A function nested in another
-/// is part of its host's body.
-struct Collector<'a> {
-    file: &'a str,
-    found: Vec<Function>,
-}
-
-impl Collector<'_> {
-    fn take(&mut self, attrs: &[Attribute], sig: &Signature, body: &Block) {
-        if gated_to_a_harness(attrs) {
-            return;
-        }
-        let braces = body.brace_token.span;
-        self.found.push(Function {
-            file: self.file.to_string(),
-            name: sig.ident.to_string(),
-            shape: shape(sig, body),
-            line: line_of(sig.fn_token.span.start().line),
-            last: line_of(braces.close().end().line),
-            bytes: braces.join().byte_range(),
-        });
-    }
-}
-
-impl<'ast> Visit<'ast> for Collector<'_> {
-    /// Skips test modules, which repeat their setup on purpose.
-    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
-        if !gated_to_a_harness(&node.attrs) {
-            syn::visit::visit_item_mod(self, node);
-        }
-    }
-
-    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        self.take(&node.attrs, &node.sig, &node.block);
-    }
-
-    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
-        self.take(&node.attrs, &node.sig, &node.block);
-    }
-
-    fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
-        if let Some(body) = &node.default {
-            self.take(&node.attrs, &node.sig, body);
-        }
-    }
+    Ok(complexity::bodies(&parsed, &gated_to_a_harness)
+        .into_iter()
+        .filter(|found| !gated_to_a_harness(found.attrs))
+        .map(|found| {
+            let braces = found.body.brace_token.span;
+            Function {
+                file: file.to_string(),
+                name: found.name,
+                shape: shape(found.sig, found.body),
+                line: line_of(found.sig.fn_token.span.start().line),
+                last: line_of(braces.close().end().line),
+                bytes: braces.join().byte_range(),
+            }
+        })
+        .collect())
 }
 
 fn line_of(line: usize) -> u32 {

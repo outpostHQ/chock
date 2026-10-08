@@ -7,9 +7,10 @@ use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use syn::{
     Attribute, Block, Expr, ExprMatch, FnArg, Ident, ImplItem, ImplItemFn, ItemFn, ItemImpl,
-    ItemMod, ItemTrait, Pat, PatIdent, Signature, Stmt, Visibility,
+    ItemMod, ItemTrait, Pat, Signature, Stmt, Visibility,
 };
 
+use super::repeats::Facts;
 use super::{Forwarder, Read, Uses};
 use crate::gates::metrics::prodlines;
 use crate::run::report::{Finding, Place};
@@ -147,9 +148,14 @@ impl Lean<'_> {
     fn same_arms(&mut self, node: &ExprMatch) {
         let mut above: Option<(u32, String)> = None;
         for arm in &node.arms {
-            let mut binds = Binds::default();
-            binds.visit_pat(&arm.pat);
-            let open = !binds.0 && !matches!(arm.pat, Pat::Guard(_) | Pat::Wild(_));
+            // A capitalised name is a variant or a constant, and binds nothing.
+            let mut facts = Facts::default();
+            facts.visit_pat(&arm.pat);
+            let binds = facts
+                .bound
+                .iter()
+                .any(|name| !name.starts_with(char::is_uppercase));
+            let open = !binds && !matches!(arm.pat, Pat::Guard(_) | Pat::Wild(_));
             let body = arm
                 .body
                 .span()
@@ -252,17 +258,6 @@ fn is_public(vis: &Visibility) -> bool {
 
 fn is_doc(attr: &Attribute) -> bool {
     attr.path().is_ident("doc")
-}
-
-/// Whether a pattern binds a name; a capitalised name is a variant or a constant, and binds nothing.
-#[derive(Default)]
-struct Binds(bool);
-
-impl<'ast> Visit<'ast> for Binds {
-    fn visit_pat_ident(&mut self, node: &'ast PatIdent) {
-        self.0 |= !node.ident.to_string().starts_with(char::is_uppercase);
-        visit::visit_pat_ident(self, node);
-    }
 }
 
 fn count(map: &HashMap<String, usize>, word: &str) -> usize {

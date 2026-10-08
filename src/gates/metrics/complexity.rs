@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use syn::spanned::Spanned;
 use syn::visit::Visit;
-use syn::{BinOp, Block, Expr, ExprBinary, ExprIf, Signature, Stmt};
+use syn::{Attribute, BinOp, Block, Expr, ExprBinary, ExprIf, Signature, Stmt};
 
 use crate::project;
 use crate::run::baseline::{Keys, Series};
@@ -168,7 +168,7 @@ fn walked(ctx: &Ctx) -> Result<(Vec<PathBuf>, Vec<String>), String> {
 pub fn functions(source: &str, file: &str) -> Result<Vec<Function>, String> {
     let parsed =
         syn::parse_file(source).map_err(|e| format!("{}: {e}", line_of(e.span().start().line)))?;
-    Ok(bodies(&parsed)
+    Ok(bodies(&parsed, &|_| false)
         .into_iter()
         .map(|found| Function {
             file: file.to_string(),
@@ -187,12 +187,18 @@ pub struct Body<'ast> {
     pub body: &'ast Block,
     /// Declared in an `impl` or a trait, where a bare call of its own name is some other function.
     pub method: bool,
+    pub sig: &'ast Signature,
+    pub attrs: &'ast [Attribute],
 }
 
-/// Every function in a parsed file; `nesting` shares this list, so both gates see the same shapes.
+/// Every function in a parsed file, outside modules whose attributes `skip` names. `nesting` and
+/// `duplication` share this list, so all three gates see the same shapes.
 #[must_use]
-pub fn bodies(file: &syn::File) -> Vec<Body<'_>> {
-    let mut collector = Collector { found: Vec::new() };
+pub fn bodies<'ast>(file: &'ast syn::File, skip: &dyn Fn(&[Attribute]) -> bool) -> Vec<Body<'ast>> {
+    let mut collector = Collector {
+        found: Vec::new(),
+        skip,
+    };
     collector.visit_file(file);
     collector.found
 }
@@ -201,33 +207,48 @@ fn line_of(line: usize) -> u32 {
     u32::try_from(line).unwrap_or(u32::MAX)
 }
 
-struct Collector<'ast> {
+struct Collector<'ast, 'a> {
     found: Vec<Body<'ast>>,
+    skip: &'a dyn Fn(&[Attribute]) -> bool,
 }
 
-impl<'ast> Collector<'ast> {
-    fn take(&mut self, sig: &Signature, body: &'ast Block, method: bool) {
+impl<'ast> Collector<'ast, '_> {
+    fn take(
+        &mut self,
+        sig: &'ast Signature,
+        attrs: &'ast [Attribute],
+        body: &'ast Block,
+        method: bool,
+    ) {
         self.found.push(Body {
             name: sig.ident.to_string(),
             line: line_of(sig.ident.span().start().line),
             body,
             method,
+            sig,
+            attrs,
         });
     }
 }
 
-impl<'ast> Visit<'ast> for Collector<'ast> {
+impl<'ast> Visit<'ast> for Collector<'ast, '_> {
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        if !(self.skip)(&node.attrs) {
+            syn::visit::visit_item_mod(self, node);
+        }
+    }
+
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        self.take(&node.sig, &node.block, false);
+        self.take(&node.sig, &node.attrs, &node.block, false);
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
-        self.take(&node.sig, &node.block, true);
+        self.take(&node.sig, &node.attrs, &node.block, true);
     }
 
     fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
         if let Some(body) = &node.default {
-            self.take(&node.sig, body, true);
+            self.take(&node.sig, &node.attrs, body, true);
         }
     }
 }
