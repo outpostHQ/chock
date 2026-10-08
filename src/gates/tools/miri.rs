@@ -427,18 +427,11 @@ mod tests {
         assert!(!said.contains(exec::TIMEOUT), "{said}");
     }
 
-    fn ctx_at(root: &Path) -> Ctx {
-        Ctx::for_root(
-            root.to_path_buf(),
-            crate::run::baseline::Baseline::empty("0.1.0"),
-        )
-    }
-
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_per_test_limit_is_a_file_of_the_runs_own_and_goes_when_the_run_ends() {
         let root = crate::testdir::make("miri-limit");
-        let (limit, args) = limited(&ctx_at(&root), &["--all-features".to_string()]).unwrap();
+        let (limit, args) = limited(&Ctx::at(&root), &["--all-features".to_string()]).unwrap();
         let named = args.last().unwrap();
         let path = named.strip_prefix("--tool-config-file=chock:").unwrap();
         assert_eq!(Path::new(path), limit.0);
@@ -456,7 +449,7 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_part_of_the_suite_goes_to_nextest_as_its_partition() {
         let root = crate::testdir::make("miri-part");
-        let mut ctx = ctx_at(&root);
+        let mut ctx = Ctx::at(&root);
         let (_whole_limit, whole) = limited(&ctx, &[]).unwrap();
         assert!(
             !whole.iter().any(|arg| arg.starts_with("--partition")),
@@ -474,31 +467,26 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_limit_that_cannot_be_written_stops_the_gate_before_the_interpreter() {
         let root = crate::testdir::tree("miri-limit-blocked", &[("target", "a file")]);
-        let said = limited(&ctx_at(&root), &[]).err().unwrap();
+        let said = limited(&Ctx::at(&root), &[]).err().unwrap();
         assert!(
             said.starts_with("cannot write miri's per-test limit: "),
             "{said}"
         );
-        let said = limited(&ctx_at(Path::new("w")), &[]).err().unwrap();
+        let said = limited(&Ctx::at(Path::new("w")), &[]).err().unwrap();
         assert!(said.ends_with("is not under a project root"), "{said}");
     }
 
     #[test]
     fn a_test_the_limit_stopped_is_named_with_how_to_shorten_it() {
-        let out = exec::Output {
-            code: Some(100),
-            stdout: String::new(),
-            stderr: "     TIMEOUT [ 300.004s] (2/2) chock vcs::tests::slow\n".to_string(),
-            truncated: false,
-        };
+        let out = exec::Output::of(
+            Some(100),
+            "",
+            "     TIMEOUT [ 300.004s] (2/2) chock vcs::tests::slow\n",
+        );
         let outcome = judged(&out, Path::new("/w"));
         assert!(!outcome.passed);
         assert_eq!(
-            outcome
-                .findings
-                .iter()
-                .map(Finding::render)
-                .collect::<Vec<_>>(),
+            Finding::rendered(&outcome.findings),
             [format!("chock vcs::tests::slow: {STOPPED}")]
         );
     }
@@ -506,33 +494,21 @@ mod tests {
     /// As CI printed a failed assertion: the test is named, so the gate is not unable to run.
     #[test]
     fn a_test_that_failed_under_miri_is_named_though_it_printed_no_span() {
-        let out = exec::Output {
-            code: Some(100),
-            stdout: String::new(),
-            stderr: "        FAIL [  14.322s] (117/299) chock watch::tests::reused\n\
-                     error: test run failed\n"
-                .to_string(),
-            truncated: false,
-        };
+        let out = exec::Output::of(
+            Some(100),
+            "",
+            "        FAIL [  14.322s] (117/299) chock watch::tests::reused\nerror: test run failed\n",
+        );
         let outcome = judged(&out, Path::new("/w"));
         assert!(!outcome.passed);
         assert_eq!(
-            outcome
-                .findings
-                .iter()
-                .map(Finding::render)
-                .collect::<Vec<_>>(),
+            Finding::rendered(&outcome.findings),
             [format!("chock watch::tests::reused: {FAILED}")]
         );
     }
 
     fn said(code: i32, stdout: &str, stderr: &str) -> exec::Output {
-        exec::Output {
-            code: Some(code),
-            stdout: stdout.to_string(),
-            stderr: stderr.to_string(),
-            truncated: false,
-        }
+        exec::Output::of(Some(code), stdout, stderr)
     }
 
     const LISTED: &str = r#"{"rust-suites": {"chock": {"package-name": "chock",
@@ -561,7 +537,7 @@ mod tests {
             }
         };
         let args = invocation(&crate::project::config::Scope::default(), &[]);
-        let ctx = ctx_at(Path::new("/w"));
+        let ctx = Ctx::at(Path::new("/w"));
         let outcome = suite(&ctx, &[], &args, &run);
         (outcome, asked.into_inner().unwrap())
     }
@@ -591,11 +567,7 @@ mod tests {
             let outcome = outcome.unwrap();
             assert!(!outcome.passed);
             assert_eq!(
-                outcome
-                    .findings
-                    .iter()
-                    .map(Finding::render)
-                    .collect::<Vec<_>>(),
+                Finding::rendered(&outcome.findings),
                 [format!("chock a: {FAILED}")]
             );
             assert_eq!(verbs(&asked), ["list", "-p", "run"]);

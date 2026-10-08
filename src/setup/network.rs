@@ -68,12 +68,7 @@ mod tests {
         timed out\n";
 
     fn output(code: i32, stderr: &str) -> Output {
-        Output {
-            code: Some(code),
-            stdout: String::new(),
-            stderr: stderr.to_string(),
-            truncated: false,
-        }
+        Output::of(Some(code), "", stderr)
     }
 
     /// Runs `patiently` against answers given in turn, and returns its result, the pauses it

@@ -155,12 +155,7 @@ mod tests {
         let calls = std::cell::RefCell::new(Vec::new());
         let run = |args: &[&str]| {
             calls.borrow_mut().push(args.join(" "));
-            Ok(exec::Output {
-                code: Some(0),
-                stdout: String::new(),
-                stderr: String::new(),
-                truncated: false,
-            })
+            Ok(exec::Output::of(Some(0), "", ""))
         };
         assert_eq!(
             checked(Path::new("/w"), &scopes, &[], &run).unwrap(),
@@ -170,14 +165,7 @@ mod tests {
             *calls.borrow(),
             ["doc --no-deps -p first", "doc --no-deps -p second"]
         );
-        let fail = |_: &[&str]| {
-            Ok(exec::Output {
-                code: Some(1),
-                stdout: String::new(),
-                stderr: "error: fixture failed".into(),
-                truncated: false,
-            })
-        };
+        let fail = |_: &[&str]| Ok(exec::Output::of(Some(1), "", "error: fixture failed"));
         assert!(
             !checked(Path::new("/w"), &scopes, &[], &fail)
                 .unwrap()
@@ -209,12 +197,11 @@ mod tests {
             "clean" => (0, "warning"),
             _ => (101, "error"),
         };
-        exec::Output {
-            code: Some(code),
-            stdout: String::new(),
-            stderr: format!("{level}: unresolved link\n --> src/{package}.rs:7:5\n"),
-            truncated: false,
-        }
+        exec::Output::of(
+            Some(code),
+            "",
+            &format!("{level}: unresolved link\n --> src/{package}.rs:7:5\n"),
+        )
     }
 
     /// The false green this answers: the first package to fail ended the check before the rest ran.
@@ -239,12 +226,7 @@ mod tests {
         let calls = std::cell::Cell::new(0);
         let run = |_: &[&str]| {
             calls.set(calls.get() + 1);
-            Ok(exec::Output {
-                code: Some(101),
-                stdout: String::new(),
-                stderr: "error: could not compile".into(),
-                truncated: false,
-            })
+            Ok(exec::Output::of(Some(101), "", "error: could not compile"))
         };
         let scopes = [Some("first".into()), Some("second".into())];
         let outcome = checked(Path::new("/w"), &scopes, &[], &run).unwrap();

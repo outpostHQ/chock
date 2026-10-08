@@ -173,12 +173,7 @@ mod tests {
     use super::*;
 
     fn said(stdout: &str) -> exec::Output {
-        exec::Output {
-            code: Some(0),
-            stdout: stdout.to_string(),
-            stderr: String::new(),
-            truncated: false,
-        }
+        exec::Output::of(Some(0), stdout, "")
     }
 
     /// The commit count `scanned` reports walking, so passing it means the scan covered everything.
@@ -193,16 +188,10 @@ mod tests {
     /// A scanner that died partway still prints an envelope.
     #[test]
     fn a_scan_that_failed_is_not_a_history_with_no_secrets_in_it() {
-        let refused = exec::Output {
-            code: Some(2),
-            stdout: r#"{"mode":"history","findings":[],"commits_walked":3}"#.to_string(),
-            stderr: "pack is corrupt".to_string(),
-            truncated: false,
-        };
-        assert_eq!(
-            leaks(&refused, WHOLE, &[]),
-            Err("outpost could not walk this history: pack is corrupt".to_string())
-        );
+        let walked = r#"{"mode":"history","findings":[],"commits_walked":3}"#;
+        let refused = exec::Output::of(Some(2), walked, "pack is corrupt");
+        let why = "outpost could not walk this history: pack is corrupt";
+        assert_eq!(leaks(&refused, WHOLE, &[]), Err(why.to_string()));
     }
 
     #[test]

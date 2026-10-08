@@ -82,10 +82,7 @@ mod tests {
     /// Returns the scratch guard too: `Ctx` cannot hold it, and dropping it deletes the directory.
     fn ctx() -> (Ctx, crate::testdir::Scratch) {
         let dir = crate::testdir::make("wiring");
-        let held = Ctx::for_root(
-            dir.to_path_buf(),
-            crate::run::baseline::Baseline::empty("0.1.0"),
-        );
+        let held = Ctx::at(&dir);
         (held, dir)
     }
 

@@ -139,6 +139,12 @@ impl Finding {
         self
     }
 
+    /// Each finding rendered, in order: what a test compares.
+    #[cfg(test)]
+    pub(crate) fn rendered(findings: &[Self]) -> Vec<String> {
+        findings.iter().map(Self::render).collect()
+    }
+
     /// `file:line: message`, the form editors and agents follow. A finding with no file shows its
     /// item instead.
     #[must_use]

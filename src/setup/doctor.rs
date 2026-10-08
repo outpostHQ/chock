@@ -880,12 +880,7 @@ mod tests {
     }
 
     fn listing(text: &str) -> Result<crate::exec::Output, String> {
-        Ok(crate::exec::Output {
-            code: Some(0),
-            stdout: text.to_string(),
-            stderr: String::new(),
-            truncated: false,
-        })
+        Ok(crate::exec::Output::of(Some(0), text, ""))
     }
 
     fn declared(command: Option<&str>) -> crate::project::vcs::GitHook {

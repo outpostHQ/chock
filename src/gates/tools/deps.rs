@@ -146,12 +146,7 @@ mod tests {
 
     #[test]
     fn only_a_failed_outcome_gains_the_unplaced_errors() {
-        let out = exec::Output {
-            code: Some(1),
-            stdout: String::new(),
-            stderr: UNLICENSED.to_string(),
-            truncated: false,
-        };
+        let out = exec::Output::of(Some(1), "", UNLICENSED);
         assert_eq!(with_unplaced(Outcome::passed(), &out), Outcome::passed());
         let read = verdict(&out, Path::new("/w/proj"));
         assert!(unread(&read), "{:?}", read.findings);
@@ -167,10 +162,7 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_policy_file_that_is_absent_or_asks_for_nothing_cannot_be_measured() {
         let dir = crate::testdir::make("deps-no-policy");
-        let ctx = Ctx::for_root(
-            dir.to_path_buf(),
-            crate::run::baseline::Baseline::empty("0.1.0"),
-        );
+        let ctx = Ctx::at(&dir);
         let absent = check(&ctx).unwrap_err();
         assert_eq!(
             absent.split(": ").next(),

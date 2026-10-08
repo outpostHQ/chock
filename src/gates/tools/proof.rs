@@ -480,21 +480,15 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
     const HONEST: &str =
         "Checking harness one...\nSUMMARY:\n ** 0 of 2 failed\nVERIFICATION:- SUCCESSFUL\n";
 
-    fn ran(code: Option<i32>, stdout: &str, stderr: &str) -> exec::Output {
-        exec::Output {
-            code,
-            stdout: stdout.to_string(),
-            stderr: stderr.to_string(),
-            truncated: false,
-        }
-    }
-
     fn expected(names: &[&str]) -> BTreeSet<String> {
         names.iter().map(|name| (*name).to_string()).collect()
     }
 
     fn verdict_of(stdout: &str, code: i32) -> Result<Outcome, String> {
-        read_verdict(&ran(Some(code), stdout, ""), &expected(&["one"]))
+        read_verdict(
+            &exec::Output::of(Some(code), stdout, ""),
+            &expected(&["one"]),
+        )
     }
 
     #[test]
@@ -505,7 +499,7 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
             "proofs::vacuous_by_a_false_assumption",
             "proofs::doubling_never_exceeds_the_range",
         ]);
-        let outcome = read_verdict(&ran(Some(0), MEASURED, ""), &names).unwrap();
+        let outcome = read_verdict(&exec::Output::of(Some(0), MEASURED, ""), &names).unwrap();
         assert!(!outcome.passed);
         let said: Vec<String> = outcome.findings.iter().map(Finding::render).collect();
         assert_eq!(
@@ -521,7 +515,11 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
     #[test]
     fn every_expected_harness_must_have_a_complete_reachable_summary() {
         assert_eq!(verdict_of(HONEST, 0).unwrap(), Outcome::passed());
-        let why = read_verdict(&ran(Some(0), HONEST, ""), &expected(&["one", "two"])).unwrap_err();
+        let why = read_verdict(
+            &exec::Output::of(Some(0), HONEST, ""),
+            &expected(&["one", "two"]),
+        )
+        .unwrap_err();
         assert!(why.contains("missing: [two]"), "{why}");
         let why = verdict_of(&HONEST.replace("one...", "two..."), 0).unwrap_err();
         assert!(why.contains("missing: [one]"), "{why}");
@@ -532,7 +530,7 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
     fn no_output_is_not_proof_even_when_kani_exits_zero() {
         let why = verdict_of("", 0).unwrap_err();
         assert!(why.contains("missing: [one]"), "{why}");
-        assert!(read_verdict(&ran(Some(0), "", ""), &BTreeSet::new()).is_err());
+        assert!(read_verdict(&exec::Output::of(Some(0), "", ""), &BTreeSet::new()).is_err());
     }
 
     #[test]
@@ -578,7 +576,7 @@ Complete - 2 successfully verified harnesses, 2 failures, 4 total.
             "proofs::never_panics",
             "proofs::panics_as_expected",
         ]);
-        let outcome = read_verdict(&ran(Some(1), SHOULD_PANIC, ""), &names).unwrap();
+        let outcome = read_verdict(&exec::Output::of(Some(1), SHOULD_PANIC, ""), &names).unwrap();
         let unexpected =
             "kani's verdict is FAILED (encountered no panics, but at least one was expected)";
         assert_eq!(
@@ -598,7 +596,7 @@ Complete - 2 successfully verified harnesses, 2 failures, 4 total.
             .unwrap();
         let passing = format!("{HONEST}{}", &SHOULD_PANIC[witness..]);
         let names = expected(&["one", "proofs::panics_as_expected"]);
-        let outcome = read_verdict(&ran(Some(0), &passing, ""), &names).unwrap();
+        let outcome = read_verdict(&exec::Output::of(Some(0), &passing, ""), &names).unwrap();
         assert_eq!(outcome.findings, []);
         assert!(outcome.passed);
     }
@@ -666,7 +664,7 @@ VERIFICATION:- SUCCESSFUL
     #[test]
     fn a_result_verified_side_by_side_belongs_to_the_harness_its_thread_started() {
         let names = expected(&["fails", "holds", "later"]);
-        let outcome = read_verdict(&ran(Some(1), SIDE_BY_SIDE, ""), &names).unwrap();
+        let outcome = read_verdict(&exec::Output::of(Some(1), SIDE_BY_SIDE, ""), &names).unwrap();
         assert_eq!(
             outcome.findings,
             [Finding::at("", "1 of 2 checks failed").item("fails")]
@@ -747,15 +745,18 @@ VERIFICATION:- SUCCESSFUL
 
     #[test]
     fn truncated_or_abnormally_terminated_output_is_not_a_proof() {
-        let mut out = ran(Some(0), HONEST, "");
+        let mut out = exec::Output::of(Some(0), HONEST, "");
         out.truncated = true;
         assert!(
             read_verdict(&out, &expected(&["one"]))
                 .unwrap_err()
                 .contains("truncated")
         );
-        let why =
-            read_verdict(&ran(None, HONEST, "solver stopped"), &expected(&["one"])).unwrap_err();
+        let why = read_verdict(
+            &exec::Output::of(None, HONEST, "solver stopped"),
+            &expected(&["one"]),
+        )
+        .unwrap_err();
         assert!(why.contains("solver stopped"), "{why}");
     }
 
@@ -817,10 +818,10 @@ VERIFICATION:- SUCCESSFUL
 
     #[test]
     fn a_listing_failure_or_truncation_is_refused_before_any_file_is_read() {
-        let out = ran(Some(1), "", "kani is not installed");
+        let out = exec::Output::of(Some(1), "", "kani is not installed");
         let why = read_harnesses(&out, || panic!("must not read a failed listing")).unwrap_err();
         assert!(why.contains("kani is not installed"), "{why}");
-        let mut out = ran(Some(0), "", "");
+        let mut out = exec::Output::of(Some(0), "", "");
         out.truncated = true;
         assert!(read_harnesses(&out, || panic!("must not read an incomplete listing")).is_err());
     }
@@ -828,10 +829,11 @@ VERIFICATION:- SUCCESSFUL
     #[test]
     fn the_listing_returns_identities_and_rejects_no_expected_work() {
         assert_eq!(
-            read_harnesses(&ran(Some(0), "", ""), || Ok(ONE.to_string())).unwrap(),
+            read_harnesses(&exec::Output::of(Some(0), "", ""), || Ok(ONE.to_string())).unwrap(),
             expected(&["one"])
         );
-        let why = read_harnesses(&ran(Some(0), "", ""), || Ok("{}".into())).unwrap_err();
+        let why =
+            read_harnesses(&exec::Output::of(Some(0), "", ""), || Ok("{}".into())).unwrap_err();
         assert!(why.contains("no #[kani::proof] harnesses"), "{why}");
     }
 
@@ -841,7 +843,9 @@ VERIFICATION:- SUCCESSFUL
         let root = crate::testdir::make("proof-listing");
         std::fs::write(root.join(LISTING), ONE).unwrap();
         clear_listing(&root).unwrap();
-        assert!(read_harnesses(&ran(Some(0), "", ""), || read_listing(&root)).is_err());
+        assert!(
+            read_harnesses(&exec::Output::of(Some(0), "", ""), || read_listing(&root)).is_err()
+        );
         clear_listing(&root).unwrap();
         std::fs::write(root.join(LISTING), ONE).unwrap();
         assert_eq!(

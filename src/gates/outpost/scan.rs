@@ -78,14 +78,13 @@ mod tests {
     }
 
     fn flowed(files: u64, findings: &str, taint: &str) -> exec::Output {
-        exec::Output {
-            code: Some(0),
-            stdout: format!(
+        exec::Output::of(
+            Some(0),
+            &format!(
                 r#"{{"findings":[{findings}],"taint":[{taint}],"languages":{{"rs":{{"files":{files}}}}}}}"#
             ),
-            stderr: String::new(),
-            truncated: false,
-        }
+            "",
+        )
     }
 
     fn found(file: &str, rule: &str) -> String {
@@ -154,23 +153,13 @@ mod tests {
 
     #[test]
     fn a_tree_outpost_refused_is_not_a_tree_with_nothing_wrong() {
-        let refused = exec::Output {
-            code: Some(1),
-            stdout: String::new(),
-            stderr: "not a repository".to_string(),
-            truncated: false,
-        };
+        let refused = exec::Output::of(Some(1), "", "not a repository");
         assert!(read_scan(&refused).is_err());
     }
 
     #[test]
     fn output_in_a_shape_chock_does_not_know_stops_the_gate() {
-        let odd = exec::Output {
-            code: Some(0),
-            stdout: "not json".to_string(),
-            stderr: String::new(),
-            truncated: false,
-        };
+        let odd = exec::Output::of(Some(0), "not json", "");
         assert!(
             read_scan(&odd)
                 .unwrap_err()

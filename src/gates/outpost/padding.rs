@@ -59,13 +59,7 @@ mod tests {
     use super::*;
 
     fn checked_from(json: &str) -> crate::gates::outpost::Check {
-        crate::gates::outpost::checked(&crate::exec::Output {
-            code: Some(0),
-            stdout: json.to_string(),
-            stderr: String::new(),
-            truncated: false,
-        })
-        .unwrap()
+        crate::gates::outpost::checked(&crate::exec::Output::of(Some(0), json, "")).unwrap()
     }
 
     fn bar(tree_median: f64, pinned: bool) -> crate::gates::outpost::Bar {

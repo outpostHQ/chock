@@ -354,12 +354,7 @@ mod tests {
     }
 
     fn output(code: i32, stdout: &str, stderr: &str) -> exec::Output {
-        exec::Output {
-            code: Some(code),
-            stdout: stdout.to_string(),
-            stderr: stderr.to_string(),
-            truncated: false,
-        }
+        exec::Output::of(Some(code), stdout, stderr)
     }
 
     fn branch(commit: &str) -> String {

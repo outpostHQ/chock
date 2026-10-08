@@ -209,6 +209,19 @@ pub enum Kind {
     },
 }
 
+#[cfg(test)]
+impl Kind {
+    /// What a ratchet keys its record by and counts in; `None` for a gate that reads a verdict.
+    pub(crate) fn ratcheted(&self) -> Option<(Keys, &'static str)> {
+        match self {
+            Self::Ratchet { keys, unit, .. } | Self::AnnotatedRatchet { keys, unit, .. } => {
+                Some((*keys, unit))
+            }
+            Self::Binary(_) | Self::Debt { .. } => None,
+        }
+    }
+}
+
 /// Which list a gate belongs to. An instrument only reports, so it is never enforced or turned on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {
@@ -1143,6 +1156,22 @@ mod tests {
         }
     }
 
+    fn ratchet_of(measure: Measure, keys: Keys, unit: &'static str) -> Gate {
+        gate_of(Kind::Ratchet {
+            measure,
+            keys,
+            unit,
+        })
+    }
+
+    fn annotated_of(measure: AnnotatedMeasure, keys: Keys, unit: &'static str) -> Gate {
+        gate_of(Kind::AnnotatedRatchet {
+            measure,
+            keys,
+            unit,
+        })
+    }
+
     fn gate_of(kind: Kind) -> Gate {
         Gate {
             name: "probe",
@@ -1186,11 +1215,7 @@ mod tests {
 
     #[test]
     fn debt_the_record_allows_fails_in_a_touched_file_and_nowhere_else() {
-        let gate = gate_of(Kind::Ratchet {
-            measure: one_file_four_ways,
-            keys: Keys::Items,
-            unit: "lines",
-        });
+        let gate = ratchet_of(one_file_four_ways, Keys::Items, "lines");
         let report = run_one(&gate, &kept_clean(Ok(vec!["src/a.rs".to_string()])));
         assert_eq!(report.verdict, Verdict::Tripped);
         let named: Vec<_> = report
@@ -1213,11 +1238,7 @@ mod tests {
 
     #[test]
     fn a_change_set_that_cannot_be_read_stops_the_gate_rather_than_passing_it() {
-        let gate = gate_of(Kind::Ratchet {
-            measure: one_file_four_ways,
-            keys: Keys::Items,
-            unit: "lines",
-        });
+        let gate = ratchet_of(one_file_four_ways, Keys::Items, "lines");
         let report = run_one(&gate, &kept_clean(Err("no repository".to_string())));
         assert_eq!(report.verdict, Verdict::CannotRun);
         let why = report.cannot_run_reason.unwrap_or_default();
@@ -1230,11 +1251,7 @@ mod tests {
     #[test]
     fn only_a_listed_gate_that_counts_items_holds_touched_files_to_zero() {
         let touched = || kept_clean(Ok(vec!["src/a.rs".to_string()]));
-        let measures = gate_of(Kind::Ratchet {
-            measure: two_items,
-            keys: Keys::Measures,
-            unit: "lines",
-        });
+        let measures = ratchet_of(two_items, Keys::Measures, "lines");
         let mut ctx = touched();
         ctx.baseline.set("probe", two_items(&ctx).unwrap());
         assert_eq!(run_one(&measures, &ctx).verdict, Verdict::Pass);
@@ -1265,14 +1282,7 @@ mod tests {
         assert_eq!(report.measured, Some(15));
         assert_eq!(report.unit.as_deref(), Some("lines"));
 
-        let refused = survey_one(
-            &gate_of(Kind::Ratchet {
-                measure: measured_nothing,
-                keys: Keys::Items,
-                unit: "lines",
-            }),
-            &ctx,
-        );
+        let refused = survey_one(&ratchet_of(measured_nothing, Keys::Items, "lines"), &ctx);
         assert_eq!(refused.verdict, Verdict::CannotRun);
         assert!(
             refused
@@ -1297,11 +1307,7 @@ mod tests {
     }
 
     fn ratchet_gate() -> Gate {
-        gate_of(Kind::Ratchet {
-            measure: two_items,
-            keys: Keys::Items,
-            unit: "lines",
-        })
+        ratchet_of(two_items, Keys::Items, "lines")
     }
 
     /// A ratchet that reads a tool no machine holds.
@@ -1390,11 +1396,7 @@ mod tests {
     /// machine's filesystem can never match there. coverage recorded exactly that from a stale lcov.
     #[test]
     fn a_measurement_keyed_outside_this_project_is_refused_rather_than_recorded() {
-        let gate = gate_of(Kind::Ratchet {
-            measure: a_key_from_another_tree,
-            keys: Keys::Items,
-            unit: "lines",
-        });
+        let gate = ratchet_of(a_key_from_another_tree, Keys::Items, "lines");
         let report = run_one(&gate, &ctx_with("probe", &[("src/a.rs", 10)]));
         assert_eq!(report.verdict, Verdict::CannotRun);
         let why = report.cannot_run_reason.unwrap_or_default();
@@ -1474,7 +1476,7 @@ mod tests {
             (report.verdict, report.tightened.clone()),
             (Verdict::Tripped, None)
         );
-        let said: Vec<String> = report.findings.iter().map(Finding::render).collect();
+        let said: Vec<String> = Finding::rendered(&report.findings);
         assert_eq!(
             said,
             [
@@ -1496,7 +1498,7 @@ mod tests {
         ctx.strict = vec!["slop".to_string()];
         let report = run_one(&settling_gate(), &ctx);
         assert_eq!(report.verdict, Verdict::Tripped);
-        let said: Vec<String> = report.findings.iter().map(Finding::render).collect();
+        let said: Vec<String> = Finding::rendered(&report.findings);
         assert_eq!(
             said,
             [
@@ -1534,12 +1536,11 @@ mod tests {
         );
         assert_eq!(stopped("the suite does not compile"), None);
         // `unused-deep` reads no finding where rustup has no `nightly`; rustup's words name the repair.
-        let no_nightly = crate::exec::Output {
-            code: Some(1),
-            stdout: String::new(),
-            stderr: "error: toolchain 'nightly-x86_64-unknown-linux-gnu' is not installed\n".into(),
-            truncated: false,
-        };
+        let no_nightly = crate::exec::Output::of(
+            Some(1),
+            "",
+            "error: toolchain 'nightly-x86_64-unknown-linux-gnu' is not installed\n",
+        );
         let unread = Outcome::failed(Vec::new()).saying(&no_nightly);
         let unread = outcome_report(&settling_gate(), Ok(unread));
         assert_eq!(unread.verdict, Verdict::CannotRun);
@@ -1589,9 +1590,8 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_that_keeps_its_own_record_is_keyed_again_after_it_was_judged() {
-        let dir = crate::testdir::make("run-kept-under");
-        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
-        let ctx = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
+        let dir = crate::testdir::tree("run-kept-under", &[("a.rs", "fn a() {}\n")]);
+        let ctx = Ctx::at(&dir);
         let plain = declaring(agreeable);
         let asked = Some("asked".to_string());
         assert_eq!(kept_under(&plain, &ctx, asked.clone()), asked);
@@ -1616,9 +1616,8 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_verdict_that_took_a_first_record_is_not_recalled() {
-        let dir = crate::testdir::make("run-first-record");
-        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
-        let ctx = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
+        let dir = crate::testdir::tree("run-first-record", &[("a.rs", "fn a() {}\n")]);
+        let ctx = Ctx::at(&dir);
         let gate = Gate {
             reads: Some(crate::run::verdicts::Reads::tree_and(&[])),
             ..ratchet_gate()
@@ -1640,13 +1639,12 @@ mod tests {
         fn broken(_ctx: &Ctx) -> Result<Outcome, String> {
             Ok(Outcome::failed(vec![Finding::at("a.rs", "broken")]))
         }
-        let dir = crate::testdir::make("run-no-cache");
-        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
-        let ctx = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
+        let dir = crate::testdir::tree("run-no-cache", &[("a.rs", "fn a() {}\n")]);
+        let ctx = Ctx::at(&dir);
         assert!(!run_one(&declaring(agreeable), &ctx).recalled);
         let fresh = Ctx {
             no_cache: true,
-            ..Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"))
+            ..Ctx::at(&dir)
         };
         let judged = run_one(&declaring(broken), &fresh);
         assert_eq!((judged.verdict, judged.recalled), (Verdict::Tripped, false));
@@ -1676,9 +1674,8 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_ci_run_keeps_its_verdict_under_its_own_key() {
-        let dir = crate::testdir::make("run-ci-key");
-        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
-        let local = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
+        let dir = crate::testdir::tree("run-ci-key", &[("a.rs", "fn a() {}\n")]);
+        let local = Ctx::at(&dir);
         let here = keyed(&declaring(agreeable), &local).unwrap();
         let ci = Ctx { ci: true, ..local };
         let there = keyed(&declaring(agreeable), &ci).unwrap();
@@ -1689,9 +1686,8 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_that_names_its_inputs_answers_the_second_time_without_running() {
-        let dir = crate::testdir::make("run-recalled");
-        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
-        let ctx = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
+        let dir = crate::testdir::tree("run-recalled", &[("a.rs", "fn a() {}\n")]);
+        let ctx = Ctx::at(&dir);
         let first = run_one(&declaring(agreeable), &ctx);
         assert_eq!(first.verdict, Verdict::Pass);
         assert!(!first.recalled, "the first run took the verdict itself");
@@ -1743,8 +1739,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_held_clean_where_touched_runs_again_when_the_change_set_moves() {
-        let dir = crate::testdir::make("run-touched-key");
-        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+        let dir = crate::testdir::tree("run-touched-key", &[("a.rs", "fn a() {}\n")]);
         let touching = |changed: Result<Vec<String>, String>| Ctx {
             root: dir.to_path_buf(),
             ..kept_clean(changed)
@@ -1761,9 +1756,8 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_changing_puts_the_gate_back_to_running() {
-        let dir = crate::testdir::make("run-recalled-moved");
-        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
-        let ctx = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
+        let dir = crate::testdir::tree("run-recalled-moved", &[("a.rs", "fn a() {}\n")]);
+        let ctx = Ctx::at(&dir);
         assert!(!run_one(&declaring(agreeable), &ctx).recalled);
         std::fs::write(dir.join("a.rs"), "fn a() { }\n").unwrap();
         // The listing is taken once per run, so a second context is what a second run would have.
@@ -1788,11 +1782,7 @@ mod tests {
             ci: true,
             ..Ctx::for_root(PathBuf::from("/w"), Baseline::empty("0.1.0"))
         };
-        let gate = gate_of(Kind::Ratchet {
-            measure: never_reached,
-            keys: Keys::Items,
-            unit: "lines",
-        });
+        let gate = ratchet_of(never_reached, Keys::Items, "lines");
         let report = run_one(&gate, &ctx);
         assert_eq!(report.verdict, Verdict::CannotRun);
         assert_eq!(
@@ -1856,11 +1846,7 @@ mod tests {
                 .push(Finding::at("src/a.rs", "survived").item("eq_op_invert"));
             Ok(read)
         }
-        let gate = gate_of(Kind::AnnotatedRatchet {
-            measure: sited,
-            keys: Keys::Items,
-            unit: "survivors",
-        });
+        let gate = annotated_of(sited, Keys::Items, "survivors");
         let ctx = ctx_with("another", &[]);
         let report = run_one(&gate, &ctx);
         let scoped = scoped_measurement(&ctx).unwrap();
@@ -1878,7 +1864,7 @@ mod tests {
         let ctx = with_no_record(Ok(vec!["src/a.rs".to_string()]));
         let report = run_one(&ratchet_gate(), &ctx);
         assert_eq!((report.verdict, report.exit_code), (Verdict::Tripped, 1));
-        let said: Vec<String> = report.findings.iter().map(Finding::render).collect();
+        let said: Vec<String> = Finding::rendered(&report.findings);
         assert_eq!(
             said,
             [
@@ -1909,16 +1895,12 @@ mod tests {
     /// The false green this answers: a count the record lacks passed with a note at every size.
     #[test]
     fn a_measure_the_baseline_never_saw_trips_once_it_counts_anything() {
-        let gate = gate_of(Kind::Ratchet {
-            measure: two_items,
-            keys: Keys::Measures,
-            unit: "lines",
-        });
+        let gate = ratchet_of(two_items, Keys::Measures, "lines");
         let ctx = ctx_with("probe", &[("src/a.rs", 10)]);
         let report = run_one(&gate, &ctx);
         assert_eq!(report.verdict, Verdict::Tripped);
         assert_eq!(report.exit_code, 1);
-        let said: Vec<String> = report.findings.iter().map(Finding::render).collect();
+        let said: Vec<String> = Finding::rendered(&report.findings);
         assert_eq!(said, vec!["src/b.rs: 5 lines, not in the baseline"]);
     }
 
@@ -1927,7 +1909,7 @@ mod tests {
         let ctx = ctx_with("probe", &[("src/a.rs", 10)]);
         let report = run_one(&census_gate(two_items), &ctx);
         assert_eq!(report.verdict, Verdict::Tripped);
-        let said: Vec<String> = report.findings.iter().map(Finding::render).collect();
+        let said: Vec<String> = Finding::rendered(&report.findings);
         assert_eq!(said, vec!["src/b.rs: 5 hazard(s), not in the baseline"]);
     }
 
@@ -2017,11 +1999,7 @@ mod tests {
     /// Charging that as a lost check would fail a project for fixing its code.
     #[test]
     fn a_measure_whose_last_finding_was_fixed_passes_rather_than_reading_as_a_lost_check() {
-        let gate = gate_of(Kind::Ratchet {
-            measure: two_items,
-            keys: Keys::Measures,
-            unit: "findings",
-        });
+        let gate = ratchet_of(two_items, Keys::Measures, "findings");
         let ctx = ctx_with(
             "probe",
             &[
@@ -2055,7 +2033,7 @@ mod tests {
             &[("half-an-inverse", 2), ("src/a.rs", 1), ("src/b.rs", 5)],
         );
         let report = run_one(&census_gate(two_items), &ctx);
-        let said: Vec<String> = report.findings.iter().map(Finding::render).collect();
+        let said: Vec<String> = Finding::rendered(&report.findings);
         assert!(
             said.contains(&"src/a.rs: 10 hazard(s), over the recorded 1".to_string()),
             "{said:?}"
@@ -2074,11 +2052,7 @@ mod tests {
         fn broken(_ctx: &Ctx) -> Result<Series, String> {
             Err("cargo is not on PATH".to_string())
         }
-        let gate = gate_of(Kind::Ratchet {
-            measure: broken,
-            keys: Keys::Items,
-            unit: "lines",
-        });
+        let gate = ratchet_of(broken, Keys::Items, "lines");
         let report = run_one(&gate, &ctx_with("probe", &[]));
         assert_eq!(report.verdict, Verdict::CannotRun);
         assert_eq!(report.exit_code, 2);
@@ -2118,11 +2092,7 @@ mod tests {
     }
 
     fn scoped_ratchet() -> Gate {
-        gate_of(Kind::AnnotatedRatchet {
-            measure: scoped_measurement,
-            keys: Keys::Items,
-            unit: "survivors",
-        })
+        annotated_of(scoped_measurement, Keys::Items, "survivors")
     }
 
     #[test]
@@ -2254,11 +2224,7 @@ mod tests {
         fn failed(_ctx: &Ctx) -> Result<Measurement, String> {
             Err("eligible target launch did not build".to_string())
         }
-        let gate = gate_of(Kind::AnnotatedRatchet {
-            measure: failed,
-            keys: Keys::Items,
-            unit: "survivors",
-        });
+        let gate = annotated_of(failed, Keys::Items, "survivors");
         let ctx = ctx_with("probe", &[("src/a.rs#eq_op_invert", 1)]);
         let report = run_one(&gate, &ctx);
         assert_eq!(report.verdict, Verdict::CannotRun);

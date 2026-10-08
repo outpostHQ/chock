@@ -518,12 +518,7 @@ mod tests {
 
     #[test]
     fn a_signal_that_killed_clippy_is_could_not_run_and_not_a_clean_tree() {
-        let out = exec::Output {
-            code: None,
-            stdout: String::new(),
-            stderr: "error: process didn't exit successfully\n".to_string(),
-            truncated: false,
-        };
+        let out = exec::Output::of(None, "", "error: process didn't exit successfully\n");
         assert!(from_run(&out).is_err());
     }
 
@@ -585,14 +580,6 @@ mod tests {
         assert_eq!(GATE.name, "codeslop");
         assert_eq!(crate::run::rerun(GATE.name), "chock run codeslop");
         assert_eq!(GATE.group, Group::Quality);
-        match GATE.kind {
-            Kind::Ratchet { keys, unit, .. } | Kind::AnnotatedRatchet { keys, unit, .. } => {
-                assert_eq!(keys, Keys::Measures);
-                assert_eq!(unit, "findings");
-            }
-            Kind::Binary(_) | Kind::Debt { .. } => {
-                panic!("codeslop is a ratchet, not a pass/fail gate")
-            }
-        }
+        assert_eq!(GATE.kind.ratcheted(), Some((Keys::Measures, "findings")));
     }
 }

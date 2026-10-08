@@ -154,10 +154,7 @@ mod tests {
         };
         Ctx {
             forbidden: vec![shim],
-            ..Ctx::for_root(
-                dir.to_path_buf(),
-                crate::run::baseline::Baseline::empty("0.1.0"),
-            )
+            ..Ctx::at(dir)
         }
     }
 
@@ -263,20 +260,14 @@ mod tests {
                 std::fs::read_dir(&absent).unwrap_err()
             )
         );
-        let none = Ctx::for_root(
-            dir.to_path_buf(),
-            crate::run::baseline::Baseline::empty("0.1.0"),
-        );
+        let none = Ctx::at(&dir);
         assert_eq!(
             inspect(&none).unwrap_err(),
             "no phrase is listed under `forbidden` in .chock/config.json"
         );
         let blank = Ctx {
             forbidden: vec![refused("", "nothing")],
-            ..Ctx::for_root(
-                dir.to_path_buf(),
-                crate::run::baseline::Baseline::empty("0.1.0"),
-            )
+            ..Ctx::at(&dir)
         };
         assert_eq!(
             inspect(&blank).unwrap_err(),

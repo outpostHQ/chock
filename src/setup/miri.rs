@@ -112,12 +112,7 @@ mod tests {
     const ADDING: &str = "rustup component add --toolchain nightly miri rust-src";
 
     fn output(code: i32, stdout: &str, stderr: &str) -> exec::Output {
-        exec::Output {
-            code: Some(code),
-            stdout: stdout.to_string(),
-            stderr: stderr.to_string(),
-            truncated: false,
-        }
+        exec::Output::of(Some(code), stdout, stderr)
     }
 
     fn unstarted(stage: exec::Stage) -> exec::ExecError {

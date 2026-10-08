@@ -426,13 +426,11 @@ mod tests {
 
     #[test]
     fn a_tool_that_refused_to_size_a_binary_is_a_gate_that_could_not_run() {
-        let refused = exec::Output {
-            code: Some(2),
-            stdout: String::new(),
-            stderr: "error: workspace has several bin targets, pick one with --bin: app, appd\n"
-                .to_string(),
-            truncated: false,
-        };
+        let refused = exec::Output::of(
+            Some(2),
+            "",
+            "error: workspace has several bin targets, pick one with --bin: app, appd\n",
+        );
         let why = reported("app", &refused).unwrap_err();
         assert!(why.contains("could not size `app`"), "{why}");
         assert!(why.contains("several bin targets"), "{why}");
@@ -440,12 +438,7 @@ mod tests {
 
     #[test]
     fn what_the_instrument_said_about_each_binary_is_carried_back() {
-        let sized = exec::Output {
-            code: Some(0),
-            stdout: "app 4.2 MiB\n".to_string(),
-            stderr: String::new(),
-            truncated: false,
-        };
+        let sized = exec::Output::of(Some(0), "app 4.2 MiB\n", "");
         assert_eq!(reported("app", &sized).unwrap(), "app 4.2 MiB\n");
         let outcome = measured_sizes(
             &["app".to_string(), "appd".to_string()],
@@ -529,12 +522,11 @@ mod tests {
 
     #[test]
     fn a_build_that_failed_or_was_cut_short_sizes_nothing() {
-        let failed = exec::Output {
-            code: Some(101),
-            stdout: "{\"reason\":\"compiler-message\",\"message\":{\"level\":\"error\",\"message\":\"no method `f`\"}}\n".to_string(),
-            stderr: "   Compiling proc-macro2 v1.0.107\n".to_string(),
-            truncated: false,
-        };
+        let failed = exec::Output::of(
+            Some(101),
+            "{\"reason\":\"compiler-message\",\"message\":{\"level\":\"error\",\"message\":\"no method `f`\"}}\n",
+            "   Compiling proc-macro2 v1.0.107\n",
+        );
         assert_eq!(
             read_build(&failed, &tool_package(), &|_| Some(9)).unwrap_err(),
             "the release build of cli failed, so there is nothing to size: no method `f`"
@@ -549,12 +541,7 @@ mod tests {
             read_build(&cut, &tool_package(), &|_| Some(9)).unwrap_err(),
             "cargo printed more about cli than chock keeps; the sizes would be partial"
         );
-        let built = exec::Output {
-            code: Some(0),
-            stdout: BUILT.to_string(),
-            stderr: String::new(),
-            truncated: false,
-        };
+        let built = exec::Output::of(Some(0), BUILT, "");
         assert_eq!(
             read_build(&built, &tool_package(), &|_| Some(9))
                 .unwrap()

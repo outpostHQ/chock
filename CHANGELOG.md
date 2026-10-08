@@ -17,13 +17,24 @@ changes its unit, so a project that recorded `lean` runs `chock baseline lean` o
   one table for copies side by side, or a call to a function whose whole body is one copy. It gives
   the lines that the merge removes, less the lines that the function and its calls add. Each copy
   is a place, `copy i of k` or `row i of k`. A group counts when it removes 6 lines or more.
+- **`lean` reads tests.** Production code, the tests in each `src` directory and the tests in each
+  `tests` directory are apart: no group mixes them. Two more merges are named: one function that
+  takes the one statement that differs as a closure, and one test that loops over a table of
+  cases where whole test bodies repeat.
+- **`lean` counts what rustfmt writes.** A function merges at most 6 values that differ, and a
+  table at most 12, one column each. A call or a row wider than 88 columns costs a line for each
+  value and 2 more, because rustfmt breaks it over lines. A copy can bind at most 3 names that
+  later code reads, and the merged function returns them.
 - **`lean` counts removable lines.** Each file holds its share of each group, and the lines of each
   function that only passes its parameters on. The unit is now `removable line(s)`. A record in
   the old unit, `forwarders`, makes the gate report that it cannot run, and names the command.
 - **`lean` leaves out what a merge cannot take.** Copies that differ in a string that a macro
-  reads, such as a format string, do not merge. Nor do copies where later code reads more than one
-  name that they bind. A file that a tool wrote is left out: a part of its path is `generated`, or
+  reads do not merge, except format strings with the same placeholders: the function passes the
+  text that differs to a placeholder of its own. Nor do copies where later code reads more than 3
+  names that they bind. A file that a tool wrote is left out: a part of its path is `generated`, or
   one of its first 5 lines says so.
+- **Not yet in `lean`.** A production function that only tests call, and copies of the fields of
+  one struct that a `derive` would write.
 - **A project in a subfolder of a repository gets its hooks.** Before, `chock init --local` in a
   folder such as `crates/tova` wired no hook, because it found no `.git` there. Now it declares
   each hook at the top of the repository under a name of its own,

@@ -836,12 +836,8 @@ mod tests {
                 "{refused}"
             );
         }
-        let plain = crate::exec::Output {
-            code: Some(101),
-            stdout: String::new(),
-            stderr: "error: the lock file needs to be updated\n".to_string(),
-            truncated: false,
-        };
+        let plain =
+            crate::exec::Output::of(Some(101), "", "error: the lock file needs to be updated\n");
         assert_eq!(
             cargo_failure(&plain),
             "error: the lock file needs to be updated"

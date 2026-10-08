@@ -379,16 +379,6 @@ fn version_in(out: &crate::exec::Output) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn tree_of(files: &[(&str, &str)]) -> crate::testdir::Scratch {
-        let dir = crate::testdir::make("verdicts");
-        for (path, text) in files {
-            let at = dir.join(path);
-            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
-            std::fs::write(at, text).unwrap();
-        }
-        dir
-    }
-
     #[test]
     fn a_verdict_is_kept_only_where_it_measured_and_left_no_record_to_write() {
         let mut passed = GateReport::new("crap", Verdict::Pass, "chock run crap");
@@ -430,7 +420,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn only_a_measured_verdict_with_nothing_left_to_write_is_kept() {
-        let dir = tree_of(&[]);
+        let dir = crate::testdir::tree("verdicts", &[]);
         let stopped = GateReport::new("probe", Verdict::CannotRun, "chock run probe");
         let writes = GateReport {
             tightened: Some(crate::run::baseline::Series::new()),
@@ -491,7 +481,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_that_reads_a_tool_keys_on_what_that_tool_answered() {
-        let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
+        let dir = crate::testdir::tree("verdicts", &[("src/a.rs", "fn a() {}\n")]);
         let bare = keyed(&dir, &[]).unwrap();
         let with_tool = keyed(&dir, &["clippy-driver"]).unwrap();
         assert_ne!(with_tool, bare);
@@ -502,7 +492,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tool_is_found_at_the_first_path_entry_that_holds_it() {
-        let dir = tree_of(&[("early/outpost", ""), ("late/outpost", "")]);
+        let dir = crate::testdir::tree("verdicts", &[("early/outpost", ""), ("late/outpost", "")]);
         let listed = std::env::join_paths([dir.join("late"), dir.join("early")]).unwrap();
         assert_eq!(
             which(&listed, "outpost"),
@@ -596,7 +586,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_stamp_is_the_binarys_own_size_and_a_missing_tool_has_none() {
-        let dir = tree_of(&[("bin/outpost", "0123456789")]);
+        let dir = crate::testdir::tree("verdicts", &[("bin/outpost", "0123456789")]);
         let listed = dir.join("bin").into_os_string();
         assert_eq!(
             binary_of(&listed, "outpost").map(|(bytes, _)| bytes),
@@ -608,7 +598,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tree_that_has_not_moved_keys_the_same_and_one_that_has_does_not() {
-        let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
+        let dir = crate::testdir::tree("verdicts", &[("src/a.rs", "fn a() {}\n")]);
         let first = keyed(&dir, &[]).unwrap();
         assert_eq!(keyed(&dir, &[]).unwrap(), first);
         std::fs::write(dir.join("src/a.rs"), "fn a() { }\n").unwrap();
@@ -619,7 +609,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_nothing_tracks_still_changes_the_key() {
-        let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
+        let dir = crate::testdir::tree("verdicts", &[("src/a.rs", "fn a() {}\n")]);
         let first = keyed(&dir, &[]).unwrap();
         std::fs::write(dir.join("src/b.rs"), "fn b() {}\n").unwrap();
         assert_ne!(keyed(&dir, &[]).unwrap(), first);
@@ -628,7 +618,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn moving_a_file_without_changing_a_byte_changes_the_key() {
-        let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
+        let dir = crate::testdir::tree("verdicts", &[("src/a.rs", "fn a() {}\n")]);
         let first = keyed(&dir, &[]).unwrap();
         std::fs::rename(dir.join("src/a.rs"), dir.join("src/b.rs")).unwrap();
         assert_ne!(keyed(&dir, &[]).unwrap(), first);
@@ -637,7 +627,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tool_that_reports_a_new_version_changes_the_key() {
-        let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
+        let dir = crate::testdir::tree("verdicts", &[("src/a.rs", "fn a() {}\n")]);
         let reads = Reads::tree_and(&["cargo"]);
         let listed = Listed::new();
         let at = |version: &'static str| {
@@ -682,7 +672,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_reading_the_runner_has_no_key_until_its_tools_are_named() {
-        let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
+        let dir = crate::testdir::tree("verdicts", &[("src/a.rs", "fn a() {}\n")]);
         let reads = Reads::tree_runner_and(&["cargo"]);
         let listed = Listed::new();
         let keyed = |tools: &[String]| {
@@ -700,7 +690,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_reading_the_coverage_command_has_no_key_until_its_tools_are_known() {
-        let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
+        let dir = crate::testdir::tree("verdicts", &[("src/a.rs", "fn a() {}\n")]);
         let reads = Reads::tree_and(&["cargo"]).and_coverage();
         let listed = Listed::new();
         let keyed = |tools: &[String]| {
@@ -721,7 +711,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_named_tool_that_says_nothing_leaves_no_key() {
-        let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
+        let dir = crate::testdir::tree("verdicts", &[("src/a.rs", "fn a() {}\n")]);
         let listed = Listed::new();
         let only_cargo = |tool: &str| (tool == "cargo").then(|| "cargo 1.90.0".to_string());
         let tools = ["kani".to_string()];
@@ -735,12 +725,7 @@ mod tests {
     }
 
     fn said(code: i32, stdout: &str) -> crate::exec::Output {
-        crate::exec::Output {
-            code: Some(code),
-            stdout: stdout.to_string(),
-            stderr: String::new(),
-            truncated: false,
-        }
+        crate::exec::Output::of(Some(code), stdout, "")
     }
 
     /// An empty answer would key every version of the tool alike.
@@ -758,7 +743,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tool_that_says_nothing_leaves_no_key_at_all() {
-        let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
+        let dir = crate::testdir::tree("verdicts", &[("src/a.rs", "fn a() {}\n")]);
         let listed = Listed::new();
         let silent = Held {
             version_of: &|_| None,
@@ -771,7 +756,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_new_record_and_another_gate_each_change_the_key() {
-        let dir = tree_of(&[("src/a.rs", "fn a() {}\n")]);
+        let dir = crate::testdir::tree("verdicts", &[("src/a.rs", "fn a() {}\n")]);
         let listed = Listed::new();
         let reads = Reads::tree_and(&[]);
         let first = key(reads, "probe", &held(&dir, &listed)).unwrap();
@@ -786,7 +771,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_config_key_a_gate_reads_changes_the_key_and_one_that_chooses_gates_does_not() {
-        let dir = tree_of(&[]);
+        let dir = crate::testdir::tree("verdicts", &[]);
         // Without the tree, whose walk may see the config file too.
         let apart = Reads {
             tree: false,
@@ -816,7 +801,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_verdict_is_recalled_only_under_the_key_it_was_kept_with() {
-        let dir = tree_of(&[]);
+        let dir = crate::testdir::tree("verdicts", &[]);
         keep(&dir, "probe", "abc", &passed());
         assert_eq!(
             recall(&dir, "probe", "abc").map(|r| r.verdict),
@@ -829,7 +814,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_that_could_not_run_is_never_kept() {
-        let dir = tree_of(&[]);
+        let dir = crate::testdir::tree("verdicts", &[]);
         let refused = GateReport::cannot_run("probe", "chock run probe", "no tool");
         keep(&dir, "probe", "abc", &refused);
         assert_eq!(recall(&dir, "probe", "abc"), None);
@@ -838,7 +823,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_verdict_that_leaves_a_record_to_write_is_never_kept() {
-        let dir = tree_of(&[]);
+        let dir = crate::testdir::tree("verdicts", &[]);
         let mut wrote = passed();
         wrote.tightened = Some(crate::run::baseline::Series::new());
         keep(&dir, "probe", "abc", &wrote);
@@ -848,7 +833,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_keeps_its_newest_verdicts_and_drops_the_oldest_past_the_limit() {
-        let dir = tree_of(&[]);
+        let dir = crate::testdir::tree("verdicts", &[]);
         for key in ["k1", "k2", "k3", "k4", "k5"] {
             keep(&dir, "probe", key, &passed());
         }
@@ -865,7 +850,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn clearing_removes_every_kept_verdict_and_says_how_many() {
-        let dir = tree_of(&[]);
+        let dir = crate::testdir::tree("verdicts", &[]);
         assert_eq!(clear(&dir).unwrap(), 0, "nothing kept is not an error");
         keep(&dir, "probe", "k1", &passed());
         keep(&dir, "probe", "k2", &passed());
@@ -878,7 +863,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot open a directory")]
     fn a_record_that_cannot_be_removed_is_an_error() {
-        let dir = tree_of(&[]);
+        let dir = crate::testdir::tree("verdicts", &[]);
         std::fs::create_dir_all(dir.join(FILE)).unwrap();
         assert!(clear(&dir).is_err());
     }
@@ -887,7 +872,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_tripped_verdict_is_kept_like_a_passing_one() {
-        let dir = tree_of(&[]);
+        let dir = crate::testdir::tree("verdicts", &[]);
         let mut tripped = GateReport::new("probe", Verdict::Tripped, "chock run probe");
         tripped.findings = vec![crate::run::report::Finding::at("src/a.rs", "too long")];
         keep(&dir, "probe", "abc", &tripped);
@@ -905,7 +890,7 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_record_that_cannot_be_read_recalls_nothing_and_does_not_stop_the_run() {
-        let dir = tree_of(&[]);
+        let dir = crate::testdir::tree("verdicts", &[]);
         let at = dir.join(FILE);
         std::fs::create_dir_all(at.parent().unwrap()).unwrap();
         std::fs::write(&at, "{ not json").unwrap();

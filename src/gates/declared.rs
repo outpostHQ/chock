@@ -130,12 +130,7 @@ mod tests {
     }
 
     fn said(code: i32, stdout: &str) -> exec::Output {
-        exec::Output {
-            code: Some(code),
-            stdout: stdout.to_string(),
-            stderr: String::new(),
-            truncated: false,
-        }
+        exec::Output::of(Some(code), stdout, "")
     }
 
     fn judged(command: &Command, out: &exec::Output) -> Result<Inspection, String> {
@@ -252,10 +247,7 @@ mod tests {
                     false,
                 ),
             ],
-            ..Ctx::for_root(
-                dir.to_path_buf(),
-                crate::run::baseline::Baseline::empty("0.1.0"),
-            )
+            ..Ctx::at(&dir)
         };
         let quick = quick(&ctx).unwrap();
         assert_eq!(quick.blockers, Vec::new());
@@ -271,20 +263,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             [Some("slow".to_string())]
         );
-        let none = Ctx::for_root(
-            dir.to_path_buf(),
-            crate::run::baseline::Baseline::empty("0.1.0"),
-        );
+        let none = Ctx::at(&dir);
         assert_eq!(
             quick_or_reason(&none),
             "no command with `builds: false` is declared under `commands` in .chock/config.json"
         );
         let empty = Ctx {
             commands: vec![declared("nothing", &[], false, false)],
-            ..Ctx::for_root(
-                dir.to_path_buf(),
-                crate::run::baseline::Baseline::empty("0.1.0"),
-            )
+            ..Ctx::at(&dir)
         };
         assert_eq!(quick_or_reason(&empty), "`nothing` names no command to run");
     }

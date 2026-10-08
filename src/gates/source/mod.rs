@@ -963,7 +963,6 @@ fn is_target(rest: &str) -> bool {
 )]
 mod tests {
     use super::*;
-    use crate::run::baseline::Baseline;
 
     fn faults(path: &str, src: &str) -> Result<Vec<Finding>, String> {
         judged(path, src, true)
@@ -2156,7 +2155,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri did not end this test in 15 minutes")]
     fn chocks_own_source_trips_no_rule() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let here = Ctx::for_root(root.to_path_buf(), Baseline::empty("0.1.0"));
+        let here = Ctx::at(root);
         let mut found = Vec::new();
         for path in sources(&here).unwrap().0 {
             let shown = project::relative(root, &path);

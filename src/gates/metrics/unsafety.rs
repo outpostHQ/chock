@@ -214,39 +214,25 @@ mod tests {
     }
 
     fn workspace(name: &str, exclude: &str) -> crate::testdir::Scratch {
-        let dir = crate::testdir::make(name);
+        let root = format!("[workspace]\nmembers = [\"app\"]\n{exclude}");
         let files = [
-            (
-                "Cargo.toml",
-                format!("[workspace]\nmembers = [\"app\"]\n{exclude}"),
-            ),
-            ("app/Cargo.toml", "[package]\nname = \"app\"\n".to_string()),
-            ("app/src/lib.rs", "pub fn f() {}\n".to_string()),
-            ("ffi/Cargo.toml", "[package]\nname = \"ffi\"\n".to_string()),
-            ("ffi/src/lib.rs", "pub unsafe fn raw() {}\n".to_string()),
+            ("Cargo.toml", root.as_str()),
+            ("app/Cargo.toml", "[package]\nname = \"app\"\n"),
+            ("app/src/lib.rs", "pub fn f() {}\n"),
+            ("ffi/Cargo.toml", "[package]\nname = \"ffi\"\n"),
+            ("ffi/src/lib.rs", "pub unsafe fn raw() {}\n"),
         ];
-        for (name, text) in files {
-            let path = dir.join(name);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, text).unwrap();
-        }
-        dir
+        crate::testdir::tree(name, &files)
     }
 
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_crate_the_workspace_excludes_is_not_charged_to_it() {
         let kept = workspace("unsafety-excluded", "exclude = [\"ffi/\"]\n");
-        let ctx = Ctx::for_root(
-            kept.to_path_buf(),
-            crate::run::baseline::Baseline::empty("0.1.0"),
-        );
+        let ctx = Ctx::at(&kept);
         assert_eq!(measure(&ctx).unwrap().0, BTreeMap::new());
         let member = workspace("unsafety-member", "");
-        let ctx = Ctx::for_root(
-            member.to_path_buf(),
-            crate::run::baseline::Baseline::empty("0.1.0"),
-        );
+        let ctx = Ctx::at(&member);
         assert_eq!(
             measure(&ctx).unwrap().0,
             BTreeMap::from([("ffi/src/lib.rs#fn".to_string(), 1)])

@@ -367,10 +367,7 @@ mod tests {
 
     /// A context over a missing tree, for cases that refuse before reading one.
     fn nowhere_ctx() -> Ctx {
-        Ctx::for_root(
-            nowhere().to_path_buf(),
-            crate::run::baseline::Baseline::empty("0.1.0"),
-        )
+        Ctx::at(nowhere())
     }
 
     fn checked_from(json: &str) -> super::super::Check {
@@ -399,11 +396,7 @@ mod tests {
         let outcome = gaps(&check);
         assert!(outcome.passed);
         assert_eq!(
-            outcome
-                .findings
-                .iter()
-                .map(Finding::render)
-                .collect::<Vec<_>>(),
+            Finding::rendered(&outcome.findings),
             [
                 // The line is split off so an editor opens where the region begins.
                 "crates/a/src/y.rs:412: outpost read around this line, so no lens judged it",
@@ -483,7 +476,7 @@ mod tests {
             measured.series.get("hazard_expensive_call_in_loop"),
             Some(1)
         );
-        let told: Vec<String> = measured.findings.iter().map(Finding::render).collect();
+        let told: Vec<String> = Finding::rendered(&measured.findings);
         assert_eq!(
             told,
             ["src/a.rs:4: hazard_expensive_call_in_loop: sync_all per item"]
@@ -500,21 +493,11 @@ mod tests {
     }
 
     fn said(stdout: &str) -> exec::Output {
-        exec::Output {
-            code: Some(0),
-            stdout: stdout.to_string(),
-            stderr: String::new(),
-            truncated: false,
-        }
+        exec::Output::of(Some(0), stdout, "")
     }
 
     fn refused() -> exec::Output {
-        exec::Output {
-            code: Some(1),
-            stdout: String::new(),
-            stderr: "not a repository".to_string(),
-            truncated: false,
-        }
+        exec::Output::of(Some(1), "", "not a repository")
     }
 
     #[test]

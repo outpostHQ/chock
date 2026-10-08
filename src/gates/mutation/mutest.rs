@@ -431,7 +431,7 @@ mod tests {
     fn a_survivor_past_its_record_is_named_where_it_is_and_one_at_it_is_not() {
         let out = ran(TOTALS, Some(2), false);
         let over = unrecorded(&out, &one).unwrap();
-        let sites: Vec<String> = over.findings.iter().map(Finding::render).collect();
+        let sites: Vec<String> = Finding::rendered(&over.findings);
         assert_eq!(
             sites,
             ["src/a.rs:7: no test caught: does a thing (eq_op_invert)"]
@@ -490,7 +490,7 @@ mod tests {
         };
         let was = Series([("src/a.rs#eq_op_invert".to_string(), 1)].into());
         let some = read(&ran(CONFIRMED_PAST, Some(3), false), &timed, &was).unwrap();
-        let said: Vec<String> = some.findings.iter().map(Finding::render).collect();
+        let said: Vec<String> = Finding::rendered(&some.findings);
         assert_eq!(
             said,
             [
@@ -540,7 +540,7 @@ mod tests {
             })
         };
         let some = read(&ran(totals, Some(3), false), &timed, &was).unwrap();
-        let said: Vec<String> = some.findings.iter().map(Finding::render).collect();
+        let said: Vec<String> = Finding::rendered(&some.findings);
         assert_eq!(
             said,
             [

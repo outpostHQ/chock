@@ -308,6 +308,14 @@ pub struct Runner {
 }
 
 #[cfg(test)]
+impl Ctx {
+    /// A test's context at `root`, holding an empty record.
+    pub(crate) fn at(root: &std::path::Path) -> Self {
+        Self::for_root(root.to_path_buf(), Baseline::empty("0.1.0"))
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::project::config::{Accepted, History};

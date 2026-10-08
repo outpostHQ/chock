@@ -86,6 +86,19 @@ pub struct Output {
     pub truncated: bool,
 }
 
+#[cfg(test)]
+impl Output {
+    /// A tool's exit and both streams, captured whole.
+    pub(crate) fn of(code: Option<i32>, stdout: &str, stderr: &str) -> Self {
+        Self {
+            code,
+            stdout: stdout.to_string(),
+            stderr: stderr.to_string(),
+            truncated: false,
+        }
+    }
+}
+
 impl Output {
     #[must_use]
     pub fn success(&self) -> bool {
@@ -935,12 +948,7 @@ mod tests {
     }
 
     fn said(stdout: &str, stderr: &str) -> Output {
-        Output {
-            code: Some(1),
-            stdout: stdout.to_string(),
-            stderr: stderr.to_string(),
-            truncated: false,
-        }
+        Output::of(Some(1), stdout, stderr)
     }
 
     #[test]
@@ -1523,12 +1531,11 @@ mod tests {
 
     #[test]
     fn failure_details_preserve_test_names_beside_a_generic_error_summary() {
-        let out = Output {
-            code: Some(1),
-            stdout: "FAIL [0.001s] fixture::cannot_read\n".to_string(),
-            stderr: "error: test run failed\n".to_string(),
-            truncated: false,
-        };
+        let out = Output::of(
+            Some(1),
+            "FAIL [0.001s] fixture::cannot_read\n",
+            "error: test run failed\n",
+        );
         let why = out.failure_details();
         assert!(why.contains("fixture::cannot_read"), "{why}");
         assert!(why.contains("error: test run failed"), "{why}");

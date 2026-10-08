@@ -755,7 +755,6 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::run::baseline::Baseline;
     use crate::testdir::tree;
 
     fn found(source: &str) -> Vec<Function> {
@@ -881,7 +880,7 @@ mod tests {
     }
 
     fn read(root: &Path) -> Result<Measurement, String> {
-        measure(&Ctx::for_root(root.to_path_buf(), Baseline::empty("0.1.0")))
+        measure(&Ctx::at(root))
     }
 
     #[test]
@@ -1498,14 +1497,6 @@ mod tests {
     fn the_gate_is_a_ratchet_over_items_counted_in_duplicates() {
         assert_eq!(GATE.name, "duplication");
         assert_eq!(crate::run::rerun(GATE.name), "chock run duplication");
-        match GATE.kind {
-            Kind::Ratchet { keys, unit, .. } | Kind::AnnotatedRatchet { keys, unit, .. } => {
-                assert_eq!(keys, Keys::Items);
-                assert_eq!(unit, "duplicate(s)");
-            }
-            Kind::Binary(_) | Kind::Debt { .. } => {
-                panic!("duplication is a ratchet, not a pass/fail gate")
-            }
-        }
+        assert_eq!(GATE.kind.ratcheted(), Some((Keys::Items, "duplicate(s)")));
     }
 }

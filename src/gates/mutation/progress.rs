@@ -627,15 +627,23 @@ mod tests {
     }
 
     fn ready(phase: &str) -> Progress {
+        begun(phase, 0, 100)
+    }
+
+    /// A run past its header and into `phase`, which began `at` ms in, both read at `observed` ms.
+    fn begun(phase: &str, at: u64, observed: u64) -> Progress {
         let mut progress = Progress::new(NONCE.to_owned());
-        ingest(&mut progress, header(), 100).unwrap();
-        ingest(
-            &mut progress,
-            row("phase", 1, 0, json!({"phase":phase})),
-            100,
-        )
-        .unwrap();
+        ingest(&mut progress, header(), observed).unwrap();
+        let begins = row("phase", 1, at, json!({ "phase": phase }));
+        ingest(&mut progress, begins, observed).unwrap();
         progress
+    }
+
+    /// What a fresh run makes of a header whose `field` holds `value`.
+    fn opened_with(field: &str, value: Value) -> Result<(), String> {
+        let mut next = header();
+        next[field] = value;
+        ingest(&mut Progress::new(NONCE.into()), next, 100)
     }
 
     fn header() -> Value {
@@ -925,25 +933,17 @@ mod tests {
     #[test]
     fn schemas_and_versions_must_match_the_wire_contract() {
         for (field, value) in [("schema", json!("other")), ("version", json!(2))] {
-            let mut next = header();
-            next[field] = value;
-            assert_eq!(
-                ingest(&mut Progress::new(NONCE.into()), next, 100),
-                Err("unsupported progress schema or version".into())
-            );
+            let why = "unsupported progress schema or version";
+            assert_eq!(opened_with(field, value), Err(why.into()));
         }
     }
 
     #[test]
     fn the_first_row_must_be_a_zero_time_header() {
-        let mut late = header();
-        late["elapsed_ms"] = json!(1);
-        for next in [late, row("phase", 0, 0, json!({"phase":"reference"}))] {
-            assert_eq!(
-                ingest(&mut Progress::new(NONCE.into()), next, 100),
-                Err("first progress row must be a zero-time header".into())
-            );
-        }
+        let why = Err("first progress row must be a zero-time header".into());
+        assert_eq!(opened_with("elapsed_ms", json!(1)), why);
+        let phase = row("phase", 0, 0, json!({"phase":"reference"}));
+        assert_eq!(ingest(&mut Progress::new(NONCE.into()), phase, 100), why);
     }
 
     #[test]
@@ -952,12 +952,8 @@ mod tests {
             ("pid", json!(0)),
             ("process_start", json!({"kind":"unknown","ticks":123})),
         ] {
-            let mut next = header();
-            next[field] = value;
-            assert_eq!(
-                ingest(&mut Progress::new(NONCE.into()), next, 100),
-                Err("invalid progress process identity".into())
-            );
+            let why = "invalid progress process identity";
+            assert_eq!(opened_with(field, value), Err(why.into()));
         }
     }
 
@@ -972,24 +968,16 @@ mod tests {
             "/tmp/harness/",
             "/tmp/ha\0rness",
         ] {
-            let mut next = header();
-            next["exe"] = json!(path);
-            assert_eq!(
-                ingest(&mut Progress::new(NONCE.into()), next, 100),
-                Err("executable path is not canonical-looking".into())
-            );
+            let why = "executable path is not canonical-looking";
+            assert_eq!(opened_with("exe", json!(path)), Err(why.into()));
         }
     }
 
     #[test]
     fn size_limits_must_match_the_protocol_limits() {
         for field in ["record_limit_bytes", "file_limit_bytes"] {
-            let mut next = header();
-            next[field] = json!(1);
-            assert_eq!(
-                ingest(&mut Progress::new(NONCE.into()), next, 100),
-                Err("invalid progress size limits".into())
-            );
+            let why = "invalid progress size limits";
+            assert_eq!(opened_with(field, json!(1)), Err(why.into()));
         }
     }
 
@@ -1201,14 +1189,7 @@ mod tests {
 
     #[test]
     fn delayed_headers_do_not_double_count_elapsed_time() {
-        let mut progress = Progress::new(NONCE.into());
-        ingest(&mut progress, header(), 60_000).unwrap();
-        ingest(
-            &mut progress,
-            row("phase", 1, 60_000, json!({"phase":"evaluation"})),
-            60_000,
-        )
-        .unwrap();
+        let mut progress = begun("evaluation", 60_000, 60_000);
         ingest(
             &mut progress,
             start(2, 60_000, 1, "evaluation", Some(100)),
@@ -1224,14 +1205,7 @@ mod tests {
 
     #[test]
     fn anchor_refinement_only_shortens_existing_deadlines() {
-        let mut progress = Progress::new(NONCE.into());
-        ingest(&mut progress, header(), 60_000).unwrap();
-        ingest(
-            &mut progress,
-            row("phase", 1, 0, json!({"phase":"evaluation"})),
-            60_000,
-        )
-        .unwrap();
+        let mut progress = begun("evaluation", 0, 60_000);
         ingest(
             &mut progress,
             start(2, 0, 1, "evaluation", Some(60_000)),
@@ -1253,14 +1227,7 @@ mod tests {
 
     #[test]
     fn anchor_refinement_preserves_explicit_outer_budget_invocations() {
-        let mut progress = Progress::new(NONCE.into());
-        ingest(&mut progress, header(), 1000).unwrap();
-        ingest(
-            &mut progress,
-            row("phase", 1, 0, json!({"phase":"reference"})),
-            1000,
-        )
-        .unwrap();
+        let mut progress = begun("reference", 0, 1000);
         ingest(&mut progress, start(2, 0, 1, "reference", None), 1000).unwrap();
         ingest(
             &mut progress,

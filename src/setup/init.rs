@@ -1446,7 +1446,7 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn an_instrument_is_never_switched_on_however_green_the_tree_is() {
         let dir = crate::testdir::make("init-decide-instrument");
-        let ctx = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
+        let ctx = Ctx::at(&dir);
         assert_eq!(
             judge(&crate::gates::tools::BSIZE, &ctx).0,
             Decision::Reports
@@ -1463,7 +1463,7 @@ mod tests {
         let dir = crate::testdir::make("init-decide-ratchet");
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src/a.rs"), "// a\n// b\n// c\nfn f() {}\n").unwrap();
-        let ctx = Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
+        let ctx = Ctx::at(&dir);
         assert_eq!(
             judge(&crate::gates::text::slop::GATE, &ctx).0,
             Decision::On("ratchet: 1 item today".to_string())
@@ -1566,25 +1566,25 @@ mod tests {
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     }
 
+    /// Installs `text` as the justfile and asserts it lands beside the project's own, as `kept`.
+    fn lands_beside(dir: &Path, text: &str, kept: &str) {
+        let written = Written::Conflict {
+            name: "justfile".to_string(),
+            kept: kept.to_string(),
+        };
+        assert_eq!(install_file(dir, "justfile", text), Ok(written));
+        assert_eq!(std::fs::read_to_string(dir.join(kept)).unwrap(), text);
+    }
+
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_holding_something_else_keeps_its_content_and_ours_lands_beside_it() {
         let dir = crate::testdir::make("init-conflict");
         std::fs::write(dir.join("justfile"), "theirs\n").unwrap();
-        assert_eq!(
-            install_file(&dir, "justfile", "ours\n"),
-            Ok(Written::Conflict {
-                name: "justfile".to_string(),
-                kept: "justfile.chock".to_string()
-            })
-        );
+        lands_beside(&dir, "ours\n", "justfile.chock");
         assert_eq!(
             std::fs::read_to_string(dir.join("justfile")).unwrap(),
             "theirs\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dir.join("justfile.chock")).unwrap(),
-            "ours\n"
         );
     }
 
@@ -1594,20 +1594,10 @@ mod tests {
         let dir = crate::testdir::make("init-conflict-twice");
         std::fs::write(dir.join("justfile"), "theirs\n").unwrap();
         std::fs::write(dir.join("justfile.chock"), "first upgrade\n").unwrap();
-        assert_eq!(
-            install_file(&dir, "justfile", "second upgrade\n"),
-            Ok(Written::Conflict {
-                name: "justfile".to_string(),
-                kept: "justfile.chock.1".to_string()
-            })
-        );
+        lands_beside(&dir, "second upgrade\n", "justfile.chock.1");
         assert_eq!(
             std::fs::read_to_string(dir.join("justfile.chock")).unwrap(),
             "first upgrade\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dir.join("justfile.chock.1")).unwrap(),
-            "second upgrade\n"
         );
     }
 
@@ -1618,17 +1608,7 @@ mod tests {
         std::fs::write(dir.join("justfile"), "theirs\n").unwrap();
         std::fs::write(dir.join("justfile.chock"), "first\n").unwrap();
         std::fs::write(dir.join("justfile.chock.1"), "second\n").unwrap();
-        assert_eq!(
-            install_file(&dir, "justfile", "third\n"),
-            Ok(Written::Conflict {
-                name: "justfile".to_string(),
-                kept: "justfile.chock.2".to_string()
-            })
-        );
-        assert_eq!(
-            std::fs::read_to_string(dir.join("justfile.chock.2")).unwrap(),
-            "third\n"
-        );
+        lands_beside(&dir, "third\n", "justfile.chock.2");
     }
 
     #[test]
@@ -1668,20 +1648,8 @@ mod tests {
     fn a_conflict_copy_already_holding_our_content_is_reused_so_a_re_run_adds_nothing() {
         let dir = crate::testdir::make("init-conflict-idempotent");
         std::fs::write(dir.join("justfile"), "theirs\n").unwrap();
-        assert_eq!(
-            install_file(&dir, "justfile", "ours\n"),
-            Ok(Written::Conflict {
-                name: "justfile".to_string(),
-                kept: "justfile.chock".to_string()
-            })
-        );
-        assert_eq!(
-            install_file(&dir, "justfile", "ours\n"),
-            Ok(Written::Conflict {
-                name: "justfile".to_string(),
-                kept: "justfile.chock".to_string()
-            })
-        );
+        lands_beside(&dir, "ours\n", "justfile.chock");
+        lands_beside(&dir, "ours\n", "justfile.chock");
         let mut names: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| Some(e.ok()?.file_name().to_string_lossy().into_owned()))
@@ -1696,13 +1664,7 @@ mod tests {
         let dir = crate::testdir::make("init-symlink");
         let outside = dir.join("outside-the-project");
         std::os::unix::fs::symlink(&outside, dir.join("justfile")).unwrap();
-        assert_eq!(
-            install_file(&dir, "justfile", "ours\n"),
-            Ok(Written::Conflict {
-                name: "justfile".to_string(),
-                kept: "justfile.chock".to_string()
-            })
-        );
+        lands_beside(&dir, "ours\n", "justfile.chock");
         assert!(
             !outside.exists(),
             "wrote through the link to {}",
@@ -1924,7 +1886,7 @@ mod tests {
         let dir = crate::testdir::make("init-own-baseline");
         let file = crate::gates::own_baseline("crap").unwrap();
         assert_eq!(file, crate::gates::coverage::crap::baseline());
-        let ctx = crate::run::Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
+        let ctx = crate::run::Ctx::at(&dir);
         let (decision, report) = judge(&crate::gates::coverage::crap::GATE, &ctx);
         assert_eq!(
             decision,
@@ -1954,7 +1916,7 @@ mod tests {
             .collect();
         assert_eq!(setup, vec!["wiring"]);
         let dir = crate::testdir::make("init-setup-group");
-        let ctx = crate::run::Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
+        let ctx = crate::run::Ctx::at(&dir);
         let (decision, report) = judge(&crate::gates::wiring::GATE, &ctx);
         assert_eq!(decision, Decision::On(WRITTEN_NOW.to_string()));
         assert!(decision.enables(), "it would be left out of the config");

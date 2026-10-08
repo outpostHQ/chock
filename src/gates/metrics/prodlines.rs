@@ -28,7 +28,7 @@ pub(crate) fn parse_rust(src: &str) -> Result<syn::File, String> {
 /// dropped once every file has been scanned.
 pub fn measure(ctx: &crate::run::Ctx) -> Result<Vec<(PathBuf, usize)>, String> {
     let root = &ctx.root;
-    let (paths, crates) = walked(ctx)?;
+    let (paths, crates) = walked(ctx, false)?;
     let mut counted: Vec<(PathBuf, usize, Vec<PathBuf>)> = Vec::new();
     for path in paths {
         let shown = project::relative(root, &path);
@@ -269,7 +269,7 @@ pub fn for_each_source<T>(
     of: &dyn Fn(&str) -> Result<T, String>,
 ) -> Result<Vec<(String, T)>, String> {
     let root = &ctx.root;
-    let (paths, crates) = walked(ctx)?;
+    let (paths, crates) = walked(ctx, false)?;
     let mut out = Vec::new();
     for path in &paths {
         let shown = project::relative(root, path);
@@ -304,17 +304,23 @@ where
     series
 }
 
-/// The production sources and every crate directory, from one walk; fixture crates are left out.
-fn walked(ctx: &crate::run::Ctx) -> Result<(Vec<PathBuf>, Vec<String>), String> {
+/// Every Rust source, test files and `tests` directories too; fixture crates are left out.
+pub fn sources(ctx: &crate::run::Ctx) -> Result<Vec<PathBuf>, String> {
+    Ok(walked(ctx, true)?.0)
+}
+
+/// The production sources, or with `tests` every source, and every crate directory, from one
+/// walk; fixture crates are left out.
+fn walked(ctx: &crate::run::Ctx, tests: bool) -> Result<(Vec<PathBuf>, Vec<String>), String> {
     let root = &ctx.root;
     let found = project::walked(
         &ctx.listing,
         root,
-        &|name| !skip_dir(name),
+        &|name| !skip_dir(name) || (tests && name == "tests"),
         &|name, path| {
             name == "Cargo.toml"
                 || (name.ends_with(".rs")
-                    && !is_test_file(name)
+                    && (tests || !is_test_file(name))
                     && !project::is_compile_fail_fixture(path))
         },
     )?;
@@ -399,19 +405,34 @@ mod tests {
             ],
         );
         let parse = |src: &str| syn::parse_file(src).map(|_| ()).map_err(|e| e.to_string());
-        let read = for_each_source(&ctx_at(&root), &parse).unwrap();
+        let read = for_each_source(&crate::run::Ctx::at(&root), &parse).unwrap();
         assert_eq!(read, [("src/lib.rs".to_string(), ())]);
     }
 
-    fn ctx_at(root: &Path) -> crate::run::Ctx {
-        crate::run::Ctx::for_root(
-            root.to_path_buf(),
-            crate::run::baseline::Baseline::empty("0.1.0"),
-        )
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn every_source_holds_test_files_and_tests_but_no_fixture_crate() {
+        let root = tree(
+            "prodlines-sources",
+            &[
+                ("Cargo.toml", ""),
+                ("src/lib.rs", "#[cfg(test)]\nmod tests;\n"),
+                ("src/tests.rs", "fn t() {}\n"),
+                ("tests/cli.rs", "fn c() {}\n"),
+                ("tests/sample/Cargo.toml", ""),
+                ("tests/sample/src/lib.rs", "fn s() {}\n"),
+            ],
+        );
+        let mut shown: Vec<String> = (sources(&crate::run::Ctx::at(&root)).unwrap().iter())
+            .map(|path| project::relative(&root, path))
+            .collect();
+        shown.sort();
+        assert_eq!(shown, ["src/lib.rs", "src/tests.rs", "tests/cli.rs"]);
+        assert_eq!(kept(&root), ["src/lib.rs"]);
     }
 
     fn kept(root: &Path) -> Vec<String> {
-        measure(&ctx_at(root))
+        measure(&crate::run::Ctx::at(root))
             .unwrap()
             .into_iter()
             .map(|(path, _)| project::relative(root, &path))
@@ -619,7 +640,7 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_the_parser_rejects_names_itself_rather_than_measuring_zero() {
         let root = tree("prodlines-unparsable", &crate::testdir::UNPARSABLE);
-        let err = measure(&ctx_at(&root)).unwrap_err();
+        let err = measure(&crate::run::Ctx::at(&root)).unwrap_err();
         assert!(err.starts_with("src/lib.rs: line 1:"), "{err}");
     }
 
@@ -627,7 +648,7 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_root_that_is_not_there_is_a_failure_and_not_an_empty_tree() {
         let root = crate::testdir::make("prodlines-missing").join("gone");
-        let err = measure(&ctx_at(&root)).unwrap_err();
+        let err = measure(&crate::run::Ctx::at(&root)).unwrap_err();
         assert!(err.starts_with("cannot read "), "{err}");
         assert!(err.contains("gone"), "{err}");
     }

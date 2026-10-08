@@ -84,12 +84,11 @@ mod tests {
     use crate::exec;
 
     fn checked(rows: &str) -> super::super::Check {
-        let out = exec::Output {
-            code: Some(0),
-            stdout: format!(r#"{{"contract":1,"measures":[{rows}]}}"#),
-            stderr: String::new(),
-            truncated: false,
-        };
+        let out = exec::Output::of(
+            Some(0),
+            &format!(r#"{{"contract":1,"measures":[{rows}]}}"#),
+            "",
+        );
         super::super::checked(&out).unwrap()
     }
 

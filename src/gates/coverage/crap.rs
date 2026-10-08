@@ -631,10 +631,6 @@ mod tests {
       {"file":"/w/src/e.rs","function":"old","line":9,"cyclomatic":7.0,"coverage":0.0,
        "crap":56.0,"status":"unchanged","baseline_crap":56.0}]}"#;
 
-    fn rendered(outcome: &Outcome) -> Vec<String> {
-        outcome.findings.iter().map(Finding::render).collect()
-    }
-
     /// A record as `judged` takes it.
     fn held(record: &str) -> Vec<Scored> {
         read(record).unwrap().entries
@@ -648,7 +644,7 @@ mod tests {
     fn a_function_that_got_worse_and_a_new_one_over_the_threshold_both_trip() {
         let outcome = judged(REPORT, false, Path::new("/w"), &held(HELD)).unwrap();
         assert_eq!(
-            rendered(&outcome),
+            Finding::rendered(&outcome.findings),
             [
                 "src/a.rs:12: parse: CRAP 90.0, was 42.0: complexity 9, coverage 0.0%. Test more of \
                  it, or split the function",
@@ -667,7 +663,7 @@ mod tests {
         let outcome = judged(only_new, true, Path::new("/w"), &[]).unwrap();
         assert!(!outcome.passed);
         assert_eq!(
-            rendered(&outcome),
+            Finding::rendered(&outcome.findings),
             ["src/d.rs:5: added: CRAP 110.0, not in the baseline"]
         );
     }
@@ -683,7 +679,7 @@ mod tests {
         assert!(outcome.passed);
         assert_eq!(outcome.counted, Some((1, 2, UNIT)));
         assert_eq!(
-            rendered(&outcome),
+            Finding::rendered(&outcome.findings),
             [
                 "record: 1 function(s) are not in the record, so a rise in one passes until it is \
                  over CRAP 30: `chock baseline crap` records them"
@@ -733,7 +729,7 @@ mod tests {
         let report = entries(&[scored(now.0, now.1, now.2, &rest)]);
         let record = held(&entries(&[scored(was.0, was.1, was.2, "")]));
         let outcome = judged(&report, false, Path::new("/w"), &record).unwrap();
-        rendered(&outcome).join("\n")
+        Finding::rendered(&outcome.findings).join("\n")
     }
 
     #[test]
@@ -808,7 +804,12 @@ mod tests {
         let new = |crap: f64, cyclomatic: f64, coverage: &str| {
             let rest = r#","status":"new","baseline_crap":null"#;
             let report = entries(&[scored(crap, cyclomatic, coverage, rest)]);
-            rendered(&judged(&report, true, Path::new("/w"), &[]).unwrap()).join("\n")
+            Finding::rendered(
+                &judged(&report, true, Path::new("/w"), &[])
+                    .unwrap()
+                    .findings,
+            )
+            .join("\n")
         };
         let said = |rest: &str| format!("src/a.rs:10: parse: CRAP {rest}");
         assert_eq!(
@@ -901,13 +902,13 @@ mod tests {
         );
         let risen = judged(&twins(380.0, 6.0, BOTH), true, root, &pair).unwrap();
         assert_eq!(
-            rendered(&risen),
+            Finding::rendered(&risen.findings),
             ["src/w.rs:203: Watch::poll: CRAP 6.0, was 2.0"]
         );
         // The two scores changed places: the worst is no worse, and the second function rose.
         let swapped = judged(&twins(2.0, 380.0, BOTH), true, root, &pair).unwrap();
         assert_eq!(
-            rendered(&swapped),
+            Finding::rendered(&swapped.findings),
             ["src/w.rs:203: Watch::poll: CRAP 380.0, was 2.0"]
         );
     }
@@ -938,7 +939,7 @@ mod tests {
         );
         let outcome = judged(&twins(40.0, 50.0, one), true, Path::new("/w"), &record).unwrap();
         assert_eq!(
-            rendered(&outcome),
+            Finding::rendered(&outcome.findings),
             ["src/w.rs:115: Watch::poll: CRAP 40.0, not in the baseline"]
         );
     }

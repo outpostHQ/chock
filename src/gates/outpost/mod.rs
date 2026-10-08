@@ -231,12 +231,7 @@ mod tests {
     }
 
     fn said(stdout: &str, code: i32) -> exec::Output {
-        exec::Output {
-            code: Some(code),
-            stdout: stdout.to_string(),
-            stderr: "not a repository".to_string(),
-            truncated: false,
-        }
+        exec::Output::of(Some(code), stdout, "not a repository")
     }
 
     #[test]

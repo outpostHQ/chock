@@ -1,10 +1,11 @@
 //! The lines a file could lose: functions that only pass their parameters on, and code repeated in
-//! one shape. Shapes the source cannot settle are candidates; files a tool wrote are left out.
+//! one shape, tests too. Shapes the source cannot settle are candidates; files a tool wrote are out.
 
 mod repeats;
 mod walk;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
@@ -21,8 +22,8 @@ use crate::run::{Ctx, Gate, Group, Kind, Measurement};
 
 pub const GATE: Gate = Gate {
     name: "lean",
-    about: "a file gains lines that a call past a forwarder, or one function or table for code \
-            repeated in one shape, would remove",
+    about: "a file gains lines that a call past a forwarder, or one function, closure or table \
+            for code repeated in one shape, in production code or in tests, would remove",
     group: Group::Quality,
     builds: false,
     reads: None,
@@ -42,6 +43,24 @@ pub struct Forwarder {
     pub last: u32,
 }
 
+impl Forwarder {
+    /// The forwarder as a place in `shown`, and the fix that removes it.
+    fn shows(&self, shown: &str) -> Detail {
+        let (name, callee) = (&self.name, &self.callee);
+        Detail {
+            line: None,
+            places: vec![
+                Place::at("forwards", shown, self.line)
+                    .through(self.last)
+                    .item(name),
+            ],
+            fix: Some(format!(
+                "call `{callee}` where `{name}` is called, then remove `{name}`"
+            )),
+        }
+    }
+}
+
 /// One file's forwarders, which count, and its candidates, which do not.
 #[derive(Debug, Default)]
 pub struct Read {
@@ -49,44 +68,38 @@ pub struct Read {
     pub candidates: Vec<Finding>,
 }
 
-/// Every production file's removable lines: each forwarder's lines, and its part of what merging
+/// Every file's removable lines: each production forwarder's lines, and its part of what merging
 /// each repeated group would remove. Each place shows a forwarder or a copy; candidates are notes.
 fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let words = splits::words_by_file(ctx)?;
     let mut read = Measurement::of(Series::new(), Vec::new());
     let mut corpus = repeats::Corpus::default();
     let mut files = BTreeMap::new();
+    let mut tests: BTreeSet<PathBuf> = prodlines::sources(ctx)?.into_iter().collect();
     for (path, _) in prodlines::measure(ctx)? {
-        let shown = project::relative(&ctx.root, &path);
-        let src = std::fs::read_to_string(&path).map_err(|e| format!("{shown}: {e}"))?;
-        if generated(&shown, &src) {
+        tests.remove(&path);
+        let Some((shown, src)) = source(ctx, &path)? else {
             continue;
-        }
+        };
         let found = scan(&src, &shown, &splits::used_below(&words, &path));
         read.findings.extend(found.candidates);
-        corpus.add(&shown, &src);
+        corpus.add(&shown, &src, false);
         for it in &found.forwarders {
-            let (name, callee) = (&it.name, &it.callee);
-            let shows = Detail {
-                line: None,
-                places: vec![
-                    Place::at("forwards", &shown, it.line)
-                        .through(it.last)
-                        .item(name),
-                ],
-                fix: Some(format!(
-                    "call `{callee}` where `{name}` is called, then remove `{name}`"
-                )),
-            };
-            charge(&mut files, &shown, u64::from(it.last + 1 - it.line), shows);
+            charge(
+                &mut files,
+                &shown,
+                u64::from(it.last + 1 - it.line),
+                it.shows(&shown),
+            );
+        }
+    }
+    for path in tests {
+        if let Some((shown, src)) = source(ctx, &path)? {
+            corpus.add(&shown, &src, true);
         }
     }
     for repeat in corpus.repeats() {
-        let mut lines: BTreeMap<&str, u64> = BTreeMap::new();
-        for (site, share) in repeat.sites.iter().zip(repeat.shares()) {
-            *lines.entry(&site.file).or_default() += share;
-        }
-        for (shown, lines) in lines {
+        for (shown, lines) in repeat.by_file() {
             let shows = Detail {
                 line: None,
                 places: repeat.places(),
@@ -100,6 +113,13 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
         read.details.insert(shown, detail);
     }
     Ok(read)
+}
+
+/// A file's path as shown and its text, or `None` for a file a tool wrote.
+fn source(ctx: &Ctx, path: &Path) -> Result<Option<(String, String)>, String> {
+    let shown = project::relative(&ctx.root, path);
+    let src = std::fs::read_to_string(path).map_err(|e| format!("{shown}: {e}"))?;
+    Ok((!generated(&shown, &src)).then_some((shown, src)))
 }
 
 /// Adds `lines` to a file's removable lines, and the places and fix that show them. The file's
@@ -541,6 +561,30 @@ mod tests {
              offset)\n        .sum::<u64>();\n    let mean = total / count;\n    log({value}, total, \
              mean);\n    {name}!();\n}}\n"
         )
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn tests_are_charged_for_their_own_copies_and_never_merge_with_production_code() {
+        let tests = copy("a", "1") + &copy("b", "2") + &copy("c", "3");
+        let root = Held::tree(
+            "lean-tests",
+            &[
+                ("src/lib.rs", copy("d", "4").as_str()),
+                (
+                    "src/tests.rs",
+                    &(copy("e", "5") + &copy("f", "6") + &copy("g", "7")),
+                ),
+                ("tests/cli.rs", tests.as_str()),
+            ],
+        );
+        let read = measure(&root).unwrap();
+        let charged = ["src/lib.rs", "src/tests.rs", "tests/cli.rs"].map(|it| read.series.get(it));
+        assert_eq!(
+            charged,
+            [None, Some(6), Some(6)],
+            "unit tests and `tests` stay apart"
+        );
     }
 
     #[test]

@@ -288,7 +288,6 @@ fn read_text(root: &Path, path: &str) -> Option<String> {
 )]
 mod tests {
     use super::*;
-    use crate::run::baseline::Baseline;
 
     /// Assembled at run time so this file holds no literal the gate would report.
     fn aws_key() -> String {
@@ -307,7 +306,7 @@ mod tests {
     fn listed_by_git(root: &Path) -> Ctx {
         Ctx {
             vcs: crate::project::vcs::live_holder(root),
-            ..Ctx::for_root(root.to_path_buf(), Baseline::empty("0.1.0"))
+            ..Ctx::at(root)
         }
     }
 

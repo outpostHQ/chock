@@ -344,19 +344,14 @@ mod tests {
         was.set("src/b.rs", 1);
         let read = uncovered(DETAILED, Path::new("/w")).unwrap().held_to(&was);
         assert_eq!(read.series.get("src/a.rs"), Some(3));
-        let said: Vec<String> = read.findings.iter().map(Finding::render).collect();
+        let said: Vec<String> = Finding::rendered(&read.findings);
         assert_eq!(said, ["src/a.rs:2: no test ran line(s) 2-3, 7"]);
     }
 
     #[test]
     fn a_file_the_record_does_not_hold_names_every_line_no_test_ran() {
         let read = uncovered(DETAILED, Path::new("/w")).unwrap();
-        let said: Vec<String> = read
-            .held_to(&Series::new())
-            .findings
-            .iter()
-            .map(Finding::render)
-            .collect();
+        let said: Vec<String> = Finding::rendered(&read.held_to(&Series::new()).findings);
         assert_eq!(
             said,
             [
@@ -430,10 +425,7 @@ mod tests {
 
     fn held(name: &str) -> crate::testdir::Held {
         let dir = crate::testdir::make(name);
-        let ctx = Ctx::for_root(
-            dir.to_path_buf(),
-            crate::run::baseline::Baseline::empty("0.1.0"),
-        );
+        let ctx = Ctx::at(&dir);
         crate::testdir::Held::new(dir, ctx)
     }
 

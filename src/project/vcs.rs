@@ -845,12 +845,11 @@ mod tests {
 
     #[test]
     fn a_declared_hook_standing_is_read_even_where_outpost_refused() {
-        let refused = exec::Output {
-            code: Some(1),
-            stdout: r#"{"local":[],"declared":[],"standing":"changed"}"#.to_string(),
-            stderr: String::new(),
-            truncated: false,
-        };
+        let refused = exec::Output::of(
+            Some(1),
+            r#"{"local":[],"declared":[],"standing":"changed"}"#,
+            "",
+        );
         assert_eq!(standing(&refused), Some("changed".to_string()));
         assert_eq!(
             standing(&exec::Output {
@@ -1514,21 +1513,11 @@ mod tests {
     }
 
     fn said(stdout: &str) -> exec::Output {
-        exec::Output {
-            code: Some(0),
-            stdout: stdout.to_string(),
-            stderr: String::new(),
-            truncated: false,
-        }
+        exec::Output::of(Some(0), stdout, "")
     }
 
     fn refused(stderr: &str) -> exec::Output {
-        exec::Output {
-            code: Some(1),
-            stdout: String::new(),
-            stderr: stderr.to_string(),
-            truncated: false,
-        }
+        exec::Output::of(Some(1), "", stderr)
     }
 
     #[test]
@@ -1785,12 +1774,7 @@ mod tests {
     }
 
     fn ran(stdout: &str, code: Option<i32>) -> exec::Output {
-        exec::Output {
-            code,
-            stdout: stdout.to_string(),
-            stderr: "no repository".to_string(),
-            truncated: false,
-        }
+        exec::Output::of(code, stdout, "no repository")
     }
 
     #[test]

@@ -1059,52 +1059,36 @@ mod tests {
 
     #[test]
     fn a_tool_that_exited_clean_with_nothing_to_say_passes_silently() {
-        let out = exec::Output {
-            code: Some(0),
-            stdout: String::new(),
-            stderr: "advisories ok\n".to_string(),
-            truncated: false,
-        };
+        let out = exec::Output::of(Some(0), "", "advisories ok\n");
         assert_eq!(verdict(&out, root()), Outcome::passed());
     }
 
     #[test]
     fn a_tool_that_exited_clean_still_reports_the_advisory_it_printed() {
-        let out = exec::Output {
-            code: Some(0),
-            stdout: String::new(),
-            stderr: "warning[unmaintained]: crate is unmaintained\n  ┌─ /w/proj/Cargo.lock:12:1\n"
-                .to_string(),
-            truncated: false,
-        };
+        let out = exec::Output::of(
+            Some(0),
+            "",
+            "warning[unmaintained]: crate is unmaintained\n  ┌─ /w/proj/Cargo.lock:12:1\n",
+        );
         let outcome = verdict(&out, root());
         assert!(outcome.passed);
         assert_eq!(
-            outcome
-                .findings
-                .iter()
-                .map(Finding::render)
-                .collect::<Vec<_>>(),
+            Finding::rendered(&outcome.findings),
             vec!["Cargo.lock:12: unmaintained: crate is unmaintained"]
         );
     }
 
     #[test]
     fn a_failing_tool_carries_the_spans_from_both_streams() {
-        let out = exec::Output {
-            code: Some(101),
-            stdout: "error: b\n --> /w/proj/b.rs:2:1\n".to_string(),
-            stderr: "error: a\n --> /w/proj/a.rs:1:1\n".to_string(),
-            truncated: false,
-        };
+        let out = exec::Output::of(
+            Some(101),
+            "error: b\n --> /w/proj/b.rs:2:1\n",
+            "error: a\n --> /w/proj/a.rs:1:1\n",
+        );
         let outcome = verdict(&out, root());
         assert!(!outcome.passed);
         assert_eq!(
-            outcome
-                .findings
-                .iter()
-                .map(Finding::render)
-                .collect::<Vec<_>>(),
+            Finding::rendered(&outcome.findings),
             vec!["a.rs:1: a", "b.rs:2: b"]
         );
     }
@@ -1122,32 +1106,23 @@ mod tests {
     fn a_failure_is_explained_by_its_errors_and_never_by_a_warning_beside_them() {
         let warned =
             "warning: unused workspace dependency `thiserror`\n --> /w/proj/Cargo.toml:9:1\n";
-        let died = exec::Output {
-            code: Some(101),
-            stdout: String::new(),
-            stderr: format!("{warned}error: failed to run custom build command for `glib-sys`\n"),
-            truncated: false,
-        };
+        let died = exec::Output::of(
+            Some(101),
+            "",
+            &format!("{warned}error: failed to run custom build command for `glib-sys`\n"),
+        );
         assert_eq!(verdict(&died, root()).findings, Vec::new());
         let erred = exec::Output {
             stderr: format!("{warned}error[E0425]: cannot find value\n --> /w/proj/a.rs:3:5\n"),
             ..died.clone()
         };
-        let pointed: Vec<String> = verdict(&erred, root())
-            .findings
-            .iter()
-            .map(Finding::render)
-            .collect();
+        let pointed: Vec<String> = Finding::rendered(&verdict(&erred, root()).findings);
         assert_eq!(pointed, ["a.rs:3: E0425: cannot find value"]);
         let passed = exec::Output {
             code: Some(0),
             ..died
         };
-        let noted: Vec<String> = verdict(&passed, root())
-            .findings
-            .iter()
-            .map(Finding::render)
-            .collect();
+        let noted: Vec<String> = Finding::rendered(&verdict(&passed, root()).findings);
         assert_eq!(
             noted,
             ["Cargo.toml:9: unused workspace dependency `thiserror`"]
@@ -1220,12 +1195,11 @@ mod tests {
             failed_test(line).as_deref(),
             Some("chock cli::args::tests::one")
         );
-        let out = exec::Output {
-            code: Some(100),
-            stdout: String::new(),
-            stderr: "     TIMEOUT [ 300.004s] (1783/1783) chock slow::hangs\n".to_string(),
-            truncated: false,
-        };
+        let out = exec::Output::of(
+            Some(100),
+            "",
+            "     TIMEOUT [ 300.004s] (1783/1783) chock slow::hangs\n",
+        );
         assert_eq!(
             timed_out_tests(&out).into_iter().collect::<Vec<_>>(),
             ["chock slow::hangs"]
@@ -1460,17 +1434,8 @@ mod tests {
     #[test]
     fn a_test_nextest_named_on_both_streams_is_one_finding() {
         let line = "        FAIL [   0.004s] walkdir tests::recursive::empty_follow\n";
-        let out = exec::Output {
-            code: Some(100),
-            stdout: line.to_string(),
-            stderr: line.to_string(),
-            truncated: false,
-        };
-        let rendered: Vec<String> = read_suite(&out, root())
-            .findings
-            .iter()
-            .map(Finding::render)
-            .collect();
+        let out = exec::Output::of(Some(100), line, line);
+        let rendered: Vec<String> = Finding::rendered(&read_suite(&out, root()).findings);
         assert_eq!(
             rendered,
             vec!["walkdir tests::recursive::empty_follow: this test failed"]
@@ -1479,60 +1444,40 @@ mod tests {
 
     #[test]
     fn a_suite_that_failed_names_the_tests_that_failed() {
-        let out = exec::Output {
-            code: Some(100),
-            stdout: "        FAIL [   0.004s] chock a_rule_that_holds\n".to_string(),
-            stderr: String::new(),
-            truncated: false,
-        };
+        let out = exec::Output::of(
+            Some(100),
+            "        FAIL [   0.004s] chock a_rule_that_holds\n",
+            "",
+        );
         let outcome = read_suite(&out, root());
         assert!(!outcome.passed);
         assert_eq!(
-            outcome
-                .findings
-                .iter()
-                .map(Finding::render)
-                .collect::<Vec<_>>(),
+            Finding::rendered(&outcome.findings),
             vec!["chock a_rule_that_holds: this test failed"]
         );
     }
 
     #[test]
     fn a_runner_stage_that_named_a_measure_getting_worse_reports_that_measure() {
-        let out = exec::Output {
-            code: Some(1),
-            stdout: "worse sparse 122 -> 130\nworse dead_items 0 -> 2\n".to_string(),
-            stderr: "Error: 2 measure(s) got worse\n".to_string(),
-            truncated: false,
-        };
+        let worse = "worse sparse 122 -> 130\nworse dead_items 0 -> 2\n";
+        let out = exec::Output::of(Some(1), worse, "Error: 2 measure(s) got worse\n");
         let outcome = read_suite(&out, root());
         assert!(!outcome.passed);
-        assert_eq!(
-            outcome
-                .findings
-                .iter()
-                .map(Finding::render)
-                .collect::<Vec<_>>(),
-            vec![
-                "dead_items: got worse: 0 to 2",
-                "sparse: got worse: 122 to 130"
-            ]
-        );
+        let said = [
+            "dead_items: got worse: 0 to 2",
+            "sparse: got worse: 122 to 130",
+        ];
+        assert_eq!(Finding::rendered(&outcome.findings), said);
     }
 
     #[test]
     fn a_measure_named_on_both_streams_is_reported_once() {
-        let out = exec::Output {
-            code: Some(1),
-            stdout: "worse sparse 1 -> 2\n".to_string(),
-            stderr: "worse sparse 1 -> 2\nError: 1 measure(s) got worse\n".to_string(),
-            truncated: false,
-        };
-        let rendered: Vec<String> = read_suite(&out, root())
-            .findings
-            .iter()
-            .map(Finding::render)
-            .collect();
+        let out = exec::Output::of(
+            Some(1),
+            "worse sparse 1 -> 2\n",
+            "worse sparse 1 -> 2\nError: 1 measure(s) got worse\n",
+        );
+        let rendered: Vec<String> = Finding::rendered(&read_suite(&out, root()).findings);
         assert_eq!(rendered, vec!["sparse: got worse: 1 to 2"]);
     }
 
@@ -1545,20 +1490,15 @@ mod tests {
 
     #[test]
     fn a_crate_that_would_not_build_is_reported_at_the_span_rustc_gave() {
-        let out = exec::Output {
-            code: Some(101),
-            stdout: String::new(),
-            stderr: "error[E0432]: unresolved import\n --> /w/proj/src/a.rs:3:5\n".to_string(),
-            truncated: false,
-        };
+        let out = exec::Output::of(
+            Some(101),
+            "",
+            "error[E0432]: unresolved import\n --> /w/proj/src/a.rs:3:5\n",
+        );
         let outcome = read_suite(&out, root());
         assert!(!outcome.passed);
         assert_eq!(
-            outcome
-                .findings
-                .iter()
-                .map(Finding::render)
-                .collect::<Vec<_>>(),
+            Finding::rendered(&outcome.findings),
             vec!["src/a.rs:3: E0432: unresolved import"]
         );
     }
@@ -1588,7 +1528,7 @@ mod tests {
         out.stderr = said.to_string();
         let outcome = read_msrv(&out, "1.94", root()).unwrap();
         assert!(!outcome.passed);
-        let shown: Vec<String> = outcome.findings.iter().map(Finding::render).collect();
+        let shown: Vec<String> = Finding::rendered(&outcome.findings);
         assert_eq!(
             shown,
             vec![
@@ -1615,34 +1555,24 @@ mod tests {
 
     #[test]
     fn a_rustup_that_could_not_list_its_toolchains_is_named_rather_than_read_as_empty() {
-        let broken = exec::Output {
-            code: Some(1),
-            stdout: String::new(),
-            stderr: "error: could not open the rustup home directory\n".to_string(),
-            truncated: false,
-        };
+        let broken = exec::Output::of(
+            Some(1),
+            "",
+            "error: could not open the rustup home directory\n",
+        );
         assert_eq!(
             tests_the_promise(&broken, "1.94").unwrap_err(),
             "rustup could not say which toolchains are installed: error: could not open the \
              rustup home directory"
         );
-        let holds_none = exec::Output {
-            code: Some(0),
-            stdout: "stable-x86_64-unknown-linux-gnu (default)\n".to_string(),
-            stderr: String::new(),
-            truncated: false,
-        };
+        let holds_none =
+            exec::Output::of(Some(0), "stable-x86_64-unknown-linux-gnu (default)\n", "");
         assert_eq!(
             tests_the_promise(&holds_none, "1.94").unwrap_err(),
             "this crate promises Rust 1.94, which this machine does not have: run `rustup \
              toolchain install 1.94`"
         );
-        let holds_it = exec::Output {
-            code: Some(0),
-            stdout: "1.94.1-x86_64-unknown-linux-gnu\n".to_string(),
-            stderr: String::new(),
-            truncated: false,
-        };
+        let holds_it = exec::Output::of(Some(0), "1.94.1-x86_64-unknown-linux-gnu\n", "");
         assert_eq!(
             tests_the_promise(&holds_it, "1.94").unwrap(),
             "1.94.1-x86_64-unknown-linux-gnu"
@@ -1689,20 +1619,12 @@ mod tests {
 
     #[test]
     fn a_missing_toolchain_stops_the_msrv_gate_and_names_the_version_promised() {
-        let out = exec::Output {
-            code: Some(1),
-            stdout: String::new(),
-            stderr: "error: toolchain '1.85-x86_64-unknown-linux-gnu' is not installed\n\
-                     help: run `rustup toolchain install 1.85` to install it\n"
-                .to_string(),
-            truncated: false,
-        };
-        let err = read_msrv(&out, "1.85", root()).unwrap_err();
-        assert_eq!(
-            err,
-            "this crate promises Rust 1.85, which this machine does not have: \
-             run `rustup toolchain install 1.85`"
-        );
+        let missing = "error: toolchain '1.85-x86_64-unknown-linux-gnu' is not installed\n\
+                       help: run `rustup toolchain install 1.85` to install it\n";
+        let err = read_msrv(&exec::Output::of(Some(1), "", missing), "1.85", root()).unwrap_err();
+        let promised = "this crate promises Rust 1.85, which this machine does not have: \
+                        run `rustup toolchain install 1.85`";
+        assert_eq!(err, promised);
     }
 
     #[test]
@@ -1713,26 +1635,21 @@ mod tests {
 
     #[test]
     fn a_crate_that_no_longer_builds_on_its_oldest_rust_is_reported_at_the_span() {
-        let out = exec::Output {
-            code: Some(101),
-            stdout: String::new(),
-            stderr: "error[E0658]: let...else is unstable\n --> /w/proj/src/a.rs:9:5\n".to_string(),
-            truncated: false,
-        };
+        let out = exec::Output::of(
+            Some(101),
+            "",
+            "error[E0658]: let...else is unstable\n --> /w/proj/src/a.rs:9:5\n",
+        );
         let outcome = read_msrv(&out, "1.64", root()).unwrap();
         assert!(!outcome.passed);
         assert_eq!(
-            outcome
-                .findings
-                .iter()
-                .map(Finding::render)
-                .collect::<Vec<_>>(),
+            Finding::rendered(&outcome.findings),
             vec!["src/a.rs:9: E0658: let...else is unstable"]
         );
     }
 
     fn said(outcome: &Outcome) -> Vec<String> {
-        outcome.findings.iter().map(Finding::render).collect()
+        Finding::rendered(&outcome.findings)
     }
 
     /// The false green this answers: a file to reformat ended `lint` before clippy ran.
@@ -1818,12 +1735,11 @@ mod tests {
 
     #[test]
     fn a_missing_rustfmt_could_not_run_rather_than_calling_the_code_unformatted() {
-        let out = exec::Output {
-            code: Some(1),
-            stdout: String::new(),
-            stderr: "error: 'cargo-fmt' is not installed for the toolchain '1.98.1'\n".to_string(),
-            truncated: false,
-        };
+        let out = exec::Output::of(
+            Some(1),
+            "",
+            "error: 'cargo-fmt' is not installed for the toolchain '1.98.1'\n",
+        );
         let refused = formatted(&out, Path::new("/w")).unwrap_err();
         assert!(
             refused.contains("'cargo-fmt' is not installed"),
@@ -1833,14 +1749,9 @@ mod tests {
 
     #[test]
     fn only_a_hunk_trips_formatting_and_a_clean_check_passes() {
-        let hunk = exec::Output {
-            code: Some(1),
-            stdout: "Diff in /w/src/a.rs:3:\n".to_string(),
-            stderr: String::new(),
-            truncated: false,
-        };
+        let hunk = exec::Output::of(Some(1), "Diff in /w/src/a.rs:3:\n", "");
         let tripped = formatted(&hunk, Path::new("/w")).unwrap();
-        let rendered: Vec<String> = tripped.findings.iter().map(Finding::render).collect();
+        let rendered: Vec<String> = Finding::rendered(&tripped.findings);
         assert_eq!(rendered, vec![format!("src/a.rs: {UNFORMATTED}")]);
         assert!(!tripped.passed);
 
@@ -1861,46 +1772,31 @@ mod tests {
     }
 
     fn coloured(message: &str) -> exec::Output {
-        exec::Output {
-            code: Some(1),
-            stdout: String::new(),
-            stderr: format!("\u{1b}[0m\u{1b}[31merror: \u{1b}[0m{message}\n"),
-            truncated: false,
-        }
+        exec::Output::of(
+            Some(1),
+            "",
+            &format!("\u{1b}[0m\u{1b}[31merror: \u{1b}[0m{message}\n"),
+        )
     }
 
     #[test]
     fn the_tests_that_failed_only_the_second_time_are_named() {
-        let second = exec::Output {
-            code: Some(100),
-            stdout: "        FAIL [   0.005s] ws db::tests::a_second_open_reuses_the_file\n"
-                .to_string(),
-            stderr: "        FAIL [   1.200s] ws fs::tests::a_scratch_dir_is_removed\n".to_string(),
-            truncated: false,
-        };
+        let db = "ws db::tests::a_second_open_reuses_the_file";
+        let fs = "ws fs::tests::a_scratch_dir_is_removed";
+        let failed = |test: &str, took: &str| format!("        FAIL [   {took}s] {test}\n");
+        let second = exec::Output::of(Some(100), &failed(db, "0.005"), &failed(fs, "1.200"));
         let findings = failed_twice(&second, Path::new("/w"));
-        let named: Vec<&str> = findings
+        let named: Vec<_> = findings
             .iter()
-            .filter_map(|finding| finding.item.as_deref())
+            .filter_map(|it| it.item.as_deref())
             .collect();
-        assert_eq!(
-            named,
-            vec![
-                "ws db::tests::a_second_open_reuses_the_file",
-                "ws fs::tests::a_scratch_dir_is_removed"
-            ]
-        );
+        assert_eq!(named, [db, fs]);
     }
 
     /// `run` reads a failure with no finding as could-not-run, so the last resort reports one.
     #[test]
     fn a_second_run_that_named_no_test_still_reports_that_it_failed() {
-        let second = exec::Output {
-            code: Some(101),
-            stdout: String::new(),
-            stderr: "killed".to_string(),
-            truncated: false,
-        };
+        let second = exec::Output::of(Some(101), "", "killed");
         let findings = failed_twice(&second, Path::new("/w"));
         let named: Vec<&str> = findings
             .iter()
@@ -1942,11 +1838,7 @@ mod tests {
         let found = read_acl(&out).unwrap();
         assert!(!found.passed);
         assert_eq!(
-            found
-                .findings
-                .iter()
-                .map(Finding::render)
-                .collect::<Vec<_>>(),
+            Finding::rendered(&found.findings),
             [
                 "cackle.toml: 'proc-macro2' uses disallowed API `process`",
                 "cackle.toml: 'proc-macro2' uses disallowed API `fs`"

@@ -164,14 +164,9 @@ mod tests {
         assert_eq!(GATE.name, "bigfiles");
         assert_eq!(crate::run::rerun(GATE.name), "chock run bigfiles");
         assert_eq!(GATE.group, Group::Quality);
-        match GATE.kind {
-            Kind::Ratchet { keys, unit, .. } | Kind::AnnotatedRatchet { keys, unit, .. } => {
-                assert_eq!(keys, Keys::Items);
-                assert_eq!(unit, "production lines");
-            }
-            Kind::Binary(_) | Kind::Debt { .. } => {
-                panic!("bigfiles reports a number, not a verdict")
-            }
-        }
+        assert_eq!(
+            GATE.kind.ratcheted(),
+            Some((Keys::Items, "production lines"))
+        );
     }
 }

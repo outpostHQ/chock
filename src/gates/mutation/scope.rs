@@ -230,7 +230,7 @@ mod tests {
         let all = || Ok(measuring("src/z.rs#eq_op_invert"));
         let whole = widened(None, &was, &files, all).unwrap();
         assert_eq!(whole.series, series(&[("src/z.rs#eq_op_invert", 1)]));
-        let said: Vec<String> = whole.findings.iter().map(Finding::render).collect();
+        let said: Vec<String> = Finding::rendered(&whole.findings);
         assert_eq!(
             said,
             [

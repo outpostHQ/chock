@@ -77,12 +77,7 @@ mod tests {
     use super::*;
 
     fn said(stdout: &str) -> exec::Output {
-        exec::Output {
-            code: Some(0),
-            stdout: stdout.to_string(),
-            stderr: String::new(),
-            truncated: false,
-        }
+        exec::Output::of(Some(0), stdout, "")
     }
 
     fn counts(pairs: &[(&str, u64)]) -> BTreeMap<String, u64> {
@@ -118,33 +113,20 @@ mod tests {
 
     #[test]
     fn a_refused_cut_short_or_unreadable_listing_is_not_a_clean_graph() {
-        let refused = exec::Output {
-            code: Some(101),
-            stdout: String::new(),
-            stderr: "error: the lock file needs to be updated but --locked was passed".to_string(),
-            truncated: false,
-        };
-        let error = read(&refused).unwrap_err();
+        let locked = "error: the lock file needs to be updated but --locked was passed";
+        let error = read(&exec::Output::of(Some(101), "", locked)).unwrap_err();
         assert!(
             error.starts_with("cargo tree did not list duplicates: "),
             "{error}"
         );
         assert!(error.contains("--locked was passed"), "{error}");
-        let cut = exec::Output {
-            truncated: true,
-            ..said("syn v3.0.6\n")
-        };
-        assert_eq!(
-            read(&cut).unwrap_err(),
-            "cargo tree's listing was cut short, so any count would be partial"
-        );
-        assert_eq!(
-            read(&said("warning: something else\n")).unwrap_err(),
-            "unreadable cargo tree line: warning: something else"
-        );
-        assert_eq!(
-            read(&said("lonely\n")).unwrap_err(),
-            "unreadable cargo tree line: lonely"
-        );
+        let mut cut = said("syn v3.0.6\n");
+        cut.truncated = true;
+        let partial = "cargo tree's listing was cut short, so any count would be partial";
+        assert_eq!(read(&cut).unwrap_err(), partial);
+        for line in ["warning: something else", "lonely"] {
+            let error = read(&said(&format!("{line}\n"))).unwrap_err();
+            assert_eq!(error, format!("unreadable cargo tree line: {line}"));
+        }
     }
 }

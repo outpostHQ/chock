@@ -155,6 +155,19 @@ fn has_row(out: &str, tool: &str) -> bool {
         .any(|row| row.split_whitespace().nth(1) == Some(tool))
 }
 
+/// Runs chock in `cwd` and asserts it exits with `code`, showing both streams when it does not.
+fn exits(cwd: &Path, args: &[&str], code: i32) -> Ran {
+    let ran = chock(cwd, args);
+    assert_eq!(ran.code, code, "{}{}", ran.out, ran.err);
+    ran
+}
+
+/// Writes a config that turns on only `gates`.
+fn turn_on(dir: &Path, gates: &[&str]) {
+    let config = chock::project::config::Config::of(gates.iter().copied());
+    put(dir, chock::project::config::FILE, &config.render());
+}
+
 fn says(haystack: &str, needle: &str) {
     assert!(
         haystack.contains(needle),
@@ -199,8 +212,7 @@ fn the_help_flag_prints_the_usage_and_exits_zero() {
 
 #[test]
 fn no_arguments_exits_two_and_names_the_problem() {
-    let ran = chock(&scratch("no-arguments"), &[]);
-    assert_eq!(ran.code, 2);
+    let ran = exits(&scratch("no-arguments"), &[], 2);
     says(&ran.err, "chock: no command given");
     says(&ran.err, "chock run [GATE...]");
     assert_eq!(ran.out, "", "a usage error belongs on stderr");
@@ -208,8 +220,7 @@ fn no_arguments_exits_two_and_names_the_problem() {
 
 #[test]
 fn an_unknown_command_exits_two_and_names_it() {
-    let ran = chock(&scratch("unknown-command"), &["doctr"]);
-    assert_eq!(ran.code, 2);
+    let ran = exits(&scratch("unknown-command"), &["doctr"], 2);
     says(&ran.err, "chock: unknown command `doctr`");
     says(&ran.err, "chock doctor");
     assert_eq!(ran.out, "");
@@ -220,12 +231,10 @@ fn an_unknown_command_exits_two_and_names_it() {
 fn an_argument_a_subcommand_does_not_take_is_named_rather_than_ignored() {
     let dir = scratch("stray-argument");
 
-    let ran = chock(&dir, &["run", "--deep"]);
-    assert_eq!(ran.code, 2);
+    let ran = exits(&dir, &["run", "--deep"], 2);
     says(&ran.err, "chock: unknown option `--deep`");
 
-    let ran = chock(&dir, &["gates", "all"]);
-    assert_eq!(ran.code, 2);
+    let ran = exits(&dir, &["gates", "all"], 2);
     says(&ran.err, "chock: gates takes no argument `all`");
 }
 
@@ -339,16 +348,14 @@ fn slop_given_something_that_is_not_a_directory_exits_two() {
     put(&dir, "notes.rs", AT_LIMIT);
     let path = dir.join("notes.rs").display().to_string();
 
-    let ran = chock(&dir, &["slop", &path]);
-    assert_eq!(ran.code, 2);
+    let ran = exits(&dir, &["slop", &path], 2);
     says(&ran.err, &format!("chock: slop: {path} is not a directory"));
     assert_eq!(ran.out, "");
 }
 
 #[test]
 fn slop_takes_at_most_one_path() {
-    let ran = chock(&scratch("slop-two-paths"), &["slop", "src", "tests"]);
-    assert_eq!(ran.code, 2);
+    let ran = exits(&scratch("slop-two-paths"), &["slop", "src", "tests"], 2);
     says(&ran.err, "chock: slop takes at most one path");
 }
 
@@ -356,8 +363,7 @@ fn slop_takes_at_most_one_path() {
 fn doctor_without_a_pin_file_says_to_run_chock_init_local() {
     let dir = project("doctor-unpinned", &[]);
 
-    let ran = chock(&dir, &["doctor"]);
-    assert_eq!(ran.code, 2);
+    let ran = exits(&dir, &["doctor"], 2);
     says(&ran.err, "chock: cannot read ");
     says(&ran.err, "tool-versions.env");
     says(&ran.err, "run `chock init --local` to write one");
@@ -403,8 +409,7 @@ fn doctor_names_a_record_in_a_unit_this_chock_no_longer_counts() {
     baseline.record("slop", "comment line(s) of an older chock", series);
     put(&dir, chock::run::baseline::FILE, &baseline.render());
 
-    let ran = chock(&dir, &["doctor"]);
-    assert_eq!(ran.code, 1, "{}{}", ran.out, ran.err);
+    let ran = exits(&dir, &["doctor"], 1);
     says(&ran.out, "RECOUNTED");
     says(&ran.out, "chock baseline slop");
 }
@@ -440,8 +445,7 @@ fn doctor_json_emits_the_run_schema() {
 fn run_refuses_a_gate_name_that_does_not_exist_and_lists_the_real_ones() {
     let dir = project("run-unknown-gate", &[]);
 
-    let ran = chock(&dir, &["run", "nope"]);
-    assert_eq!(ran.code, 2);
+    let ran = exits(&dir, &["run", "nope"], 2);
     says(&ran.err, "chock: no gate named `nope`. There is: ");
     for gate in chock::gates::registry() {
         says(&ran.err, gate.name);
@@ -453,8 +457,7 @@ fn run_refuses_a_gate_name_that_does_not_exist_and_lists_the_real_ones() {
 fn explain_before_any_run_says_to_run_chock_run_first() {
     let dir = project("explain-before-a-run", &[]);
 
-    let ran = chock(&dir, &["explain", "slop"]);
-    assert_eq!(ran.code, 2);
+    let ran = exits(&dir, &["explain", "slop"], 2);
     says(&ran.err, "no record of a run at ");
     says(&ran.err, ".chock/last-run.json");
     says(&ran.err, "run `chock run` first");
@@ -465,16 +468,14 @@ fn explain_before_any_run_says_to_run_chock_run_first() {
 fn explain_refuses_a_name_that_is_not_a_gate() {
     let dir = project("explain-unknown-gate", &[]);
 
-    let ran = chock(&dir, &["explain", "nope"]);
-    assert_eq!(ran.code, 2);
+    let ran = exits(&dir, &["explain", "nope"], 2);
     says(&ran.err, "chock: no gate named `nope`. There is: ");
 }
 
 #[test]
 fn explain_refuses_a_last_run_that_lacks_the_gate_or_does_not_read() {
     let dir = project("explain-other-records", &[("src/legacy.rs", OVER_LIMIT)]);
-    let ran = chock(&dir, &["run", "slop"]);
-    assert_eq!(ran.code, 0, "{}{}", ran.out, ran.err);
+    exits(&dir, &["run", "slop"], 0);
     let absent = chock(&dir, &["explain", "fmt"]);
     assert_eq!(absent.code, 2, "{}", absent.out);
     says(&absent.err, "chock: the last run did not include `fmt`");
@@ -504,8 +505,7 @@ fn the_first_run_of_a_gate_writes_its_record_and_ci_writes_none() {
         "CI writes nothing"
     );
 
-    let first = chock(&dir, &["run", "slop"]);
-    assert_eq!(first.code, 0, "{}{}", first.out, first.err);
+    let first = exits(&dir, &["run", "slop"], 0);
     says(&first.out, "slop       ok          1 against 1");
     says(
         &first.err,
@@ -575,8 +575,7 @@ fn cache_clear_removes_every_kept_verdict_and_cache_alone_is_refused() {
     );
     assert!(!dir.join(chock::run::verdicts::FILE).exists());
 
-    let bare = chock(&dir, &["cache"]);
-    assert_eq!(bare.code, 2);
+    let bare = exits(&dir, &["cache"], 2);
     says(&bare.err, "chock: cache takes one word: clear");
 }
 
@@ -629,16 +628,14 @@ fn a_fix_lowers_the_record_and_ci_refuses_a_change_that_did_not_commit_it() {
     put(&dir, "src/legacy.rs", OVER_LIMIT);
     let held = std::fs::read_to_string(dir.join(".chock/baseline.json")).unwrap();
 
-    let ci = chock(&dir, &["run", "slop", "--ci"]);
-    assert_eq!(ci.code, 1, "{}{}", ci.out, ci.err);
+    let ci = exits(&dir, &["run", "slop", "--ci"], 1);
     says(
         &ci.out,
         "src/legacy.rs: 1 over-long comment block(s) where the record holds 2",
     );
     assert_eq!(slop_record(&dir), Some(2), "CI writes nothing");
 
-    let local = chock(&dir, &["run", "slop"]);
-    assert_eq!(local.code, 0, "{}{}", local.out, local.err);
+    let local = exits(&dir, &["run", "slop"], 0);
     says(
         &local.err,
         "chock: lowered the record for slop; commit .chock/baseline.json",
@@ -675,16 +672,14 @@ fn debt_on_record_fails_in_a_file_the_change_touched_where_the_project_asks() {
     }
     assert!(git(&dir, &["add", "-A"]).status.success());
     assert!(git(&dir, &["commit", "-q", "-m", "First"]).status.success());
-    let untouched = chock(&dir, &["run", "slop"]);
-    assert_eq!(untouched.code, 0, "{}{}", untouched.out, untouched.err);
+    exits(&dir, &["run", "slop"], 0);
 
     put(
         &dir,
         "src/legacy.rs",
         &format!("{OVER_LIMIT}pub fn f() {{}}\n"),
     );
-    let touched = chock(&dir, &["run", "slop"]);
-    assert_eq!(touched.code, 1, "{}{}", touched.out, touched.err);
+    let touched = exits(&dir, &["run", "slop"], 1);
     says(
         &touched.out,
         "src/legacy.rs: 1 over-long comment block(s) in a file this change touched",
@@ -900,15 +895,12 @@ fn commit(dir: &Path, message: &str) -> std::process::Output {
 #[test]
 fn a_hook_name_chock_does_not_run_is_refused() {
     let dir = project("hook-unknown", &[]);
-    let ran = chock(&dir, &["hook", "post-merge"]);
-    assert_eq!(ran.code, 2);
+    let ran = exits(&dir, &["hook", "post-merge"], 2);
     says(&ran.err, "chock hook does not run `post-merge`");
-    let bare = chock(&dir, &["hook"]);
-    assert_eq!(bare.code, 2);
+    let bare = exits(&dir, &["hook"], 2);
     says(&bare.err, "needs a hook name");
     // No message file and none being composed leaves nothing to check, which is not a pass.
-    let unnamed = chock(&dir, &["hook", "commit-msg"]);
-    assert_eq!(unnamed.code, 2, "{}{}", unnamed.out, unnamed.err);
+    let unnamed = exits(&dir, &["hook", "commit-msg"], 2);
     says(&unnamed.err, "git names no message being composed");
 }
 
@@ -1014,16 +1006,14 @@ fn a_command_run_outside_a_rust_project_names_the_manifest_it_could_not_find() {
 #[test]
 fn init_refuses_what_it_cannot_do_before_writing_anything() {
     let dir = project("init-refusals", &[]);
-    let ran = chock(&dir, &["init", "--deep"]);
-    assert_eq!(ran.code, 2);
+    let ran = exits(&dir, &["init", "--deep"], 2);
     says(&ran.err, "chock init: unknown option `--deep`");
     assert!(
         !dir.join("justfile").exists(),
         "init wrote a file despite refusing the option"
     );
 
-    let ran = chock(Path::new("/"), &["init", "--local"]);
-    assert_eq!(ran.code, 2);
+    let ran = exits(Path::new("/"), &["init", "--local"], 2);
     says(
         &ran.err,
         "chock init: no Cargo.toml here or in any parent — chock installs into a Rust project",
@@ -1036,15 +1026,13 @@ fn init_refuses_what_it_cannot_do_before_writing_anything() {
 fn init_global_stops_at_a_pin_file_it_cannot_read_or_parse() {
     let dir = project("init-pins", &[]);
     std::fs::create_dir_all(dir.join("tool-versions.env")).unwrap();
-    let ran = chock(&dir, &["init", "--global"]);
-    assert_eq!(ran.code, 2, "{}{}", ran.out, ran.err);
+    let ran = exits(&dir, &["init", "--global"], 2);
     says(&ran.err, "chock init: cannot read ");
     says(&ran.err, "tool-versions.env: ");
 
     std::fs::remove_dir(dir.join("tool-versions.env")).unwrap();
     put(&dir, "tool-versions.env", "CARGO_MUTEST_VERSION\n");
-    let ran = chock(&dir, &["init", "--global"]);
-    assert_eq!(ran.code, 2, "{}{}", ran.out, ran.err);
+    let ran = exits(&dir, &["init", "--global"], 2);
     says(
         &ran.err,
         "tool-versions.env: line 1: expected KEY=VALUE, found `CARGO_MUTEST_VERSION`",
@@ -1200,11 +1188,7 @@ fn ci_runs_every_gate_rather_than_a_list_that_goes_stale() {
 
 /// A scratch project with `slop` on; without it, an edited file answers to chock's own tree.
 fn set_up(dir: Scratch) -> Scratch {
-    put(
-        &dir,
-        chock::project::config::FILE,
-        &chock::project::config::Config::of(["slop"]).render(),
-    );
+    turn_on(&dir, &["slop"]);
     dir
 }
 
@@ -1216,27 +1200,23 @@ fn edited_reports_a_file_at_its_line_and_says_nothing_about_a_clean_one() {
         "edited-one",
         &[("src/bad.rs", OVER_LIMIT), ("src/good.rs", AT_LIMIT)],
     ));
-    let bad = chock(&dir, &["edited", "src/bad.rs"]);
-    assert_eq!(bad.code, 1);
+    let bad = exits(&dir, &["edited", "src/bad.rs"], 1);
     assert!(bad.out.contains("src/bad.rs:1"), "{}", bad.out);
-    let good = chock(&dir, &["edited", "src/good.rs"]);
-    assert_eq!(good.code, 0);
+    let good = exits(&dir, &["edited", "src/good.rs"], 0);
     assert_eq!(good.out, "");
 }
 
 #[test]
 fn edited_with_no_path_says_what_it_takes() {
     let dir = project("edited-none", &[]);
-    let ran = chock(&dir, &["edited"]);
-    assert_eq!(ran.code, 2);
+    let ran = exits(&dir, &["edited"], 2);
     assert!(ran.err.contains("one or more paths"), "{}", ran.err);
 }
 
 #[test]
 fn edited_refuses_a_path_it_cannot_open_rather_than_reporting_it_clean() {
     let dir = project("edited-absent", &[]);
-    let ran = chock(&dir, &["edited", "src/gone.rs"]);
-    assert_eq!(ran.code, 2);
+    let ran = exits(&dir, &["edited", "src/gone.rs"], 2);
     assert!(ran.err.contains("cannot read"), "{}", ran.err);
 }
 
@@ -1312,20 +1292,17 @@ fn the_hook_is_quiet_about_a_write_chock_has_no_rule_for() {
 fn switching_a_gate_on_and_off_is_recorded_in_the_project_config() {
     let dir = project("switch-gates", &[("src/lib.rs", "pub fn f() {}\n")]);
     // Switching a gate on in a project that never ran `init` would write a config nothing decided.
-    let undecided = chock(&dir, &["enable", "slop"]);
-    assert_eq!(undecided.code, 2, "{}{}", undecided.out, undecided.err);
+    let undecided = exits(&dir, &["enable", "slop"], 2);
     says(&undecided.err, "chock init --local");
     put(
         &dir,
         ".chock/config.json",
         "{\"version\": 1, \"enabled\": [\"lint\"]}\n",
     );
-    let on = chock(&dir, &["enable", "slop"]);
-    assert_eq!(on.code, 0, "{}{}", on.out, on.err);
+    exits(&dir, &["enable", "slop"], 0);
     let config = std::fs::read_to_string(dir.join(".chock/config.json")).unwrap();
     says(&config, "\"slop\"");
-    let off = chock(&dir, &["disable", "slop"]);
-    assert_eq!(off.code, 0, "{}{}", off.out, off.err);
+    exits(&dir, &["disable", "slop"], 0);
     let after = std::fs::read_to_string(dir.join(".chock/config.json")).unwrap();
     let after: chock::project::config::Config = serde_json::from_str(&after).unwrap();
     assert!(!after.is_on("slop"), "it is still on: {after:?}");
@@ -1334,8 +1311,7 @@ fn switching_a_gate_on_and_off_is_recorded_in_the_project_config() {
         Some("switched off by hand"),
         "switching it off is a decision the config keeps"
     );
-    let wrong = chock(&dir, &["enable", "sloop"]);
-    assert_eq!(wrong.code, 2, "{}{}", wrong.out, wrong.err);
+    let wrong = exits(&dir, &["enable", "sloop"], 2);
     says(&wrong.err, "sloop");
 }
 
@@ -1346,8 +1322,7 @@ fn switching_a_gate_on_changes_only_the_list_of_gates() {
     let written = "{\n  \"version\": 1,\n  \"runner\": [\"cargo\", \"test\"],\n  \"enabled\": \
                    [\"lint\"],\n  \"left_off\": {\"typos\": \"kept\"}\n}\n";
     put(&dir, ".chock/config.json", written);
-    let on = chock(&dir, &["enable", "slop"]);
-    assert_eq!(on.code, 0, "{}{}", on.out, on.err);
+    exits(&dir, &["enable", "slop"], 0);
     assert_eq!(
         std::fs::read_to_string(dir.join(".chock/config.json")).unwrap(),
         written.replace("[\"lint\"]", "[\n    \"lint\",\n    \"slop\"\n  ]")
@@ -1364,8 +1339,7 @@ fn staging_a_gate_records_only_a_stage_other_than_its_default() {
         r#"{"version": 1, "enabled": ["binsize"]}"#,
     );
     let config = || std::fs::read_to_string(dir.join(".chock/config.json")).unwrap();
-    let ci = chock(&dir, &["stage", "binsize", "ci"]);
-    assert_eq!(ci.code, 0, "{}{}", ci.out, ci.err);
+    let ci = exits(&dir, &["stage", "binsize", "ci"], 0);
     says(&ci.out, "binsize      runs at ci");
     says(&config(), "\"binsize\": \"ci\"");
     says(
@@ -1374,8 +1348,7 @@ fn staging_a_gate_records_only_a_stage_other_than_its_default() {
     );
     let manual = chock(&dir, &["stage", "typos", "manual"]);
     says(&manual.out, "only `chock run` does");
-    let back = chock(&dir, &["stage", "binsize", "push"]);
-    assert_eq!(back.code, 0, "{}{}", back.out, back.err);
+    exits(&dir, &["stage", "binsize", "push"], 0);
     assert!(!config().contains("binsize\": \""), "{}", config());
 }
 
@@ -1391,21 +1364,24 @@ fn a_hook_for_a_project_below_the_top_moves_into_it_and_still_finds_the_message(
         ],
     );
     std::fs::write(top.join("good.txt"), "A subject that says what changed\n").unwrap();
-    let good = chock(
+    exits(
         &top,
         &["hook", "commit-msg", "--project", "sub", "good.txt"],
+        0,
     );
-    assert_eq!(good.code, 0, "{}{}", good.out, good.err);
     std::fs::write(top.join("bad.txt"), format!("{}\n", "x".repeat(200))).unwrap();
-    let bad = chock(&top, &["hook", "commit-msg", "--project", "sub", "bad.txt"]);
-    assert_eq!(bad.code, 1, "{}{}", bad.out, bad.err);
+    let bad = exits(
+        &top,
+        &["hook", "commit-msg", "--project", "sub", "bad.txt"],
+        1,
+    );
     says(&bad.err, "subject");
     // A project that is not there is a hook chock could not run, not one that passed.
-    let gone = chock(
+    let gone = exits(
         &top,
         &["hook", "commit-msg", "--project", "gone", "good.txt"],
+        2,
     );
-    assert_eq!(gone.code, 2, "{}{}", gone.out, gone.err);
     says(&gone.err, "no Cargo.toml there");
 }
 
@@ -1414,16 +1390,13 @@ fn a_hook_for_a_project_below_the_top_moves_into_it_and_still_finds_the_message(
 fn a_commit_message_is_checked_against_the_projects_own_limits() {
     let dir = project("message-by-hand", &[("src/lib.rs", "pub fn f() {}\n")]);
     std::fs::write(dir.join("good.txt"), "A subject that says what changed\n").unwrap();
-    let good = chock(&dir, &["message", "good.txt"]);
-    assert_eq!(good.code, 0, "{}{}", good.out, good.err);
+    exits(&dir, &["message", "good.txt"], 0);
     let over = "x".repeat(200);
     std::fs::write(dir.join("bad.txt"), format!("{over}\n")).unwrap();
-    let bad = chock(&dir, &["message", "bad.txt"]);
-    assert_eq!(bad.code, 1, "{}{}", bad.out, bad.err);
+    let bad = exits(&dir, &["message", "bad.txt"], 1);
     says(&bad.err, "subject");
     // A file that is not there is a hook chock could not run, not a message that passed.
-    let missing = chock(&dir, &["message", "nowhere.txt"]);
-    assert_eq!(missing.code, 2, "{}{}", missing.out, missing.err);
+    let missing = exits(&dir, &["message", "nowhere.txt"], 2);
     says(&missing.err, "cannot read nowhere.txt");
 }
 
@@ -1496,8 +1469,7 @@ fn init_run_again_switches_on_a_gate_newer_than_the_config_that_wiring_asks_for(
         &dir,
         &["commit", "-q", "-m", "A first commit so a history exists"],
     );
-    let first = chock(&dir, &["init", "--local", "--fast"]);
-    assert_eq!(first.code, 0, "{}{}", first.out, first.err);
+    exits(&dir, &["init", "--local", "--fast"], 0);
     let path = dir.join(chock::project::config::FILE);
     let mut config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -1507,18 +1479,15 @@ fn init_run_again_switches_on_a_gate_newer_than_the_config_that_wiring_asks_for(
         .retain(|gate| gate != "lean" && gate != "splits");
     std::fs::write(&path, config.to_string()).unwrap();
 
-    let again = chock(&dir, &["init", "--local", "--fast"]);
-    assert_eq!(again.code, 0, "{}{}", again.out, again.err);
+    let again = exits(&dir, &["init", "--local", "--fast"], 0);
     says(&again.out, "switched on lean splits");
-    let wired = chock(&dir, &["run", "wiring"]);
-    assert_eq!(wired.code, 0, "{}{}", wired.out, wired.err);
+    exits(&dir, &["run", "wiring"], 0);
 }
 
 #[test]
 fn init_keeps_a_broken_core_check_enabled_and_the_next_run_reports_it() {
     let dir = project("init-broken-module", &[("src/lib.rs", "mod absent;\n")]);
-    let init = chock(&dir, &["init", "--local", "--fast"]);
-    assert_eq!(init.code, 0, "{}{}", init.out, init.err);
+    let init = exits(&dir, &["init", "--local", "--fast"], 0);
     says(&init.out, "a required gate, and it trips today:");
     says(&init.out, "On does not mean passed");
     let config: chock::project::config::Config = serde_json::from_str(
@@ -1526,8 +1495,7 @@ fn init_keeps_a_broken_core_check_enabled_and_the_next_run_reports_it() {
     )
     .unwrap();
     assert!(config.is_on("modcheck"));
-    let run = chock(&dir, &["run", "modcheck", "--json"]);
-    assert_eq!(run.code, 1, "{}{}", run.out, run.err);
+    let run = exits(&dir, &["run", "modcheck", "--json"], 1);
     let report = parsed(&run.out);
     assert_eq!(report.gates[0].gate, "modcheck");
     assert_eq!(report.gates[0].verdict, Verdict::Tripped);
@@ -1545,8 +1513,7 @@ fn init_retains_unreadable_source_checks_without_turning_on_opt_in_tools() {
         "init-unreadable-source",
         &[("src/lib.rs", "fn broken( {\n")],
     );
-    let init = chock(&dir, &["init", "--local", "--fast"]);
-    assert_eq!(init.code, 0, "{}{}", init.out, init.err);
+    let init = exits(&dir, &["init", "--local", "--fast"], 0);
     says(&init.out, "on, error modcheck");
     says(&init.out, "on, error source");
     let config: chock::project::config::Config = serde_json::from_str(
@@ -1561,8 +1528,7 @@ fn init_retains_unreadable_source_checks_without_turning_on_opt_in_tools() {
         !config.is_on("test"),
         "--fast remains an explicit scope choice"
     );
-    let run = chock(&dir, &["run", "modcheck", "--json"]);
-    assert_eq!(run.code, 2, "{}{}", run.out, run.err);
+    let run = exits(&dir, &["run", "modcheck", "--json"], 2);
     let report = parsed(&run.out);
     assert_eq!(report.gates[0].verdict, Verdict::CannotRun);
     let why = report.gates[0].cannot_run_reason.as_deref().unwrap();
@@ -1778,32 +1744,25 @@ fn a_local_run_adopts_orphan_debt_without_weakening_missing_module_checks() {
     let config = chock::project::config::Config::of(["modcheck"]);
     put(&dir, chock::project::config::FILE, &config.render());
     // A module that names no file is no debt to record, so it fails with no record written.
-    let unresolved = chock(&dir, &["run", "modcheck", "--json"]);
-    assert_eq!(unresolved.code, 1, "{}{}", unresolved.out, unresolved.err);
+    let unresolved = exits(&dir, &["run", "modcheck", "--json"], 1);
     says(&unresolved.out, "names no file");
     assert!(!dir.join(chock::run::baseline::FILE).exists());
     put(&dir, "src/lib.rs", "pub fn f() {}\n");
     // CI writes no record, so there the orphan fails.
-    let ci = chock(&dir, &["run", "modcheck", "--ci", "--json"]);
-    assert_eq!(ci.code, 1, "{}{}", ci.out, ci.err);
+    exits(&dir, &["run", "modcheck", "--ci", "--json"], 1);
     assert!(!dir.join(chock::run::baseline::FILE).exists());
-    let first = chock(&dir, &["run", "modcheck", "--json"]);
-    assert_eq!(first.code, 0, "{}{}", first.out, first.err);
+    let first = exits(&dir, &["run", "modcheck", "--json"], 0);
     says(&first.err, "chock: wrote the first record for modcheck");
     let baseline = std::fs::read_to_string(dir.join(chock::run::baseline::FILE)).unwrap();
-    let adopted = chock(&dir, &["run", "modcheck", "--json"]);
-    assert_eq!(adopted.code, 0, "{}{}", adopted.out, adopted.err);
+    let adopted = exits(&dir, &["run", "modcheck", "--json"], 0);
     assert_eq!(gate_of(&parsed(&adopted.out), "modcheck").measured, Some(1));
     put(&dir, "src/new.rs", "pub fn new() {}\n");
-    let new = chock(&dir, &["run", "modcheck", "--json"]);
-    assert_eq!(new.code, 1, "{}{}", new.out, new.err);
+    let new = exits(&dir, &["run", "modcheck", "--json"], 1);
     says(&new.out, "src/new.rs");
     put(&dir, "src/lib.rs", "mod missing;\n");
-    let broken = chock(&dir, &["run", "modcheck", "--json"]);
-    assert_eq!(broken.code, 1, "{}{}", broken.out, broken.err);
+    let broken = exits(&dir, &["run", "modcheck", "--json"], 1);
     says(&broken.out, "names no file");
-    let refused = chock(&dir, &["baseline", "modcheck"]);
-    assert_eq!(refused.code, 2, "{}{}", refused.out, refused.err);
+    let refused = exits(&dir, &["baseline", "modcheck"], 2);
     says(
         &refused.err,
         "cannot baseline unresolved correctness failures",
@@ -1826,24 +1785,16 @@ fn feature_debt_can_be_adopted_but_a_new_feature_issue_cannot_hide_in_it() {
         "Cargo.toml",
         &format!("{MANIFEST}\n[workspace]\n[features]\nstale = []\n"),
     );
-    put(
-        &dir,
-        chock::project::config::FILE,
-        &chock::project::config::Config::of(["features"]).render(),
-    );
-    let before = chock(&dir, &["run", "features", "--ci", "--json"]);
-    assert_eq!(before.code, 1, "{}{}", before.out, before.err);
-    let baseline = chock(&dir, &["baseline", "features"]);
-    assert_eq!(baseline.code, 0, "{}{}", baseline.out, baseline.err);
-    let accepted = chock(&dir, &["run", "features", "--json"]);
-    assert_eq!(accepted.code, 0, "{}{}", accepted.out, accepted.err);
+    turn_on(&dir, &["features"]);
+    exits(&dir, &["run", "features", "--ci", "--json"], 1);
+    exits(&dir, &["baseline", "features"], 0);
+    exits(&dir, &["run", "features", "--json"], 0);
     put(
         &dir,
         "src/lib.rs",
         "#[cfg(feature = \"missing\")] pub fn f() {}\n",
     );
-    let grew = chock(&dir, &["run", "features", "--json"]);
-    assert_eq!(grew.code, 1, "{}{}", grew.out, grew.err);
+    let grew = exits(&dir, &["run", "features", "--json"], 1);
     says(&grew.out, "missing");
 }
 
@@ -1854,8 +1805,7 @@ fn an_explicit_gate_filtered_out_never_becomes_an_empty_or_partial_success() {
         vec!["run", "--fast", "lint", "codeslop", "--json"],
         vec!["run", "--fast", "lint", "manifest", "--json"],
     ] {
-        let result = chock(&dir, &args);
-        assert_eq!(result.code, 2, "{}{}", result.out, result.err);
+        let result = exits(&dir, &args, 2);
         says(&result.err, "leaves out what you named");
         says(&result.err, "lint");
         assert_eq!(result.out, "");
@@ -1866,21 +1816,14 @@ fn an_explicit_gate_filtered_out_never_becomes_an_empty_or_partial_success() {
 #[test]
 fn an_empty_user_run_is_not_the_same_as_a_hook_with_no_assigned_checks() {
     let dir = project("empty-selection", &[("src/lib.rs", "pub fn f() {}\n")]);
-    put(
-        &dir,
-        chock::project::config::FILE,
-        &chock::project::config::Config::of(["test"]).render(),
-    );
-    let run = chock(&dir, &["run", "--fast", "--json"]);
-    assert_eq!(run.code, 2, "{}{}", run.out, run.err);
+    turn_on(&dir, &["test"]);
+    let run = exits(&dir, &["run", "--fast", "--json"], 2);
     says(&run.err, "no gate is left after --fast/--ci");
     assert_eq!(run.out, "");
-    let hook = chock(&dir, &["hook", "pre-commit"]);
-    assert_eq!(hook.code, 0, "{}{}", hook.out, hook.err);
+    let hook = exits(&dir, &["hook", "pre-commit"], 0);
     says(&hook.err, "nothing was measured");
     assert!(!dir.join(".chock/last-run.json").exists());
-    let valid = chock(&dir, &["run", "--fast", "modcheck", "--json"]);
-    assert_eq!(valid.code, 0, "{}{}", valid.out, valid.err);
+    let valid = exits(&dir, &["run", "--fast", "modcheck", "--json"], 0);
     assert_eq!(
         gate_of(&parsed(&valid.out), "modcheck").verdict,
         Verdict::Pass
@@ -1893,8 +1836,7 @@ fn ci_cannot_silently_exclude_an_explicit_local_only_gate() {
     let mut config = chock::project::config::Config::of(["manifest"]);
     config.local_only = Some(vec!["manifest".to_string()]);
     put(&dir, chock::project::config::FILE, &config.render());
-    let result = chock(&dir, &["run", "--ci", "manifest", "--json"]);
-    assert_eq!(result.code, 2, "{}{}", result.out, result.err);
+    let result = exits(&dir, &["run", "--ci", "manifest", "--json"], 2);
     says(&result.err, "manifest");
     says(&result.err, "leaves out what you named");
 }
@@ -1958,11 +1900,7 @@ esac
 "#,
     );
     make_runnable(&dir.join("bin/cargo"));
-    put(
-        &dir,
-        chock::project::config::FILE,
-        &chock::project::config::Config::of(["bsize"]).render(),
-    );
+    turn_on(&dir, &["bsize"]);
     for (failed, verdict, code) in [("no", Verdict::Pass, 0), ("yes", Verdict::CannotRun, 2)] {
         let result = with_tools(
             &dir,
@@ -2365,11 +2303,7 @@ fn failed_coverage_is_not_retried_by_crap_or_recorded_as_a_new_baseline() {
 #[test]
 fn mutation_scope_notes_reach_baseline_output_and_run_json() {
     let dir = project("mutation-scope", &[("src/lib.rs", "pub fn f() {}\n")]);
-    put(
-        &dir,
-        chock::project::config::FILE,
-        &chock::project::config::Config::of(["mutest"]).render(),
-    );
+    turn_on(&dir, &["mutest"]);
     let recorded = mutation_tool(&dir, &["baseline", "mutest"], "2", false);
     assert_eq!(recorded.code, 0, "{}{}", recorded.out, recorded.err);
     says(&recorded.err, "integration test commands");
@@ -2406,11 +2340,7 @@ esac
 #[test]
 fn a_cargo_mutest_that_is_not_the_fork_stops_the_check_and_names_the_install() {
     let dir = project("mutation-foreign", &[("src/lib.rs", "pub fn f() {}\n")]);
-    put(
-        &dir,
-        chock::project::config::FILE,
-        &chock::project::config::Config::of(["mutest"]).render(),
-    );
+    turn_on(&dir, &["mutest"]);
     put(&dir, "bin/cargo", UPSTREAM_MUTEST);
     make_runnable(&dir.join("bin/cargo"));
     let install = "run `chock init --global`: it builds `cargo-mutest` from the newest commit";
@@ -2437,11 +2367,7 @@ fn mutation_target_failure_never_replaces_a_baseline_with_partial_results() {
         "mutation-failed-target",
         &[("src/lib.rs", "pub fn f() {}\n")],
     );
-    put(
-        &dir,
-        chock::project::config::FILE,
-        &chock::project::config::Config::of(["mutest"]).render(),
-    );
+    turn_on(&dir, &["mutest"]);
     let mut baseline = chock::run::baseline::Baseline::empty(VERSION);
     let mut series = chock::run::baseline::Series::new();
     series.set("src/lib.rs#eq_op_invert", 7);
