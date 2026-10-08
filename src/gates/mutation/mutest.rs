@@ -95,7 +95,7 @@ fn mutated<T>(ctx: &Ctx, filter: Option<&str>, was: &Series, judge: Judge<T>) ->
         &invocation(&ctx.features, &results.flag(), filter),
         &ctx.root,
         &[],
-        moving,
+        (moving, exec::deadline()),
     )
     .map_err(|error| error.to_string())?;
     let measured = judge(&output, &|expected| results.survivors(expected), was)

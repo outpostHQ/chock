@@ -59,6 +59,12 @@ No command or flag is removed or renamed. The JSON reports add fields and remove
 - **`miri` counts the memory of one interpreter, not one build job.** The limit was one group for
   each 2 GB free, so a 7 GB Mac with 3 cores could not use all its cores. Now the limit is one group
   for each 512 MB free. Chock's own suite peaked at 5968 MB in all on 32 cores.
+- **`miri` stops a group that waits on one test past its limit.** A group waited up to 30 minutes
+  on a test that ran too long. Now it stops after 6 minutes with no progress, and nextest runs its
+  tests under their own 5-minute limit. On smoltcp, Miri took 2312 s.
+- **`miri` stops when a group shows that Miri cannot emulate the code.** Before, nextest ran the
+  group's tests again and met the same refusal. The result is `cannot_run` in both cases. On
+  progenitor, the gate took 740 s to give that answer.
 - **`miri` has no limit on the whole run.** The run stops only when no test ends and no crate
   builds for `CHOCK_TIMEOUT` (30 minutes). Before, a suite or a CI part with many tests failed at
   30 minutes in all, even when each test kept to its own limit.

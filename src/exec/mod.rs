@@ -282,22 +282,26 @@ pub(crate) fn run_watched(
     watchdog: &mut dyn Watchdog,
     moving: Moving,
 ) -> Result<Output, ExecError> {
-    run_full(program, args, cwd, MAX_CAPTURE, env, watchdog, Some(moving))
+    let pace = (moving, deadline());
+    run_full(program, args, cwd, MAX_CAPTURE, env, watchdog, Some(pace))
 }
 
 /// Whether an output line shows a tool still moving; each such line restarts a paced deadline.
 pub type Moving = fn(&str) -> bool;
 
+/// A paced run: what shows progress, and the longest wait for it, most often `deadline()`.
+pub type Pace = (Moving, std::time::Duration);
+
 /// `run_env` for a tool that may run as long as it shows progress: it is stopped only when no
-/// line `moving` accepts arrives within the deadline.
+/// line the pace's `Moving` accepts arrives within its wait.
 pub fn run_paced(
     program: &str,
     args: &[&str],
     cwd: &Path,
     env: &[(&str, &str)],
-    moving: Moving,
+    pace: Pace,
 ) -> Result<Output, ExecError> {
-    run_full(program, args, cwd, MAX_CAPTURE, env, &mut (), Some(moving))
+    run_full(program, args, cwd, MAX_CAPTURE, env, &mut (), Some(pace))
 }
 
 /// The `Moving` of a tool with a deadline in all: no line restarts it.
@@ -307,9 +311,9 @@ fn never(_line: &str) -> bool {
 
 /// What restarts the deadline, the limit on the whole run, and the limit since the last progress:
 /// a paced tool has no limit in all, only one since its last progress.
-fn pacing(pace: Option<Moving>) -> (Moving, std::time::Duration, std::time::Duration) {
+fn pacing(pace: Option<Pace>) -> (Moving, std::time::Duration, std::time::Duration) {
     match pace {
-        Some(moving) => (moving, std::time::Duration::MAX, deadline()),
+        Some((moving, idle)) => (moving, std::time::Duration::MAX, idle),
         None => (never, deadline(), std::time::Duration::MAX),
     }
 }
@@ -744,7 +748,7 @@ fn run_full(
     cap: usize,
     env: &[(&str, &str)],
     watchdog: &mut dyn Watchdog,
-    pace: Option<Moving>,
+    pace: Option<Pace>,
 ) -> Result<Output, ExecError> {
     let fail = |stage: Stage, reason: String| ExecError {
         program: program.to_string(),
@@ -1489,7 +1493,7 @@ mod tests {
             &["-c", "echo PASS; echo SLOW >&2"],
             &here(),
             &[],
-            stopping,
+            (stopping, deadline()),
         )
         .unwrap();
         assert_eq!(out.stdout, "PASS\n");

@@ -3,6 +3,7 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::exec;
 use crate::run::report::Finding;
@@ -44,52 +45,76 @@ impl Part {
 
 fn checked(ctx: &Ctx) -> Result<Outcome, String> {
     let prepared = asked(ctx).and_then(|asked| limited(ctx, &asked).map(|made| (asked, made)));
-    prepared
-        .and_then(|(asked, (_limit, args))| suite(ctx, &asked, &args, &|argv| interpret(ctx, argv)))
+    let run = |argv: &[String], idle| interpret(ctx, argv, idle);
+    prepared.and_then(|(asked, (_limit, args))| suite(ctx, &asked, &args, &run))
 }
 
-/// One cargo command under miri: its output, or why it stopped.
-type Interpret<'a> = dyn Fn(&[String]) -> Result<exec::Output, String> + Sync + 'a;
+/// One cargo command under miri, stopped after its longest wait for progress: its output, or why
+/// it stopped.
+type Interpret<'a> = dyn Fn(&[String], Duration) -> Result<exec::Output, String> + Sync + 'a;
+
+/// A group under libtest prints a line as each test ends, so a group this long without one holds a
+/// test past nextest's five minutes. It stops, and nextest runs its tests under their own limit.
+const GROUP_IDLE: Duration = Duration::from_secs(6 * 60);
 
 /// Runs one command under miri; opt-in, since interpreting costs tens of times a normal run.
-fn interpret(ctx: &Ctx, args: &[String]) -> Result<exec::Output, String> {
+fn interpret(ctx: &Ctx, args: &[String], idle: Duration) -> Result<exec::Output, String> {
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let flags = miriflags(&ctx.miri);
     let env = [("MIRIFLAGS", flags.as_str())];
-    exec::run_paced("cargo", &argv, &ctx.root, &env, moving)
+    exec::run_paced("cargo", &argv, &ctx.root, &env, (moving, idle))
         .map_err(|failed| advice(failed.hung(), &failed.to_string()))
 }
 
-/// The suite in groups, one interpreter each, as many at once as the lane's cores; a group that
-/// fails runs again under nextest, which names each test. With no list to group, one nextest run.
+/// The suite in groups, one interpreter each, as many at once as the lane's cores; a failed group
+/// runs again under nextest, which names each test. With no list to group, one nextest run.
 fn suite(ctx: &Ctx, asked: &[String], args: &[String], run: &Interpret) -> Result<Outcome, String> {
-    let listed = run(&groups::listing(args))
+    let listed = run(&groups::listing(args), exec::deadline())
         .ok()
         .filter(exec::Output::success);
     let Some((listed, grouped)) =
         listed.and_then(|out| groups::grouped(&out.stdout).map(|grouped| (out, grouped)))
     else {
-        return judge(&ctx.root, &run(args)?);
+        return judge(&ctx.root, &run(args, exec::deadline())?);
     };
     let recorded = crate::run::recorded_tests(&ctx.root, GATE.name);
     let lanes = groups::slowest_first(&grouped, &recorded);
     let timed =
         crate::run::workers::on_workers(&grouped, &lanes, exec::budget::interpreters(), &|group| {
-            let out = run(&groups::command(group, asked))
-                .ok()
-                .filter(exec::Output::success)?;
-            Some(groups::times(group, &out.stdout))
+            match run(
+                &groups::command(group, asked),
+                GROUP_IDLE.min(exec::deadline()),
+            ) {
+                Ok(out) if out.success() => Ok(groups::times(group, &out.stdout)),
+                out => Err(out.ok().and_then(|out| never_ran(&out.stderr))),
+            }
         });
+    // nextest would meet the same refusal, so the suite ends here rather than paying for it twice.
+    if let Some(why) = timed
+        .iter()
+        .flatten()
+        .find_map(|timed| timed.clone().err()?)
+    {
+        return Err(why);
+    }
     let failed: Vec<&groups::Group> = grouped
         .iter()
         .zip(&timed)
-        .filter(|(_, timed)| !matches!(timed, Some(Some(_))))
+        .filter(|(_, timed)| !matches!(timed, Some(Ok(_))))
         .map(|(group, _)| group)
         .collect();
-    let tests_ms = timed.into_iter().flatten().flatten().flatten().collect();
+    let tests_ms = timed
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .flatten()
+        .collect();
     let outcome = match failed.is_empty() {
         true => super::verdict(&listed, &ctx.root),
-        false => judge(&ctx.root, &run(&groups::rerun(args, &failed))?)?,
+        false => judge(
+            &ctx.root,
+            &run(&groups::rerun(args, &failed), exec::deadline())?,
+        )?,
     };
     Ok(Outcome {
         tests_ms,
@@ -508,17 +533,20 @@ mod tests {
     /// `suite` against canned answers: the list, each group (`None` stops it), then nextest's run.
     fn suite_with(
         list: &exec::Output,
-        group: Option<i32>,
+        group: Option<&exec::Output>,
         nextest: &exec::Output,
     ) -> (Result<Outcome, String>, Vec<Vec<String>>) {
         let asked = std::sync::Mutex::new(Vec::new());
-        let run = |argv: &[String]| {
+        let run = |argv: &[String], idle: Duration| {
             asked.lock().unwrap().push(argv.to_vec());
+            assert_eq!(
+                argv[2] == "test",
+                idle == GROUP_IDLE,
+                "only a group waits less"
+            );
             match (argv[2].as_str(), argv[3].as_str()) {
                 ("nextest", "list") => Ok(list.clone()),
-                ("test", _) => group
-                    .map(|code| said(code, "", ""))
-                    .ok_or("stopped".to_string()),
+                ("test", _) => group.cloned().ok_or("stopped".to_string()),
                 _ => Ok(nextest.clone()),
             }
         };
@@ -534,7 +562,11 @@ mod tests {
 
     #[test]
     fn groups_that_pass_are_the_whole_run_and_nextest_never_starts() {
-        let (outcome, asked) = suite_with(&said(0, LISTED, ""), Some(0), &said(1, "", ""));
+        let (outcome, asked) = suite_with(
+            &said(0, LISTED, ""),
+            Some(&said(0, "", "")),
+            &said(1, "", ""),
+        );
         assert!(outcome.unwrap().passed);
         assert_eq!(verbs(&asked), ["list", "-p"], "one group for both tests");
         assert!(asked[1].ends_with(&["a".to_string(), "b".to_string()]));
@@ -543,8 +575,9 @@ mod tests {
     #[test]
     fn a_group_that_fails_or_stops_runs_again_under_nextest_which_names_the_test() {
         let fail = "        FAIL [  1.000s] (1/2) chock a\n";
-        for group in [Some(1), None] {
-            let (outcome, asked) = suite_with(&said(0, LISTED, ""), group, &said(100, "", fail));
+        for group in [Some(said(1, "", "")), None] {
+            let (outcome, asked) =
+                suite_with(&said(0, LISTED, ""), group.as_ref(), &said(100, "", fail));
             let outcome = outcome.unwrap();
             assert!(!outcome.passed);
             assert_eq!(
@@ -562,14 +595,27 @@ mod tests {
     }
 
     #[test]
+    fn a_group_miri_cannot_emulate_ends_the_suite_and_nextest_never_starts() {
+        let refused = "error: unsupported operation: can't call foreign function `posix_spawn`\n";
+        let group = said(1, "", refused);
+        let (outcome, asked) = suite_with(&said(0, LISTED, ""), Some(&group), &said(0, "", ""));
+        let why = outcome.unwrap_err();
+        assert!(
+            why.contains("can't call foreign function `posix_spawn`"),
+            "{why}"
+        );
+        assert_eq!(verbs(&asked), ["list", "-p"]);
+    }
+
+    #[test]
     fn a_list_that_fails_or_holds_no_group_leaves_the_one_nextest_run() {
         for list in [said(101, LISTED, ""), said(0, "{}", "")] {
-            let (outcome, asked) = suite_with(&list, Some(0), &said(0, "", ""));
+            let (outcome, asked) = suite_with(&list, Some(&said(0, "", "")), &said(0, "", ""));
             assert!(outcome.unwrap().passed);
             assert_eq!(verbs(&asked), ["list", "run"]);
         }
         let absent = said(101, "", "error: 'cargo-miri' is not installed");
-        let (outcome, _) = suite_with(&absent, Some(0), &absent);
+        let (outcome, _) = suite_with(&absent, Some(&said(0, "", "")), &absent);
         assert_eq!(outcome.unwrap_err(), ABSENT);
     }
 
