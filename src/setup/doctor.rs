@@ -377,13 +377,14 @@ pub fn machine_health(
     if let Some((top, below)) = hooks_declared_at(root) {
         let declarations = crate::project::vcs::git_hook_declarations(&top);
         let path = std::env::var_os("PATH");
+        let startable = |program: &str| match &path {
+            Some(path) => crate::setup::hooks::executable(root, program, path),
+            None => Err("PATH is not available".to_string()),
+        };
         rows.extend(declared_git_hooks(
             below.as_deref(),
             &declarations,
-            &|program| {
-                let path = path.as_ref().ok_or("PATH is not available")?;
-                crate::setup::hooks::executable(root, program, path)
-            },
+            &startable,
         ));
     }
     rows
@@ -1001,8 +1002,8 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    fn machine_health_without_toolchains_or_a_repository_needs_no_process() {
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn machine_health_without_toolchains_or_a_repository_has_nothing_to_report() {
         let root = crate::testdir::make("doctor-no-machine-queries");
         assert_eq!(
             machine_health(&root, &crate::setup::pins::AdditionalPins::default()),
@@ -1379,9 +1380,8 @@ mod tests {
             verdict(&declared_git_hooks(None, &Ok(vec![silent]), &|_| Ok(true))),
             Verdict::Tripped
         );
-        let unread = declared_git_hooks(None, &Err("Git config unreadable".to_string()), &|_| {
-            Ok(true)
-        });
+        let unreadable = Err("Git config unreadable".to_string());
+        let unread = declared_git_hooks(None, &unreadable, &|_| Ok(true));
         assert_eq!(verdict(&unread), Verdict::CannotRun);
         let unavailable = declared_git_hooks(
             None,

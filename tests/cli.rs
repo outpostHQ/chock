@@ -393,6 +393,22 @@ fn doctor_reports_a_pin_no_machine_can_satisfy_as_missing() {
     );
 }
 
+/// An upgrade that changes what a gate counts leaves its old record behind. Doctor names that
+/// record with the command that re-records it, before a commit refuses.
+#[test]
+fn doctor_names_a_record_in_a_unit_this_chock_no_longer_counts() {
+    let dir = project("doctor-recounted", &[("tool-versions.env", "")]);
+    let mut baseline = chock::run::baseline::Baseline::empty(VERSION);
+    let series = chock::run::baseline::Series::new();
+    baseline.record("slop", "comment line(s) of an older chock", series);
+    put(&dir, chock::run::baseline::FILE, &baseline.render());
+
+    let ran = chock(&dir, &["doctor"]);
+    assert_eq!(ran.code, 1, "{}{}", ran.out, ran.err);
+    says(&ran.out, "RECOUNTED");
+    says(&ran.out, "chock baseline slop");
+}
+
 #[test]
 fn doctor_json_emits_the_run_schema() {
     let dir = project("doctor-json", &[("tool-versions.env", IMPOSSIBLE_PIN)]);

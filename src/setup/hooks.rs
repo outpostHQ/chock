@@ -749,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_tree_no_repository_holds_is_told_nothing_about_commit_hooks() {
         let dir = crate::testdir::make("init-unheld");
         assert_eq!(install_hooks(&dir).unwrap(), String::new());
@@ -943,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_tree_that_is_not_a_git_repository_gets_no_hooks_and_no_complaint() {
         let dir = crate::testdir::make("init-nogit");
         assert_eq!(install_hooks(&dir).unwrap(), String::new());

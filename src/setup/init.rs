@@ -2029,7 +2029,7 @@ mod tests {
     /// A gate newer than the config passes here; with `wiring` on, the config gains it, and with
     /// `wiring` off the choice stays the project's.
     #[test]
-    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_held_config_gains_a_passing_gate_only_where_it_turns_wiring_on() {
         let lean = |_: &Path, _: &Config| vec!["lean".to_string()];
         let real: &dyn Fn(&Path, &Config) -> Vec<String> = &gates::wiring::passing_and_off;
@@ -2062,7 +2062,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_project_that_already_says_which_checks_are_on_is_never_measured() {
         let dir = crate::testdir::make("init-already-chosen");
         fs::write(dir.join("Cargo.toml"), "[package]\nname = \"a\"\n").unwrap();
@@ -2096,7 +2096,7 @@ mod tests {
     /// A config chock cannot read is not a decision it can keep, so the tree is measured past it
     /// rather than the run stopping on a file somebody hand-edited.
     #[test]
-    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_config_that_cannot_be_read_is_measured_past() {
         let dir = crate::testdir::make("init-unreadable-config");
         fs::write(dir.join("Cargo.toml"), "[package]\nname = \"a\"\n").unwrap();
@@ -2112,7 +2112,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn write_local_reports_every_file_it_wrote_and_the_baselines_it_could_not() {
         let dir = crate::testdir::make("init-local");
         let report = write_local_with(&dir, &none_pass, &stub_choice).unwrap();
