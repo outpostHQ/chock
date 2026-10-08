@@ -101,7 +101,7 @@ impl Ctx {
     pub fn from_config(config: Option<&Config>) -> Self {
         Self {
             depth: crate::exec::depth(),
-            jobs: crate::exec::budget::of_this_machine(),
+            jobs: crate::exec::budget::of_this_machine(crate::exec::budget::PER_JOB_MB),
             runner: runner_for(config),
             coverage: coverage_for(config),
             message: crate::gates::repo::commits::Limits::of(config.and_then(|set| set.message)),

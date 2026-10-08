@@ -56,6 +56,9 @@ No command or flag is removed or renamed. The JSON reports add fields and remove
   lane's cores. The tests and flags are the same. A group that fails or stops runs again under
   nextest, one test to a process, so the finding names each test as before. On 53 of chock's own
   tests, the work went from 169 s to 74 s.
+- **`miri` counts the memory of one interpreter, not one build job.** The limit was one group for
+  each 2 GB free, so a 7 GB Mac with 3 cores could not use all its cores. Now the limit is one group
+  for each 512 MB free. Chock's own suite peaked at 5968 MB in all on 32 cores.
 - **`miri` has no limit on the whole run.** The run stops only when no test ends and no crate
   builds for `CHOCK_TIMEOUT` (30 minutes). Before, a suite or a CI part with many tests failed at
   30 minutes in all, even when each test kept to its own limit.

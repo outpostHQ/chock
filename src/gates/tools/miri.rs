@@ -73,12 +73,13 @@ fn suite(ctx: &Ctx, asked: &[String], args: &[String], run: &Interpret) -> Resul
     };
     let recorded = crate::run::recorded_tests(&ctx.root, GATE.name);
     let lanes = groups::slowest_first(&grouped, &recorded);
-    let timed = crate::run::workers::on_workers(&grouped, &lanes, exec::budget::cap(), &|group| {
-        let out = run(&groups::command(group, asked))
-            .ok()
-            .filter(exec::Output::success)?;
-        Some(groups::times(group, &out.stdout))
-    });
+    let timed =
+        crate::run::workers::on_workers(&grouped, &lanes, exec::budget::interpreters(), &|group| {
+            let out = run(&groups::command(group, asked))
+                .ok()
+                .filter(exec::Output::success)?;
+            Some(groups::times(group, &out.stdout))
+        });
     let failed: Vec<&groups::Group> = grouped
         .iter()
         .zip(&timed)

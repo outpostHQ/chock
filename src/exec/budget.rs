@@ -9,14 +9,23 @@ pub const PER_JOB_MB: u64 = 2048;
 /// The environment variable that sets the job count outright.
 pub const ASKED: &str = "CHOCK_JOBS";
 
-/// Jobs to run: no more than the cores or memory allow, at least one, and `asked` wins outright,
-/// so the memory is read only when nobody asked.
+/// What one Miri interpreter may need at its peak. Chock's own suite, its groups at once on 32
+/// cores, peaked at 5968 MB in all.
+pub const PER_INTERPRETER_MB: u64 = 512;
+
+/// Jobs to run: no more than the cores allow or the memory at `per_job_mb` each, at least one, and
+/// `asked` wins outright, so the memory is read only when nobody asked.
 #[must_use]
-pub fn jobs(cpus: usize, available_mb: impl FnOnce() -> u64, asked: Option<usize>) -> usize {
+pub fn jobs(
+    cpus: usize,
+    per_job_mb: u64,
+    available_mb: impl FnOnce() -> u64,
+    asked: Option<usize>,
+) -> usize {
     if let Some(asked) = asked {
         return asked.max(1);
     }
-    let by_memory = usize::try_from(available_mb() / PER_JOB_MB).unwrap_or(usize::MAX);
+    let by_memory = usize::try_from(available_mb() / per_job_mb).unwrap_or(usize::MAX);
     cpus.min(by_memory).max(1)
 }
 
@@ -189,7 +198,14 @@ pub fn cap() -> usize {
 /// The job cap of the whole machine, before the lanes share it.
 #[must_use]
 pub fn machine() -> usize {
-    *CAP.get_or_init(of_this_machine)
+    *CAP.get_or_init(|| of_this_machine(PER_JOB_MB))
+}
+
+/// Miri interpreters to run at once: the lane's share of the cores, with memory counted at what
+/// one interpreter needs, not a build job. At 2 GB each, a 7 GB Mac cannot use its 3 cores.
+#[must_use]
+pub fn interpreters() -> usize {
+    (of_this_machine(PER_INTERPRETER_MB) / RUNNING.load(Ordering::Relaxed).max(1)).max(1)
 }
 
 /// The jobs one lane needs to be worth running beside another.
@@ -240,10 +256,10 @@ pub fn within(jobs: usize, set: Option<&str>) -> usize {
         .max(1)
 }
 
-/// The job cap this machine allows. `available_parallelism` already honours CPU affinity and
-/// cgroup quotas.
+/// The job cap this machine allows at `per_job_mb` each. `available_parallelism` already honours
+/// CPU affinity and cgroup quotas.
 #[must_use]
-pub fn of_this_machine() -> usize {
+pub fn of_this_machine(per_job_mb: u64) -> usize {
     // A cargo job cap set by the caller is this whole run's allowance, which the lanes then share.
     let cpus = within(
         std::thread::available_parallelism().map_or(1, Into::into),
@@ -251,7 +267,12 @@ pub fn of_this_machine() -> usize {
     );
     let asked = std::env::var(ASKED).ok().and_then(|n| n.parse().ok());
     // Memory chock cannot read counts as one job's worth, not unlimited.
-    jobs(cpus, || available_mb().unwrap_or(PER_JOB_MB), asked)
+    jobs(
+        cpus,
+        per_job_mb,
+        || available_mb().unwrap_or(per_job_mb),
+        asked,
+    )
 }
 
 /// The memory free for new work in MB: the host's or the container's, whichever is less. Where no
@@ -281,25 +302,32 @@ mod tests {
 
     #[test]
     fn a_machine_with_memory_to_spare_is_held_to_its_cores() {
-        assert_eq!(jobs(8, || 64 * 1024, None), 8);
+        assert_eq!(jobs(8, PER_JOB_MB, || 64 * 1024, None), 8);
     }
 
     #[test]
     fn a_machine_with_more_cores_than_memory_is_held_to_its_memory() {
-        assert_eq!(jobs(96, || 16 * 1024, None), 8);
-        assert_eq!(jobs(96, || 4 * 1024, None), 2);
+        assert_eq!(jobs(96, PER_JOB_MB, || 16 * 1024, None), 8);
+        assert_eq!(jobs(96, PER_JOB_MB, || 4 * 1024, None), 2);
+    }
+
+    #[test]
+    fn an_interpreter_counts_its_own_memory_and_not_a_build_jobs() {
+        assert_eq!(jobs(3, PER_JOB_MB, || 3 * 1024, None), 1);
+        assert_eq!(jobs(3, PER_INTERPRETER_MB, || 3 * 1024, None), 3);
+        assert!(interpreters() >= 1);
     }
 
     #[test]
     fn a_machine_with_almost_no_memory_still_runs_one_job() {
-        assert_eq!(jobs(96, || 0, None), 1);
-        assert_eq!(jobs(0, || 64 * 1024, None), 1);
+        assert_eq!(jobs(96, PER_JOB_MB, || 0, None), 1);
+        assert_eq!(jobs(0, PER_JOB_MB, || 64 * 1024, None), 1);
     }
 
     #[test]
     fn a_number_somebody_asked_for_is_used_whatever_the_machine_looks_like() {
-        assert_eq!(jobs(2, || 1024, Some(32)), 32);
-        assert_eq!(jobs(96, || 999_999, Some(1)), 1);
+        assert_eq!(jobs(2, PER_JOB_MB, || 1024, Some(32)), 32);
+        assert_eq!(jobs(96, PER_JOB_MB, || 999_999, Some(1)), 1);
     }
 
     #[test]
@@ -309,8 +337,8 @@ mod tests {
             read.set(read.get() + 1);
             64 * 1024
         };
-        assert_eq!((jobs(8, mb, Some(3)), read.get()), (3, 0));
-        assert_eq!((jobs(8, mb, None), read.get()), (8, 1));
+        assert_eq!((jobs(8, PER_JOB_MB, mb, Some(3)), read.get()), (3, 0));
+        assert_eq!((jobs(8, PER_JOB_MB, mb, None), read.get()), (8, 1));
     }
 
     #[test]
@@ -377,7 +405,7 @@ mod tests {
 
     #[test]
     fn a_request_for_no_jobs_at_all_still_runs_one() {
-        assert_eq!(jobs(8, || 64 * 1024, Some(0)), 1);
+        assert_eq!(jobs(8, PER_JOB_MB, || 64 * 1024, Some(0)), 1);
     }
 
     #[test]
@@ -453,7 +481,7 @@ mod tests {
         let lane = Lane::enter();
         assert_eq!(Some(&machine()), CAP.get());
         assert!(RUNNING.load(Ordering::Relaxed) >= 1);
-        assert!(cap() >= 1 && cap() <= *CAP.get_or_init(of_this_machine));
+        assert!(cap() >= 1 && cap() <= *CAP.get_or_init(|| of_this_machine(PER_JOB_MB)));
         drop(lane);
     }
 
