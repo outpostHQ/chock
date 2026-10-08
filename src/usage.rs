@@ -38,6 +38,12 @@ Called by the hooks
   chock edited PATH...            check each file's own text, as the editor hook does
   chock slop [DIR]                list the comment blocks longer than the limit
 
+Cut code, then show that nothing changed
+  chock lean [DIR]                every line this tree could lose, file by file; no record
+  chock lean --tests --min N      count test code too; list only files with N lines to lose
+  chock oracle --old A --new B --corpus FILE
+                                  run two builds over the same scenarios and compare each answer
+
 Options
   --json                          machine-readable output, for an agent or a CI job
   -h, --help                      this text; `chock init --help` shows the options of init

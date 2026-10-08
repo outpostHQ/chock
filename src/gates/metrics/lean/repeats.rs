@@ -161,6 +161,7 @@ struct Holder {
     len: usize,
     body: Option<String>,
     case: bool,
+    test: bool,
 }
 
 /// One statement or arm: its lines, its shape's symbol, its token count, its names and values in
@@ -201,6 +202,20 @@ impl Corpus {
             test: test || prodlines::is_test_gated(&file.attrs),
         }
         .visit_file(&file);
+    }
+
+    /// The file and first line of each statement and arm of test code. A group is all test code
+    /// or all production code, so a group's first copy says which the group is.
+    pub fn test_starts(&self) -> BTreeSet<(&str, u32)> {
+        (self.units.iter())
+            .filter(|unit| self.holders[unit.holder].test)
+            .map(|unit| {
+                (
+                    self.files[self.holders[unit.holder].file].as_str(),
+                    unit.line,
+                )
+            })
+            .collect()
     }
 
     /// The groups to name, most lines removed first; no two share a line.
@@ -503,6 +518,7 @@ impl Corpus {
             len: parts.len(),
             case: body.as_ref().is_some_and(|(_, case)| *case),
             body: body.map(|(name, _)| name),
+            test,
         });
         for (span, facts, lets) in parts {
             let mut hasher = DefaultHasher::new();

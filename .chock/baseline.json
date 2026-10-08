@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/baseline-v1.json",
   "version": 1,
-  "chock": "0.3.0",
+  "chock": "0.4.0",
   "gates": {
     "assertions": {
       "src/cli.rs#a_project_that_has_not_run_init_gets_the_enforced_set": 1,

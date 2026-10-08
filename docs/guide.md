@@ -7,7 +7,8 @@ and [the contract for agents](agents.md).
 [Install](#1-install) · [Set up a project](#2-set-up-a-project) · [The daily loop](#3-the-daily-loop) ·
 [Read a result](#4-read-a-result) · [When a gate does not pass](#5-when-a-gate-does-not-pass) ·
 [See all the debt](#6-see-all-the-debt) · [Choose the gates](#7-choose-the-gates) ·
-[JSON output](#8-json-output) · [Every command](#9-every-command) · [Limits](#limits)
+[JSON output](#8-json-output) · [Every command](#9-every-command) ·
+[Cut code with proof](#10-cut-code-with-proof) · [Limits](#limits)
 
 ## 1. Install
 
@@ -203,7 +204,7 @@ gate to its record only. [Configuration](configuration.md) has every key.
 
 ## 8. JSON output
 
-`run`, `gates`, `explain`, `doctor`, `survey`, `edited` and `slop` take `--json`. A run's report
+`run`, `gates`, `explain`, `doctor`, `survey`, `edited`, `slop`, `lean` and `oracle` take `--json`. A run's report
 follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 `chock run complexity --json` prints this:
 
@@ -211,7 +212,7 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/run-v1.json",
   "version": 1,
-  "chock": "0.3.0",
+  "chock": "0.4.0",
   "gates": [
     {
       "gate": "complexity",
@@ -290,7 +291,133 @@ The hooks call three more commands. You can run them by hand.
 | `chock edited PATH...` | checks each file's own text, as the editor hook does |
 | `chock slop [DIR]` | lists the comment blocks longer than the limit |
 
+Two commands read a tree or a program that chock does not own. They need no config and write no
+record. [Cut code with proof](#10-cut-code-with-proof) explains them.
+
+| command | what it does |
+|---|---|
+| `chock lean [DIR]` | lists every line the tree could lose, file by file, largest first |
+| `chock lean --tests` | counts repeated test code too |
+| `chock lean --min N` | lists only the files that could lose `N` lines or more |
+| `chock oracle --old A --new B --corpus FILE` | runs two builds over the same scenarios and compares each answer |
+
 Exit codes: `0` every gate passed, `1` a gate tripped, `2` a gate could not run.
+
+## 10. Cut code with proof
+
+The `lean` gate stops a file from gaining lines that could be written once. These two commands
+work on the lines that are already there.
+
+```text
+chock lean --json ──▶ one change for each place ──▶ a person approves
+                                                          │
+chock run ◀── chock oracle: old build = new build ◀── apply, build again
+```
+
+chock calls no model and applies no change. An agent or a person does both.
+
+### `chock lean`
+
+`chock lean [DIR]` reads every `.rs` file under `DIR`, or under the current directory. It prints
+the totals, the lines by kind, and the 30 files that could lose the most. `--json` prints every
+file.
+
+| field | where | what it holds |
+|---|---|---|
+| `files`, `lines` | report | the production files and their lines |
+| `lines_counted` | report | which lines `lines` counts |
+| `removable_lines` | report, row, place | the lines that could go |
+| `by_kind` | report | `removable_lines` for each kind |
+| `unread` | report | each file that did not parse; the command then exits `2` |
+| `rows` | report | one row for each file, most `removable_lines` first |
+| `path`, `lines`, `places` | row | the file, its lines, and each place in it |
+| `line`, `end_line` | place | where the place starts and ends |
+| `kind` | place | `forwarder`, `repeat`, `reexport_module`, `single_impl_trait` or `mirror_type` |
+| `fix` | place | the change that removes the lines |
+| `twin` | place | the other copy of a repeat or a mirror, as `file:line` |
+| `evidence` | place | `exact` or `estimate` |
+
+A place with `exact` evidence is a fact that the source settles: a private function that only
+passes its parameters on. A place with `estimate` evidence is a shape that a person must judge. A
+trait with one implementation can be a test seam, and a module of re-exports can be a public API.
+
+A repeat counts once: each copy holds its share of the lines that one function would remove.
+
+### `chock oracle`
+
+`chock oracle` runs an old build and a new build of one program over the same scenarios. It
+compares the exit code, stdout and stderr of each command, and the files that each build left.
+
+```sh
+chock oracle --old target/old/tool --new target/release/tool --corpus scenarios.jsonl \
+    --fixture tests/fixture --probe "status --json" --normalize rules.jsonl --allow allowed.jsonl
+```
+
+| option | what it gives |
+|---|---|
+| `--old`, `--new` | the two builds |
+| `--corpus FILE` | the scenarios, one JSON object on each line |
+| `--fixture DIR` | a directory that each build gets its own copy of, as its working directory |
+| `--probe "ARGS"` | a command that each build runs after the last step; repeat the option for more |
+| `--normalize FILE` | rules for text that two honest runs print differently |
+| `--allow FILE` | differences that a person accepted |
+| `--timeout SECS` | the limit for one command; 60 without the option |
+
+A scenario names its steps. Each step is the arguments of one command. `stdin` and `env` are
+optional, and each step gets them.
+
+```json
+{"name": "commit then log", "steps": [["commit", "-m", "one"], ["log"]], "stdin": "", "env": {"PAGER": "cat"}}
+```
+
+Each build runs in its own directories, with its own `HOME` and temporary directory. chock clears
+the environment and sets the same time zone, language, author and dates for both builds. It sets
+the proxy variables to a closed local port. It does not block sockets, so a build that ignores
+those variables can still reach the network.
+
+A normalize rule replaces text with a token before the comparison. chock replaces each build's
+own directory with `<DIR>` without a rule. The report counts what each token replaced.
+
+```json
+{"kind": "hex", "min": 12, "token": "<ID>"}
+{"kind": "digits", "min": 10, "token": "<TIME>"}
+{"kind": "text", "text": "tool 2.1.0", "token": "<VERSION>"}
+```
+
+| kind | what it replaces |
+|---|---|
+| `text` | each place the `text` stands |
+| `hex` | each run of `min` or more hexadecimal digits |
+| `digits` | each run of `min` or more decimal digits |
+
+An allow line accepts one field of one scenario. The field is `exit`, `stdout`, `stderr`, `probe`
+or `tree`. The difference stays in the report, and the scenario counts as `allowed`.
+
+```json
+{"scenario": "commit then log", "field": "stderr", "reason": "the new build drops a warning"}
+```
+
+The JSON report has `scenarios`, `equal`, `different`, `allowed` and `errors`, the counts in
+`normalized`, and one row for each scenario. A row has `name`, `verdict`, `differences` and
+`allowed`. A difference has `field`, `at` (the step or the probe), `old`, `new`, `line`,
+`old_line` and `new_line`: both values, and the first line that is not the same. A `tree`
+difference has the first path that the two builds hold differently.
+
+| exit code | meaning |
+|---|---|
+| `0` | each scenario is `equal` or `allowed` |
+| `1` | a scenario is `different` |
+| `2` | a scenario could not be compared, or the run could not start |
+
+Limits of the comparison:
+
+- The two builds of a scenario run at the same time. Scenarios run one after another.
+- A command that passes its limit is killed. A timeout never compares equal, also when both builds
+  time out.
+- The file comparison leaves out `.git` and `.outpost` directories. Use a probe to compare what a
+  store holds.
+- A file that holds a build's own directory differs between the builds. Add an allow line for it.
+- A probe's arguments are split at spaces. A probe cannot hold an argument with a space in it.
 
 ## Limits
 

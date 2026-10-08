@@ -5,6 +5,7 @@ pub mod cli;
 pub mod edited;
 pub mod exec;
 pub mod gates;
+pub mod oracle;
 pub mod project;
 pub mod run;
 pub mod setup;

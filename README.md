@@ -180,6 +180,8 @@ can work through it. chock measures and refuses. It does not rewrite your code.
 | `chock edited PATH...` | checks each file's own text, as the editor hook does; `--hook` reads stdin |
 | `chock message FILE` | checks a commit message against the `message` limits |
 | `chock slop [DIR]` | lists comment blocks longer than the limit, in any tree |
+| `chock lean [DIR]` | lists every line a tree could lose, file by file, largest first; it reads no record and writes none |
+| `chock oracle --old A --new B --corpus FILE` | runs two builds of one program over the same scenarios and compares each answer |
 
 `chock --help` lists every command, and `--json` gives machine-readable output. The
 [guide](docs/guide.md#9-every-command) has the full list.

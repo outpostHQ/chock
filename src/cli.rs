@@ -1,6 +1,7 @@
 //! What each command does, kept out of `main` so every branch is reachable from a test.
 
 mod args;
+mod tree;
 use args::split_json;
 pub use args::{Command, parse};
 
@@ -15,7 +16,6 @@ use crate::project::{
 };
 use crate::run::{self, Ctx, baseline::Baseline, report::LAST_RUN, report::Run, report::Verdict};
 use crate::setup::{doctor, init, pins};
-use crate::slop;
 use crate::usage::USAGE;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -89,7 +89,7 @@ pub fn dispatch(args: &[&str]) -> ExitCode {
         Command::Message(file) => check_message(file),
         Command::Hook(args) => run_hook(args),
         Command::Edited(rest) => run_edited(rest),
-        Command::Slop(rest) => run_slop(rest),
+        Command::Tree(name, rest) => tree::reads(name, rest),
         Command::Init(rest) => init::run(rest),
         Command::Print(text) => {
             emit(text);
@@ -121,7 +121,7 @@ fn refused(message: &str) -> u8 {
     2
 }
 
-/// Every command except `slop` and `edited` needs the project root.
+/// Every command except `slop`, `lean`, `oracle` and `edited` needs the project root.
 fn root() -> Result<PathBuf, String> {
     project::here()
 }
@@ -942,38 +942,6 @@ fn named(rest: &[&str]) -> Result<Vec<String>, ExitCode> {
     }
 }
 
-fn run_slop(args: &[&str]) -> ExitCode {
-    let (rest, json) = split_json(args);
-    let root = match rest.as_slice() {
-        [] => match std::env::current_dir() {
-            Ok(dir) => dir,
-            Err(e) => return cannot_run(&format!("cannot read the current directory: {e}")),
-        },
-        [dir] => PathBuf::from(*dir),
-        _ => return usage("slop takes at most one path"),
-    };
-    if !root.is_dir() {
-        return cannot_run(&format!(
-            "slop: {0} is not a directory; `chock edited {0}` checks one file",
-            root.display()
-        ));
-    }
-    let hits = match slop::scan(&root) {
-        Ok(hits) => hits,
-        Err(why) => return cannot_run(&format!("slop: {why}")),
-    };
-    if json {
-        emit(&format!("{}\n", slop::render_json(&hits, &root, VERSION)));
-    } else {
-        emit(&slop::render(&hits, &root));
-    }
-    if hits.is_empty() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(Verdict::Tripped.code())
-    }
-}
-
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -1143,7 +1111,7 @@ mod tests {
     fn the_usage_text_lists_every_subcommand_that_parses() {
         for name in [
             "run", "gates", "enable", "disable", "explain", "baseline", "cache", "doctor",
-            "message", "edited", "slop", "init",
+            "message", "edited", "slop", "lean", "oracle", "init",
         ] {
             assert!(
                 USAGE.contains(&format!("chock {name}")),

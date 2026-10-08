@@ -1,6 +1,6 @@
 [package]
 name = "chock"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.99.0"
 description = "Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers. 55 gates, one command, JSON for agents."
@@ -45,12 +45,12 @@ syn = { version = "3.0.6", features = ["full", "visit"] }
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 rustix = { version = "1.1.5", features = ["process"] }
 
-# Size everywhere but the parser chock spends its own time in: 3.1 MB rather than 4.5, for a survey
-# of this tree 5% slower rather than the 19% that `"s"` on every crate cost.
+# Size everywhere but the parser chock spends its own time in. `"z"` since 0.4.0: 3.61 MB on Linux
+# rather than 3.85 with `"s"`, for a `chock lean` of this tree 0.03 s slower.
 [profile.release]
 codegen-units = 1
 lto = true
-opt-level = "s"
+opt-level = "z"
 strip = true
 
 [profile.release.package.proc-macro2]

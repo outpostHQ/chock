@@ -121,6 +121,22 @@ whole tree.
 - **`unused` and `dead` give leads.** Neither sees a dependency used only in a doc example, or a
   function reached only through a name a macro builds; mark such a function `#[expect(dead_code)]`.
 
+## Why each gate starts its own compiler
+
+One compiler process for every gate would not make a run faster, so chock does not build one.
+
+- Rust has had no plugin interface since 1.75. A tool that reads the compiler's own data is a
+  driver: a program that links one exact nightly and runs in place of `rustc`.
+- `clippy`, `miri`, `mutest-rs` and `kani` are four drivers. Each one needs a different build of
+  the same source, so they cannot share one compilation.
+- Dylint shares one driver between lints only. `rustc_public`, the stable view of the compiler's
+  data, is not stable yet.
+- Most of a run is code that executes: tests, mutants, Miri and proofs. A shared compiler would
+  save none of that time.
+
+chock shares what can be shared: one target directory, one build for the gates that take the
+same flags, and a kept verdict for each gate whose inputs did not change.
+
 ## What a gate needs
 
 `chock init --global` installs the tools at the versions in `tool-versions.env`. `chock doctor`

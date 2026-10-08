@@ -2,6 +2,7 @@
 //! names which step failed.
 
 pub mod budget;
+pub mod fixed;
 pub(crate) mod peak;
 
 use std::fmt;

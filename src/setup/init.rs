@@ -39,7 +39,7 @@ const IGNORES: [&str; 9] = [
     crate::edited::HEARTBEAT,
     // A compiler crash dump lands in the working directory, so a `git add -A` after one commits it.
     "rustc-ice-*.txt",
-    // What `install_all` writes beside a file it will not overwrite. Not `*.chock`: `*` matches
+    // What `install_file` writes beside a file it will not overwrite. Not `*.chock`: `*` matches
     // the empty string, so that pattern would hide all of `.chock/`.
     "?*.chock",
 ];
@@ -585,16 +585,8 @@ answers on every edit, and `chock run` in CI is the backstop.\n";
 fn install_files(root: &Path) -> Result<String, Error> {
     let pin_file = local_pin_file(env!("CARGO_PKG_VERSION"));
     let pins = super::repin::install_pins(root, &pin_file)?;
-    let files = install_all(root, &[("deny.toml", DENY)])?;
-    Ok(format!("{pins}\n{files}"))
-}
-
-fn install_all(root: &Path, files: &[(&str, &str)]) -> Result<String, Error> {
-    let mut out = String::new();
-    for (name, content) in files {
-        let _ = writeln!(out, "{}", install_file(root, name, content)?);
-    }
-    Ok(out)
+    let deny = super::merge::install(root, "deny.toml", DENY)?;
+    Ok(format!("{pins}\n{deny}\n"))
 }
 
 /// Append what the gates produce to every ignore file the repositories holding this tree read.

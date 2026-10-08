@@ -48,11 +48,20 @@ pub enum Command<'a> {
     /// What a git hook runs. The body lives in chock, so an upgrade updates every hook.
     Hook(&'a [&'a str]),
     Edited(&'a [&'a str]),
-    Slop(&'a [&'a str]),
+    /// `slop`, `lean` and `oracle`: each reads a tree or a program that chock does not own.
+    Tree(&'a str, &'a [&'a str]),
     Init(&'a [&'a str]),
     /// `--version` and `--help`: the text each one prints.
     Print(&'static str),
     Usage(String),
+}
+
+/// A command that takes its own arguments apart, or the error for a word that is no command.
+fn named<'a>(cmd: &'a str, rest: &'a [&'a str]) -> Command<'a> {
+    match cmd {
+        "lean" | "oracle" => Command::Tree(cmd, rest),
+        _ => Command::Usage(format!("unknown command `{cmd}`")),
+    }
 }
 
 /// `--help` or `-h` anywhere after a command; `init` answers it with its own text.
@@ -153,13 +162,13 @@ pub fn parse<'a>(args: &'a [&'a str]) -> Command<'a> {
         ["doctor", rest @ ..] => json_only("doctor", rest, |json| Command::Doctor { json }),
         ["survey", rest @ ..] => json_only("survey", rest, |json| Command::Survey { json }),
         ["edited", rest @ ..] => Command::Edited(rest),
-        ["slop", rest @ ..] => Command::Slop(rest),
+        ["slop", rest @ ..] => Command::Tree("slop", rest),
         ["init", rest @ ..] => Command::Init(rest),
         ["--version" | "-V"] => Command::Print(VERSION_LINE),
         ["help", "init"] => Command::Init(&["--help"]),
         ["--help" | "-h"] | ["help", ..] => Command::Print(USAGE),
         [] => Command::Usage("no command given".to_string()),
-        [cmd, ..] => Command::Usage(format!("unknown command `{cmd}`")),
+        [cmd, rest @ ..] => named(cmd, rest),
     }
 }
 
@@ -238,9 +247,17 @@ mod tests {
     #[test]
     fn a_subcommand_keeps_the_arguments_after_it() {
         assert_eq!(parse(&["init", "--global"]), Command::Init(&["--global"]));
-        assert_eq!(parse(&["slop", "src"]), Command::Slop(&["src"]));
+        assert_eq!(parse(&["slop", "src"]), Command::Tree("slop", &["src"]));
         assert_eq!(parse(&["init"]), Command::Init(&[]));
-        assert_eq!(parse(&["slop"]), Command::Slop(&[]));
+        assert_eq!(parse(&["slop"]), Command::Tree("slop", &[]));
+        assert_eq!(
+            parse(&["lean", "--tests"]),
+            Command::Tree("lean", &["--tests"])
+        );
+        assert_eq!(
+            parse(&["oracle", "--old", "a"]),
+            Command::Tree("oracle", &["--old", "a"])
+        );
     }
 
     #[test]
@@ -414,7 +431,10 @@ mod tests {
     fn json_is_accepted_by_every_command_that_reports() {
         assert_eq!(parse(&["doctor", "--json"]), Command::Doctor { json: true });
         assert_eq!(parse(&["gates", "--json"]), Command::Gates { json: true });
-        assert_eq!(parse(&["slop", "--json"]), Command::Slop(&["--json"]));
+        assert_eq!(
+            parse(&["slop", "--json"]),
+            Command::Tree("slop", &["--json"])
+        );
     }
 
     #[test]

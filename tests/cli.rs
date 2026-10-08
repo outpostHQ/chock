@@ -359,6 +359,98 @@ fn slop_takes_at_most_one_path() {
     says(&ran.err, "chock: slop takes at most one path");
 }
 
+/// `f` only hands its argument to `g`, and `h` is its one caller.
+const FORWARDS: &str = "fn f(x: u8) { g(x) }\npub fn h() { f(1) }\n";
+
+fn json_of(ran: &Ran) -> serde_json::Value {
+    serde_json::from_str(&ran.out).unwrap()
+}
+
+#[test]
+fn lean_lists_the_place_a_tree_can_lose_and_exits_zero() {
+    let dir = scratch("lean-tree");
+    put(&dir, "src/lib.rs", FORWARDS);
+
+    let report = json_of(&exits(&dir, &["lean", "--json"], 0));
+    assert_eq!(report["removable_lines"], 1);
+    assert_eq!(report["rows"][0]["path"], "src/lib.rs");
+    let place = &report["rows"][0]["places"][0];
+    assert_eq!(
+        (&place["kind"], &place["line"]),
+        (&"forwarder".into(), &1.into())
+    );
+    assert_eq!(place["evidence"], "exact");
+
+    let text = exits(&dir, &["lean", "."], 0);
+    says(
+        &text.out,
+        "chock lean: 1 removable line(s) in 1 production file(s)",
+    );
+    says(&text.out, "  src/lib.rs\n");
+}
+
+#[test]
+fn lean_shows_its_report_and_exits_two_when_a_crate_file_does_not_parse() {
+    let files = [
+        ("src/lib.rs", FORWARDS),
+        ("src/broken.rs", "fn broken( {\n"),
+    ];
+    let dir = project("lean-unread", &files);
+
+    let ran = exits(&dir, &["lean", "--json"], 2);
+    says(
+        &ran.err,
+        "chock: lean: could not read src/broken.rs: line 1: ",
+    );
+    assert_eq!(json_of(&ran)["removable_lines"], 1);
+}
+
+#[test]
+fn lean_names_a_word_it_does_not_take_and_a_path_that_is_no_directory() {
+    let dir = scratch("lean-words");
+    let flag = exits(&dir, &["lean", "--nope"], 2);
+    says(&flag.err, "chock: lean does not take `--nope`");
+    let path = exits(&dir, &["lean", "no/such"], 2);
+    says(&path.err, "chock: lean: no/such is not a directory");
+}
+
+#[test]
+fn oracle_names_the_flag_it_needs_and_a_build_that_is_not_there() {
+    let dir = scratch("oracle-words");
+    let bare = exits(&dir, &["oracle"], 2);
+    says(&bare.err, "chock: oracle needs `--old`");
+    let gone = "oracle --old no/such/build --new b --corpus c";
+    let ran = exits(&dir, &gone.split(' ').collect::<Vec<_>>(), 2);
+    says(&ran.err, "chock: oracle: no/such/build is not a file");
+    assert_eq!(ran.out, "");
+}
+
+#[cfg(unix)]
+#[test]
+fn oracle_exits_zero_for_builds_that_answer_alike_and_one_for_builds_that_do_not() {
+    let dir = scratch("oracle-builds");
+    let corpus = "{\"name\": \"hello\", \"steps\": [[\"-c\", \"echo hi\"]]}\n";
+    put(&dir, "corpus.jsonl", corpus);
+    let compared = |new: &str, code| {
+        let args = format!("oracle --old /bin/sh --new {new} --corpus corpus.jsonl --json");
+        json_of(&exits(&dir, &args.split(' ').collect::<Vec<_>>(), code))
+    };
+
+    let alike = compared("/bin/sh", 0);
+    assert_eq!(
+        (&alike["equal"], &alike["different"]),
+        (&1.into(), &0.into())
+    );
+    let unlike = compared("/bin/echo", 1);
+    assert_eq!(unlike["rows"][0]["verdict"], "different");
+    let found = &unlike["rows"][0]["differences"][0];
+    assert_eq!(
+        (&found["field"], &found["old"]),
+        (&"stdout".into(), &"hi\n".into())
+    );
+    assert_eq!(found["new"], "-c echo hi\n");
+}
+
 #[test]
 fn doctor_without_a_pin_file_says_to_run_chock_init_local() {
     let dir = project("doctor-unpinned", &[]);

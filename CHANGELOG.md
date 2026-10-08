@@ -5,9 +5,43 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-09
+
+No command or flag is removed or renamed. The JSON report of `chock run` does not change. Two
+commands are new: `chock lean` and `chock oracle`.
+
+- **`chock lean [DIR]` lists every line a tree could lose.** The `lean` gate reports only what a
+  change adds. The command reads the whole tree, with no config and no record, and ranks the
+  files by the lines that could go. It finds five kinds of place: a function that only passes its
+  parameters on, code repeated in one shape, a module that only re-exports, a trait with one
+  implementation, and a struct that mirrors another one through a `From`. Each place has a fix
+  and says if it is a fact (`exact`) or a shape that a person must judge (`estimate`). `--tests`
+  counts repeated test code, `--min N` leaves out the small files, and `--json` prints each file.
+- **`chock oracle` compares two builds of one program.** It runs the old build and the new build
+  over the same scenarios, each in its own copy of a fixture with a fixed environment. It compares
+  the exit code, stdout and stderr of each step, the output of each probe, and the files that
+  each build left. Rules replace text that two honest runs print differently, and an allow file
+  holds each difference that a person accepted. It exits 0 when each scenario is equal or allowed,
+  1 for a difference, and 2 when a scenario could not be compared.
+- **A sequence for an agent that cuts code.** `docs/agents.md`, which `chock init` installs as
+  `.chock/agents.md`, gives the steps: `chock lean --json`, one change for each place, a person
+  approves, `chock oracle`, `chock run`. chock calls no model and applies no change.
+- **`chock init` merges into your `deny.toml`.** Before, a project with its own `deny.toml` got a
+  `deny.toml.chock` beside it on each run. Now chock adds each key and table that it ships and
+  the project does not set, and keeps each line of the project. A `deny.toml` that already has
+  them is `unchanged`.
+- **`chock init` updates `.chock/agents.md` in place.** Before, a contract from an older chock
+  got an `agents.md.chock` beside it. Now chock replaces a file that it wrote, and keeps a file
+  that the project wrote under that name.
 - **`lean` reads past a file that does not parse.** Before, the first such file stopped the gate
   with no findings. Now the gate shows what every other file holds and names each file it could
   not read. It still exits 2 and records nothing, and `chock baseline lean` still refuses.
+- **The release binary is built with `opt-level = "z"`.** It was `"s"`. The two commands add
+  code, and with `"s"` the Linux binary is 3.85 MB, which is over the `binsize` limit. With `"z"`
+  it is 3.61 MB, so no record changes. `chock lean` on chock's own tree takes 0.03 s longer.
+- **One compiler process for every gate: decided against.** `docs/gates.md` gives the reasons.
+  Each compiler tool needs a different build of the same source, and most of a run is code that
+  executes.
 
 ## [0.3.0] - 2026-10-08
 

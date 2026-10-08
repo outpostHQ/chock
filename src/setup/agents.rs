@@ -109,9 +109,26 @@ fn needs_pointer(held: &str) -> bool {
     !held.contains(AGENT_FILE)
 }
 
+/// Whether the held contract is one chock wrote: it opens with the heading chock's contract has.
+fn is_chocks(held: &str) -> bool {
+    held.lines().next() == AGENT_CONTRACT.lines().next()
+}
+
+/// The contract file's line of the report. A contract chock wrote is replaced by this version's;
+/// any other file under that name, and a symlink, is kept as `install_file` keeps it.
+fn refreshed(root: &Path) -> Result<String, Error> {
+    let path = root.join(AGENT_FILE);
+    let held = held_or_empty(&path)?;
+    if held == AGENT_CONTRACT || !is_chocks(&held) || path.is_symlink() {
+        return Ok(install_file(root, AGENT_FILE, AGENT_CONTRACT)?.to_string());
+    }
+    crate::project::document::write(&path, AGENT_CONTRACT).map_err(|e| unwritable(&path, &e))?;
+    Ok(format!("  updated   {AGENT_FILE} to this version of chock"))
+}
+
 /// Writes the agent contract and appends a pointer to it in each host file the project has.
 pub fn write_agent_contract(root: &Path) -> Result<String, Error> {
-    let mut report = format!("{}\n", install_file(root, AGENT_FILE, AGENT_CONTRACT)?);
+    let mut report = format!("{}\n", refreshed(root)?);
     let mut pointed = Vec::new();
     for name in HOST_FILES {
         let path = root.join(name);
@@ -263,6 +280,61 @@ mod tests {
         let once = fs::read_to_string(dir.join("AGENTS.md")).unwrap();
         write_agent_contract(&dir).unwrap();
         assert_eq!(fs::read_to_string(dir.join("AGENTS.md")).unwrap(), once);
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_contract_from_an_older_chock_is_replaced_and_no_copy_lands_beside_it() {
+        let dir = crate::testdir::make("init-agents-older");
+        fs::create_dir_all(dir.join(".chock")).unwrap();
+        let heading = AGENT_CONTRACT.lines().next().unwrap();
+        fs::write(
+            dir.join(AGENT_FILE),
+            format!("{heading}\n\nan older text\n"),
+        )
+        .unwrap();
+        let report = write_agent_contract(&dir).unwrap();
+        assert_eq!(
+            report,
+            format!("  updated   {AGENT_FILE} to this version of chock\n")
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join(AGENT_FILE)).unwrap(),
+            AGENT_CONTRACT
+        );
+        assert!(!dir.join(".chock/agents.md.chock").exists());
+        let again = write_agent_contract(&dir).unwrap();
+        assert_eq!(again, format!("  unchanged {AGENT_FILE}\n"));
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_file_the_project_wrote_under_the_contract_name_is_kept() {
+        let dir = crate::testdir::make("init-agents-theirs");
+        fs::create_dir_all(dir.join(".chock")).unwrap();
+        fs::write(dir.join(AGENT_FILE), "# our own notes\n").unwrap();
+        let report = write_agent_contract(&dir).unwrap();
+        assert!(report.starts_with("  conflict  "), "{report}");
+        assert_eq!(
+            fs::read_to_string(dir.join(AGENT_FILE)).unwrap(),
+            "# our own notes\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_contract_behind_a_symlink_is_not_written_through() {
+        let dir = crate::testdir::make("init-agents-link");
+        fs::create_dir_all(dir.join(".chock")).unwrap();
+        let heading = AGENT_CONTRACT.lines().next().unwrap();
+        let target = dir.join("elsewhere.md");
+        fs::write(&target, format!("{heading}\nolder\n")).unwrap();
+        std::os::unix::fs::symlink(&target, dir.join(AGENT_FILE)).unwrap();
+        write_agent_contract(&dir).unwrap();
+        assert_eq!(
+            fs::read_to_string(&target).unwrap(),
+            format!("{heading}\nolder\n")
+        );
     }
 
     #[test]

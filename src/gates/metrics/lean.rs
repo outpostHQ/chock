@@ -2,6 +2,8 @@
 //! one shape, tests too. Shapes the source cannot settle are candidates; files a tool wrote are out.
 
 mod repeats;
+pub mod report;
+mod shapes;
 mod walk;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -68,39 +70,57 @@ pub struct Read {
     pub candidates: Vec<Finding>,
 }
 
-/// Every file's removable lines: each production forwarder's lines, and its part of what merging
-/// each repeated group would remove. Each place shows a forwarder or a copy; candidates are notes.
-fn measure(ctx: &Ctx) -> Result<Measurement, String> {
+/// Every file read once: each production forwarder with its file, the candidates, the crate files
+/// that do not parse, each production file's lines, and the corpus of all code, tests too.
+#[derive(Debug, Default)]
+struct Tree {
+    forwarders: Vec<(String, Forwarder)>,
+    candidates: Vec<Finding>,
+    unread: Vec<String>,
+    lines: BTreeMap<String, u64>,
+    corpus: repeats::Corpus,
+}
+
+fn read_tree(ctx: &Ctx) -> Result<Tree, String> {
     let words = splits::words_by_file(ctx)?;
-    let mut read = Measurement::of(Series::new(), Vec::new());
-    let mut corpus = repeats::Corpus::default();
-    let mut files = BTreeMap::new();
     let mut tests: BTreeSet<PathBuf> = prodlines::sources(ctx)?.into_iter().collect();
     let (counted, unread) = prodlines::parsed(ctx)?;
-    read.unmeasured = unread;
-    for (path, _) in counted {
+    let mut tree = Tree {
+        unread,
+        ..Tree::default()
+    };
+    for (path, lines) in counted {
         tests.remove(&path);
         let Some((shown, src)) = source(ctx, &path)? else {
             continue;
         };
         let found = scan(&src, &shown, &splits::used_below(&words, &path));
-        read.findings.extend(found.candidates);
-        corpus.add(&shown, &src, false);
-        for it in &found.forwarders {
-            charge(
-                &mut files,
-                &shown,
-                u64::from(it.last + 1 - it.line),
-                it.shows(&shown),
-            );
-        }
+        tree.candidates.extend(found.candidates);
+        tree.corpus.add(&shown, &src, false);
+        let here = found.forwarders.into_iter().map(|it| (shown.clone(), it));
+        tree.forwarders.extend(here);
+        tree.lines.insert(shown, lines as u64);
     }
     for path in tests {
         if let Some((shown, src)) = source(ctx, &path)? {
-            corpus.add(&shown, &src, true);
+            tree.corpus.add(&shown, &src, true);
         }
     }
-    for repeat in corpus.repeats() {
+    Ok(tree)
+}
+
+/// Every file's removable lines: each production forwarder's lines, and its part of what merging
+/// each repeated group would remove. Each place shows a forwarder or a copy; candidates are notes.
+fn measure(ctx: &Ctx) -> Result<Measurement, String> {
+    let tree = read_tree(ctx)?;
+    let mut read = Measurement::of(Series::new(), tree.candidates);
+    read.unmeasured = tree.unread;
+    let mut files = BTreeMap::new();
+    for (shown, it) in &tree.forwarders {
+        let lines = u64::from(it.last + 1 - it.line);
+        charge(&mut files, shown, lines, it.shows(shown));
+    }
+    for repeat in tree.corpus.repeats() {
         for (shown, lines) in repeat.by_file() {
             let shows = Detail {
                 line: None,

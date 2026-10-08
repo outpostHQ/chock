@@ -9,6 +9,9 @@ chock explain GATE          the last run's findings, without a new run
 chock edited PATH...        what the commit would refuse in these files; no build
 chock run --no-cache        judge every gate again; no kept verdict answers
 chock baseline GATE...      raise a record to where this tree is; read the rule below first
+chock lean [DIR] --json     every line this tree could lose, file by file; no record
+chock oracle --old A --new B --corpus FILE --json
+                            two builds over the same scenarios; each answer compared
 ```
 
 Exit codes: `0` every gate passed, `1` a gate tripped, `2` a gate could not run.
@@ -57,3 +60,20 @@ it never trips the gate. Judge each one before you change the code.
 
 The findings are what got worse than the record, not all the debt. `measured` and `baseline` on the
 gate count that debt, and `chock explain --json` lists every record, largest first.
+
+## Cutting code that is already there
+
+`chock lean --json` ranks the files by `removable_lines`. Each place has a `kind`, a `fix` and
+`evidence`. `exact` is a fact that the source settles. `estimate` is a shape that a person must
+judge: a trait with one implementation can be a test seam.
+
+1. Run `chock lean --json` and take the files at the top.
+2. Propose one change for each place, and wait until a person approves it.
+3. Keep a build of the program from before the change. Apply the change and build again.
+4. Run `chock oracle --old OLD --new NEW --corpus FILE --json`.
+5. Run `chock run --json`.
+
+The oracle exits `0` when each scenario answered the same, and `1` when one did not: the report
+names the step, the field and the first line that differs. It exits `2` when nothing was compared,
+which is not a pass. A difference is a fact about the change. Fix the change, or let a person
+accept the difference in the `--allow` file with a reason.
