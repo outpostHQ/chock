@@ -5,6 +5,10 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- **`lean` reads past a file that does not parse.** Before, the first such file stopped the gate
+  with no findings. Now the gate shows what every other file holds and names each file it could
+  not read. It still exits 2 and records nothing, and `chock baseline lean` still refuses.
+
 ## [0.3.0] - 2026-10-08
 
 No command or flag is removed or renamed. The JSON reports do not change. The `lean` record

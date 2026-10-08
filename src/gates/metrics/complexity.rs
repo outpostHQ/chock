@@ -80,6 +80,7 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
         series,
         findings: Vec::new(),
         details,
+        unmeasured: Vec::new(),
     })
 }
 

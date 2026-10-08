@@ -96,6 +96,7 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
         series: series(&families),
         findings: Vec::new(),
         details: details(&families, &sources),
+        unmeasured: Vec::new(),
     })
 }
 

@@ -10,6 +10,7 @@ pub mod verdicts;
 
 mod context;
 mod lanes;
+mod measurement;
 pub(crate) mod workers;
 pub use context::{
     Coverage, Ctx, LCOV, Runner, coverage_for, default_coverage, default_runner, runner_for,
@@ -19,8 +20,9 @@ use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 use crate::run::baseline::{Keys, Series};
-use crate::run::report::{Detail, Finding, GateReport, Run, Verdict};
+use crate::run::report::{Finding, GateReport, Run, Verdict};
 pub(crate) use lanes::recorded_tests;
+pub use measurement::{Details, Measurement};
 use workers::on_workers;
 
 /// What a pass/fail gate found. `passed` is the tool's own verdict rather than a count of
@@ -105,39 +107,6 @@ fn cut_short(truncated: bool) -> &'static str {
 /// clean result is the one failure a quality system cannot afford.
 pub type Measure = fn(&Ctx) -> Result<Series, String>;
 pub type Check = fn(&Ctx) -> Result<Outcome, String>;
-
-/// A measured series with scope notes that must survive comparison and baseline recording.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Measurement {
-    pub series: Series,
-    pub findings: Vec<Finding>,
-    /// What the gate knows about a key beyond its number, by key.
-    pub details: Details,
-}
-
-/// A gate's details, by the key they are about.
-pub type Details = std::collections::BTreeMap<String, Detail>;
-
-impl Measurement {
-    /// A series and its notes, with no details for any key.
-    #[must_use]
-    pub fn of(series: Series, findings: Vec<Finding>) -> Self {
-        Self {
-            series,
-            findings,
-            details: Details::new(),
-        }
-    }
-
-    /// Baseline output keeps scope notes visible without recording them as measured debt.
-    #[must_use]
-    pub fn notes(&self, gate: &str) -> String {
-        self.findings
-            .iter()
-            .map(|finding| format!("  note      {gate:<12} {}\n", finding.render()))
-            .collect()
-    }
-}
 
 pub type AnnotatedMeasure = fn(&Ctx) -> Result<Measurement, String>;
 
@@ -274,8 +243,14 @@ pub fn measure(gate: &Gate, ctx: &Ctx) -> Result<Series, String> {
     measured(gate, ctx).map(|read| read.series)
 }
 
-/// Baseline recording and verdicts consume the same measurement, including scope exclusions.
+/// What `chock baseline` records and a survey shows: a read of every file, with its scope notes.
 pub fn measured(gate: &Gate, ctx: &Ctx) -> Result<Measurement, String> {
+    read_of(gate, ctx).and_then(Measurement::whole)
+}
+
+/// What a gate read, which may leave out files it could not read. Only a verdict takes such a read,
+/// since it names the files left out and records nothing.
+fn read_of(gate: &Gate, ctx: &Ctx) -> Result<Measurement, String> {
     match gate.kind {
         Kind::Ratchet { measure, .. } => {
             measure(ctx).map(|series| Measurement::of(series, Vec::new()))
@@ -735,13 +710,28 @@ fn ratchet(gate: &Gate, ctx: &Ctx, keys: Keys, unit: &str) -> GateReport {
         report.unit = Some(unit.to_string());
         return report;
     }
-    let read = match measured(gate, ctx) {
+    let read = match read_of(gate, ctx) {
         Ok(read) => read,
         Err(reason) => {
             return GateReport::cannot_run(gate.name, rerun(gate.name).as_str(), &reason);
         }
     };
-    measured_ratchet(gate, ctx, read, keys, unit)
+    ruled_on(gate, ctx, read, keys, unit)
+}
+
+/// The verdict on what a gate read. A read that left files out rules on nothing and records nothing,
+/// since a file it could not read looks like debt paid; it still shows what the rest hold.
+fn ruled_on(gate: &Gate, ctx: &Ctx, read: Measurement, keys: Keys, unit: &str) -> GateReport {
+    if read.unmeasured.is_empty() {
+        return measured_ratchet(gate, ctx, read, keys, unit);
+    }
+    let was = held_against(gate, ctx, &read.series);
+    let (_, over) = compared(&read.series, &was, keys, gate.name, unit, &read.details);
+    let why = read.unread();
+    let mut report = GateReport::cannot_run(gate.name, rerun(gate.name).as_str(), &why);
+    report.unit = Some(unit.to_string());
+    report.findings = over.into_iter().chain(read.findings).collect();
+    report
 }
 
 fn measured_ratchet(
@@ -2234,6 +2224,43 @@ mod tests {
             Some("eligible target launch did not build")
         );
         assert!(measured(&gate, &ctx).is_err());
+        assert_eq!(survey_one(&gate, &ctx).verdict, Verdict::CannotRun);
+    }
+
+    /// Reads one item and a note in one file, and could not read a second file.
+    fn left_one_out(_ctx: &Ctx) -> Result<Measurement, String> {
+        let mut read = Measurement::of(Series::new(), vec![Finding::at("src/a.rs", "a note")]);
+        read.series.set("src/a.rs#f", 2);
+        read.unmeasured = vec!["src/b.rs: line 1: expected `)`".to_string()];
+        Ok(read)
+    }
+
+    #[test]
+    fn a_read_that_left_a_file_out_shows_the_rest_but_rules_on_nothing_and_records_nothing() {
+        let gate = annotated_of(left_one_out, Keys::Items, "lines");
+        let recorded = ctx_with("probe", &[("src/a.rs#f", 1), ("src/b.rs#g", 4)]);
+        for ctx in [recorded, ctx_with("another", &[])] {
+            let report = run_one(&gate, &ctx);
+            assert_eq!((report.verdict, report.exit_code), (Verdict::CannotRun, 2));
+            assert_eq!(report.tightened, None);
+            let reason = report.cannot_run_reason.unwrap_or_default();
+            assert!(
+                reason.ends_with(": src/b.rs: line 1: expected `)`"),
+                "{reason}"
+            );
+            let over = report.findings.iter().find(|it| it.measured == Some(2));
+            assert_eq!(over.map(|it| it.file.as_str()), Some("src/a.rs"));
+            assert!(report.findings.iter().any(|it| it.message == "a note"));
+        }
+    }
+
+    #[test]
+    fn baseline_and_survey_refuse_a_read_that_left_a_file_out() {
+        let gate = annotated_of(left_one_out, Keys::Items, "lines");
+        let ctx = ctx_with("another", &[]);
+        let err = measured(&gate, &ctx).unwrap_err();
+        assert!(err.starts_with("1 file(s) could not be read"), "{err}");
+        assert!(err.ends_with(": src/b.rs: line 1: expected `)`"), "{err}");
         assert_eq!(survey_one(&gate, &ctx).verdict, Verdict::CannotRun);
     }
 

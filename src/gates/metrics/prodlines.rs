@@ -24,12 +24,22 @@ pub(crate) fn parse_rust(src: &str) -> Result<syn::File, String> {
     syn::parse_file(src).map_err(|e| format!("line {}: {e}", e.span().start().line))
 }
 
-/// Every production file with its line count. Files gated `#[cfg(test)]` from another file are
-/// dropped once every file has been scanned.
-pub fn measure(ctx: &crate::run::Ctx) -> Result<Vec<(PathBuf, usize)>, String> {
+/// Each production file with its line count.
+pub type Counted = Vec<(PathBuf, usize)>;
+
+/// Every production file with its line count, or the first crate file that does not parse.
+pub fn measure(ctx: &crate::run::Ctx) -> Result<Counted, String> {
+    let (counted, unread) = parsed(ctx)?;
+    unread.into_iter().next().map_or(Ok(counted), Err)
+}
+
+/// Every production file that parses with its line count, and `path: reason` for each crate file
+/// that does not. Files gated `#[cfg(test)]` from another file go once every file is scanned.
+pub fn parsed(ctx: &crate::run::Ctx) -> Result<(Counted, Vec<String>), String> {
     let root = &ctx.root;
     let (paths, crates) = walked(ctx, false)?;
     let mut counted: Vec<(PathBuf, usize, Vec<PathBuf>)> = Vec::new();
+    let mut unread = Vec::new();
     for path in paths {
         let shown = project::relative(root, &path);
         let src = fs::read_to_string(&path).map_err(|e| format!("{shown}: {e}"))?;
@@ -41,17 +51,21 @@ pub fn measure(ctx: &crate::run::Ctx) -> Result<Vec<(PathBuf, usize)>, String> {
             {
                 continue;
             }
-            Err(why) => return Err(format!("{shown}: {why}")),
+            Err(why) => {
+                unread.push(format!("{shown}: {why}"));
+                continue;
+            }
         };
         let gated = gated_paths(&path, &mods);
         counted.push((path, lines, gated));
     }
     let gated: Vec<PathBuf> = counted.iter().flat_map(|(_, _, g)| g.clone()).collect();
-    Ok(counted
+    let kept = counted
         .into_iter()
         .filter(|(path, _, _)| !gated.iter().any(|g| path.starts_with(g)))
         .map(|(path, lines, _)| (path, lines))
-        .collect())
+        .collect();
+    Ok((kept, unread))
 }
 
 /// One source split into (production text, test text): `#[cfg(test)]` modules, or a whole file

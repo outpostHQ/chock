@@ -76,7 +76,9 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let mut corpus = repeats::Corpus::default();
     let mut files = BTreeMap::new();
     let mut tests: BTreeSet<PathBuf> = prodlines::sources(ctx)?.into_iter().collect();
-    for (path, _) in prodlines::measure(ctx)? {
+    let (counted, unread) = prodlines::parsed(ctx)?;
+    read.unmeasured = unread;
+    for (path, _) in counted {
         tests.remove(&path);
         let Some((shown, src)) = source(ctx, &path)? else {
             continue;
@@ -552,6 +554,29 @@ mod tests {
         let read = measure(&root).unwrap();
         assert_eq!(read.series, Series::new());
         assert!(read.details.is_empty());
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_file_the_parser_rejects_is_named_while_the_gate_still_shows_every_other_file() {
+        let src = "fn a(x: u8) { b(x) }\npub fn b(_x: u8) {}\npub fn entry() { a(1); }\n";
+        let files = [
+            ("Cargo.toml", ""),
+            ("src/lib.rs", src),
+            ("src/broken.rs", "fn broken( {\n"),
+        ];
+        let root = Held::tree("lean-partial", &files);
+        let read = measure(&root).unwrap();
+        assert_eq!(read.series.get("src/lib.rs"), Some(1));
+        let named = matches!(read.unmeasured.as_slice(),
+            [one] if one.starts_with("src/broken.rs: line 1:"));
+        assert!(named, "{:?}", read.unmeasured);
+        let report = crate::run::run_one(&GATE, &root);
+        assert_eq!(report.exit_code, 2);
+        let reason = report.cannot_run_reason.unwrap_or_default();
+        assert!(reason.contains(": src/broken.rs: line 1:"), "{reason}");
+        let shown = report.findings.iter().find(|it| it.measured == Some(1));
+        assert_eq!(shown.map(|it| it.file.as_str()), Some("src/lib.rs"));
     }
 
     /// A function holding a six-line run that differs from its copies only in `value`.
