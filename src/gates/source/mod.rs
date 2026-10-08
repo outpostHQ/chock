@@ -240,10 +240,8 @@ pub fn judged_with(
     gated: bool,
 ) -> Result<Vec<Finding>, String> {
     let file = syn::parse_file(src).map_err(|e| format!("line {}: {e}", e.span().start().line))?;
-    let mut scan = Scan::new(path, src, Imports::of(&file));
+    let mut scan = Scan::new(path, src, Imports::of(&file), ships, test_only);
     scan.test_file |= gated || test_gate(&file.attrs, test_only);
-    scan.ships = ships;
-    scan.test_only = test_only;
     scan.visit_file(&file);
     Ok(scan.into_findings())
 }
@@ -281,13 +279,15 @@ struct Scan<'a> {
     test_file: bool,
     /// Whether anybody receives this file; see `judged`.
     ships: bool,
-    /// Whether a named feature is one no shipped build enables, read from the workspace manifests.
-    test_only: &'a dyn Fn(&str) -> bool,
+    test_only: TestOnly<'a>,
     findings: Vec<Finding>,
 }
 
+/// Whether a named feature is one no shipped build enables, read from the workspace manifests.
+type TestOnly<'a> = &'a dyn Fn(&str) -> bool;
+
 impl<'a> Scan<'a> {
-    fn new(path: &'a str, src: &'a str, imports: Imports) -> Self {
+    fn new(path: &'a str, src: &'a str, imports: Imports, ships: bool, only: TestOnly<'a>) -> Self {
         Self {
             path,
             src,
@@ -296,8 +296,8 @@ impl<'a> Scan<'a> {
             attrs: Vec::new(),
             tests: 0,
             test_file: test_path(path),
-            ships: true,
-            test_only: &|_| false,
+            ships,
+            test_only: only,
             findings: Vec::new(),
         }
     }
@@ -1339,6 +1339,20 @@ mod tests {
         assert_eq!(only_rule(DISABLED_TLS, marked), Vec::<String>::new());
         let under = "fn c() {\n    let _ = reqwest::Client::builder().danger_accept_invalid_certs(true);\n}\n";
         assert_eq!(at("tests/wire.rs", under), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_method_is_test_code_only_when_it_is_marked_itself() {
+        let src = "impl S {\n    #[test]\n    fn t() {\n        let _ = \
+                   reqwest::Client::builder().danger_accept_invalid_certs(true);\n    }\n    \
+                   fn c() {\n        let _ = \
+                   reqwest::Client::builder().danger_accept_invalid_certs(true);\n    }\n}\n";
+        assert_eq!(
+            rendered(src),
+            [
+                "src/lib.rs:7: disabled_tls_verification: reqwest client builder disables TLS certificate verification"
+            ]
+        );
     }
 
     #[test]

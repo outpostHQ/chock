@@ -1311,6 +1311,12 @@ mod tests {
                 Verdict::Tripped
             );
         }
+        let mut silent = declared(Some("chock hook pre-commit"));
+        silent.events.clear();
+        assert_eq!(
+            verdict(&declared_git_hooks(&Ok(vec![silent]), &|_| Ok(true))),
+            Verdict::Tripped
+        );
         let unread = declared_git_hooks(&Err("Git config unreadable".to_string()), &|_| Ok(true));
         assert_eq!(verdict(&unread), Verdict::CannotRun);
         let unavailable =

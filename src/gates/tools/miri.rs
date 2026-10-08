@@ -71,20 +71,29 @@ fn suite(ctx: &Ctx, asked: &[String], args: &[String], run: &Interpret) -> Resul
     else {
         return judge(&ctx.root, &run(args)?);
     };
-    let lanes: Vec<Vec<usize>> = grouped.iter().enumerate().map(|(at, _)| vec![at]).collect();
-    let passed = crate::run::workers::on_workers(&grouped, &lanes, exec::budget::cap(), &|group| {
-        run(&groups::command(group, asked)).is_ok_and(|out| out.success())
+    let recorded = crate::run::recorded_tests(&ctx.root, GATE.name);
+    let lanes = groups::slowest_first(&grouped, &recorded);
+    let timed = crate::run::workers::on_workers(&grouped, &lanes, exec::budget::cap(), &|group| {
+        let out = run(&groups::command(group, asked))
+            .ok()
+            .filter(exec::Output::success)?;
+        Some(groups::times(group, &out.stdout))
     });
     let failed: Vec<&groups::Group> = grouped
         .iter()
-        .zip(passed)
-        .filter(|(_, passed)| *passed != Some(true))
+        .zip(&timed)
+        .filter(|(_, timed)| !matches!(timed, Some(Some(_))))
         .map(|(group, _)| group)
         .collect();
-    if failed.is_empty() {
-        return Ok(super::verdict(&listed, &ctx.root));
-    }
-    judge(&ctx.root, &run(&groups::rerun(args, &failed))?)
+    let tests_ms = timed.into_iter().flatten().flatten().flatten().collect();
+    let outcome = match failed.is_empty() {
+        true => super::verdict(&listed, &ctx.root),
+        false => judge(&ctx.root, &run(&groups::rerun(args, &failed))?)?,
+    };
+    Ok(Outcome {
+        tests_ms,
+        ..outcome
+    })
 }
 
 /// nextest's verdict, or why miri never tested the code.

@@ -2,6 +2,7 @@
 //! names which step failed.
 
 pub mod budget;
+pub(crate) mod peak;
 
 use std::fmt;
 use std::io::Read;
@@ -781,6 +782,7 @@ fn run_full(
     let reading_out = captured(counted(process.child.stdout.take(), counts, &moved), cap);
     let reading_err = captured(counted(process.child.stderr.take(), counts, &moved), cap);
     let mut paced = Paced::new(watchdog, moved, idle);
+    let mut sampled = peak::Sampled::new(&mut paced, process.child.id());
     finish_capture(
         &mut process,
         program,
@@ -788,7 +790,7 @@ fn run_full(
         &reading_err,
         whole,
         DRAIN,
-        &mut paced,
+        &mut sampled,
     )
 }
 

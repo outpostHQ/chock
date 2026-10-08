@@ -587,8 +587,7 @@
       "src/gates/metrics/duplication.rs": 1,
       "src/gates/mutation/progress.rs": 1,
       "src/gates/mutation/watch.rs": 1,
-      "src/gates/source/mod.rs": 1,
-      "src/run/mod.rs": 1
+      "src/gates/source/mod.rs": 1
     },
     "supply": {
       "libc#build-script": 1,

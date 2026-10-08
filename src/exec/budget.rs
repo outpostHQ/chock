@@ -9,13 +9,14 @@ pub const PER_JOB_MB: u64 = 2048;
 /// The environment variable that sets the job count outright.
 pub const ASKED: &str = "CHOCK_JOBS";
 
-/// Jobs to run: no more than the cores or memory allow, at least one, and `asked` wins outright.
+/// Jobs to run: no more than the cores or memory allow, at least one, and `asked` wins outright,
+/// so the memory is read only when nobody asked.
 #[must_use]
-pub fn jobs(cpus: usize, available_mb: u64, asked: Option<usize>) -> usize {
+pub fn jobs(cpus: usize, available_mb: impl FnOnce() -> u64, asked: Option<usize>) -> usize {
     if let Some(asked) = asked {
         return asked.max(1);
     }
-    let by_memory = usize::try_from(available_mb / PER_JOB_MB).unwrap_or(usize::MAX);
+    let by_memory = usize::try_from(available_mb() / PER_JOB_MB).unwrap_or(usize::MAX);
     cpus.min(by_memory).max(1)
 }
 
@@ -36,6 +37,76 @@ pub fn available_from_cgroup(limit: &str, current: &str) -> Option<u64> {
     let limit: u64 = limit.trim().parse().ok()?;
     let current: u64 = current.trim().parse().ok().unwrap_or(0);
     Some(limit.saturating_sub(current) / (1024 * 1024))
+}
+
+/// Free memory in MB from macOS's `vm_stat`: the free and inactive pages, at the page size its
+/// first line names.
+#[must_use]
+pub fn available_from_vm_stat(text: &str) -> Option<u64> {
+    let page = text
+        .split_once("page size of ")?
+        .1
+        .split_whitespace()
+        .next()?;
+    let pages = |name: &str| {
+        let count = text.lines().find_map(|line| line.strip_prefix(name))?;
+        count.trim().trim_end_matches('.').parse::<u64>().ok()
+    };
+    let bytes = (pages("Pages free:")? + pages("Pages inactive:")?) * page.parse::<u64>().ok()?;
+    Some(bytes / (1024 * 1024))
+}
+
+/// Free memory in MB from a command that prints the number alone, as Windows' counter does.
+#[must_use]
+pub fn available_from_number(text: &str) -> Option<u64> {
+    text.trim().parse().ok()
+}
+
+/// A command that prints the free memory where no file holds it, and how to read what it prints.
+#[derive(Clone, Copy)]
+pub struct Ask {
+    pub program: &'static str,
+    pub args: &'static [&'static str],
+    pub read: fn(&str) -> Option<u64>,
+}
+
+/// macOS counts its pages in `vm_stat`.
+#[cfg(all(target_os = "macos", not(miri)))]
+pub const ASK: Option<Ask> = Some(Ask {
+    program: "vm_stat",
+    args: &[],
+    read: available_from_vm_stat,
+});
+
+/// Windows keeps its free memory in a performance counter.
+#[cfg(all(windows, not(miri)))]
+pub const ASK: Option<Ask> = Some(Ask {
+    program: "powershell",
+    args: &[
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "(Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory).AvailableMBytes",
+    ],
+    read: available_from_number,
+});
+
+/// Linux reads a file instead, and Miri cannot start a process.
+#[cfg(any(miri, not(any(target_os = "macos", windows))))]
+pub const ASK: Option<Ask> = None;
+
+/// What `ask` prints, read its own way; `None` with nothing to ask or when it does not answer.
+fn asked_mb(ask: Option<Ask>) -> Option<u64> {
+    let ask = ask?;
+    // Not `exec::run`: each of its spawns reads the job cap, and the cap reads this.
+    let out = std::process::Command::new(ask.program)
+        .args(ask.args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let said = String::from_utf8_lossy(&out.stdout);
+    out.status.success().then(|| (ask.read)(&said))?
 }
 
 /// Whichever reading is smaller, because a container sees both and only the tighter one binds.
@@ -124,11 +195,11 @@ pub fn machine() -> usize {
 /// The jobs one lane needs to be worth running beside another.
 pub const PER_LANE: usize = 8;
 
-/// How many lanes of compiling gates may run at once with `jobs`: one below `2 * PER_LANE`, and
-/// never more than two, the suite's and the one for gates that build apart.
+/// How many of `wanted` lanes of compiling gates may run at once with `jobs`: one for each
+/// `PER_LANE`, so one below `2 * PER_LANE`.
 #[must_use]
-pub fn lanes(jobs: usize) -> usize {
-    (jobs / PER_LANE).clamp(1, 2)
+pub fn lanes(jobs: usize, wanted: usize) -> usize {
+    (jobs / PER_LANE).clamp(1, wanted.max(1))
 }
 
 /// The lanes running now.
@@ -178,18 +249,26 @@ pub fn of_this_machine() -> usize {
         std::thread::available_parallelism().map_or(1, Into::into),
         std::env::var(CARGO_JOBS).ok().as_deref(),
     );
+    let asked = std::env::var(ASKED).ok().and_then(|n| n.parse().ok());
+    // Memory chock cannot read counts as one job's worth, not unlimited.
+    jobs(cpus, || available_mb().unwrap_or(PER_JOB_MB), asked)
+}
+
+/// The memory free for new work in MB: the host's or the container's, whichever is less. Where no
+/// file holds the host's, `ASK` prints it.
+#[must_use]
+pub fn available_mb() -> Option<u64> {
     let host = std::fs::read_to_string("/proc/meminfo")
         .ok()
-        .and_then(|text| available_from_meminfo(&text));
+        .and_then(|text| available_from_meminfo(&text))
+        .or_else(|| asked_mb(ASK));
     let container = std::fs::read_to_string("/sys/fs/cgroup/memory.max")
         .ok()
         .and_then(|limit| {
             let current = std::fs::read_to_string("/sys/fs/cgroup/memory.current").ok()?;
             available_from_cgroup(&limit, &current)
         });
-    let asked = std::env::var(ASKED).ok().and_then(|n| n.parse().ok());
-    // Memory chock cannot read counts as one job's worth, not unlimited.
-    jobs(cpus, tightest(host, container).unwrap_or(PER_JOB_MB), asked)
+    tightest(host, container)
 }
 
 #[cfg(test)]
@@ -202,30 +281,103 @@ mod tests {
 
     #[test]
     fn a_machine_with_memory_to_spare_is_held_to_its_cores() {
-        assert_eq!(jobs(8, 64 * 1024, None), 8);
+        assert_eq!(jobs(8, || 64 * 1024, None), 8);
     }
 
     #[test]
     fn a_machine_with_more_cores_than_memory_is_held_to_its_memory() {
-        assert_eq!(jobs(96, 16 * 1024, None), 8);
-        assert_eq!(jobs(96, 4 * 1024, None), 2);
+        assert_eq!(jobs(96, || 16 * 1024, None), 8);
+        assert_eq!(jobs(96, || 4 * 1024, None), 2);
     }
 
     #[test]
     fn a_machine_with_almost_no_memory_still_runs_one_job() {
-        assert_eq!(jobs(96, 0, None), 1);
-        assert_eq!(jobs(0, 64 * 1024, None), 1);
+        assert_eq!(jobs(96, || 0, None), 1);
+        assert_eq!(jobs(0, || 64 * 1024, None), 1);
     }
 
     #[test]
     fn a_number_somebody_asked_for_is_used_whatever_the_machine_looks_like() {
-        assert_eq!(jobs(2, 1024, Some(32)), 32);
-        assert_eq!(jobs(96, 999_999, Some(1)), 1);
+        assert_eq!(jobs(2, || 1024, Some(32)), 32);
+        assert_eq!(jobs(96, || 999_999, Some(1)), 1);
+    }
+
+    #[test]
+    fn the_memory_is_read_only_when_nobody_asked_for_a_number() {
+        let read = std::cell::Cell::new(0);
+        let mb = || {
+            read.set(read.get() + 1);
+            64 * 1024
+        };
+        assert_eq!((jobs(8, mb, Some(3)), read.get()), (3, 0));
+        assert_eq!((jobs(8, mb, None), read.get()), (8, 1));
+    }
+
+    #[test]
+    fn macos_free_memory_is_its_free_and_inactive_pages_at_its_page_size() {
+        let said = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n\
+                    Pages free:                                3000.\n\
+                    Pages active:                            100000.\n\
+                    Pages inactive:                           61000.\n\
+                    Pages speculative:                         2000.\n";
+        assert_eq!(
+            available_from_vm_stat(said),
+            Some(1000),
+            "64000 pages of 16 KB"
+        );
+        let no_inactive = said.replace("Pages inactive:", "Pages wired down:");
+        assert_eq!(available_from_vm_stat(&no_inactive), None);
+        let no_free = said.replace("Pages free:", "Pages purgeable:");
+        assert_eq!(available_from_vm_stat(&no_free), None);
+        assert_eq!(available_from_vm_stat(&said.replace("16384", "many")), None);
+        assert_eq!(
+            available_from_vm_stat("Pages free: 3.\n"),
+            None,
+            "no page size"
+        );
+    }
+
+    #[test]
+    fn a_number_printed_alone_is_the_free_memory_and_anything_else_is_none() {
+        assert_eq!(available_from_number("12345\r\n"), Some(12345));
+        assert_eq!(available_from_number(""), None);
+        assert_eq!(available_from_number("n/a"), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn an_answer_counts_only_from_a_command_that_ran_and_succeeded() {
+        let echo = Ask {
+            program: "echo",
+            args: &["2048"],
+            read: available_from_number,
+        };
+        assert_eq!(asked_mb(Some(echo)), Some(2048));
+        let failed = Ask {
+            program: "false",
+            args: &[],
+            read: |_| Some(1),
+        };
+        assert_eq!(asked_mb(Some(failed)), None, "a failed command");
+        let absent = Ask {
+            program: "chock-no-such-program",
+            ..failed
+        };
+        assert_eq!(asked_mb(Some(absent)), None, "no such program");
+        assert_eq!(asked_mb(None), None, "nothing to ask");
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", windows))]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn this_system_says_how_much_memory_is_free() {
+        assert!(asked_mb(ASK).is_some_and(|mb| mb > 0));
     }
 
     #[test]
     fn a_request_for_no_jobs_at_all_still_runs_one() {
-        assert_eq!(jobs(8, 64 * 1024, Some(0)), 1);
+        assert_eq!(jobs(8, || 64 * 1024, Some(0)), 1);
     }
 
     #[test]
@@ -288,9 +440,12 @@ mod tests {
     }
 
     #[test]
-    fn a_second_lane_opens_at_twice_the_jobs_one_lane_needs_and_a_third_never() {
-        let opened: Vec<usize> = [1, 8, 15, 16, 24, 96].into_iter().map(lanes).collect();
-        assert_eq!(opened, [1, 1, 1, 2, 2, 2]);
+    fn a_lane_opens_for_each_lot_of_jobs_one_lane_needs_up_to_the_lanes_wanted() {
+        let two: Vec<usize> = [1, 8, 15, 16, 24, 96].map(|jobs| lanes(jobs, 2)).to_vec();
+        assert_eq!(two, [1, 1, 1, 2, 2, 2]);
+        let four: Vec<usize> = [24, 32, 96].map(|jobs| lanes(jobs, 4)).to_vec();
+        assert_eq!(four, [3, 4, 4]);
+        assert_eq!(lanes(96, 0), 1, "no lane wanted still runs one");
     }
 
     #[test]

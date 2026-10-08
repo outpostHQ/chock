@@ -1,10 +1,8 @@
 name: corpus
 
 # Every gate, by name, on nine public Rust projects, each at a pinned commit: what chock does on
-# code that its authors did not write. A release waits for its run on main.
+# code that its authors did not write. A release starts it by hand on its commit and waits for it.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 # The projects are built and tested here, so the job holds a read-only token and no secret.

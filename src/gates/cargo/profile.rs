@@ -38,9 +38,7 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
     findings.extend(review.dev);
     Ok(Outcome {
         passed,
-        findings,
-        said: None,
-        counted: None,
+        ..Outcome::noted(findings)
     })
 }
 

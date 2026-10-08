@@ -62,6 +62,18 @@ No command or flag is removed or renamed. The JSON reports add fields and remove
 - **`mutest` has no limit on the whole run.** The run stops only when mutest prints no line for
   `CHOCK_TIMEOUT` (30 minutes). Before, chock's own mutest on macOS stopped at 30 minutes in all,
   while it still confirmed its timeouts one by one.
+- **`mutest` and `miri` run beside the other gates when they fit in memory.** Each gate's report
+  now holds `peak_mb`, the most memory its processes held at once (Linux only). `mutest` and
+  `miri` build in directories of their own. On the next run, each takes a lane of its own when
+  the recorded peaks of all that would run at once fit in three quarters of the free memory. A
+  gate with no record runs in turn, as before.
+- **chock reads the free memory on macOS and Windows.** Before, it read it only on Linux, so a run
+  on macOS or Windows ran one build job at a time. Now `vm_stat` on macOS and a performance counter
+  on Windows give it, and the job count follows the cores and the memory, as on Linux. With
+  `CHOCK_JOBS` set, chock does not read the memory.
+- **chock's own CI runs the whole Miri suite as one job on each system.** That job takes the time a
+  user's `chock run miri` takes on one machine. One push now starts 10 jobs. Before, it started 55,
+  and 45 of them were parts of the Miri suite.
 - **A run longer than the deadline keeps its lock.** The holder refreshes the lock while it runs.
   Before, a second run took over the lock of a live run after 30 minutes.
 - **`mutest` trusts a timeout that it confirmed.** A mutest that re-runs each timed-out mutation
@@ -79,7 +91,8 @@ No command or flag is removed or renamed. The JSON reports add fields and remove
   read", so the first step that the README gives each machine failed.
 - **A release checks the runs on `main`, and does not repeat them.** A `v*` tag publishes only
   when the `ci.yml` run on `main` for the tagged commit passed on the three systems and its
-  `corpus.yml` run passed on the nine projects. Each push to `main` starts both.
+  `corpus.yml` run passed on the nine projects. Each push to `main` starts `ci.yml`, and a
+  release starts `corpus.yml` by hand on the same commit.
 - **`miri` runs one part of its suite.** `chock run --miri-partition=K/N` runs part K of N, as
   nextest's `count:K/N` partition splits the tests. CI can run the N parts as jobs at once. Each
   part keeps its verdict under a key of its own.

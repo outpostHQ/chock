@@ -219,49 +219,18 @@ jobs:
           path: target/test-scratch/mutest-results-*
           if-no-files-found: ignore
 
-  # Miri over the whole suite takes hours on one runner, so these jobs run its parts at the same
-  # time. `parts`: how many jobs share the suite on that system.
+  # The whole Miri suite on one runner, as a user's `chock run` gets it: its time is the gate's.
   miri:
-    name: Miri part ${{ matrix.part }} of ${{ matrix.parts }} on ${{ matrix.system }}
+    name: Miri on ${{ matrix.system }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        system: [linux, macos, windows]
-        part: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
         include:
-          - { system: linux, os: ubuntu-latest, parts: 6 }
-          - { system: macos, os: macos-latest, parts: 15 }
-          - { system: windows, os: windows-latest, parts: 24 }
-        exclude:
-          - { system: linux, part: 7 }
-          - { system: linux, part: 8 }
-          - { system: linux, part: 9 }
-          - { system: linux, part: 10 }
-          - { system: linux, part: 11 }
-          - { system: linux, part: 12 }
-          - { system: linux, part: 13 }
-          - { system: linux, part: 14 }
-          - { system: linux, part: 15 }
-          - { system: linux, part: 16 }
-          - { system: linux, part: 17 }
-          - { system: linux, part: 18 }
-          - { system: linux, part: 19 }
-          - { system: linux, part: 20 }
-          - { system: linux, part: 21 }
-          - { system: linux, part: 22 }
-          - { system: linux, part: 23 }
-          - { system: linux, part: 24 }
-          - { system: macos, part: 16 }
-          - { system: macos, part: 17 }
-          - { system: macos, part: 18 }
-          - { system: macos, part: 19 }
-          - { system: macos, part: 20 }
-          - { system: macos, part: 21 }
-          - { system: macos, part: 22 }
-          - { system: macos, part: 23 }
-          - { system: macos, part: 24 }
+          - { os: ubuntu-latest, system: linux }
+          - { os: macos-latest, system: macos }
+          - { os: windows-latest, system: windows }
     defaults:
       run:
         shell: bash
@@ -277,12 +246,11 @@ jobs:
       - name: Install nightly with Miri
         run: rustup toolchain install nightly --profile minimal --component miri --component rust-src
 
-      # One cache for every part on a system, saved by one part only.
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: miri
-          save-if: ${{ github.ref == 'refs/heads/main' && matrix.part == 1 }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@main
@@ -296,5 +264,5 @@ jobs:
         run: cargo install --locked --path .
 
       # One gate by name here: the job above runs every gate, and chock refuses a name it lacks.
-      - name: This part of the Miri suite
-        run: chock run --ci --miri-partition=${{ matrix.part }}/${{ matrix.parts }} miri
+      - name: The Miri suite
+        run: chock run --ci miri

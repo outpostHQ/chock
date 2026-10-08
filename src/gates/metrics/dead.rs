@@ -596,6 +596,18 @@ mod tests {
     }
 
     #[test]
+    fn a_private_module_hides_nothing_and_its_end_restores_the_outer_scope() {
+        assert_eq!(
+            defined("mod m {\n    fn f() {}\n}\nfn g() {}\n"),
+            vec!["f".to_string(), "g".to_string()]
+        );
+        assert_eq!(
+            defined("pub mod m {\n    fn f() {}\n}\nfn g() {}\n"),
+            vec!["g".to_string()]
+        );
+    }
+
+    #[test]
     fn a_trait_method_is_reached_through_the_trait_and_is_not_judged() {
         assert_eq!(
             defined("struct S;\nimpl Iterator for S {\n    fn next(&mut self) {}\n}\n"),

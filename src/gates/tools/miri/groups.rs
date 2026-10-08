@@ -1,6 +1,8 @@
 //! The suite in groups of tests, one interpreter to a group: each interpreter compiles the crate
 //! again before its first test, so one to a test spent most of the run compiling.
 
+use std::collections::BTreeMap;
+
 /// Tests one interpreter runs: enough that its compile is a small share, few enough to spread.
 const PER_GROUP: usize = 32;
 
@@ -76,14 +78,55 @@ fn picked(suite: &serde_json::Value) -> Option<Vec<String>> {
     Some(target)
 }
 
-/// One group under libtest's own harness: each name matched whole, one test at a time.
+/// What libtest takes for a group: each name matched whole, one test at a time, each test's time.
+/// A harness that refuses one fails the group, which then runs under nextest.
+const LIBTEST: [&str; 5] = [
+    "--",
+    "--exact",
+    "--test-threads=1",
+    "-Zunstable-options",
+    "--report-time",
+];
+
+/// One group under libtest's own harness.
 pub(super) fn command(group: &Group, asked: &[String]) -> Vec<String> {
     let mut args = ["+nightly", "miri", "test"].map(String::from).to_vec();
     args.extend(group.target.iter().cloned());
     args.extend_from_slice(asked);
-    args.extend(["--", "--exact", "--test-threads=1"].map(String::from));
+    args.extend(LIBTEST.map(String::from));
     args.extend(group.tests.iter().cloned());
     args
+}
+
+/// Each test's time in ms, out of libtest's lines such as `test a::b ... ok <1.250s>`.
+pub(super) fn times(group: &Group, stdout: &str) -> Vec<(String, u64)> {
+    let each = stdout.lines().filter_map(|line| {
+        let (test, said) = line.strip_prefix("test ")?.split_once(" ... ")?;
+        let secs = said.split_once(" <")?.1.strip_suffix("s>")?.parse().ok()?;
+        let ms = std::time::Duration::try_from_secs_f64(secs)
+            .ok()?
+            .as_millis();
+        Some((key(&group.binary, test), u64::try_from(ms).ok()?))
+    });
+    each.collect()
+}
+
+/// The name a test's time is kept under: its binary's, then its own.
+fn key(binary: &str, test: &str) -> String {
+    format!("{binary} {test}")
+}
+
+/// Each group a lane of its own, the longest on record first, so the last to start ends soonest.
+/// A group with a test on no record starts first, as it may be the longest.
+pub(super) fn slowest_first(groups: &[Group], recorded: &BTreeMap<String, u64>) -> Vec<Vec<usize>> {
+    let took = |group: &Group| -> Option<u64> {
+        let each = group.tests.iter();
+        each.map(|test| recorded.get(&key(&group.binary, test)).copied())
+            .sum()
+    };
+    let mut order: Vec<(usize, Option<u64>)> = groups.iter().map(took).enumerate().collect();
+    order.sort_by_key(|(_, took)| std::cmp::Reverse(took.unwrap_or(u64::MAX)));
+    order.into_iter().map(|(at, _)| vec![at]).collect()
 }
 
 /// A nextest filter that picks the tests of `groups`, each in its own binary.
@@ -243,9 +286,37 @@ mod tests {
         assert_eq!(
             run,
             words(&format!(
-                "+nightly miri test {lib} -- --exact --test-threads=1 a::b c"
+                "+nightly miri test {lib} -- --exact --test-threads=1 -Zunstable-options \
+                 --report-time a::b c"
             ))
         );
+    }
+
+    #[test]
+    fn each_time_libtest_printed_is_kept_in_ms_under_the_tests_binary_and_name() {
+        let out = "running 2 tests\ntest a::b ... ok <1.250s>\ntest c ... ok <0.000s>\n\
+                   test d ... ok\ntest e ... ok <soon>\ntest f ... ok <-1.000s>\n\
+                   test g ... ok <100000000000000000s>\ntest result: ok. 2 passed";
+        let timed = [("chock a::b".to_string(), 1250), ("chock c".to_string(), 0)];
+        assert_eq!(times(&group("chock", "a::b c"), out), timed);
+    }
+
+    #[test]
+    fn the_longest_group_on_record_starts_first_and_one_with_no_record_before_it() {
+        let groups = [
+            group("chock", "a"),
+            group("chock", "b c"),
+            group("chock", "d"),
+            group("chock::cli", "a"),
+        ];
+        let recorded = [
+            ("chock a", 5),
+            ("chock b", 2),
+            ("chock c", 4),
+            ("chock::cli a", 1),
+        ];
+        let recorded = recorded.map(|(test, ms)| (test.to_string(), ms)).into();
+        assert_eq!(slowest_first(&groups, &recorded), [[2], [1], [0], [3]]);
     }
 
     #[test]

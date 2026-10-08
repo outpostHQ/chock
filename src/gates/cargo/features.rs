@@ -305,7 +305,7 @@ impl<'ast> Visit<'ast> for Cfgs {
     /// Reads `cfg!(…)` as a condition and scans any other macro body, which `syn` leaves as
     /// tokens, for a `cfg` (`cfg_if!`, `macro_rules!`).
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
-        if mac.path.is_ident("cfg") || mac.path.is_ident("cfg_attr") {
+        if mac.path.is_ident("cfg") {
             named(mac.tokens.clone(), &mut self.sites);
         } else {
             gated(mac.tokens.clone(), &mut self.sites);
@@ -702,6 +702,20 @@ mod tests {
     }
 
     #[test]
+    fn a_feature_after_other_keys_in_the_same_list_is_still_read() {
+        let src = "#[cfg(all(target_os = \"linux\", unix, feature = \"a\"))]\nfn f() {}\n";
+        assert_eq!(features_of(src), ["a"]);
+    }
+
+    #[test]
+    fn a_feature_key_with_no_equals_sign_names_nothing() {
+        assert_eq!(
+            features_of("#[cfg(feature, \"a\")]\nfn f() {}\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn a_cfg_attr_names_the_feature_it_gates_on() {
         let src = "#[cfg_attr(feature = \"serde\", derive(Serialize))]\nstruct S;\n";
         assert_eq!(features_of(src), ["serde"]);
@@ -727,6 +741,12 @@ mod tests {
     fn a_cfg_inside_a_macro_body_the_grammar_never_enters_is_still_found() {
         let src = "macro_rules! wrap {\n    () => {\n        #[cfg(feature = \"inner\")]\n        fn f() {}\n    };\n}\n";
         assert_eq!(features_of(src), ["inner"]);
+    }
+
+    #[test]
+    fn a_call_in_a_macro_body_is_not_read_as_a_cfg() {
+        let src = "macro_rules! wrap {\n    () => {\n        call(feature = \"a\")\n    };\n}\n";
+        assert_eq!(features_of(src), Vec::<String>::new());
     }
 
     #[test]
@@ -792,6 +812,21 @@ mod tests {
             ),
             [format!("src/lib.rs:1: ghost: {UNDECLARED}")]
         );
+    }
+
+    #[test]
+    fn a_file_outside_src_that_does_not_parse_is_skipped_and_the_read_goes_on() {
+        let broken = ("benches/input.rs", "fn f( {\n");
+        let ghost = ("src/lib.rs", "#[cfg(feature = \"ghost\")]\nfn g() {}\n");
+        let found = rendered("", "", &[broken, ghost]);
+        assert_eq!(found, [format!("src/lib.rs:1: ghost: {UNDECLARED}")]);
+    }
+
+    #[test]
+    fn an_included_fragment_under_src_that_does_not_parse_is_skipped() {
+        let include = ("src/lib.rs", "const N: u8 = include!(\"table.rs\");\n");
+        let fragment = ("src/table.rs", "1 + 2\n");
+        assert!(rendered("", "", &[include, fragment]).is_empty());
     }
 
     #[test]

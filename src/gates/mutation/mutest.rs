@@ -368,6 +368,19 @@ mod tests {
         assert!(!moving("\u{1b}[0m"));
     }
 
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_crate_cargo_cannot_read_measures_nothing_and_says_so() {
+        let held = crate::testdir::Held::tree("mutest-unreadable", &[("Cargo.toml", "[")]);
+        let refused = mutated(&held, None, &Series::default(), read).unwrap_err();
+        // Linux watches mutest's progress, so there a run that never starts left no record first.
+        #[cfg(target_os = "linux")]
+        let said = "could not collect the exit of cargo: mutest wrote no progress records";
+        #[cfg(not(target_os = "linux"))]
+        let said = "mutest reported no mutation totals";
+        assert!(refused.starts_with(said), "{refused}");
+    }
+
     /// A file as the root, so asking cargo which tool it has fails before a run starts.
     fn touched(files: &[&str]) -> Ctx {
         let mut baseline = crate::run::baseline::Baseline::empty("0.1.0");

@@ -317,6 +317,14 @@ pub struct GateReport {
     /// What to do about a gate that tripped, in one sentence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix: Option<String>,
+    /// The most memory in MB the gate's processes held at once, read on Linux, so a later run knows
+    /// which slow gates fit side by side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_mb: Option<u64>,
+    /// Each test's time in ms under its binary and name, from a gate that times its tests
+    /// (`miri`), so a later run starts the slowest first.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub tests_ms: std::collections::BTreeMap<String, u64>,
 }
 
 /// The last result for each gate: this run's, then each earlier result this run did not replace.
@@ -483,6 +491,8 @@ impl GateReport {
             ran_at: None,
             tightened: None,
             fix: None,
+            peak_mb: None,
+            tests_ms: std::collections::BTreeMap::new(),
         }
     }
 

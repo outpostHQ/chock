@@ -695,6 +695,7 @@ fn f(a: bool, b: Option<u8>) {
     fn a_method_recurses_through_self_and_a_bare_call_of_its_name_is_another_function() {
         assert_eq!(scored("impl S { fn walk(&self) { self.walk() } }"), 1);
         assert_eq!(scored("impl S { fn build() { Self::build() } }"), 1);
+        assert_eq!(scored("trait T { fn walk(&self) { self.walk() } }"), 1);
         assert_eq!(scored("impl S { fn parse(&self) { parse(1) } }"), 0);
         assert_eq!(
             scored("impl S { fn walk(&self, o: &S) { o.walk_other() } }"),

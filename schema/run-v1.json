@@ -96,6 +96,19 @@
           "type": "integer",
           "minimum": 0
         },
+        "tests_ms": {
+          "description": "Each test's time in ms, keyed by its binary and name, from a gate that times its tests (`miri`). A later run starts the slowest tests first.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "peak_mb": {
+          "description": "The most memory in MB the gate's processes held at once. Read on Linux only; a later run uses it to decide which slow gates fit side by side.",
+          "type": "integer",
+          "minimum": 0
+        },
         "ran_at": {
           "description": "When this gate ran, in seconds since the Unix epoch. Written only into the cached record at .chock/last-run.json, which holds the last result for each gate rather than one run: without it a reader cannot tell a result this run produced from one an earlier run left, and would read a stale pass as a current one.",
           "type": "integer",

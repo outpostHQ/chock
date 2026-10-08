@@ -157,6 +157,8 @@ mod tests {
         // An `any()` with no arms is `false` and an `all()` with none holds everywhere.
         assert!(!gate("any()", &|_| true));
         assert!(!gate("all()", &|_| true));
+        // Only the `feature` key names a feature, whatever its value.
+        assert!(!gate("target_os = \"linux\"", &|_| true));
     }
 
     fn attrs_of(item: &syn::Item) -> Vec<Attribute> {
@@ -168,11 +170,13 @@ mod tests {
 
     #[test]
     fn a_cfg_nested_past_the_limit_is_not_a_test_gate() {
-        let deep = "all(".repeat(CFG_NESTING + 2) + "test" + &")".repeat(CFG_NESTING + 2);
-        let src = format!("#[cfg({deep})]\nfn f() {{}}\n");
-        let file = syn::parse_file(&src).unwrap();
-        assert!(!test_gate(&attrs_of(file.items.first().unwrap()), &|_| {
-            true
-        }));
+        let nested = |depth: usize| {
+            let cfg = "all(".repeat(depth) + "test" + &")".repeat(depth);
+            let src = format!("#[cfg({cfg})]\nfn f() {{}}\n");
+            let file = syn::parse_file(&src).unwrap();
+            test_gate(&attrs_of(file.items.first().unwrap()), &|_| true)
+        };
+        assert!(nested(CFG_NESTING));
+        assert!(!nested(CFG_NESTING + 1));
     }
 }

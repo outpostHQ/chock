@@ -11,9 +11,12 @@ pub(crate) fn on_workers<T: Sync, R: Send>(
     let next = std::sync::atomic::AtomicUsize::new(0);
     let slots: Vec<std::sync::Mutex<Option<R>>> =
         items.iter().map(|_| std::sync::Mutex::default()).collect();
+    // Each worker counts what it starts toward the caller's peak, as the caller's own thread would.
+    let peak = crate::exec::peak::current();
     std::thread::scope(|scope| {
         for _ in 0..workers.min(lanes.len()) {
             scope.spawn(|| {
+                let _counted = crate::exec::peak::enter(peak.clone());
                 while let Some(lane) =
                     lanes.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
                 {

@@ -9,6 +9,7 @@ pub mod report;
 pub mod verdicts;
 
 mod context;
+mod lanes;
 pub(crate) mod workers;
 pub use context::{
     Coverage, Ctx, LCOV, Runner, coverage_for, default_coverage, default_runner, runner_for,
@@ -19,6 +20,7 @@ use std::time::Instant;
 
 use crate::run::baseline::{Keys, Series};
 use crate::run::report::{Detail, Finding, GateReport, Run, Verdict};
+pub(crate) use lanes::recorded_tests;
 use workers::on_workers;
 
 /// What a pass/fail gate found. `passed` is the tool's own verdict rather than a count of
@@ -31,6 +33,8 @@ pub struct Outcome {
     pub said: Option<String>,
     /// What a pass-or-fail gate counted, what its record holds, and the unit of both.
     pub counted: Option<(u64, u64, &'static str)>,
+    /// Each test's time in ms under its binary and name, from a gate that timed its tests.
+    pub tests_ms: std::collections::BTreeMap<String, u64>,
 }
 
 impl Outcome {
@@ -41,6 +45,7 @@ impl Outcome {
             findings: Vec::new(),
             said: None,
             counted: None,
+            tests_ms: std::collections::BTreeMap::new(),
         }
     }
 
@@ -53,6 +58,7 @@ impl Outcome {
             findings,
             said: None,
             counted: None,
+            tests_ms: std::collections::BTreeMap::new(),
         }
     }
 
@@ -63,6 +69,7 @@ impl Outcome {
             findings,
             said: None,
             counted: None,
+            tests_ms: std::collections::BTreeMap::new(),
         }
     }
 
@@ -380,7 +387,11 @@ pub fn run_one(gate: &Gate, ctx: &Ctx) -> GateReport {
         report.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         return report;
     }
+    let peak = std::sync::Arc::new(crate::exec::peak::Peak::default());
+    let counted = crate::exec::peak::enter(Some(std::sync::Arc::clone(&peak)));
     let mut report = judged(gate, ctx);
+    drop(counted);
+    report.peak_mb = peak.most();
     report.fix = advice(&report);
     report.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     if let Some(key) = kept_under(gate, ctx, key) {
@@ -430,7 +441,7 @@ pub fn run_all(gates: &[&Gate], ctx: &Ctx, chock_version: &str, told: Told) -> R
         .flatten()
         .filter(|report| report.verdict != Verdict::Pass)
         .for_each(told);
-    let compiled = in_lanes(gates, ctx, told);
+    let compiled = lanes::in_lanes(gates, ctx, told);
     let reports = gates
         .iter()
         .zip(quick.into_iter().zip(compiled))
@@ -441,33 +452,6 @@ pub fn run_all(gates: &[&Gate], ctx: &Ctx, chock_version: &str, told: Told) -> R
         })
         .collect();
     Run::new(chock_version, reports)
-}
-
-/// With jobs for two lanes, the gates that compile: the gates that build apart in turn on one lane,
-/// the rest in turn on the other. Otherwise every slot stays empty.
-fn in_lanes(gates: &[&Gate], ctx: &Ctx, told: Told) -> Vec<Option<GateReport>> {
-    let width = crate::exec::budget::lanes(ctx.jobs);
-    let lanes = if width > 1 {
-        lanes_of(gates, ctx)
-    } else {
-        Vec::new()
-    };
-    on_workers(gates, &lanes, width, &|gate| {
-        let _share = crate::exec::budget::Lane::enter();
-        in_turn(gate, ctx, told)
-    })
-}
-
-/// The two lanes as indexes into `gates`, in order: the compiling gates that share the suite's
-/// target directory, then those that build apart, so no two release builds run at once.
-fn lanes_of(gates: &[&Gate], ctx: &Ctx) -> Vec<Vec<usize>> {
-    let (apart, beside): (Vec<usize>, Vec<usize>) = gates
-        .iter()
-        .enumerate()
-        .filter(|(_, gate)| gate.builds)
-        .map(|(at, _)| at)
-        .partition(|&at| crate::gates::builds_apart(gates[at].name, &ctx.build));
-    vec![beside, apart]
 }
 
 fn in_turn(gate: &Gate, ctx: &Ctx, told: Told) -> GateReport {
@@ -590,6 +574,7 @@ fn reported(gate: &Gate, verdict: Verdict, outcome: Outcome) -> GateReport {
         report.unit = Some(unit.to_string());
     }
     report.findings = outcome.findings;
+    report.tests_ms = outcome.tests_ms;
     report
 }
 
@@ -2298,17 +2283,13 @@ mod tests {
         fn off_caller(_ctx: &Ctx) -> Result<Outcome, String> {
             Ok(Outcome {
                 passed: !on_the_caller(),
-                findings: Vec::new(),
-                said: None,
-                counted: None,
+                ..Outcome::passed()
             })
         }
         fn on_caller(_ctx: &Ctx) -> Result<Outcome, String> {
             Ok(Outcome {
                 passed: on_the_caller(),
-                findings: Vec::new(),
-                said: None,
-                counted: None,
+                ..Outcome::passed()
             })
         }
         let quick = Gate {
@@ -2373,9 +2354,7 @@ mod tests {
         fn in_a_lane(_ctx: &Ctx) -> Result<Outcome, String> {
             Ok(Outcome {
                 passed: LANES_CALLER.get() != Some(&std::thread::current().id()),
-                findings: Vec::new(),
-                said: None,
-                counted: None,
+                ..Outcome::passed()
             })
         }
         let apart = Gate {
@@ -2412,7 +2391,56 @@ mod tests {
         let mut heard = heard.into_inner().unwrap();
         heard.sort();
         assert_eq!(heard, ["binsize", "bsize", "slow", "slow"]);
-        assert_eq!(lanes_of(&gates, &ctx), [vec![0, 2], vec![1, 3]]);
+        assert_eq!(
+            lanes::lanes_of(&gates, &ctx, &[], 0),
+            [vec![0, 2], vec![1, 3]]
+        );
+    }
+
+    #[test]
+    fn a_slow_gate_with_a_record_that_fits_runs_on_a_lane_of_its_own() {
+        let named = |name| Gate {
+            name,
+            builds: true,
+            ..gate_of(Kind::Binary(agreeable))
+        };
+        let (test, mutest, miri) = (named("test"), named("mutest"), named("miri"));
+        let bsize = named("bsize");
+        let gates = [&test, &mutest, &miri, &bsize];
+        let ctx = ctx_with("probe", &[]);
+        let peaks =
+            [("mutest", 9), ("miri", 7), ("test", 2)].map(|(gate, mb)| (gate.to_string(), mb));
+        let each = [vec![0], vec![3], vec![1], vec![2]];
+        assert_eq!(lanes::lanes_of(&gates, &ctx, &peaks, 18), each, "9 + 7 + 2");
+        assert_eq!(
+            lanes::lanes_of(&gates, &ctx, &peaks, 17),
+            [vec![0, 2], vec![3], vec![1]]
+        );
+        let none = [vec![0, 1, 2], vec![3]];
+        assert_eq!(
+            lanes::lanes_of(&gates, &ctx, &[], 1000),
+            none,
+            "no record, no lane"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_gate_that_starts_processes_records_the_most_they_held_at_once() {
+        fn held(_ctx: &Ctx) -> Result<Outcome, String> {
+            let both = "sleep 1.2 & sleep 1.2; wait";
+            let here = std::path::Path::new(".");
+            crate::exec::run("sh", &["-c", both], here).map_err(|error| error.to_string())?;
+            Ok(Outcome::passed())
+        }
+        let report = run_one(&gate_of(Kind::Binary(held)), &ctx_with("probe", &[]));
+        assert_eq!(report.verdict, Verdict::Pass);
+        assert!(
+            report.peak_mb.is_some_and(|mb| mb >= 2),
+            "{:?}",
+            report.peak_mb
+        );
     }
 
     #[test]
