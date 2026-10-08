@@ -1467,6 +1467,37 @@ fn after_init_the_wiring_gate_passes_on_every_shape_of_project() {
     }
 }
 
+/// A config an older chock wrote lacks the gates added since. `wiring` refuses a passing gate left
+/// off, so init run again switches those on rather than the next commit refusing.
+#[test]
+fn init_run_again_switches_on_a_gate_newer_than_the_config_that_wiring_asks_for() {
+    let dir = project("init-newer-gate", &[("src/lib.rs", "pub fn f() {}\n")]);
+    assert!(git(&dir, &["init", "-q"]).status.success());
+    git(&dir, &["config", "user.email", "t@e"]);
+    git(&dir, &["config", "user.name", "t"]);
+    git(&dir, &["add", "-A"]);
+    git(
+        &dir,
+        &["commit", "-q", "-m", "A first commit so a history exists"],
+    );
+    let first = chock(&dir, &["init", "--local", "--fast"]);
+    assert_eq!(first.code, 0, "{}{}", first.out, first.err);
+    let path = dir.join(chock::project::config::FILE);
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config["enabled"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|gate| gate != "lean" && gate != "splits");
+    std::fs::write(&path, config.to_string()).unwrap();
+
+    let again = chock(&dir, &["init", "--local", "--fast"]);
+    assert_eq!(again.code, 0, "{}{}", again.out, again.err);
+    says(&again.out, "switched on lean splits");
+    let wired = chock(&dir, &["run", "wiring"]);
+    assert_eq!(wired.code, 0, "{}{}", wired.out, wired.err);
+}
+
 #[test]
 fn init_keeps_a_broken_core_check_enabled_and_the_next_run_reports_it() {
     let dir = project("init-broken-module", &[("src/lib.rs", "mod absent;\n")]);

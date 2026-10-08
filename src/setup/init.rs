@@ -457,7 +457,7 @@ fn is_program(path: &Path) -> bool {
 }
 
 fn write_local(root: &Path, fast: bool) -> Result<String, Error> {
-    write_local_with(root, &|at| {
+    write_local_with(root, &gates::wiring::passing_and_off, &|at| {
         // Printed first: on a large workspace the measuring is the longest thing chock does.
         eprintln!("{}", about_to_measure(fast, at));
         choose_gates(at, fast)
@@ -495,6 +495,7 @@ fn about_to_measure(fast: bool, root: &Path) -> String {
 /// one would start the test suite from inside the test suite, which is a fork bomb, not a test.
 fn write_local_with(
     root: &Path,
+    passing: &dyn Fn(&Path, &Config) -> Vec<String>,
     choose: &dyn Fn(&Path) -> (Config, String),
 ) -> Result<String, Error> {
     let files = install_files(root)?;
@@ -504,7 +505,11 @@ fn write_local_with(
     let contract = crate::setup::agents::write_agent_contract(root)?;
     // Measuring decides the config, so a project that already has one is not measured.
     let (config, decisions) = match already_chosen(root) {
-        Some(held) => (held, DECIDED.to_string()),
+        // `wiring` on asks for every passing gate, so one newer than the config is switched on.
+        Some(mut held) => {
+            held.enabled.extend(passing(root, &held));
+            (held, DECIDED.to_string())
+        }
         None => choose(root),
     };
     let dir = root.join(".chock");
@@ -529,11 +534,11 @@ fn already_chosen(root: &Path) -> Option<Config> {
     crate::project::document::parse::<Config>(&text, &path.display().to_string()).ok()
 }
 
-const DECIDED: &str = ".chock/config.json already says which checks are on, so nothing was \
-measured. `chock enable GATE` switches one on, and `chock run` says where the tree stands.\n";
+const DECIDED: &str = ".chock/config.json already says which checks are on; init built \
+nothing. `chock enable GATE` switches one on, and `chock run` says where the tree stands.\n";
 
 /// The one file holding decisions somebody made, not measurements chock took. Overwriting it
-/// would switch off gates somebody turned on.
+/// would switch off gates somebody turned on, so it only gains the gates `wiring` asks for.
 fn keep_the_choices_already_made(path: &Path, measured: &Config) -> Result<String, Error> {
     let Ok(text) = fs::read_to_string(path) else {
         crate::project::document::write(path, &measured.render())
@@ -556,12 +561,17 @@ fn keep_the_choices_already_made(path: &Path, measured: &Config) -> Result<Strin
     if offered.is_empty() {
         return Ok(format!("  unchanged {}\n", crate::project::config::FILE));
     }
-    Ok(format!(
-        "  unchanged {}\n  note      {} also pass(es) now: chock enable {}\n",
-        crate::project::config::FILE,
-        offered.len(),
-        offered.join(" ")
-    ))
+    let mut kept = held;
+    kept.enabled.extend(offered.iter().map(ToString::to_string));
+    crate::project::document::write(path, &kept.render())
+        .map(|()| {
+            format!(
+                "  updated   {}: switched on {}, which pass here and `wiring` asks to be on\n",
+                crate::project::config::FILE,
+                offered.join(" ")
+            )
+        })
+        .map_err(|e| unwritable(path, &e))
 }
 
 use crate::setup::hooks::install_hooks;
@@ -1056,11 +1066,17 @@ mod tests {
             keep_the_choices_already_made(&path, &held),
             Ok(format!("  unchanged {file}\n"))
         );
+        // `wiring` on asks for every passing gate, so the gate is switched on, not offered.
+        fs::write(&path, Config::of(["lint", "wiring"]).render()).unwrap();
         assert_eq!(
-            keep_the_choices_already_made(&path, &Config::of(["lint", "typos"])),
+            keep_the_choices_already_made(&path, &Config::of(["lint", "typos", "wiring"])),
             Ok(format!(
-                "  unchanged {file}\n  note      1 also pass(es) now: chock enable typos\n"
+                "  updated   {file}: switched on typos, which pass here and `wiring` asks to be on\n"
             ))
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            Config::of(["lint", "typos", "wiring"]).render()
         );
     }
 
@@ -2005,6 +2021,46 @@ mod tests {
         )
     }
 
+    /// A tree where no switched-off gate passes, so a held config gains nothing.
+    fn none_pass(_root: &Path, _held: &Config) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// A gate newer than the config passes here; with `wiring` on, the config gains it, and with
+    /// `wiring` off the choice stays the project's.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_held_config_gains_a_passing_gate_only_where_it_turns_wiring_on() {
+        let lean = |_: &Path, _: &Config| vec!["lean".to_string()];
+        let real: &dyn Fn(&Path, &Config) -> Vec<String> = &gates::wiring::passing_and_off;
+        for (held, passing, gains) in [
+            (
+                Config::of(["slop", "wiring"]),
+                &lean as &dyn Fn(&Path, &Config) -> Vec<String>,
+                true,
+            ),
+            // With `wiring` off, the real check returns before it runs a gate.
+            (Config::of(["slop"]), real, false),
+        ] {
+            let dir = crate::testdir::make("init-held-wiring");
+            let path = dir.join(crate::project::config::FILE);
+            fs::create_dir_all(dir.join(".chock")).unwrap();
+            crate::project::document::write(&path, &held.render()).unwrap();
+            let report = write_local_with(&dir, passing, &never_measured).unwrap();
+            let after = crate::project::document::parse::<Config>(
+                &fs::read_to_string(&path).unwrap(),
+                "config",
+            )
+            .unwrap();
+            assert_eq!(after.is_on("lean"), gains, "{report}");
+            assert_eq!(report.contains("switched on lean"), gains, "{report}");
+        }
+    }
+
+    fn never_measured(_root: &Path) -> (Config, String) {
+        unreachable!("a held config is never measured")
+    }
+
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_project_that_already_says_which_checks_are_on_is_never_measured() {
@@ -2022,7 +2078,7 @@ mod tests {
             measured.set(true);
             stub_choice(at)
         };
-        let report = write_local_with(&dir, &never).unwrap();
+        let report = write_local_with(&dir, &none_pass, &never).unwrap();
         assert!(!measured.get(), "the tree was measured:\n{report}");
         assert!(
             report.contains("already says which checks are on"),
@@ -2051,7 +2107,7 @@ mod tests {
             measured.set(true);
             stub_choice(at)
         };
-        let report = write_local_with(&dir, &counted).unwrap();
+        let report = write_local_with(&dir, &none_pass, &counted).unwrap();
         assert!(measured.get(), "the tree was not measured:\n{report}");
     }
 
@@ -2059,7 +2115,7 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn write_local_reports_every_file_it_wrote_and_the_baselines_it_could_not() {
         let dir = crate::testdir::make("init-local");
-        let report = write_local_with(&dir, &stub_choice).unwrap();
+        let report = write_local_with(&dir, &none_pass, &stub_choice).unwrap();
         assert_eq!(
             report,
             format!(
@@ -2095,7 +2151,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn write_local_in_a_git_repository_reports_the_hooks_too() {
         let dir = git_repo("init-local-git");
-        let report = write_local_with(&dir, &stub_choice).unwrap();
+        let report = write_local_with(&dir, &none_pass, &stub_choice).unwrap();
         assert!(report.contains("declared"), "{report}");
         // Declared, so nothing on disk: the hook a repository runs is whichever chock is installed.
         assert!(!dir.join(".chock/hooks/pre-commit").exists(), "{report}");

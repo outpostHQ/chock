@@ -169,21 +169,6 @@ const UNDECLARED: [(&str, &str); 4] = [
     ("deps", "cargo-deny"),
 ];
 
-/// Every tool a gate needs installed, from what it declares plus the list above.
-fn tools_of(gate: &crate::run::Gate) -> Vec<&'static str> {
-    let declared = gate.reads.map(|reads| reads.tools).unwrap_or_default();
-    let undeclared = UNDECLARED
-        .iter()
-        .filter(|(name, _)| *name == gate.name)
-        .map(|(_, tool)| *tool);
-    declared
-        .iter()
-        .copied()
-        .chain(undeclared)
-        .filter(|tool| !TOOLCHAIN.contains(tool))
-        .collect()
-}
-
 /// A switched-on gate whose tool no pin names, so doctor would check a tool nothing runs.
 #[must_use]
 pub fn unpinned(enabled: &dyn Fn(&str) -> bool, pins: &[Pin]) -> Vec<Row> {
@@ -196,7 +181,19 @@ pub fn unpinned(enabled: &dyn Fn(&str) -> bool, pins: &[Pin]) -> Vec<Row> {
         .iter()
         .filter(|gate| enabled(gate.name))
     {
-        for tool in tools_of(gate).into_iter().filter(|tool| !pinned(tool)) {
+        // Every tool a gate needs installed, from what it declares plus the list above.
+        let declared = gate.reads.map(|reads| reads.tools).unwrap_or_default();
+        let undeclared = UNDECLARED
+            .iter()
+            .filter(|(name, _)| *name == gate.name)
+            .map(|(_, tool)| *tool);
+        for tool in declared
+            .iter()
+            .copied()
+            .chain(undeclared)
+            .filter(|tool| !TOOLCHAIN.contains(tool))
+            .filter(|tool| !pinned(tool))
+        {
             needed.entry(tool).or_default().push(gate.name);
         }
     }

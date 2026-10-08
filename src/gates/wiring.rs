@@ -1,5 +1,7 @@
 //! The `wiring` gate: reports gates that would pass on this tree but are switched off.
 
+use crate::project::config::Config;
+use crate::run::baseline::Baseline;
 use crate::run::report::{Finding, Verdict};
 use crate::run::{self, Ctx, Gate, Group, Kind, Outcome};
 
@@ -13,8 +15,8 @@ pub const GATE: Gate = Gate {
 };
 
 fn check(ctx: &Ctx) -> Result<Outcome, String> {
-    let Some(config) = crate::project::document::read::<crate::project::config::Config>(&ctx.root)
-        .map_err(|e| e.to_string())?
+    let Some(config) =
+        crate::project::document::read::<Config>(&ctx.root).map_err(|e| e.to_string())?
     else {
         return Err(format!(
             "no {} — run `chock init --local`",
@@ -28,9 +30,33 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
     Ok(Outcome::failed(found))
 }
 
+/// The gates `unwired` names at `root` in the context a run builds, so `init` switches on what
+/// this gate would refuse. None where `wiring` is off: there the choice is the project's.
+pub(crate) fn passing_and_off(root: &std::path::Path, config: &Config) -> Vec<String> {
+    if !config.is_on(GATE.name) {
+        return Vec::new();
+    }
+    unwired(
+        config,
+        &Ctx {
+            vcs: crate::project::vcs::holding(root, Some(config)),
+            root: root.to_path_buf(),
+            baseline: crate::project::document::read::<Baseline>(root)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| Baseline::empty(env!("CARGO_PKG_VERSION"))),
+            ..Ctx::from_config(Some(config))
+        },
+        &|gate, ctx| run::run_one(gate, ctx).verdict,
+    )
+    .into_iter()
+    .filter_map(|finding| finding.item)
+    .collect()
+}
+
 /// Switched-off gates that would pass. Only gates that need no compile are tried, and not this one.
 fn unwired(
-    config: &crate::project::config::Config,
+    config: &Config,
     ctx: &Ctx,
     verdict: &dyn Fn(&'static Gate, &Ctx) -> Verdict,
 ) -> Vec<Finding> {
@@ -52,7 +78,6 @@ fn unwired(
 )]
 mod tests {
     use super::*;
-    use crate::project::config::Config;
 
     /// Returns the scratch guard too: `Ctx` cannot hold it, and dropping it deletes the directory.
     fn ctx() -> (Ctx, crate::testdir::Scratch) {

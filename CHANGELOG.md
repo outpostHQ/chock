@@ -20,6 +20,11 @@ No command or flag is removed or renamed. The JSON reports do not change.
   project had changed was rewritten in chock's order. Now each line that chock pins takes chock's
   value where it stands, with its comment. The project's own lines stay as they are, and a pin
   that the file did not hold is added at the end.
+- **`chock init` switches on a passing gate that is newer than the config.** Before, a project
+  whose config an older chock wrote kept new gates such as `splits` and `lean` off. Its
+  `wiring` gate then refused the next commit. Now, where the config turns `wiring` on, init tries
+  each gate that is off and needs no compiler, and switches on each one that passes. It names them.
+  Where `wiring` is off, init does not change the config.
 - **Miri groups take every n-th test.** Before, each group held 32 neighbouring tests, so the slow
   tests of one module shared a group. On chock's own suite with 32 cores, one group took 203 s,
   and the others waited for it. Now each group takes every n-th test of the list. From the measured

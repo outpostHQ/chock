@@ -60,8 +60,11 @@ Three facts about `chock init --local`:
 - **On does not mean passed.** The last lines of the output name each gate that is on and needs
   attention.
 - **It never overwrites a file you have.** Yours stays, and chock's lands beside it as
-  `<name>.chock`. The one exception is `tool-versions.env`; see
-  [Update chock](ci-and-hooks.md#update-chock).
+  `<name>.chock`. There are two exceptions. The first is `tool-versions.env`; see
+  [Update chock](ci-and-hooks.md#update-chock). The second is `.chock/config.json`: init keeps
+  each choice in it and measures no gate that builds. Where the config turns `wiring` on, init
+  switches on each gate that is off, needs no compiler and passes, such as a gate newer than the
+  config.
 
 `chock init` with no flag does both halves: the project first, then the tools.
 
