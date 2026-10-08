@@ -184,36 +184,35 @@ impl Corpus {
         let (symbols, units) = self.symbols();
         let order = suffixes(&symbols);
         let shared = common(&symbols, &order);
-        let found = intervals(&order, &shared)
-            .into_iter()
-            .filter_map(|(length, mut starts)| {
-                let before: BTreeSet<Option<u64>> = starts
-                    .iter()
-                    .map(|at| at.checked_sub(1).map(|it| symbols[it]))
-                    .collect();
-                if before.len() == 1 && !before.contains(&None) {
-                    return None;
+        let mut found = Vec::new();
+        for (length, mut starts) in intervals(&order, &shared) {
+            let before: BTreeSet<Option<u64>> = starts
+                .iter()
+                .map(|at| at.checked_sub(1).map(|it| symbols[it]))
+                .collect();
+            // One symbol before every copy: the run is part of a longer one.
+            if before.len() == 1 {
+                continue;
+            }
+            starts.sort_unstable();
+            let mut apart: Vec<usize> = Vec::new();
+            for at in starts {
+                if apart.last().is_none_or(|last| at >= last + length) {
+                    apart.push(at);
                 }
-                starts.sort_unstable();
-                let mut apart: Vec<usize> = Vec::new();
-                for at in starts {
-                    if apart.last().is_none_or(|last| at >= last + length) {
-                        apart.push(at);
-                    }
-                }
-                let tandem = apart.windows(2).all(|pair| pair[1] == pair[0] + length);
-                let firsts: Vec<usize> = apart.iter().filter_map(|&at| units[at]).collect();
-                self.judge(&firsts, length, tandem)
-            })
-            .collect();
+            }
+            let tandem = apart.windows(2).all(|pair| pair[1] == pair[0] + length);
+            let firsts: Vec<usize> = apart.iter().filter_map(|&at| units[at]).collect();
+            found.extend(self.judge(&firsts, length, tandem));
+        }
         settle(found)
     }
 
     /// One symbol per unit, holder after holder, then one of its own after each holder, so that no
     /// run crosses into the next. A unit that may not move is a symbol of its own too.
     fn symbols(&self) -> (Vec<u64>, Vec<Option<usize>>) {
-        let mut symbols = Vec::with_capacity(self.units.len() + self.holders.len());
-        let mut units = Vec::with_capacity(symbols.capacity());
+        let mut symbols = Vec::new();
+        let mut units = Vec::new();
         let mut own = 1_u64 << 63;
         for holder in &self.holders {
             for at in holder.first..holder.first + holder.len {
@@ -412,13 +411,15 @@ impl Corpus {
             let mut hasher = DefaultHasher::new();
             let mut leaves = Vec::new();
             let read = span.source_text().and_then(|text| text.parse().ok());
-            let tokens = read.map_or(0, |tokens| shape(tokens, false, &mut hasher, &mut leaves));
+            let tokens = read.map(|tokens| shape(tokens, false, &mut hasher, &mut leaves));
             let unit = Unit {
                 holder,
                 line: u32::try_from(span.start().line).unwrap_or(u32::MAX),
                 last: u32::try_from(span.end().line).unwrap_or(u32::MAX),
-                symbol: (tokens > 0 && !facts.escapes).then(|| hasher.finish() >> 1),
-                tokens,
+                symbol: tokens
+                    .filter(|_| !facts.escapes)
+                    .map(|_| hasher.finish() >> 1),
+                tokens: tokens.unwrap_or(0),
                 leaves: self.ids(leaves),
                 bound: self.ids(facts.bound),
                 lets: self.ids(lets),
@@ -552,7 +553,7 @@ fn suffixes(symbols: &[u64]) -> Vec<usize> {
         }
         let distinct = order.last().map_or(0, |&last| next[last] + 1);
         rank = next;
-        if usize::try_from(distinct).is_ok_and(|it| it == symbols.len()) || width >= symbols.len() {
+        if usize::try_from(distinct).is_ok_and(|it| it == symbols.len()) {
             return order;
         }
         width *= 2;
@@ -752,10 +753,11 @@ mod tests {
             .collect()
     }
 
-    fn found(src: &str) -> Vec<Repeat> {
+    /// One file's corpus. Each test calls `repeats` itself, so mutest's call depth reaches `judge`.
+    fn lib(src: &str) -> Corpus {
         let mut corpus = Corpus::default();
         corpus.add("src/lib.rs", src);
-        corpus.repeats()
+        corpus
     }
 
     /// The group three copies of `run` make in src/lib.rs, starting at `lines`, six lines each.
@@ -785,11 +787,19 @@ mod tests {
     #[test]
     fn three_copies_of_one_run_are_one_function_whatever_each_copy_names_for_itself() {
         let named = [function(6, [2, 11, 20], 5)];
-        assert_eq!(found(&spread(&copies(&["a", "b", "c"]), "")), named);
+        assert_eq!(lib(&spread(&copies(&["a", "b", "c"]), "")).repeats(), named);
         let own = [run("a"), run("b").replace("total", "sum"), run("c")];
-        assert_eq!(found(&spread(&own, "")), named);
+        assert_eq!(lib(&spread(&own, "")).repeats(), named);
         // A function returns one value, so the code after a copy may read one name the copy binds.
-        assert_eq!(found(&spread(&copies(&["a", "b", "c"]), "mean")), named);
+        assert_eq!(
+            lib(&spread(&copies(&["a", "b", "c"]), "mean")).repeats(),
+            named
+        );
+        let led = format!(
+            "fn lead() {{\n    go();\n}}\n{}",
+            spread(&copies(&["a", "b", "c"]), "")
+        );
+        assert_eq!(lib(&led).repeats(), [function(6, [5, 14, 23], 5)]);
     }
 
     #[test]
@@ -802,29 +812,29 @@ mod tests {
                 spread(&copies(&["a", "b", "c"]), "")
             ),
         ] {
-            assert_eq!(found(&src), [], "{src}");
+            assert_eq!(lib(&src).repeats(), [], "{src}");
         }
     }
 
     #[test]
     fn copies_that_differ_in_a_string_a_macro_reads_merge_only_where_it_formats_the_same() {
         let logged = |value: &str| run(value).replace("log(", "log!(");
-        assert_eq!(found(&spread(&["a", "b", "c"].map(logged), "")), []);
+        assert_eq!(lib(&spread(&["a", "b", "c"].map(logged), "")).repeats(), []);
         let named = ["total", "sum", "all"]
             .map(|name| logged(&format!("{{{name}}}")).replace("total", name));
         let mut same = function(7, [2, 11, 20], 5);
         same.differs.clear();
-        assert_eq!(found(&spread(&named, "")), [same]);
+        assert_eq!(lib(&spread(&named, "")).repeats(), [same]);
     }
 
     #[test]
     fn copies_that_call_another_method_are_not_one_shape() {
         let called = ["sum", "product", "count"].map(|method| run("a").replace("sum", method));
-        assert_eq!(found(&spread(&called, "")), []);
+        assert_eq!(lib(&spread(&called, "")).repeats(), []);
         let fields = ["size", "len", "weight"].map(|field| run("a").replace("size", field));
         let mut read = function(6, [2, 11, 20], 5);
         read.differs = vec!["`size` / `len` / `weight`".to_string()];
-        assert_eq!(found(&spread(&fields, "")), [read]);
+        assert_eq!(lib(&spread(&fields, "")).repeats(), [read]);
     }
 
     /// A method and a trait's default body are bodies like a free function's; a match is read arm
@@ -856,12 +866,12 @@ mod tests {
             paired("item", "other"),
             paired("other", "item"),
         ];
-        assert_eq!(found(&spread(&swapped, "")), []);
+        assert_eq!(lib(&spread(&swapped, "")).repeats(), []);
         let mut renamed = swapped;
         renamed[2] = paired("item", "other").replace("|(item, other)| item.", "|(it, other)| it.");
         let mut same = function(7, [2, 11, 20], 5);
         same.differs.clear();
-        assert_eq!(found(&spread(&renamed, "")), [same]);
+        assert_eq!(lib(&spread(&renamed, "")).repeats(), [same]);
     }
 
     #[test]
@@ -879,10 +889,10 @@ mod tests {
                     run(value)
                 )
             });
-            found(&spread(&bodies, ""))
+            lib(&spread(&bodies, ""))
         };
-        assert_eq!(ending("stop()"), [function(12, [2, 14, 26], 8)]);
-        assert_eq!(ending("return"), [function(6, [2, 14, 26], 5)]);
+        assert_eq!(ending("stop()").repeats(), [function(12, [2, 14, 26], 8)]);
+        assert_eq!(ending("return").repeats(), [function(6, [2, 14, 26], 5)]);
     }
 
     #[test]
@@ -898,12 +908,12 @@ mod tests {
                     )
                 })
                 .collect();
-            found(&format!("fn rows() {{\n{rows}}}\n"))
+            lib(&format!("fn rows() {{\n{rows}}}\n"))
         };
         let differs =
             ["a", "b", "c", "d"].map(|it| format!("`{it}1` / `{it}2` / `{it}3` / `{it}4`"));
         assert_eq!(
-            rows(&|_| "shared".to_string()),
+            rows(&|_| "shared".to_string()).repeats(),
             [Repeat {
                 sites: [2, 12, 22, 32]
                     .map(|line| site("src/lib.rs", line, line + 9))
@@ -913,7 +923,7 @@ mod tests {
                 differs: differs.to_vec(),
             }]
         );
-        assert_eq!(rows(&|at| format!("e{at}")), []);
+        assert_eq!(rows(&|at| format!("e{at}")).repeats(), []);
     }
 
     #[test]
@@ -928,33 +938,42 @@ mod tests {
             differs: function(0, [0; 3], 0).differs,
         };
         assert_eq!(
-            found(&(shared + &spread(&copies(&["b", "c"]), ""))),
+            lib(&(shared + &spread(&copies(&["b", "c"]), ""))).repeats(),
             [named]
         );
         let bodies: String = (["a", "b", "c"].iter().enumerate())
             .map(|(at, value)| format!("fn s{at}() {{\n{}}}\n", run(value)))
             .collect();
-        assert_eq!(found(&bodies), []);
+        assert_eq!(lib(&bodies).repeats(), []);
+        let led: String = (["a", "b", "c"].iter().enumerate())
+            .map(|(at, value)| format!("fn s{at}() {{\n    let x = setup();\n{}}}\n", run(value)))
+            .collect();
+        assert_eq!(
+            lib(&led).repeats(),
+            [],
+            "a run inside whole copies is judged with them"
+        );
     }
 
-    /// A copy spans three lines or more and thirty tokens or more.
+    /// A copy spans three lines or more and thirty tokens or more. Two tall copies pay.
     #[test]
     fn a_copy_shorter_than_three_lines_or_thirty_tokens_is_not_named() {
         let names = "x1, x2, x3, x4, x5, x6,\n        x7, x8, x9, x10, x11, x12";
-        let saves = |copies: usize, call: &dyn Fn(&str) -> String| {
+        let tree = |copies: usize, call: &dyn Fn(&str) -> String| {
             let bodies: Vec<String> = (0..copies).map(|at| call(&format!("v{at}"))).collect();
-            found(&spread(&bodies, ""))
-                .iter()
-                .map(|it| it.saves)
-                .collect::<Vec<u32>>()
+            lib(&spread(&bodies, ""))
         };
+        let saves = |groups: &[Repeat]| groups.iter().map(|it| it.saves).collect::<Vec<u32>>();
         let two_lines = |value: &str| format!("    call(\"{value}\", {names}, x13);\n");
         let three_lines = |value: &str| format!("    call(\n        \"{value}\", {names}, x13);\n");
         let fewer_tokens = |value: &str| format!("    call(\n        \"{value}\", {names},);\n");
-        assert_eq!(saves(10, &two_lines), Vec::<u32>::new());
-        assert_eq!(saves(10, &three_lines), [14]);
-        assert_eq!(saves(6, &three_lines), [6]);
-        assert_eq!(saves(6, &fewer_tokens), Vec::<u32>::new());
+        let column: String = (1..=13).map(|at| format!("        x{at},\n")).collect();
+        let tall = |value: &str| format!("    call(\n        \"{value}\",\n{column}    );\n");
+        assert_eq!(saves(&tree(20, &two_lines).repeats()), Vec::<u32>::new());
+        assert_eq!(saves(&tree(10, &three_lines).repeats()), [14]);
+        assert_eq!(saves(&tree(6, &three_lines).repeats()), [6]);
+        assert_eq!(saves(&tree(6, &fewer_tokens).repeats()), Vec::<u32>::new());
+        assert_eq!(saves(&tree(2, &tall).repeats()), [11]);
     }
 
     #[test]
@@ -1005,6 +1024,11 @@ mod tests {
         // `a` is read after the run; `b` is only bound again.
         assert_eq!(corpus.outliving(2, 2), 1);
         assert_eq!(corpus.outliving(0, 1), 1);
+        assert_eq!(
+            corpus.outliving(5, 2),
+            0,
+            "a run that ends its block has nothing after it"
+        );
         let differs = corpus
             .differs(&[&corpus.units[0..2], &corpus.units[2..4]])
             .unwrap();
@@ -1121,6 +1145,11 @@ mod tests {
             assert_ne!(shaped(other).0, one, "{other}");
         }
         assert_ne!(shaped("let y = g!(2);").0, shaped("let y = h!(2);").0);
+        let (cmp, leaves, _) = shaped("x.cmp(y)");
+        assert_eq!(leaves, ["x", "y"]);
+        assert_ne!(shaped("x.total_cmp(y)").0, cmp);
+        assert_eq!(shaped("x.sum::<u64>()").1, ["x", "u64"]);
+        assert_eq!(shaped("x.size + x.len").1, ["x", "size", "x", "len"]);
         let marked = |text: &str| format!("{FORMAT}{text}");
         let (_, leaves, _) = shaped(r#"log!("{told}", g("a"), x); g("b");"#);
         let expected = [marked(r#""{}""#), "g".into(), marked(r#""a""#), "x".into()];

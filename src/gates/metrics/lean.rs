@@ -571,6 +571,27 @@ mod tests {
     }
 
     #[test]
+    fn a_file_charged_again_keeps_its_first_line_and_names_each_fix_once() {
+        let mut files = BTreeMap::new();
+        for (line, fix) in [(9, "merge x"), (4, "merge x"), (2, "merge y")] {
+            let shows = Detail {
+                line: None,
+                places: vec![
+                    Place::at("copy", "src/b.rs", 1),
+                    Place::at("copy", "src/a.rs", line),
+                ],
+                fix: Some(fix.to_string()),
+            };
+            charge(&mut files, "src/a.rs", 3, shows);
+        }
+        let (total, detail) = &files["src/a.rs"];
+        assert_eq!((*total, detail.line), (9, Some(9)));
+        assert_eq!(detail.fix.as_deref(), Some("merge x; merge y"));
+        let lines: Vec<u32> = detail.places.iter().map(|place| place.line).collect();
+        assert_eq!(lines, [1, 9, 1, 4, 1, 2]);
+    }
+
+    #[test]
     fn a_file_a_tool_wrote_is_known_by_its_path_or_its_first_lines() {
         for (shown, src, wrote) in [
             ("src/generated/pb.rs", "", true),
