@@ -184,12 +184,35 @@ jobs:
           prefix-key: mutest
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Clone the mutest fork
-        run: git clone --depth 1 https://github.com/outpostHQ/mutest-rs "$RUNNER_TEMP/mutest-rs"
+      # The installed driver embeds its runtime, so the two binaries are the whole tool, and a
+      # build of the same fork commit with the same nightly on the same system is the same tool.
+      - name: Find the mutest fork's commit
+        id: fork
+        run: |
+          . ./tool-versions.env
+          echo "sha=$(git ls-remote https://github.com/outpostHQ/mutest-rs refs/heads/main | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "nightly=$MUTEST_NIGHTLY" >> "$GITHUB_OUTPUT"
+
+      - name: Restore mutest built from that commit
+        id: built
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-mutest*
+            ~/.cargo/bin/mutest-driver*
+          key: mutest-${{ runner.os }}-${{ steps.fork.outputs.nightly }}-${{ steps.fork.outputs.sha }}
+
+      - name: Clone the mutest fork at that commit
+        if: steps.built.outputs.cache-hit != 'true'
+        run: |
+          git init -q "$RUNNER_TEMP/mutest-rs"
+          git -C "$RUNNER_TEMP/mutest-rs" fetch -q --depth 1 https://github.com/outpostHQ/mutest-rs "${{ steps.fork.outputs.sha }}"
+          git -C "$RUNNER_TEMP/mutest-rs" checkout -q FETCH_HEAD
 
       # From inside the clone: rustup reads the toolchain from the working directory, and ours
       # pins a stable carrying no rustc-dev.
       - name: Build mutest from the fork
+        if: steps.built.outputs.cache-hit != 'true'
         working-directory: ${{ runner.temp }}/mutest-rs
         env:
           # The fork's profiles add their own flags on top of this one.
@@ -198,6 +221,16 @@ jobs:
           cargo build --profile=release -p mutest-runtime
           cargo install --force --path mutest-driver
           cargo install --force --path cargo-mutest
+
+      # Saved at once, so a later gate failure does not lose the build.
+      - name: Keep that build for the next run
+        if: steps.built.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-mutest*
+            ~/.cargo/bin/mutest-driver*
+          key: ${{ steps.built.outputs.cache-primary-key }}
 
       - name: Install chock from this checkout
         run: cargo install --locked --path .
