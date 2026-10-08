@@ -22,14 +22,12 @@ pub fn run(
         stage: Stage::Spawn,
         reason: e.to_string(),
     })?;
-    if let Some(mut pipe) = process.child.stdin.take() {
-        let text = stdin.to_string();
-        // On its own thread: a child that never reads would block this one once the pipe fills.
-        std::thread::spawn(move || {
-            // outpost: ignore[discarded-result] a child that stops reading answers by its exit.
-            let _ = pipe.write_all(text.as_bytes());
-        });
-    }
+    let (pipe, text) = (process.child.stdin.take(), stdin.to_string());
+    // On its own thread: a child that never reads would block this one once the pipe fills.
+    std::thread::spawn(move || {
+        // outpost: ignore[discarded-result] a child that stops reading answers by its exit.
+        let _ = pipe.map(|mut pipe| pipe.write_all(text.as_bytes()));
+    });
     let out = captured(process.child.stdout.take(), MAX_CAPTURE);
     let err = captured(process.child.stderr.take(), MAX_CAPTURE);
     finish_capture(&mut process, program, &out, &err, limit, DRAIN, &mut ())

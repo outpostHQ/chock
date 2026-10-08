@@ -658,10 +658,9 @@ mod tests {
         let text = "\n{\"name\":\"a\",\"steps\":[[\"x\",\"y\"]]}\n  \n";
         let dir = crate::testdir::tree("oracle-blank", &[("corpus.jsonl", text)]);
         let read = lines::<Scenario>(dir.join("corpus.jsonl").to_str().unwrap()).unwrap();
-        let [only] = read.as_slice() else {
-            panic!("{read:?}")
-        };
-        assert_eq!(only.name, "a");
+        let names: Vec<&str> = read.iter().map(|it| it.name.as_str()).collect();
+        assert_eq!(names, ["a"]);
+        let only = &read[0];
         assert_eq!(only.steps, [["x", "y"]]);
         assert!(only.stdin.is_empty() && only.env.is_empty());
         assert!(optional::<Scenario>(None).unwrap().is_empty());
@@ -1035,9 +1034,8 @@ mod tests {
         let report = compared_shells("oracle-files", &scenario("writes", script), &more);
         let row = &report.rows[0];
         assert_eq!(row["verdict"], "different", "{row}");
-        let [found] = row["differences"].as_array().unwrap().as_slice() else {
-            panic!("{row}")
-        };
+        let found = &row["differences"][0];
+        assert!(row["differences"][1].is_null(), "{row}");
         assert_eq!(found["field"], "tree");
         assert_eq!(found["at"]["path"], "data/seed.txt");
         let seed = std::fs::read_to_string(fixture.join("data/seed.txt")).unwrap();
@@ -1052,9 +1050,8 @@ mod tests {
         let report = compared_shells("oracle-probe", &scenario("quiet", "true"), &more);
         let row = &report.rows[0];
         assert_eq!(row["verdict"], "different", "{row}");
-        let [found] = row["differences"].as_array().unwrap().as_slice() else {
-            panic!("{row}")
-        };
+        let found = &row["differences"][0];
+        assert!(row["differences"][1].is_null(), "{row}");
         assert_eq!(found["field"], "probe");
         assert_eq!(found["at"]["part"], "stdout");
         assert_eq!(found["at"]["probe"][1], "echo$IFS$0");
@@ -1073,6 +1070,19 @@ mod tests {
         assert_eq!(row["differences"][0]["field"], "exit");
         assert_eq!(row["differences"][0]["old"], TIMEOUT);
         assert!(started.elapsed() < Duration::from_secs(60));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_step_that_writes_more_than_chock_keeps_is_an_error_and_is_not_compared() {
+        let flood = scenario("flood", "head -c 17000000 /dev/zero");
+        let report = compared_shells("oracle-flood", &flood, &[]);
+        let row = &report.rows[0];
+        assert_eq!(row["verdict"], "error");
+        let why = "`-c head -c 17000000 /dev/zero` wrote more than chock keeps of one stream";
+        assert_eq!(row["error"], why);
+        assert_eq!(report.code(), 2);
     }
 
     #[cfg(unix)]

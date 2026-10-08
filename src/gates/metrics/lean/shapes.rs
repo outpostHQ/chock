@@ -105,10 +105,8 @@ impl Seen {
     /// Counts the trait's impl, twice where it is generic and so stands for many types, and keeps
     /// a production `impl From<A> for B`.
     fn implemented(&mut self, node: &ItemImpl, shown: &str, test: bool) {
-        let Some((path, _)) = &node.trait_ else {
-            return;
-        };
-        let Some(last) = path.segments.last() else {
+        let path = node.trait_.as_ref().map(|(path, _)| path);
+        let Some((path, last)) = path.and_then(|it| Some((it, it.segments.last()?))) else {
             return;
         };
         let many = if node.generics.params.is_empty() {
@@ -237,10 +235,9 @@ mod tests {
         let shape = "\npub trait Shape {\n    fn area(&self) -> u32;\n}\n";
         let square = "struct Square;\nimpl crate::a::Shape for Square {\n}\n";
         let found = cuts(&[("src/a.rs", shape), ("src/b.rs", square)]);
-        let [(file, cut)] = found.as_slice() else {
-            panic!("{found:?}");
-        };
-        assert_eq!(file, "src/a.rs");
+        let files: Vec<&str> = found.iter().map(|(file, _)| file.as_str()).collect();
+        assert_eq!(files, ["src/a.rs"]);
+        let cut = &found[0].1;
         assert_eq!(
             (cut.kind, cut.line, cut.end_line, cut.removable_lines),
             ("single_impl_trait", 2, 4, 3)
@@ -282,10 +279,9 @@ mod tests {
                     impl From<crate::a::Point> for Dot {\n    fn from(p: Point) -> Self {\n        \
                     Dot { x: p.x, y: p.y }\n    }\n}\n";
         let found = cuts(&[("src/a.rs", POINT), ("src/b.rs", copy)]);
-        let [(file, cut)] = found.as_slice() else {
-            panic!("{found:?}");
-        };
-        assert_eq!(file, "src/b.rs");
+        let files: Vec<&str> = found.iter().map(|(file, _)| file.as_str()).collect();
+        assert_eq!(files, ["src/b.rs"]);
+        let cut = &found[0].1;
         assert_eq!(
             (cut.kind, cut.line, cut.end_line, cut.removable_lines),
             ("mirror_type", 2, 5, 9)
@@ -333,5 +329,18 @@ mod tests {
         let built = "impl From<Point> for Dot {}\n#[cfg(test)]\nmod tests {\n    \
                      struct Dot {\n        x: u32,\n        y: u32,\n    }\n}\n";
         assert!(kinds(&[("src/a.rs", POINT), ("src/b.rs", built)]).is_empty());
+    }
+
+    #[test]
+    fn a_from_that_names_no_type_builds_no_mirror_and_an_inherent_impl_is_no_trait_impl() {
+        let dot = "struct Dot {\n    x: u32,\n    y: u32,\n}\n";
+        for from in ["From", "From<'static>", "From<3>"] {
+            let built = format!("{dot}impl {from} for Dot {{}}\n");
+            let found = kinds(&[("src/a.rs", POINT), ("src/b.rs", &built)]);
+            assert!(found.is_empty(), "{from}: {found:?}");
+        }
+        let inherent = "trait Shape {}\nimpl Shape for A {}\nimpl A {}\n";
+        let one = ("src/a.rs".to_string(), "single_impl_trait", 1, 1, 1);
+        assert_eq!(kinds(&[("src/a.rs", inherent)]), [one]);
     }
 }
