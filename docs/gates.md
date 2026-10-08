@@ -27,7 +27,7 @@ A gate is one of two kinds.
 | `commits` | | an unpushed commit's subject is too wide, its body repeats the diff, or a tool is credited as author |
 | `profile` | | the release profile skips a free win or silences a compiler check |
 | `hygiene` | | the repository tracks a secret, a credential or build output |
-| `wiring` | | a gate passes on this tree but is switched off |
+| `wiring` | | a gate passes on this tree but is switched off, and is not opt-in |
 | `modcheck` | ✓ | a `mod` names no file, or more files are reached by no `mod` |
 | `manifest` | ✓ | more dependency declarations are unpinned |
 | `placement` | ✓ | a dependency is declared outside the repository, or for every build when only tests use it |
@@ -75,7 +75,7 @@ records the reason under `left_off` in the config.
 | `unread` | | never; reports regions Outpost could not parse |
 | `bsize` | | never; reports where a binary's bytes went |
 
-Mutation testing is the slowest gate, about four minutes on chock itself. Every test of every
+Mutation testing is the slowest gate, about six minutes on chock itself. Every test of every
 mutation runs in its own process, so one mutation that aborts cannot end the run.
 
 ## Outpost gates
@@ -86,7 +86,7 @@ whole tree.
 | gate | ratchet | trips when one more… |
 |---|:-:|---|
 | `padding` | ✓ | stretch of shipped code is longer than the tree's own density explains |
-| `boundaries` | ✓ | file sits outside its directory's concern, or group spreads across directories |
+| `boundaries` | ✓ | definition has callers spread past its directory, or directory holds more than one concern |
 | `scan` | ✓ | known defect pattern appears, or untrusted input reaches a sink |
 | `hazards` | ✓ | spot of syntax is about to be wrong, such as a value spliced into a command |
 | `unreferenced` | ✓ | piece of shipped code is reached by nothing, or only by tests |
@@ -119,7 +119,7 @@ says which of them this machine has. These gates need more:
 | `proof` | `#[kani::proof]` functions; Linux or macOS |
 | `acl` | a `cackle.toml`, and bubblewrap; Linux only |
 | `commits`, `hygiene`, `history` | a git or Outpost repository; outside one they report that they could not run |
-| Outpost gates | [Outpost](https://github.com/outpostHQ) on `PATH`, with `check --grouping=report` |
+| Outpost gates, `history`, `duplicates`, `unread` | [Outpost](https://github.com/outpostHQ) on `PATH`, with `check --grouping=report` |
 
 On a system a gate's tool does not run on (`acl` off Linux, `proof` on Windows), `chock run` leaves
 that gate out and says so; a Linux run enforces it.
@@ -170,7 +170,7 @@ A gate leaves these out on purpose. Each one has a place that shows it.
 | `features` | a `.rs` file that does not parse and is outside `src/` or read by `include!` | the compiler, where a build uses the file |
 | `placement` | a path dependency outside the tree, where the tree is in no repository | the `path` in `Cargo.toml` |
 | `mutest` | on your machine, the files that the change did not touch. Where more than 2% of the mutations in the touched files time out and mutest did not confirm them by a re-run alone, the run mutates the whole crate | the run says which it did; CI mutates the whole crate |
-| `mutest` | a mutation that times out counts as detected, for up to 2% of the mutations | the run says how many timed out |
+| `mutest` | a mutation that times out counts as detected, for up to 2% of the mutations, or for any number once mutest re-ran each alone (`timeouts confirmed:`) | each timed-out mutation is a `candidate` finding at its file and line |
 | `modcheck` | the directory of a file that holds the text `chock:modcheck-exempt` | the comment in that file |
 | `modcheck` | a `mod` name that a macro builds and no file has; a `.rs` file that does not parse and is outside `src/` or read by `include!` | the compiler, where a build uses it |
 

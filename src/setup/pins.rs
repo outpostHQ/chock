@@ -193,13 +193,18 @@ pub struct Repinned {
     pub changes: Vec<String>,
 }
 
-/// `held` with each key `ours` sets taken from `ours`. A key only `held` sets is the project's own
-/// and stays below `ours`, with its comments. `None` where `held` names no chock or will not parse.
+/// `held` with each key `ours` sets at `ours`' value, then the keys only `ours` sets. `None` where
+/// `held` names no chock or will not parse.
 #[must_use]
 pub fn repinned(held: &str, ours: &str) -> Option<Repinned> {
     let (theirs, set) = (assignments(held)?, assignments(ours)?);
     let from = value_of(&theirs, "CHOCK_VERSION")?.to_string();
-    let (own, kept) = own_lines(held, &set);
+    let (added, _) = own_lines(ours, &theirs);
+    let kept: Vec<&str> = theirs
+        .iter()
+        .map(|&(key, _)| key)
+        .filter(|key| value_of(&set, key).is_none())
+        .collect();
     let mut changes: Vec<String> = set
         .iter()
         .filter_map(|&(key, want)| match value_of(&theirs, key) {
@@ -212,9 +217,38 @@ pub fn repinned(held: &str, ours: &str) -> Option<Repinned> {
     }
     Some(Repinned {
         from,
-        text: format!("{ours}{own}"),
+        text: format!("{}{added}", in_place(held, ours, &set)),
         changes,
     })
+}
+
+/// `held` line by line, a line setting a key `set` gives another value taking `ours`' line for it,
+/// with any comment the line ended in.
+fn in_place(held: &str, ours: &str, set: &[(&str, &str)]) -> String {
+    let line_of = |key: &str| {
+        let mut lines = ours.lines().map(str::trim);
+        lines.find(|raw| {
+            assignment(raw, 0)
+                .ok()
+                .flatten()
+                .is_some_and(|(at, _)| at == key)
+        })
+    };
+    let mut text = String::new();
+    for raw in held.lines() {
+        let moved = assignment(raw, 0).ok().flatten().and_then(|(key, have)| {
+            value_of(set, key).filter(|&want| want != have)?;
+            let line = line_of(key)?;
+            let trimmed = raw.trim();
+            Some(format!(
+                "{line}{}",
+                &trimmed[before_comment(trimmed).len()..]
+            ))
+        });
+        text.push_str(moved.as_deref().unwrap_or(raw));
+        text.push('\n');
+    }
+    text
 }
 
 /// Every assignment in `text`, or `None` where a line is not one.
@@ -421,15 +455,13 @@ mod tests {
     const OURS: &str = "# Header.\n\n# Why A.\nA_VERSION=2\nB_VERSION=1\nD_VERSION=4\n\n# Which chock.\nCHOCK_VERSION=0.2.0\n";
 
     #[test]
-    fn an_older_pin_file_takes_chocks_pins_and_keeps_the_projects_own_with_their_comments() {
-        let held = "# Old header.\n\n# Old why A.\nA_VERSION=1\nOWN_REV=abc\nB_VERSION=1\n# Why.\nOWN_TOOLCHAIN=nightly\n# Loose.\n\n# Spaced.\nOWN_REPO=x\nCHOCK_VERSION=0.1.0\n# Trailing.\n";
+    fn an_older_pin_file_takes_chocks_pins_in_place_and_keeps_every_line_of_the_projects_own() {
+        let held = "# Old header.\n\n# Old why A.\nA_VERSION=1  # by hand\nOWN_REV=abc\nB_VERSION=1\n# Why.\nOWN_TOOLCHAIN=nightly\n# Loose.\n\n# Spaced.\nOWN_REPO=x\nCHOCK_VERSION=0.1.0\n# Trailing.\n";
         let moved = repinned(held, OURS).unwrap();
         assert_eq!(moved.from, "0.1.0");
         assert_eq!(
             moved.text,
-            format!(
-                "{OURS}\nOWN_REV=abc\n# Why.\nOWN_TOOLCHAIN=nightly\n\n# Spaced.\nOWN_REPO=x\n"
-            )
+            "# Old header.\n\n# Old why A.\nA_VERSION=2  # by hand\nOWN_REV=abc\nB_VERSION=1\n# Why.\nOWN_TOOLCHAIN=nightly\n# Loose.\n\n# Spaced.\nOWN_REPO=x\nCHOCK_VERSION=0.2.0\n# Trailing.\n\nD_VERSION=4\n"
         );
         let own = "kept as this project's own: OWN_REV, OWN_TOOLCHAIN, OWN_REPO";
         assert_eq!(
@@ -447,13 +479,19 @@ mod tests {
             (moved.text, vec![own.to_string()])
         );
         let unspaced = repinned("OWN_REV=abc\nCHOCK_VERSION=0.1.0\n", OURS).unwrap();
-        assert_eq!(unspaced.text, format!("{OURS}\nOWN_REV=abc\n"));
+        assert_eq!(
+            unspaced.text,
+            "OWN_REV=abc\nCHOCK_VERSION=0.2.0\n\n# Why A.\nA_VERSION=2\nB_VERSION=1\nD_VERSION=4\n"
+        );
     }
 
     #[test]
     fn a_pin_file_naming_no_chock_or_holding_a_stray_line_is_not_moved() {
         let alone = repinned("CHOCK_VERSION=0.1.0\n", OURS).unwrap();
-        assert_eq!(alone.text, OURS);
+        assert_eq!(
+            alone.text,
+            "CHOCK_VERSION=0.2.0\n\n# Why A.\nA_VERSION=2\nB_VERSION=1\nD_VERSION=4\n"
+        );
         assert!(
             !alone
                 .changes

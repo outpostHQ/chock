@@ -5,12 +5,41 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-08
+
+No command or flag is removed or renamed. The JSON reports do not change.
+
+- **A project in a subfolder of a repository gets its hooks.** Before, `chock init --local` in a
+  folder such as `crates/tova` wired no hook, because it found no `.git` there. Now it declares
+  each hook at the top of the repository under a name of its own,
+  `hook.chock-pre-commit@crates/tova`, which runs `chock hook pre-commit --project crates/tova`.
+  `--project` moves the hook into that folder before it runs. Each project in one repository keeps
+  its own hooks, and `chock doctor` checks only its own. This needs git 2.54. An Outpost repository
+  gets an entry `chock@<path>` in `.outposthooks.toml`.
+- **`chock init` moves its pins in `tool-versions.env` in place.** Before, a pin file that the
+  project had changed was rewritten in chock's order. Now each line that chock pins takes chock's
+  value where it stands, with its comment. The project's own lines stay as they are, and a pin
+  that the file did not hold is added at the end.
+- **Miri groups take every n-th test.** Before, each group held 32 neighbouring tests, so the slow
+  tests of one module shared a group. On chock's own suite with 32 cores, one group took 203 s,
+  and the others waited for it. Now each group takes every n-th test of the list. From the measured
+  test times, the groups take about 100 s on 32 cores. On 3 or 4 cores the time does not change.
+- **`miri` prints one summary line.** It names the build time, the number of groups, how many ran
+  at once, and the sum of the test times.
+- **The documents match the code.** The CI and hooks guide describes the declared git keys, older
+  git, Outpost hooks, Miri groups, `--fast --ci`, `CHOCK_TIMEOUT` and `CHOCK_JOBS`. The guide lists
+  every report field and every file `init` writes. A check found 23 points; the others are
+  corrected in the README, the gate list, the configuration keys and the agent skill.
+
+The tests, flags and verdicts do not change.
+
 ## [0.2.0] - 2026-10-07
 
 No command or flag is removed or renamed. The JSON reports add fields and remove none.
 
 - **`splits`, a new gate.** It names a part of a file, 100 lines or more, that only one private
-  item uses. That part can be a module of its own. The finding gives the part's lines and the item
+  item uses. It reads files of 200 to 1000 production lines; `bigfiles` names the parts of a
+  larger file. That part can be a module of its own. The finding gives the part's lines and the item
   that leads into it. A `pub` item is never such a lead, because a move needs a re-export.
 - **`lean`, a new gate.** It counts the private functions that only pass their parameters on to
   another call, unchanged and in order. The caller can make that call itself. The finding names
@@ -75,7 +104,8 @@ No command or flag is removed or renamed. The JSON reports add fields and remove
   now holds `peak_mb`, the most memory its processes held at once (Linux only). `mutest` and
   `miri` build in directories of their own. On the next run, each takes a lane of its own when
   the recorded peaks of all that would run at once fit in three quarters of the free memory. A
-  gate with no record runs in turn, as before.
+  gate with no record runs in turn, as before. The `miri` report also holds `tests_ms`, each
+  test's time, so the next run starts the slowest tests first.
 - **chock reads the free memory on macOS and Windows.** Before, it read it only on Linux, so a run
   on macOS or Windows ran one build job at a time. Now `vm_stat` on macOS and a performance counter
   on Windows give it, and the job count follows the cores and the memory, as on Linux. With

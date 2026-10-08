@@ -242,6 +242,20 @@ fn enclosed_by_git(root: &Path) -> bool {
     exec::run("git", &["rev-parse", "--show-toplevel"], root).is_ok_and(|out| out.success())
 }
 
+/// The git repository above a project that holds none itself, and the project's path within it
+/// with `/` between its parts; `None` where git finds no repository or the project is at its top.
+#[must_use]
+pub fn enclosing_git(root: &Path) -> Option<(std::path::PathBuf, String)> {
+    let asked = ["rev-parse", "--show-toplevel", "--show-prefix"];
+    let out = exec::run("git", &asked, root)
+        .ok()
+        .filter(exec::Output::success)?;
+    let mut lines = out.stdout.lines();
+    let top = std::path::PathBuf::from(lines.next()?);
+    let below = lines.next()?.trim_end_matches('/').to_string();
+    (!below.is_empty()).then_some((top, below))
+}
+
 /// The repository's root directory; a path outside it is missing from a fresh clone.
 #[must_use]
 pub fn repository_root(root: &Path, held: Option<Kind>) -> Option<std::path::PathBuf> {

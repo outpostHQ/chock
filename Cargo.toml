@@ -1,6 +1,6 @@
 [package]
 name = "chock"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.99.0"
 description = "Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers. 55 gates, one command, JSON for agents."

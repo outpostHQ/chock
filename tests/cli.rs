@@ -890,6 +890,10 @@ fn a_hook_name_chock_does_not_run_is_refused() {
     let bare = chock(&dir, &["hook"]);
     assert_eq!(bare.code, 2);
     says(&bare.err, "needs a hook name");
+    // No message file and none being composed leaves nothing to check, which is not a pass.
+    let unnamed = chock(&dir, &["hook", "commit-msg"]);
+    assert_eq!(unnamed.code, 2, "{}{}", unnamed.out, unnamed.err);
+    says(&unnamed.err, "git names no message being composed");
 }
 
 #[cfg(unix)]
@@ -1357,6 +1361,36 @@ fn staging_a_gate_records_only_a_stage_other_than_its_default() {
     let back = chock(&dir, &["stage", "binsize", "push"]);
     assert_eq!(back.code, 0, "{}{}", back.out, back.err);
     assert!(!config().contains("binsize\": \""), "{}", config());
+}
+
+/// A hook declared at the top of a repository runs from there, names the message file from there,
+/// and judges the project below it by that project's own rules.
+#[test]
+fn a_hook_for_a_project_below_the_top_moves_into_it_and_still_finds_the_message() {
+    let top = project(
+        "hook-below",
+        &[
+            ("sub/Cargo.toml", MANIFEST),
+            ("sub/src/lib.rs", "pub fn f() {}\n"),
+        ],
+    );
+    std::fs::write(top.join("good.txt"), "A subject that says what changed\n").unwrap();
+    let good = chock(
+        &top,
+        &["hook", "commit-msg", "--project", "sub", "good.txt"],
+    );
+    assert_eq!(good.code, 0, "{}{}", good.out, good.err);
+    std::fs::write(top.join("bad.txt"), format!("{}\n", "x".repeat(200))).unwrap();
+    let bad = chock(&top, &["hook", "commit-msg", "--project", "sub", "bad.txt"]);
+    assert_eq!(bad.code, 1, "{}{}", bad.out, bad.err);
+    says(&bad.err, "subject");
+    // A project that is not there is a hook chock could not run, not one that passed.
+    let gone = chock(
+        &top,
+        &["hook", "commit-msg", "--project", "gone", "good.txt"],
+    );
+    assert_eq!(gone.code, 2, "{}{}", gone.out, gone.err);
+    says(&gone.err, "no Cargo.toml there");
 }
 
 /// `chock message` is what the commit-msg hook runs, so the rule must also hold by hand.

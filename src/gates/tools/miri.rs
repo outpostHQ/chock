@@ -69,6 +69,7 @@ fn interpret(ctx: &Ctx, args: &[String], idle: Duration) -> Result<exec::Output,
 /// The suite in groups, one interpreter each, as many at once as the lane's cores; a failed group
 /// runs again under nextest, which names each test. With no list to group, one nextest run.
 fn suite(ctx: &Ctx, asked: &[String], args: &[String], run: &Interpret) -> Result<Outcome, String> {
+    let started = std::time::Instant::now();
     let listed = run(&groups::listing(args), exec::deadline())
         .ok()
         .filter(exec::Output::success);
@@ -78,17 +79,18 @@ fn suite(ctx: &Ctx, asked: &[String], args: &[String], run: &Interpret) -> Resul
         return judge(&ctx.root, &run(args, exec::deadline())?);
     };
     let recorded = crate::run::recorded_tests(&ctx.root, GATE.name);
-    let lanes = groups::slowest_first(&grouped, &recorded);
-    let timed =
-        crate::run::workers::on_workers(&grouped, &lanes, exec::budget::interpreters(), &|group| {
-            match run(
-                &groups::command(group, asked),
-                GROUP_IDLE.min(exec::deadline()),
-            ) {
-                Ok(out) if out.success() => Ok(groups::times(group, &out.stdout)),
-                out => Err(out.ok().and_then(|out| never_ran(&out.stderr))),
-            }
-        });
+    let (lanes, built) = (
+        groups::slowest_first(&grouped, &recorded),
+        started.elapsed(),
+    );
+    let at_once = exec::budget::interpreters();
+    let timed = crate::run::workers::on_workers(&grouped, &lanes, at_once, &|group| match run(
+        &groups::command(group, asked),
+        GROUP_IDLE.min(exec::deadline()),
+    ) {
+        Ok(out) if out.success() => Ok(groups::times(group, &out.stdout)),
+        out => Err(out.ok().and_then(|out| never_ran(&out.stderr))),
+    });
     // nextest would meet the same refusal, so the suite ends here rather than paying for it twice.
     if let Some(why) = timed
         .iter()
@@ -103,12 +105,20 @@ fn suite(ctx: &Ctx, asked: &[String], args: &[String], run: &Interpret) -> Resul
         .filter(|(_, timed)| !matches!(timed, Some(Ok(_))))
         .map(|(group, _)| group)
         .collect();
-    let tests_ms = timed
+    let tests_ms: std::collections::BTreeMap<String, u64> = timed
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
         .flatten()
         .collect();
+    // Where the time went, so a slow run shows whether the build, the cores or the tests cost it.
+    eprintln!(
+        "chock: miri built and listed in {} s, then ran {} groups, {at_once} at once, through {} s \
+         of tests",
+        built.as_secs(),
+        grouped.len(),
+        tests_ms.values().sum::<u64>() / 1000
+    );
     let outcome = match failed.is_empty() {
         true => super::verdict(&listed, &ctx.root),
         false => judge(

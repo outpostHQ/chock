@@ -93,10 +93,21 @@ mod tests {
             said.ends_with("kept as this project's own: OWN_REV"),
             "{said}"
         );
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            format!("{ours}\nOWN_REV=abc\n")
+        let text = fs::read_to_string(&path).unwrap();
+        let just = ours
+            .lines()
+            .find(|line| line.starts_with("JUST_VERSION="))
+            .unwrap();
+        assert!(
+            text.starts_with(&format!("{just}\nOWN_REV=abc\nCHOCK_VERSION={running}\n\n")),
+            "{text}"
         );
+        for pin in ours.lines().filter(|line| line.contains('=')) {
+            assert!(
+                text.lines().any(|line| line == pin),
+                "{pin} missing: {text}"
+            );
+        }
         assert_eq!(
             install_pins(&dir, &ours).unwrap().to_string(),
             "  unchanged tool-versions.env"

@@ -45,14 +45,38 @@ debt the baseline already accepts. A gate under `clean_when_touched` reports the
 because the edit touches the file.
 
 The hook answers on stderr with exit 2, which is how Claude Code hands a hook's answer back to the
-model. Other editors can pipe a path to `chock edited`.
+model. Other editors can call `chock edited <path>`, or pipe a path or the editor's JSON to
+`chock edited --hook`. Only `--hook` reads stdin.
 
 ## The git hooks
 
-On git 2.54 and later the hooks are declared in `.git/config`
-(`hook.chock-pre-commit.command = chock hook pre-commit`) and run beside any hooks you keep in
-`.git/hooks`. Older git gets `core.hooksPath` pointed at `.chock/hooks`. The setting is per clone,
-so each clone runs `chock init --local` once.
+On git 2.54 and later the hooks are declared in `.git/config`, two keys for each of `pre-commit`,
+`commit-msg` and `pre-push`:
+
+```ini
+[hook "chock-pre-commit"]
+    command = chock hook pre-commit
+    event = pre-commit
+```
+
+They run beside any hooks you keep in `.git/hooks`. The setting is per clone, so each clone runs
+`chock init --local` once.
+
+Older git gets `core.hooksPath` pointed at `.chock/hooks`, which holds one stub file for each hook.
+If `.git/hooks` already holds hooks of your own, or `core.hooksPath` points somewhere else, chock
+changes nothing: it prints a note, and its hooks do not run until you wire them. After an upgrade
+to git 2.54, `chock init --local` declares the hooks, deletes its stubs and unsets the path it set.
+
+A project in a subfolder of a repository, such as `crates/tova`, declares its hooks at the top of
+the repository under names of its own: `hook.chock-pre-commit@crates/tova.command = chock hook
+pre-commit --project crates/tova`. `--project` moves the hook into that folder before it runs.
+Each project in the repository keeps its own hooks. This needs git 2.54; older git gets a note and
+no stubs, because a stub directory would replace the hooks of every other project.
+
+In an Outpost repository, chock declares one `[[pre-commit]]` entry named `chock` in
+`.outposthooks.toml`, and trusts that file when chock wrote all of it. Outpost runs only
+`pre-commit` hooks, so there is no message check and no push gate there. A project in a subfolder
+gets its own entry, named `chock@<path>`.
 
 `git commit --no-verify` and `git push --no-verify` skip both git hooks. CI is the step that nobody
 can skip.
@@ -71,6 +95,16 @@ Install the pinned tools, then run every gate but the `local_only` ones:
 - run: chock run --ci
 ```
 
+`chock run --fast --ci` runs only the gates of the commit set, with CI's rules. chock's own CI runs
+it as a quick first job on Linux.
+
+Two environment variables change how a run uses the machine:
+
+| Variable | Default | What it sets |
+|---|---|---|
+| `CHOCK_TIMEOUT` | 1800 (30 min) | The seconds one tool may run before chock stops it. |
+| `CHOCK_JOBS` | the cores, as memory allows | The build jobs at once. chock then does not read the memory. |
+
 `chock init --global` installs [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) first,
 then every other tool from its own prebuilt release, in minutes; a tool with no release for the
 platform is compiled. [`SECURITY.md`](../SECURITY.md) says what that trades.
@@ -87,18 +121,26 @@ number for each key.
 
 ### A long Miri suite
 
-`miri` interprets each test, tens of times slower than a normal run. Where the whole suite does not
-fit one CI job, split it into parts: `--miri-partition=K/N` runs part K of N, as nextest's
-`count:K/N` partition splits the tests. One job runs every other gate, and one job each runs only
-`miri` for one part. `--skip` leaves a slow gate out of the first job, so all jobs run at once:
+`miri` interprets each test, tens of times slower than a normal run. chock builds the tests once,
+lists them, and runs them in groups of up to 32 tests, each group in one Miri interpreter. Each
+group takes every n-th test of the list, so the slow tests that sit side by side in one module go
+to different groups. Groups run at once, one for each core, and one for each 512 MB of free memory.
+When the last run recorded each test's time, the slowest groups start first.
+
+A group with no progress for 6 minutes is stopped. Only `CHOCK_TIMEOUT` limits the whole run. At the end, chock prints one line: the build time, the number
+of groups, how many ran at once, and the sum of the test times.
+
+chock's own [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs the whole Miri suite as
+one job on each system, `chock run --ci miri`. Where the suite does not fit one CI job, split it
+into parts: `--miri-partition=K/N` runs part K of N, as nextest's `count:K/N` partition splits the
+tests. `--skip` leaves a slow gate out of the other job, so all jobs run at once:
 
 ```yaml
 - run: chock run --ci --skip=miri                                # every gate but miri
 - run: chock run --ci --miri-partition=${{ matrix.part }}/4 miri # parts 1 to 4, one job each
 ```
 
-Each part keeps its verdict under a key of its own. chock's own
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs its suite this way.
+Each part keeps its verdict under a key of its own.
 
 ## Update chock
 

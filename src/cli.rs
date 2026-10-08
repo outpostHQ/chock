@@ -223,10 +223,14 @@ pub(crate) fn tier_for(fast: bool, ci: bool) -> Tier {
 
 /// Runs the gates for one hook, then one line that says where to look.
 fn run_hook(args: &[&str]) -> ExitCode {
-    match asked(args) {
+    let (args, message) = match in_project(args) {
+        Ok(split) => split,
+        Err(why) => return cannot_run(&why),
+    };
+    match asked(&args) {
         Asked::Committing => hooked(Tier::Committing, "pre-commit", EXPLAIN),
         Asked::Pushing => hooked(Tier::Pushing, "pre-push", NO_VERIFY),
-        Asked::Message(file) => check_message(file),
+        Asked::Message(file) => check_message(message.as_deref().unwrap_or(file)),
         Asked::MessageGitIsComposing => match vcs::message_being_composed(&root_or_here()) {
             Some(path) => check_message(&path.to_string_lossy()),
             None => cannot_run(
@@ -239,6 +243,54 @@ fn run_hook(args: &[&str]) -> ExitCode {
         }
         Asked::Unknown(name) => cannot_run(&format!("chock hook does not run `{name}`")),
     }
+}
+
+/// The hook's arguments once it has moved into the nearest `<ancestor>/<dir>` holding a
+/// `Cargo.toml`, and the message file made whole first, since git names it from the top.
+fn in_project<'a>(args: &[&'a str]) -> Result<(Vec<&'a str>, Option<String>), String> {
+    let (args, project) = project_named(args)?;
+    let Some(dir) = project else {
+        return Ok((args, None));
+    };
+    let message = match asked(&args) {
+        Asked::Message(file) => std::path::absolute(file).ok(),
+        _ => None,
+    };
+    let here = std::env::current_dir().map_err(|e| format!("chock hook: {e}"))?;
+    let found = here
+        .ancestors()
+        .map(|at| at.join(dir))
+        .find(|at| at.join("Cargo.toml").is_file())
+        .ok_or_else(|| {
+            format!(
+                "chock hook --project {dir}: no Cargo.toml there, from {}",
+                here.display()
+            )
+        })?;
+    std::env::set_current_dir(&found)
+        .map_err(|e| format!("cannot enter {}: {e}", found.display()))?;
+    Ok((args, message.map(|path| path.display().to_string())))
+}
+
+/// A hook's arguments without `--project <dir>`, which a hook declared at the top of a repository
+/// passes for a project below it, and that directory.
+pub(crate) fn project_named<'a>(
+    args: &[&'a str],
+) -> Result<(Vec<&'a str>, Option<&'a str>), String> {
+    let (mut rest, mut project) = (Vec::new(), None);
+    let mut each = args.iter().copied();
+    while let Some(arg) = each.next() {
+        match arg {
+            "--project" => {
+                project = Some(
+                    each.next()
+                        .ok_or("chock hook --project needs a directory")?,
+                );
+            }
+            _ => rest.push(arg),
+        }
+    }
+    Ok((rest, project))
 }
 
 fn hooked(tier: Tier, when: &str, fix: &str) -> ExitCode {
@@ -1394,6 +1446,24 @@ mod tests {
             Asked::Pushing
         );
         assert_eq!(asked(&["pre-commit", "origin"]), Asked::Committing);
+    }
+
+    #[test]
+    fn a_hook_declared_above_its_project_names_the_project_wherever_git_puts_its_own_arguments() {
+        let push = ["pre-push", "--project", "crates/a b", "origin", "url"];
+        assert_eq!(
+            project_named(&push).unwrap(),
+            (vec!["pre-push", "origin", "url"], Some("crates/a b"))
+        );
+        assert_eq!(
+            project_named(&["commit-msg", "--project", "x", "MSG"]).unwrap(),
+            (vec!["commit-msg", "MSG"], Some("x"))
+        );
+        assert_eq!(
+            project_named(&["pre-commit"]).unwrap(),
+            (vec!["pre-commit"], None)
+        );
+        assert!(project_named(&["pre-commit", "--project"]).is_err());
     }
 
     #[test]

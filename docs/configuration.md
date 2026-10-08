@@ -28,6 +28,9 @@ Without the parent, the gate cannot run.
 
 | key | what it says |
 |---|---|
+| `$schema` | the path or URL of `schema/config-v1.json`, so an editor checks the file as you type; chock does not read it |
+| `version` | required; the version of the file's layout. chock refuses a higher number rather than half-read it |
+| `enabled` | required; the gates the project has switched on, by the names `chock gates` prints. An unknown name fails the run |
 | `runner` | the command that runs your tests, if not `cargo nextest run --workspace --no-tests=fail --no-fail-fast`; your command must also run every test after a failure, or the run lists only the first |
 | `coverage` | the command that writes your coverage report; `{lcov}` marks where chock reads it |
 | `message` | the widest commit subject and the longest body allowed |

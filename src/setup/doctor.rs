@@ -358,6 +358,14 @@ pub fn manual_in(config: &Result<Option<crate::project::config::Config>, String>
         .collect()
 }
 
+/// The repository top where git holds this project's hooks, and the project's path below it.
+fn hooks_declared_at(root: &std::path::Path) -> Option<(std::path::PathBuf, Option<String>)> {
+    match crate::project::vcs::holders(root).contains(&crate::project::vcs::Kind::Git) {
+        true => Some((root.to_path_buf(), None)),
+        false => crate::project::vcs::enclosing_git(root).map(|(top, below)| (top, Some(below))),
+    }
+}
+
 /// Machine queries stay at the edge; the checks below consume only the captured answers.
 pub fn machine_health(
     root: &std::path::Path,
@@ -369,13 +377,17 @@ pub fn machine_health(
         crate::exec::run("rustup", &["toolchain", "list"], root).map_err(|e| e.to_string())
     };
     let mut rows = additional(extra, &listing);
-    if crate::project::vcs::holders(root).contains(&crate::project::vcs::Kind::Git) {
-        let declarations = crate::project::vcs::git_hook_declarations(root);
+    if let Some((top, below)) = hooks_declared_at(root) {
+        let declarations = crate::project::vcs::git_hook_declarations(&top);
         let path = std::env::var_os("PATH");
-        rows.extend(declared_git_hooks(&declarations, &|program| {
-            let path = path.as_ref().ok_or("PATH is not available")?;
-            crate::setup::hooks::executable(root, program, path)
-        }));
+        rows.extend(declared_git_hooks(
+            below.as_deref(),
+            &declarations,
+            &|program| {
+                let path = path.as_ref().ok_or("PATH is not available")?;
+                crate::setup::hooks::executable(root, program, path)
+            },
+        ));
     }
     rows
 }
@@ -507,8 +519,10 @@ fn toolchain_host(host: &str) -> bool {
         })
 }
 
-/// A declaration may exist while its command cannot be started. Checking never executes the hook.
+/// This project's declarations, named for `below` where it sits below its repository's top. A
+/// declared command may not start; checking never executes the hook.
 pub fn declared_git_hooks(
+    below: Option<&str>,
     declarations: &Result<Vec<crate::project::vcs::GitHook>, String>,
     available: &dyn Fn(&str) -> Result<bool, String>,
 ) -> Vec<Row> {
@@ -519,10 +533,16 @@ pub fn declared_git_hooks(
         }],
         Ok(hooks) => hooks
             .iter()
-            .filter_map(|hook| Some((hook, hook.name.strip_prefix("chock-")?)))
+            .filter_map(|hook| {
+                let named = hook.name.strip_prefix("chock-")?;
+                let (event, at) = named
+                    .split_once('@')
+                    .map_or((named, None), |(event, at)| (event, Some(at)));
+                (at == below).then_some((hook, event))
+            })
             .map(|(hook, name)| Row {
                 command: format!("git hook {}", hook.name),
-                status: declared_status(hook, name, available),
+                status: declared_status(hook, name, below, available),
             })
             .collect(),
     }
@@ -531,6 +551,7 @@ pub fn declared_git_hooks(
 fn declared_status(
     hook: &crate::project::vcs::GitHook,
     name: &str,
+    below: Option<&str>,
     available: &dyn Fn(&str) -> Result<bool, String>,
 ) -> Status {
     if !crate::setup::hooks::wired()
@@ -547,7 +568,11 @@ fn declared_status(
             "declaration names no command; run `chock init --local`".to_string(),
         );
     };
-    let program = if command == &crate::setup::hooks::command(name) {
+    let ours = below.map_or_else(
+        || crate::setup::hooks::command(name),
+        |at| crate::setup::hooks::command_below(name, at),
+    );
+    let program = if *command == ours {
         "chock"
     } else if command.trim_start_matches("./") == format!("{}/{name}", crate::setup::hooks::DIR) {
         command
@@ -1272,9 +1297,49 @@ mod tests {
     }
 
     #[test]
+    fn a_project_reads_only_the_hooks_declared_for_it() {
+        let named = |name: &str, command: &str| crate::project::vcs::GitHook {
+            name: name.to_string(),
+            events: vec!["pre-commit".to_string()],
+            command: Some(command.to_string()),
+        };
+        let declarations = Ok(vec![
+            named("chock-pre-commit", "chock hook pre-commit"),
+            named(
+                "chock-pre-commit@crates/a",
+                "chock hook pre-commit --project crates/a",
+            ),
+            named(
+                "chock-pre-commit@crates/b",
+                "chock hook pre-commit --project crates/b",
+            ),
+        ]);
+        let read = |below| {
+            declared_git_hooks(below, &declarations, &|_| Ok(true))
+                .into_iter()
+                .map(|row| row.command)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(read(None), ["git hook chock-pre-commit"]);
+        assert_eq!(
+            read(Some("crates/a")),
+            ["git hook chock-pre-commit@crates/a"]
+        );
+        let below = declared_git_hooks(Some("crates/a"), &declarations, &|_| Ok(true));
+        assert_eq!(verdict(&below), Verdict::Pass);
+        // Another project's command is not this one's.
+        let crossed = Ok(vec![named(
+            "chock-pre-commit@crates/a",
+            "chock hook pre-commit --project crates/b",
+        )]);
+        let rows = declared_git_hooks(Some("crates/a"), &crossed, &|_| Ok(true));
+        assert_eq!(verdict(&rows), Verdict::Tripped);
+    }
+
+    #[test]
     fn a_declared_binary_is_available_but_a_missing_legacy_path_is_broken() {
         let current = declared(Some("chock hook pre-commit"));
-        let rows = declared_git_hooks(&Ok(vec![current]), &|program| {
+        let rows = declared_git_hooks(None, &Ok(vec![current]), &|program| {
             assert_eq!(program, "chock");
             Ok(true)
         });
@@ -1282,7 +1347,7 @@ mod tests {
         assert!(describe(&rows[0].status).contains("not executed"));
         assert!(render(&rows).contains("declared command is available"));
         let legacy = declared(Some(".chock/hooks/pre-commit"));
-        let rows = declared_git_hooks(&Ok(vec![legacy.clone()]), &|program| {
+        let rows = declared_git_hooks(None, &Ok(vec![legacy.clone()]), &|program| {
             assert_eq!(program, ".chock/hooks/pre-commit");
             Ok(false)
         });
@@ -1290,7 +1355,7 @@ mod tests {
         assert!(describe(&rows[0].status).contains("missing or not executable"));
         assert!(render(&rows).contains("BROKEN"));
         assert_eq!(
-            verdict(&declared_git_hooks(&Ok(vec![legacy]), &|_| Ok(true))),
+            verdict(&declared_git_hooks(None, &Ok(vec![legacy]), &|_| Ok(true))),
             Verdict::Pass
         );
     }
@@ -1303,26 +1368,29 @@ mod tests {
             declared(Some("echo ignored; chock hook pre-commit")),
             declared(Some("unrelated")),
         ] {
-            let row = declared_git_hooks(&Ok(vec![hook.clone()]), &|_| Ok(true));
+            let row = declared_git_hooks(None, &Ok(vec![hook.clone()]), &|_| Ok(true));
             assert_eq!(verdict(&row), Verdict::Tripped);
             hook.events.clear();
             assert_eq!(
-                verdict(&declared_git_hooks(&Ok(vec![hook]), &|_| Ok(true))),
+                verdict(&declared_git_hooks(None, &Ok(vec![hook]), &|_| Ok(true))),
                 Verdict::Tripped
             );
         }
         let mut silent = declared(Some("chock hook pre-commit"));
         silent.events.clear();
         assert_eq!(
-            verdict(&declared_git_hooks(&Ok(vec![silent]), &|_| Ok(true))),
+            verdict(&declared_git_hooks(None, &Ok(vec![silent]), &|_| Ok(true))),
             Verdict::Tripped
         );
-        let unread = declared_git_hooks(&Err("Git config unreadable".to_string()), &|_| Ok(true));
+        let unread = declared_git_hooks(None, &Err("Git config unreadable".to_string()), &|_| {
+            Ok(true)
+        });
         assert_eq!(verdict(&unread), Verdict::CannotRun);
-        let unavailable =
-            declared_git_hooks(&Ok(vec![declared(Some("chock hook pre-commit"))]), &|_| {
-                Err("cannot inspect binary".to_string())
-            });
+        let unavailable = declared_git_hooks(
+            None,
+            &Ok(vec![declared(Some("chock hook pre-commit"))]),
+            &|_| Err("cannot inspect binary".to_string()),
+        );
         assert_eq!(verdict(&unavailable), Verdict::CannotRun);
         let mut unrelated = declared(Some("anything"));
         unrelated.name = "other-pre-commit".to_string();
@@ -1332,14 +1400,21 @@ mod tests {
             Ok(true)
         };
         assert_eq!(
-            declared_git_hooks(&Ok(vec![unrelated]), &observe),
+            declared_git_hooks(None, &Ok(vec![unrelated]), &observe),
             Vec::new()
         );
-        assert_eq!(declared_git_hooks(&Ok(Vec::new()), &observe), Vec::new());
+        assert_eq!(
+            declared_git_hooks(None, &Ok(Vec::new()), &observe),
+            Vec::new()
+        );
         assert!(!inspected.get());
         assert_eq!(
-            declared_git_hooks(&Ok(vec![declared(Some("chock hook pre-commit"))]), &observe)[0]
-                .verdict(),
+            declared_git_hooks(
+                None,
+                &Ok(vec![declared(Some("chock hook pre-commit"))]),
+                &observe
+            )[0]
+            .verdict(),
             Verdict::Pass
         );
         assert!(inspected.get());

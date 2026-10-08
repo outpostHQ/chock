@@ -44,6 +44,10 @@ Then commit the files that chock wrote.
 | `tool-versions.env` | the tool versions this project expects |
 | `deny.toml` | `cargo deny` configuration |
 | `.claude/settings.json` | the editor hook, merged into any settings already there |
+| `.gitignore`, `.outpostignore` | the files the gates produce, such as `.chock/last-run.json`; lines are added, never removed |
+| `AGENTS.md`, `CLAUDE.md` and the like | one line that points to `.chock/agents.md`, only in the files the project already has |
+| `.chock/hooks/*` | one stub for each git hook, on git older than 2.54 only |
+| `.outposthooks.toml` | the `pre-commit` hook, in an Outpost repository |
 
 Three facts about `chock init --local`:
 
@@ -205,7 +209,7 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/run-v1.json",
   "version": 1,
-  "chock": "0.1.1",
+  "chock": "0.2.1",
   "gates": [
     {
       "gate": "complexity",
@@ -241,6 +245,13 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 | `file`, `line` | a finding | where to go, from the project root; `line` where the gate has one |
 | `item` | a finding | the function, lint or measure |
 | `message` | a finding | the finding in words |
+| `places` | a finding | the other places the finding is about, such as the copy of a duplicated body |
+| `fix` | a finding | the change that clears this finding, where the gate can name one |
+| `grade` | a finding | `candidate` for a lead that the gate cannot settle from the source; it never trips the gate |
+| `recalled` | a gate | `true` where chock reused an earlier verdict, because every input the gate reads is the same |
+| `peak_mb` | a gate | the most memory its processes held at once; Linux only |
+| `tests_ms` | a gate that times its tests (`miri`) | each test's time in ms, so the next run starts the slowest first |
+| `ran_at` | a gate in `.chock/last-run.json` | when it ran, in seconds since the Unix epoch |
 
 ## 9. Every command
 

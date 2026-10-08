@@ -24,15 +24,41 @@ pub fn command(name: &str) -> String {
     invocation(name).join(" ")
 }
 
-/// chock's `.outposthooks.toml` entry. Outpost runs hooks only at `pre-commit`, and takes an argv.
+/// The shell line git runs, from the top of its repository, for a project at `below` within it.
 #[must_use]
-pub fn declaration() -> String {
-    let argv = invocation("pre-commit")
+pub fn command_below(name: &str, below: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "/._-".contains(c);
+    let word = match below.chars().all(safe) {
+        true => below.to_string(),
+        false => format!("'{}'", below.replace('\'', r"'\''")),
+    };
+    format!("{} --project {word}", command(name))
+}
+
+/// chock's `.outposthooks.toml` entry. Outpost runs hooks only at `pre-commit`, and takes an argv.
+/// A project at `below` within the repository has its own entry, which moves into it.
+#[must_use]
+pub fn declaration(below: Option<&str>) -> String {
+    let mut argv = invocation("pre-commit").to_vec();
+    argv.extend(
+        below
+            .iter()
+            .flat_map(|at| ["--project".to_string(), at.to_string()]),
+    );
+    let argv = argv
         .iter()
         .map(|word| format!("\"{word}\""))
         .collect::<Vec<_>>()
         .join(", ");
-    format!("[[pre-commit]]\nname = \"chock\"\ncommand = [{argv}]\n")
+    format!(
+        "[[pre-commit]]\nname = \"{}\"\ncommand = [{argv}]\n",
+        named(below)
+    )
+}
+
+/// The name chock declares a hook under: its own, and the project's path where it sits below.
+fn named(below: Option<&str>) -> String {
+    below.map_or_else(|| "chock".to_string(), |at| format!("chock@{at}"))
 }
 
 /// What `.outposthooks.toml` needs. `ours` says whether chock wrote all of it, since chock trusts
@@ -53,8 +79,8 @@ pub enum Declaring {
 /// What the file's current text needs. Not parsed: an appended array-of-tables entry is valid
 /// after any valid TOML.
 #[must_use]
-pub fn declaring(held: Option<&str>) -> Declaring {
-    let want = declaration();
+pub fn declaring(held: Option<&str>, below: Option<&str>) -> Declaring {
+    let want = declaration(below);
     let Some(text) = held.filter(|text| !text.trim().is_empty()) else {
         return Declaring::Write {
             text: want,
@@ -66,7 +92,7 @@ pub fn declaring(held: Option<&str>) -> Declaring {
             ours: text.trim() == want.trim(),
         };
     }
-    if text.contains("\"chock\"") {
+    if text.contains(&format!("name = \"{}\"\n", named(below))) {
         return Declaring::Outgrown;
     }
     let sep = if text.ends_with('\n') { "" } else { "\n" };
@@ -147,24 +173,67 @@ pub fn outgrown(name: &str, held: &str) -> bool {
     held.contains("chock") && !held.contains(&command(name))
 }
 
-/// Wires chock into every repository holding this tree, git and Outpost alike.
+/// Wires chock into every repository holding this tree, git and Outpost alike, or into the
+/// repository above a project that sits below its top.
 pub fn install_hooks(root: &Path) -> Result<String, crate::setup::init::Error> {
+    let held = crate::project::vcs::holders(root);
+    match held.is_empty() {
+        true => install_from_above(root),
+        false => install_where_held(root, held),
+    }
+}
+
+fn install_where_held(
+    root: &Path,
+    held: Vec<crate::project::vcs::Kind>,
+) -> Result<String, crate::setup::init::Error> {
     let mut report = String::new();
-    for kind in crate::project::vcs::holders(root) {
+    for kind in held {
         report.push_str(&match kind {
             crate::project::vcs::Kind::Git => {
                 install_git_hooks(root, crate::project::vcs::runs_declared_hooks(root))?
             }
-            crate::project::vcs::Kind::Outpost => install_outpost_hook(root)?,
+            crate::project::vcs::Kind::Outpost => install_outpost_hook(root, None)?,
         });
     }
     Ok(report)
 }
 
+/// Wires a project below the top of its git repository, as a crate among others is: each hook
+/// declared at the top under the project's own name, moving into the project before it runs.
+fn install_from_above(root: &Path) -> Result<String, crate::setup::init::Error> {
+    let Some((top, below)) = crate::project::vcs::enclosing_git(root) else {
+        return Ok(String::new());
+    };
+    let mut report = from_above(&top, &below, crate::project::vcs::runs_declared_hooks(&top));
+    if crate::project::vcs::holders(&top).contains(&crate::project::vcs::Kind::Outpost) {
+        report.push_str(&install_outpost_hook(&top, Some(&below))?);
+    }
+    Ok(report)
+}
+
+/// The git hooks of a project at `below`, declared at `top` where git can run them from there.
+fn from_above(top: &Path, below: &str, declared: bool) -> String {
+    match declared {
+        true => declare_each(top, Some(below)),
+        // A stub directory would replace the hooks of every other project in the repository.
+        false => format!(
+            "  note      {below} sits below its repository's top, and only git 2.54 or later can \
+             run its hooks from there; chock wired none\n"
+        ),
+    }
+}
+
 /// Declares chock in `.outposthooks.toml`, since `outpost commit` runs no git hook.
-fn install_outpost_hook(root: &Path) -> Result<String, crate::setup::init::Error> {
+fn install_outpost_hook(
+    root: &Path,
+    below: Option<&str>,
+) -> Result<String, crate::setup::init::Error> {
     let path = root.join(DECLARED);
-    let plan = declaring(Some(crate::setup::init::held_or_empty(&path)?.as_str()));
+    let plan = declaring(
+        Some(crate::setup::init::held_or_empty(&path)?.as_str()),
+        below,
+    );
     write_declared(&path, &plan)?;
     // Trusting the file trusts everything in it, so chock does that only where it wrote it all.
     let trusted = match plan {
@@ -173,7 +242,7 @@ fn install_outpost_hook(root: &Path) -> Result<String, crate::setup::init::Error
         }
         _ => None,
     };
-    Ok(wired_into_outpost(&plan, trusted))
+    Ok(wired_into_outpost(&plan, trusted, below))
 }
 
 fn write_declared(path: &Path, plan: &Declaring) -> Result<(), crate::setup::init::Error> {
@@ -185,16 +254,17 @@ fn write_declared(path: &Path, plan: &Declaring) -> Result<(), crate::setup::ini
 }
 
 /// What `init` reports about the Outpost wiring, given the plan and whether trusting it worked.
-fn wired_into_outpost(plan: &Declaring, trusted: Option<bool>) -> String {
+fn wired_into_outpost(plan: &Declaring, trusted: Option<bool>, below: Option<&str>) -> String {
+    let runs = below.map_or_else(
+        || command("pre-commit"),
+        |at| command_below("pre-commit", at),
+    );
     let said = match (plan, trusted) {
         (Declaring::Outgrown, _) => format!(
-            "  note      {DECLARED} names chock but not `{}`; drop that entry and re-run\n",
-            command("pre-commit")
+            "  note      {DECLARED} names {} but not `{runs}`; drop that entry and re-run\n",
+            named(below)
         ),
-        (_, Some(true)) => format!(
-            "  outpost   {DECLARED} runs `{}`, trusted\n",
-            command("pre-commit")
-        ),
+        (_, Some(true)) => format!("  outpost   {DECLARED} runs `{runs}`, trusted\n"),
         (_, Some(false)) => {
             format!("  note      could not trust {DECLARED}; run: outpost hooks trust\n")
         }
@@ -210,7 +280,7 @@ fn wired_into_outpost(plan: &Declaring, trusted: Option<bool>) -> String {
 fn install_git_hooks(root: &Path, declared: bool) -> Result<String, crate::setup::init::Error> {
     // A declaring git needs no stub files, so any old ones are retired.
     if declared {
-        return Ok(retire(root)? + &declare_each(root));
+        return Ok(retire(root)? + &declare_each(root, None));
     }
     let dir = root.join(DIR);
     fs::create_dir_all(&dir).map_err(|e| crate::setup::init::unwritable(&dir, &e))?;
@@ -252,7 +322,7 @@ fn point_git_at_the_hooks(root: &Path, declared: bool) -> String {
 
 /// Declares the hooks and clears a `core.hooksPath` still naming the retired stub directory.
 fn declare_and_clear(root: &Path) -> String {
-    let mut report = declare_each(root);
+    let mut report = declare_each(root, None);
     if crate::project::vcs::clear_hooks_path(root, DIR) {
         report.push_str(&format!(
             "  git       core.hooksPath no longer names {DIR}\n"
@@ -331,12 +401,17 @@ fn retire(root: &Path) -> Result<String, crate::setup::init::Error> {
     ))
 }
 
-/// One declaration per hook, each under its own name so git keeps them apart.
-fn declare_each(root: &Path) -> String {
+/// One declaration per hook, each under its own name so git keeps them apart. A project at `below`
+/// within the repository declares its hooks at the top, under names of its own.
+fn declare_each(top: &Path, below: Option<&str>) -> String {
     let named: Vec<&str> = wired()
         .into_iter()
         .filter(|(name, command)| {
-            crate::project::vcs::declare_hook(root, &format!("chock-{name}"), name, command)
+            let (key, line) = match below {
+                Some(at) => (format!("chock-{name}@{at}"), command_below(name, at)),
+                None => (format!("chock-{name}"), command.clone()),
+            };
+            crate::project::vcs::declare_hook(top, &key, name, &line)
         })
         .map(|(name, _)| name)
         .collect();
@@ -345,8 +420,9 @@ fn declare_each(root: &Path) -> String {
             "  note      could not declare chock's hooks; run: git config core.hooksPath {DIR}\n"
         );
     }
+    let whence = below.map_or_else(String::new, |at| format!(" at the top for {at}"));
     format!(
-        "  git hook  {} declared, and .git/hooks still run\n",
+        "  git hook  {} declared{whence}, and .git/hooks still run\n",
         named.join(", ")
     )
 }
@@ -401,6 +477,18 @@ mod tests {
         dir
     }
 
+    /// A scratch repository whose `core.hooksPath` already names `path`.
+    fn hooks_path_set(name: &str, path: &str) -> crate::testdir::Scratch {
+        let dir = git_repo(name);
+        let set = std::process::Command::new("git")
+            .args(["config", "core.hooksPath", path])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        assert!(set.success(), "{set:?}");
+        dir
+    }
+
     #[test]
     fn a_hook_file_is_outgrown_only_when_chock_wrote_it_and_chock_has_moved_on() {
         assert!(outgrown("pre-commit", "exec chock run --fast\n"));
@@ -424,13 +512,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_hooks_path_chock_set_is_kept_for_an_older_git_and_cleared_once_hooks_are_declared() {
-        let dir = git_repo("hooks-path-ours");
-        let set = std::process::Command::new("git")
-            .args(["config", "core.hooksPath", DIR])
-            .current_dir(&dir)
-            .status()
-            .unwrap();
-        assert!(set.success(), "{set:?}");
+        let dir = hooks_path_set("hooks-path-ours", DIR);
         assert_eq!(point_git_at_the_hooks(&dir, false), String::new());
         assert_eq!(crate::project::vcs::hooks_path(&dir).as_deref(), Some(DIR));
         let said = point_git_at_the_hooks(&dir, true);
@@ -438,7 +520,7 @@ mod tests {
             said,
             format!(
                 "{}  git       core.hooksPath no longer names {DIR}\n",
-                declare_each(&dir)
+                declare_each(&dir, None)
             )
         );
         assert_eq!(crate::project::vcs::hooks_path(&dir), None);
@@ -447,14 +529,8 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_hooks_path_somebody_else_set_survives_declaring() {
-        let dir = git_repo("hooks-path-theirs");
-        let set = std::process::Command::new("git")
-            .args(["config", "core.hooksPath", "tools/hooks"])
-            .current_dir(&dir)
-            .status()
-            .unwrap();
-        assert!(set.success(), "{set:?}");
-        assert_eq!(point_git_at_the_hooks(&dir, true), declare_each(&dir));
+        let dir = hooks_path_set("hooks-path-theirs", "tools/hooks");
+        assert_eq!(point_git_at_the_hooks(&dir, true), declare_each(&dir, None));
         assert_eq!(
             crate::project::vcs::hooks_path(&dir).as_deref(),
             Some("tools/hooks")
@@ -490,22 +566,22 @@ mod tests {
     #[test]
     fn what_init_says_about_an_outpost_wiring_names_whether_the_hook_will_run() {
         let ours = Declaring::Write {
-            text: declaration(),
+            text: declaration(None),
             ours: true,
         };
-        let trusted = wired_into_outpost(&ours, Some(true));
+        let trusted = wired_into_outpost(&ours, Some(true), None);
         assert!(
             trusted.contains("runs `chock hook pre-commit`, trusted"),
             "{trusted}"
         );
-        let refused = wired_into_outpost(&ours, Some(false));
+        let refused = wired_into_outpost(&ours, Some(false), None);
         assert!(refused.contains("could not trust"), "{refused}");
-        let theirs = wired_into_outpost(&Declaring::Declared { ours: false }, None);
+        let theirs = wired_into_outpost(&Declaring::Declared { ours: false }, None, None);
         assert!(
             theirs.contains("declares hooks chock did not write"),
             "{theirs}"
         );
-        let edited = wired_into_outpost(&Declaring::Outgrown, None);
+        let edited = wired_into_outpost(&Declaring::Outgrown, None, None);
         assert!(edited.contains("drop that entry and re-run"), "{edited}");
         for said in [trusted, refused, theirs, edited] {
             assert!(
@@ -588,12 +664,12 @@ mod tests {
             "{beside}"
         );
         let after = fs::read_to_string(&path).unwrap();
-        assert_eq!(after, format!("{theirs}\n{}", declaration()));
+        assert_eq!(after, format!("{theirs}\n{}", declaration(None)));
 
         // Already chock's, so not rewritten: outpost untrusts a rewritten file.
-        fs::write(&path, declaration()).unwrap();
+        fs::write(&path, declaration(None)).unwrap();
         let again = install_hooks(&dir).unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), declaration());
+        assert_eq!(fs::read_to_string(&path).unwrap(), declaration(None));
         // Trust needs a real outpost tree, so its outcomes are tested on `wired_into_outpost`.
         assert!(
             again.contains("outpost runs only a pre-commit hook"),
@@ -617,10 +693,10 @@ mod tests {
     #[test]
     fn a_declaration_beside_somebody_elses_hooks_is_not_trusted_for_them() {
         let theirs = "[[pre-commit]]\nname = \"fmt\"\ncommand = [\"cargo\", \"fmt\"]\n";
-        let want = declaration();
+        let want = declaration(None);
         // Compared whole, so another variant shows what it was instead of panicking.
         assert_eq!(
-            declaring(Some(theirs)),
+            declaring(Some(theirs), None),
             Declaring::Write {
                 text: format!("{theirs}\n{want}"),
                 ours: false
@@ -631,16 +707,16 @@ mod tests {
     #[test]
     fn a_declaration_already_there_is_left_exactly_as_it_is() {
         assert_eq!(
-            declaring(Some(&declaration())),
+            declaring(Some(&declaration(None)), None),
             Declaring::Declared { ours: true }
         );
         let beside = format!(
             "{}{}",
             "[[pre-commit]]\nname = \"f\"\ncommand = [\"x\"]\n",
-            declaration()
+            declaration(None)
         );
         assert_eq!(
-            declaring(Some(&beside)),
+            declaring(Some(&beside), None),
             Declaring::Declared { ours: false }
         );
     }
@@ -648,15 +724,16 @@ mod tests {
     #[test]
     fn an_absent_file_is_written_whole_and_an_edited_one_is_handed_back() {
         let want = Declaring::Write {
-            text: declaration(),
+            text: declaration(None),
             ours: true,
         };
-        assert_eq!(declaring(None), want);
-        assert_eq!(declaring(Some("  \n")), want);
+        assert_eq!(declaring(None, None), want);
+        assert_eq!(declaring(Some("  \n"), None), want);
         assert_eq!(
-            declaring(Some(
-                "[[pre-commit]]\nname = \"chock\"\ncommand = [\"chock\", \"run\"]\n"
-            )),
+            declaring(
+                Some("[[pre-commit]]\nname = \"chock\"\ncommand = [\"chock\", \"run\"]\n"),
+                None
+            ),
             Declaring::Outgrown
         );
     }
@@ -664,7 +741,7 @@ mod tests {
     #[test]
     fn both_wirings_name_the_same_invocation() {
         assert_eq!(command("pre-commit"), "chock hook pre-commit");
-        let declared = declaration();
+        let declared = declaration(None);
         assert!(
             declared.contains(r#"["chock", "hook", "pre-commit"]"#),
             "{declared}"
@@ -720,7 +797,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn declaring_records_every_hook_and_names_them() {
         let dir = git_repo("init-declare");
-        let said = declare_each(&dir);
+        let said = declare_each(&dir, None);
         assert!(said.contains("pre-commit, commit-msg, pre-push"), "{said}");
         assert!(said.contains(".git/hooks still run"), "{said}");
         for name in ["pre-commit", "commit-msg", "pre-push"] {
@@ -734,7 +811,7 @@ mod tests {
     fn declaring_in_a_tree_git_will_not_answer_for_says_so() {
         // Not a scratch directory: those sit inside chock's own repository, whose config this
         // would write.
-        let said = declare_each(Path::new("/nonexistent"));
+        let said = declare_each(Path::new("/nonexistent"), None);
         assert!(said.contains("could not declare chock's hooks"), "{said}");
         assert!(!said.contains("still run"), "{said}");
     }
@@ -870,5 +947,93 @@ mod tests {
     fn a_tree_that_is_not_a_git_repository_gets_no_hooks_and_no_complaint() {
         let dir = crate::testdir::make("init-nogit");
         assert_eq!(install_hooks(&dir).unwrap(), String::new());
+    }
+
+    #[test]
+    fn a_project_below_the_top_is_entered_by_its_path_quoted_only_where_the_shell_needs_it() {
+        assert_eq!(
+            command_below("pre-push", "crates/tova"),
+            "chock hook pre-push --project crates/tova"
+        );
+        assert_eq!(
+            command_below("pre-commit", "my crate's"),
+            r"chock hook pre-commit --project 'my crate'\''s'"
+        );
+    }
+
+    #[test]
+    fn a_project_below_the_top_declares_outpost_its_own_entry_beside_the_tops() {
+        let below = declaration(Some("crates/a"));
+        assert!(below.contains(r#""--project", "crates/a""#), "{below}");
+        assert!(below.contains(r#"name = "chock@crates/a""#), "{below}");
+        // The top's own entry neither hides a subfolder's nor is outgrown by it.
+        let both = format!("{}\n{below}", declaration(None));
+        assert_eq!(
+            declaring(Some(&both), None),
+            Declaring::Declared { ours: false }
+        );
+        assert_eq!(
+            declaring(Some(&declaration(None)), Some("crates/a")),
+            Declaring::Write {
+                text: both,
+                ours: false
+            }
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_project_below_the_top_of_its_repository_declares_its_hooks_at_the_top_under_its_own_names()
+    {
+        let dir = git_repo("init-below");
+        let below = dir.join("sub");
+        fs::create_dir_all(&below).unwrap();
+        let report = install_hooks(&below).unwrap();
+        assert!(!below.join(DIR).exists(), "{report}");
+        assert!(!dir.join(DECLARED).exists(), "{report}");
+        // Once Outpost holds the top too, the project's entry joins the file it reads there.
+        crate::project::vcs::pretend_outpost_holds(&dir);
+        install_hooks(&below).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join(DECLARED)).unwrap(),
+            declaration(Some("sub"))
+        );
+        // Declared as git 2.54 would, whatever git this machine has.
+        let report = from_above(&dir, "sub", true);
+        assert!(report.contains("at the top for sub"), "{report}");
+        for (name, _) in wired() {
+            let key = format!("hook.chock-{name}@sub.command");
+            let held = std::process::Command::new("git")
+                .args(["config", "--get", &key])
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&held.stdout).trim(),
+                command_below(name, "sub")
+            );
+        }
+    }
+
+    #[test]
+    fn a_git_too_old_to_run_hooks_from_the_top_leaves_every_projects_hooks_alone() {
+        let said = from_above(Path::new("never-read"), "crates/a", false);
+        assert!(said.contains("crates/a sits below"), "{said}");
+        assert!(said.contains("only git 2.54 or later"), "{said}");
+    }
+
+    #[test]
+    fn an_outpost_entry_outgrown_below_the_top_names_the_projects_own_entry() {
+        let said = wired_into_outpost(&Declaring::Outgrown, None, Some("crates/a"));
+        assert_eq!(
+            said.lines().next(),
+            Some(
+                format!(
+                    "  note      {DECLARED} names chock@crates/a but not \
+                     `chock hook pre-commit --project crates/a`; drop that entry and re-run"
+                )
+                .as_str()
+            )
+        );
     }
 }

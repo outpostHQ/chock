@@ -33,8 +33,8 @@ pub(super) fn listing(args: &[String]) -> Vec<String> {
     list
 }
 
-/// Each binary's tests that the filter and partition keep and that are not ignored, `PER_GROUP`
-/// to a group; `None` for a list chock cannot read or that holds no test: one nextest run then.
+/// Each binary's kept tests, at most `PER_GROUP` to a group, each group every n-th test so slow
+/// neighbours part; `None` for an unreadable or empty list, which nextest then runs whole.
 pub(super) fn grouped(json: &str) -> Option<Vec<Group>> {
     let list: serde_json::Value = serde_json::from_str(json).ok()?;
     let mut groups = Vec::new();
@@ -53,11 +53,11 @@ pub(super) fn grouped(json: &str) -> Option<Vec<Group>> {
         if tests.is_empty() {
             continue;
         }
-        let target = picked(suite)?;
-        groups.extend(tests.chunks(PER_GROUP).map(|tests| Group {
+        let (target, count) = (picked(suite)?, tests.len().div_ceil(PER_GROUP));
+        groups.extend((0..count).map(|first| Group {
             binary: binary.clone(),
             target: target.clone(),
-            tests: tests.to_vec(),
+            tests: tests.iter().skip(first).step_by(count).cloned().collect(),
         }));
     }
     (!groups.is_empty()).then_some(groups)
@@ -267,16 +267,27 @@ mod tests {
     }
 
     #[test]
-    fn a_binary_with_more_tests_than_a_group_holds_is_split_in_order() {
+    fn a_binary_with_more_tests_than_a_group_holds_is_dealt_out_so_neighbours_part() {
         let names: Vec<String> = (0..=PER_GROUP).map(|at| format!("t{at:02}")).collect();
         let cases: Vec<String> = names.iter().map(|name| case(name)).collect();
         let json = format!(
             r#"{{"rust-suites": {{"b": {}}}}}"#,
             suite("lib", &cases.join(","))
         );
-        let (first, rest) = names.split_at(PER_GROUP);
-        let split = [group("b", &first.join(" ")), group("b", &rest.join(" "))];
+        let dealt = |first: usize| {
+            names
+                .iter()
+                .skip(first)
+                .step_by(2)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let split = [
+            group("b", &dealt(0).join(" ")),
+            group("b", &dealt(1).join(" ")),
+        ];
         assert_eq!(grouped(&json).unwrap(), split);
+        assert!(split.iter().all(|group| group.tests.len() <= PER_GROUP));
     }
 
     #[test]

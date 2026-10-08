@@ -162,10 +162,13 @@ can work through it. chock measures and refuses. It does not rewrite your code.
 |---|---|
 | `chock init` | sets up this project, then installs the tools it pins; `--global` and `--local` do one half each |
 | `chock baseline [GATE...]` | accepts today's numbers as the record, also where they got worse |
+| `chock baseline --lower GATE...` | records a gain on a gate that measures differently by machine |
 | `chock doctor` | says whether this machine has the tools this project pins |
 | `chock run [GATE...]` | runs the named gates; no name means every gate that is on |
 | `chock run --fast` | runs only the gates staged for a commit; they need no compiler |
-| `chock run --ci` | runs the gates a CI job runs |
+| `chock run --ci` | runs the gates a CI job runs; `--fast --ci` runs only the commit set |
+| `chock run --skip=GATE` | runs every gate that is on but the named ones |
+| `chock run --miri-partition=K/N miri` | runs part K of N of the Miri suite, for a CI job each |
 | `chock run --no-cache` | judges every gate again; no kept verdict answers |
 | `chock cache clear` | removes every kept verdict, so the next run judges every gate |
 | `chock explain [GATE]` | shows the findings of the last run of one gate; with no name, all the debt on record |
@@ -174,6 +177,9 @@ can work through it. chock measures and refuses. It does not rewrite your code.
 | `chock disable GATE... --reason WHY` | switches gates off and records the reason |
 | `chock stage GATE... STAGE` | sets when they run: `commit`, `push`, `ci` or `manual` |
 | `chock survey` | measures what every gate finds here; it changes no config and no record |
+| `chock edited PATH...` | checks each file's own text, as the editor hook does; `--hook` reads stdin |
+| `chock message FILE` | checks a commit message against the `message` limits |
+| `chock slop [DIR]` | lists comment blocks longer than the limit, in any tree |
 
 `chock --help` lists every command, and `--json` gives machine-readable output. The
 [guide](docs/guide.md#9-every-command) has the full list.
@@ -240,8 +246,9 @@ and [docs/gates.md](docs/gates.md) says when each one trips.
 - **A record is keyed by name.** Renaming a file or function drops its old record and holds the new
   name to zero, so moving debt counts as writing it again.
 
-CI runs every gate on Linux, macOS and Windows. Where a gate's tool does not run on a system, the
-run leaves that gate out and says so.
+`chock run --ci` runs every gate that is on but the `local_only` ones, on Linux, macOS and Windows.
+chock's own CI also runs the commit set first, on Linux only. Where a gate's tool does not run on a
+system, the run leaves that gate out and says so.
 
 ## Licence
 
