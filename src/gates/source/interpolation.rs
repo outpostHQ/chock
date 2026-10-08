@@ -179,6 +179,9 @@ mod tests {
         assert!(dynamic(&expr(r#"("a" + "b") + name"#)));
         assert!(!dynamic(&expr(r#""a" + "b""#)));
         assert!(!dynamic(&expr(r#"("a" + "b") + "c""#)));
+        // Only `+` joins text; any other operator makes a value of its own.
+        assert!(!dynamic(&expr("count - name")));
+        assert!(dynamic(&expr(r#""ls " + (1 - 2)"#)));
     }
 
     fn call_args(src: &str) -> Punctuated<Expr, Token![,]> {

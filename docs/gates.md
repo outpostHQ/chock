@@ -41,7 +41,7 @@ A gate is one of two kinds.
 | `slop` | ✓ | one more comment block runs past two lines |
 | `bigfiles` | ✓ | a file over 1000 production lines grows, or another one crosses 1000 |
 | `splits` | ✓ | a file gains a part of 100 lines or more that only one private item uses |
-| `lean` | ✓ | a file gains a private function that only passes its parameters on to another call |
+| `lean` | ✓ | a file gains lines that one function, one table or one call would remove: code repeated in one shape, or a function that only passes its parameters on |
 | `complexity` | ✓ | a function's cognitive complexity rises |
 | `nesting` | ✓ | a function nests deeper, past four levels |
 | `codeslop` | ✓ | one of clippy's code-shape lints fires more often, or fires for the first time |
@@ -103,6 +103,13 @@ whole tree.
 - **`acl` asks for more grants than you might expect.** cackle pre-approves only the one-colon
   `cargo:` build-script instructions, so a crate printing `cargo::` needs its own grant, and it asks
   for proc-macro grants across the whole dependency graph.
+- **How `lean` counts.** It reads each statement and match arm as a shape: names and literals
+  are values, and keywords stay as written. A run of 3 lines or more that repeats, with at most 4
+  values that differ, is a group. The finding names the merge: one function with a parameter for
+  each value, one table for copies side by side, or a call to a function whose whole body is one
+  copy. The count is the lines the merge removes, less the lines that the function and its calls
+  add. A group counts only when it removes 6 lines or more. Each file holds its share of each
+  group, and the lines of each private function that only passes its parameters on.
 - **`unused` and `dead` give leads.** Neither sees a dependency used only in a doc example, or a
   function reached only through a name a macro builds; mark such a function `#[expect(dead_code)]`.
 
@@ -171,6 +178,8 @@ A gate leaves these out on purpose. Each one has a place that shows it.
 | `placement` | a path dependency outside the tree, where the tree is in no repository | the `path` in `Cargo.toml` |
 | `mutest` | on your machine, the files that the change did not touch. Where more than 2% of the mutations in the touched files time out and mutest did not confirm them by a re-run alone, the run mutates the whole crate | the run says which it did; CI mutates the whole crate |
 | `mutest` | a mutation that times out counts as detected, for up to 2% of the mutations, or for any number once mutest re-ran each alone (`timeouts confirmed:`) | each timed-out mutation is a `candidate` finding at its file and line |
+| `lean` | a file that a tool wrote: a part of its path is `generated`, or one of its first 5 lines says `@generated`, `do not edit`, `automatically generated` or `auto-generated` | the path or the header of the file |
+| `lean` | copies that differ in a string that a macro reads, such as a format string, and copies where code after them reads more than one name that they bind | `duplication`, which compares whole function bodies |
 | `modcheck` | the directory of a file that holds the text `chock:modcheck-exempt` | the comment in that file |
 | `modcheck` | a `mod` name that a macro builds and no file has; a `.rs` file that does not parse and is outside `src/` or read by `include!` | the compiler, where a build uses it |
 

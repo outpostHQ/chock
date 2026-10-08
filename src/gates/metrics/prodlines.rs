@@ -374,6 +374,35 @@ mod tests {
         assert_eq!(kept(&root), vec!["src/lib.rs".to_string()]);
     }
 
+    #[test]
+    fn a_directory_either_list_names_is_skipped() {
+        assert_eq!(
+            ["target", "fixtures", "tests", ".cache", "src"].map(skip_dir),
+            [true, true, true, true, false]
+        );
+    }
+
+    /// A file outside every crate, or one only an `include!` reads, is not Rust a crate compiles.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_rejected_file_stops_the_walk_only_where_a_crate_compiles_it_whole() {
+        let root = tree(
+            "prodlines-each-source",
+            &[
+                ("Cargo.toml", ""),
+                (
+                    "src/lib.rs",
+                    "pub const T: [u8; 2] = include!(\"table.rs\");\n",
+                ),
+                ("src/table.rs", "[1, 2]\n"),
+                ("examples/weird.rs", "fn f( {\n"),
+            ],
+        );
+        let parse = |src: &str| syn::parse_file(src).map(|_| ()).map_err(|e| e.to_string());
+        let read = for_each_source(&ctx_at(&root), &parse).unwrap();
+        assert_eq!(read, [("src/lib.rs".to_string(), ())]);
+    }
+
     fn ctx_at(root: &Path) -> crate::run::Ctx {
         crate::run::Ctx::for_root(
             root.to_path_buf(),

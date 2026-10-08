@@ -1,9 +1,10 @@
-//! Private functions that only pass their parameters on to one call, which a caller can make itself.
-//! Shapes the source alone cannot settle are candidates, and never trip the gate.
+//! The lines a file could lose: functions that only pass their parameters on, and code repeated in
+//! one shape. Shapes the source cannot settle are candidates; files a tool wrote are left out.
 
+mod repeats;
 mod walk;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
@@ -20,14 +21,15 @@ use crate::run::{Ctx, Gate, Group, Kind, Measurement};
 
 pub const GATE: Gate = Gate {
     name: "lean",
-    about: "a file gains a private function that only passes its parameters on to another call",
+    about: "a file gains lines that a call past a forwarder, or one function or table for code \
+            repeated in one shape, would remove",
     group: Group::Quality,
     builds: false,
     reads: None,
     kind: Kind::AnnotatedRatchet {
         measure,
         keys: Keys::Items,
-        unit: "forwarders",
+        unit: "removable line(s)",
     },
 };
 
@@ -47,42 +49,87 @@ pub struct Read {
     pub candidates: Vec<Finding>,
 }
 
-/// Every production file's forwarders as a count by file, each a place of the file's finding; its
-/// candidates ride along as notes.
+/// Every production file's removable lines: each forwarder's lines, and its part of what merging
+/// each repeated group would remove. Each place shows a forwarder or a copy; candidates are notes.
 fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let words = splits::words_by_file(ctx)?;
     let mut read = Measurement::of(Series::new(), Vec::new());
+    let mut corpus = repeats::Corpus::default();
+    let mut files = BTreeMap::new();
     for (path, _) in prodlines::measure(ctx)? {
         let shown = project::relative(&ctx.root, &path);
         let src = std::fs::read_to_string(&path).map_err(|e| format!("{shown}: {e}"))?;
+        if generated(&shown, &src) {
+            continue;
+        }
         let found = scan(&src, &shown, &splits::used_below(&words, &path));
         read.findings.extend(found.candidates);
-        let Some(Forwarder {
-            name, callee, line, ..
-        }) = found.forwarders.first()
-        else {
-            continue;
-        };
-        let places = found
-            .forwarders
-            .iter()
-            .map(|it| {
-                Place::at("forwards", &shown, it.line)
-                    .through(it.last)
-                    .item(&it.name)
-            })
-            .collect();
-        let fix = format!("call `{callee}` where `{name}` is called, then remove `{name}`");
-        let count = u64::try_from(found.forwarders.len()).unwrap_or(u64::MAX);
-        read.series.set(&shown, count);
-        let detail = Detail {
-            line: Some(*line),
-            places,
-            fix: Some(fix),
-        };
+        corpus.add(&shown, &src);
+        for it in &found.forwarders {
+            let (name, callee) = (&it.name, &it.callee);
+            let shows = Detail {
+                line: None,
+                places: vec![
+                    Place::at("forwards", &shown, it.line)
+                        .through(it.last)
+                        .item(name),
+                ],
+                fix: Some(format!(
+                    "call `{callee}` where `{name}` is called, then remove `{name}`"
+                )),
+            };
+            charge(&mut files, &shown, u64::from(it.last + 1 - it.line), shows);
+        }
+    }
+    for repeat in corpus.repeats() {
+        let mut lines: BTreeMap<&str, u64> = BTreeMap::new();
+        for (site, share) in repeat.sites.iter().zip(repeat.shares()) {
+            *lines.entry(&site.file).or_default() += share;
+        }
+        for (shown, lines) in lines {
+            let shows = Detail {
+                line: None,
+                places: repeat.places(),
+                fix: Some(repeat.fix()),
+            };
+            charge(&mut files, shown, lines, shows);
+        }
+    }
+    for (shown, (lines, detail)) in files {
+        read.series.set(&shown, lines);
         read.details.insert(shown, detail);
     }
     Ok(read)
+}
+
+/// Adds `lines` to a file's removable lines, and the places and fix that show them. The file's
+/// line is its first place in that file, and a fix not given yet joins the fixes.
+fn charge(files: &mut BTreeMap<String, (u64, Detail)>, shown: &str, lines: u64, shows: Detail) {
+    let (total, detail) = files.entry(shown.to_string()).or_default();
+    *total += lines;
+    let here = shows.places.iter().find(|place| place.file == shown);
+    detail.line = detail.line.or(here.map(|place| place.line));
+    detail.places.extend(shows.places);
+    detail.fix = match (detail.fix.take(), shows.fix) {
+        (Some(given), Some(fix)) if !given.contains(&fix) => Some(format!("{given}; {fix}")),
+        (given, fix) => given.or(fix),
+    };
+}
+
+/// Whether a tool wrote the file: a part of its path is `generated`, or one of its first lines
+/// says so.
+fn generated(shown: &str, src: &str) -> bool {
+    const SAID: [&str; 4] = [
+        "@generated",
+        "do not edit",
+        "automatically generated",
+        "auto-generated",
+    ];
+    let named = shown
+        .split(['/', '\\', '.', '_', '-'])
+        .any(|part| part == "generated");
+    named
+        || (src.lines().take(5)).any(|line| SAID.iter().any(|it| line.to_lowercase().contains(it)))
 }
 
 /// The forwarders and candidates among one file's production items. `below` says whether a file
@@ -466,7 +513,10 @@ mod tests {
         );
         assert_eq!(
             told.fix.as_deref(),
-            Some("call `b` where `a` is called, then remove `a`")
+            Some(
+                "call `b` where `a` is called, then remove `a`; call `b` where `c` is called, then \
+                 remove `c`"
+            )
         );
         let notes: Vec<&str> = read.findings.iter().map(|it| it.message.as_str()).collect();
         assert_eq!(
@@ -484,17 +534,73 @@ mod tests {
         assert!(read.details.is_empty());
     }
 
+    /// A function holding a six-line run that differs from its copies only in `value`.
+    fn copy(name: &str, value: &str) -> String {
+        format!(
+            "pub fn {name}() {{\n    let total = items\n        .iter()\n        .map(|item| item.size * 2 + \
+             offset)\n        .sum::<u64>();\n    let mean = total / count;\n    log({value}, total, \
+             mean);\n    {name}!();\n}}\n"
+        )
+    }
+
     #[test]
-    fn the_gate_is_a_ratchet_over_items_counted_in_forwarders() {
-        assert!(matches!(
-            GATE.kind,
-            Kind::AnnotatedRatchet {
-                keys: Keys::Items,
-                unit: "forwarders",
-                ..
-            }
-        ));
-        assert_eq!(GATE.name, "lean");
-        assert_eq!(GATE.group, Group::Quality);
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn each_file_is_charged_its_copies_share_of_the_lines_a_merge_removes() {
+        let lib = copy("a", "1") + &copy("b", "2");
+        let root = Held::tree(
+            "lean-repeats",
+            &[
+                ("src/lib.rs", lib.as_str()),
+                ("src/b.rs", &copy("c", "3")),
+                ("src/generated/d.rs", &copy("d", "4")),
+            ],
+        );
+        let read = measure(&root).unwrap();
+        let (lib, b) = (read.series.get("src/lib.rs"), read.series.get("src/b.rs"));
+        assert_eq!((lib, b), (Some(4), Some(2)));
+        let told = &read.details["src/lib.rs"];
+        assert_eq!(told.line, Some(2));
+        assert_eq!(
+            told.places,
+            [
+                Place::at("copy 1 of 3", "src/b.rs", 2).through(7),
+                Place::at("copy 2 of 3", "src/lib.rs", 2).through(7),
+                Place::at("copy 3 of 3", "src/lib.rs", 11).through(16),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_a_tool_wrote_is_known_by_its_path_or_its_first_lines() {
+        for (shown, src, wrote) in [
+            ("src/generated/pb.rs", "", true),
+            ("src/pb_generated.rs", "", true),
+            ("src/api.generated.rs", "", true),
+            ("src/degenerated.rs", "", false),
+            ("src/pb.rs", "// @generated by prost-build\n", true),
+            ("src/pb.rs", "\n\n\n// Code generated. DO NOT EDIT.\n", true),
+            ("src/pb.rs", "\n\n\n\n\n// @generated\n", false),
+            (
+                "src/pb.rs",
+                "/// Parses what a generated file holds.\n",
+                false,
+            ),
+        ] {
+            assert_eq!(generated(shown, src), wrote, "{shown} {src:?}");
+        }
+    }
+
+    #[test]
+    fn the_gate_is_a_ratchet_over_removable_lines_by_item() {
+        let annotated = matches!(GATE.kind, Kind::AnnotatedRatchet { .. });
+        let by_item = crate::gates::holds_each_file(GATE.name);
+        assert!(
+            annotated && by_item,
+            "lean keeps a number per file, with notes beside it"
+        );
+        assert_eq!(GATE.counts_in(), Some("removable line(s)"));
+        // Lean reads the source, so it runs without a compiler.
+        let (name, group, builds) = (GATE.name, GATE.group, GATE.builds);
+        assert_eq!((name, group, builds), ("lean", Group::Quality, false));
     }
 }

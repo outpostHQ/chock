@@ -315,8 +315,8 @@ fn point_git_at_the_hooks(root: &Path, declared: bool) -> String {
     );
     match how {
         Wiring::Declare => declare_and_clear(root),
-        Wiring::PointAt => said(&how, crate::project::vcs::point_hooks_at(root, DIR)),
-        settled => said(&settled, false),
+        Wiring::PointAt => pointed(crate::project::vcs::point_hooks_at(root, DIR)),
+        settled => said(&settled),
     }
 }
 
@@ -332,22 +332,25 @@ fn declare_and_clear(root: &Path) -> String {
 }
 
 /// What `init` reports about a wiring, given whether pointing git at `DIR` worked.
-fn said(how: &Wiring, pointed: bool) -> String {
+fn said(how: &Wiring) -> String {
     match how {
-        // Not news: chock set this path, or declaring reports itself.
-        Wiring::Ours | Wiring::Declare => String::new(),
+        // Not news: chock set this path, or declaring and pointing report themselves.
+        Wiring::Ours | Wiring::Declare | Wiring::PointAt => String::new(),
         Wiring::Elsewhere(set) => {
             format!("  note      core.hooksPath is {set}; chock's hooks in {DIR} are not run\n")
         }
         Wiring::Theirs(theirs) => format!(
             "  note      .git/hooks holds {theirs}, so chock's are not run.\n  note      use them with: git config core.hooksPath {DIR}\n"
         ),
-        Wiring::PointAt if pointed => format!("  git       core.hooksPath -> {DIR}\n"),
-        Wiring::PointAt => {
-            format!(
-                "  note      could not set core.hooksPath; run: git config core.hooksPath {DIR}\n"
-            )
-        }
+    }
+}
+
+/// What `init` says once it has tried to point `core.hooksPath` at chock's hooks.
+fn pointed(done: bool) -> String {
+    if done {
+        format!("  git       core.hooksPath -> {DIR}\n")
+    } else {
+        format!("  note      could not set core.hooksPath; run: git config core.hooksPath {DIR}\n")
     }
 }
 
@@ -501,7 +504,11 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_hook_file_already_current_is_left_where_it_is() {
         let dir = git_repo("hooks-already-current");
-        install_git_hooks(&dir, false).unwrap();
+        let first = install_git_hooks(&dir, false).unwrap();
+        assert!(
+            first.ends_with(&format!("  git       core.hooksPath -> {DIR}\n")),
+            "{first}"
+        );
         let path = dir.join(DIR).join("pre-commit");
         let again = install_git_hooks(&dir, false).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), stub("pre-commit"));
@@ -540,22 +547,20 @@ mod tests {
     /// Called directly, since a git of any one version reaches only some of these states.
     #[test]
     fn what_init_says_about_a_git_wiring_is_one_line_per_state_it_can_be_in() {
-        assert_eq!(said(&Wiring::Ours, false), String::new());
-        assert_eq!(said(&Wiring::Declare, false), String::new());
-        let elsewhere = said(&Wiring::Elsewhere("other/hooks".to_string()), false);
+        assert_eq!(said(&Wiring::Ours), String::new());
+        assert_eq!(said(&Wiring::Declare), String::new());
+        assert_eq!(said(&Wiring::PointAt), String::new());
+        let elsewhere = said(&Wiring::Elsewhere("other/hooks".to_string()));
         assert!(
             elsewhere.contains("core.hooksPath is other/hooks"),
             "{elsewhere}"
         );
-        let theirs = said(&Wiring::Theirs("pre-commit".to_string()), false);
+        let theirs = said(&Wiring::Theirs("pre-commit".to_string()));
         assert!(theirs.contains(".git/hooks holds pre-commit"), "{theirs}");
         assert!(theirs.contains("git config core.hooksPath"), "{theirs}");
-        let pointed = said(&Wiring::PointAt, true);
-        assert!(
-            pointed.contains("core.hooksPath -> .chock/hooks"),
-            "{pointed}"
-        );
-        let refused = said(&Wiring::PointAt, false);
+        let set = pointed(true);
+        assert!(set.contains("core.hooksPath -> .chock/hooks"), "{set}");
+        let refused = pointed(false);
         assert!(
             refused.contains("could not set core.hooksPath"),
             "{refused}"
@@ -989,6 +994,8 @@ mod tests {
         let below = dir.join("sub");
         fs::create_dir_all(&below).unwrap();
         let report = install_hooks(&below).unwrap();
+        let declared = crate::project::vcs::runs_declared_hooks(&dir);
+        assert_eq!(report.contains("at the top for sub"), declared, "{report}");
         assert!(!below.join(DIR).exists(), "{report}");
         assert!(!dir.join(DECLARED).exists(), "{report}");
         // Once Outpost holds the top too, the project's entry joins the file it reads there.

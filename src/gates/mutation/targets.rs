@@ -112,6 +112,17 @@ mod tests {
     }
 
     #[test]
+    fn a_library_of_any_kind_writes_under_lib_and_an_example_writes_nothing() {
+        let target =
+            |kind: &str| serde_json::json!({"name": "my-app", "kind": [kind], "test": true});
+        for kind in ["lib", "rlib", "dylib", "cdylib", "staticlib"] {
+            let at = results_of("my-app", &target(kind));
+            assert_eq!(at.as_deref(), Some("my-app/lib"), "{kind}");
+        }
+        assert_eq!(results_of("my-app", &target("example")), None);
+    }
+
+    #[test]
     fn a_target_with_no_results_and_no_word_from_mutest_is_refused() {
         let written = set(&["my-app/lib", "my-app/bin", "my-app/tests/cli_flow"]);
         let refused = all_written(METADATA, &written, &set(&[])).unwrap_err();

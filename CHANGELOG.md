@@ -5,10 +5,25 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.2.1] - 2026-10-08
+## [0.3.0] - 2026-10-08
 
-No command or flag is removed or renamed. The JSON reports do not change.
+No command or flag is removed or renamed. The JSON reports do not change. The `lean` record
+changes its unit, so a project that recorded `lean` runs `chock baseline lean` once.
 
+- **`lean` finds code that could be written once.** Before, it counted only the private functions
+  that pass their parameters on. Now it also reads each statement and match arm as a shape, where
+  names and literals are values. A run of 3 lines or more that repeats, with at most 4 values that
+  differ, is a group. The finding names the merge: one function with a parameter for each value,
+  one table for copies side by side, or a call to a function whose whole body is one copy. It gives
+  the lines that the merge removes, less the lines that the function and its calls add. Each copy
+  is a place, `copy i of k` or `row i of k`. A group counts when it removes 6 lines or more.
+- **`lean` counts removable lines.** Each file holds its share of each group, and the lines of each
+  function that only passes its parameters on. The unit is now `removable line(s)`. A record in
+  the old unit, `forwarders`, makes the gate report that it cannot run, and names the command.
+- **`lean` leaves out what a merge cannot take.** Copies that differ in a string that a macro
+  reads, such as a format string, do not merge. Nor do copies where later code reads more than one
+  name that they bind. A file that a tool wrote is left out: a part of its path is `generated`, or
+  one of its first 5 lines says so.
 - **A project in a subfolder of a repository gets its hooks.** Before, `chock init --local` in a
   folder such as `crates/tova` wired no hook, because it found no `.git` there. Now it declares
   each hook at the top of the repository under a name of its own,
@@ -35,8 +50,10 @@ No command or flag is removed or renamed. The JSON reports do not change.
   git, Outpost hooks, Miri groups, `--fast --ci`, `CHOCK_TIMEOUT` and `CHOCK_JOBS`. The guide lists
   every report field and every file `init` writes. A check found 23 points; the others are
   corrected in the README, the gate list, the configuration keys and the agent skill.
+- **Tests that start git stay out of Miri.** Miri cannot start a process, so these tests are
+  ignored under Miri, as the other tests that start a process are.
 
-The tests, flags and verdicts do not change.
+The tests and flags of the other gates do not change.
 
 ## [0.2.0] - 2026-10-07
 

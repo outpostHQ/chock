@@ -498,6 +498,12 @@ mod tests {
                 .iter()
                 .any(|change| change.starts_with("kept"))
         );
+        let close = repinned(
+            "CHOCK_VERSION=0.1.0\n",
+            "CHOCK_VERSION=0.2.0\nE_VERSION=5\n",
+        )
+        .unwrap();
+        assert_eq!(close.text, "CHOCK_VERSION=0.2.0\n\nE_VERSION=5\n");
         assert_eq!(repinned("A_VERSION=1\n", OURS), None);
         assert_eq!(repinned("CHOCK_VERSION=0.1.0\nstray\n", OURS), None);
     }
