@@ -1176,11 +1176,12 @@ fn ci_runs_every_gate_rather_than_a_list_that_goes_stale() {
         .find_map(|line| line.trim().strip_prefix("run: chock run --ci --skip="));
     assert!(skipped.is_some(), "no job runs the whole set its tier can");
     for gate in skipped.unwrap_or_default().split(',') {
-        let alone = format!(" {gate}");
         assert!(
-            workflow.lines().any(
-                |line| line.trim().starts_with("run: chock run --ci") && line.ends_with(&alone)
-            ),
+            workflow.lines().map(str::trim).any(|line| {
+                line.trim_start_matches("run: ")
+                    .starts_with("chock run --ci")
+                    && line.split_whitespace().any(|word| word == gate)
+            }),
             "the job with every gate skips `{gate}`, and no job runs it"
         );
     }

@@ -235,8 +235,23 @@ jobs:
       - name: Install chock from this checkout
         run: cargo install --locked --path .
 
+      # mutest prints nothing until it ends, so a heartbeat shows the rows its journals hold. The
+      # step ends before the job does, so a slow run still keeps what the steps below collect.
       - name: The mutest gate
-        run: chock run --ci mutest
+        timeout-minutes: 108
+        run: |
+          journals() { printf '%s\n' "${TMPDIR:-/tmp}" "${TEMP:-/tmp}" | sort -u | sed 's|$|/mutest-journal-*|'; }
+          (while sleep 300 > /dev/null 2>&1; do
+            date -u +%H:%M
+            for journal in $(journals); do
+              if [ -f "$journal" ]; then echo "$(wc -l < "$journal") rows; last: $(tail -n 1 "$journal" | cut -c 1-300)"; fi
+            done
+          done) &
+          beat=$!
+          status=0
+          chock run --ci mutest || status=$?
+          kill "$beat"
+          exit "$status"
 
       # A gate that could not run says why in its own output, which these keep for reading.
       - name: Processes still running
@@ -244,12 +259,20 @@ jobs:
         shell: pwsh
         run: Get-CimInstance Win32_Process | Format-Table ProcessId, ParentProcessId, Name, CommandLine -Wrap | Out-String -Width 300
 
+      - name: Put mutest's journals beside its results
+        if: failure() || cancelled()
+        run: |
+          for dir in $(printf '%s\n' "${TMPDIR:-/tmp}" "${TEMP:-/tmp}" | sort -u); do
+            cp "$dir"/mutest-journal-* target/test-scratch/ 2> /dev/null || true
+          done
       - name: Keep mutest's results
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: mutest-results-${{ matrix.system }}
-          path: target/test-scratch/mutest-results-*
+          path: |
+            target/test-scratch/mutest-results-*
+            target/test-scratch/mutest-journal-*
           if-no-files-found: ignore
 
   # The whole Miri suite on one runner, as a user's `chock run` gets it: its time is the gate's.
