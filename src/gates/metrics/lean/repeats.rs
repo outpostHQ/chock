@@ -1088,25 +1088,39 @@ mod tests {
         );
     }
 
-    /// A copy spans three lines or more and thirty tokens or more. Two tall copies pay.
+    const NAMES: &str = "x1, x2, x3, x4, x5, x6,\n        x7, x8, x9, x10, x11, x12";
+
+    /// A tree of `copies` functions; each holds what `call` writes for its own value.
+    fn calls(copies: usize, call: &dyn Fn(&str) -> String) -> Corpus {
+        let bodies: Vec<String> = (0..copies).map(|at| call(&format!("v{at}"))).collect();
+        lib(&spread(&bodies, ""))
+    }
+
+    fn saves(groups: &[Repeat]) -> Vec<u32> {
+        groups.iter().map(|it| it.saves).collect()
+    }
+
+    /// A copy spans three lines or more and thirty tokens or more.
     #[test]
-    fn a_copy_shorter_than_three_lines_or_thirty_tokens_is_not_named() {
-        let names = "x1, x2, x3, x4, x5, x6,\n        x7, x8, x9, x10, x11, x12";
-        let tree = |copies: usize, call: &dyn Fn(&str) -> String| {
-            let bodies: Vec<String> = (0..copies).map(|at| call(&format!("v{at}"))).collect();
-            lib(&spread(&bodies, ""))
-        };
-        let saves = |groups: &[Repeat]| groups.iter().map(|it| it.saves).collect::<Vec<u32>>();
-        let two_lines = |value: &str| format!("    call(\"{value}\", {names}, x13);\n");
-        let three_lines = |value: &str| format!("    call(\n        \"{value}\", {names}, x13);\n");
-        let fewer_tokens = |value: &str| format!("    call(\n        \"{value}\", {names},);\n");
+    fn a_copy_shorter_than_three_lines_is_not_named() {
+        let two_lines = |value: &str| format!("    call(\"{value}\", {NAMES}, x13);\n");
+        assert_eq!(saves(&calls(20, &two_lines).repeats()), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn a_copy_of_three_lines_is_named_while_it_holds_thirty_tokens() {
+        let three_lines = |value: &str| format!("    call(\n        \"{value}\", {NAMES}, x13);\n");
+        let fewer_tokens = |value: &str| format!("    call(\n        \"{value}\", {NAMES},);\n");
+        assert_eq!(saves(&calls(10, &three_lines).repeats()), [14]);
+        assert_eq!(saves(&calls(6, &three_lines).repeats()), [6]);
+        assert_eq!(saves(&calls(6, &fewer_tokens).repeats()), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn two_copies_pay_where_each_is_tall() {
         let column: String = (1..=13).map(|at| format!("        x{at},\n")).collect();
         let tall = |value: &str| format!("    call(\n        \"{value}\",\n{column}    );\n");
-        assert_eq!(saves(&tree(20, &two_lines).repeats()), Vec::<u32>::new());
-        assert_eq!(saves(&tree(10, &three_lines).repeats()), [14]);
-        assert_eq!(saves(&tree(6, &three_lines).repeats()), [6]);
-        assert_eq!(saves(&tree(6, &fewer_tokens).repeats()), Vec::<u32>::new());
-        assert_eq!(saves(&tree(2, &tall).repeats()), [11]);
+        assert_eq!(saves(&calls(2, &tall).repeats()), [11]);
     }
 
     #[test]
