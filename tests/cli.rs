@@ -425,6 +425,20 @@ fn oracle_names_the_flag_it_needs_and_a_build_that_is_not_there() {
     assert_eq!(ran.out, "");
 }
 
+#[test]
+fn oracle_exits_two_and_reports_the_error_when_a_build_does_not_start() {
+    let dir = scratch("oracle-unstarted");
+    put(
+        &dir,
+        "corpus.jsonl",
+        "{\"name\": \"hello\", \"steps\": [[\"hi\"]]}\n",
+    );
+    let args = "oracle --old corpus.jsonl --new corpus.jsonl --corpus corpus.jsonl --json";
+    let found = json_of(&exits(&dir, &args.split(' ').collect::<Vec<_>>(), 2));
+    assert_eq!((&found["errors"], &found["equal"]), (&1.into(), &0.into()));
+    assert_eq!(found["rows"][0]["verdict"], "error");
+}
+
 #[cfg(unix)]
 #[test]
 fn oracle_exits_zero_for_builds_that_answer_alike_and_one_for_builds_that_do_not() {

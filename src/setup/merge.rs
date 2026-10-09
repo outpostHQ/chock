@@ -199,23 +199,22 @@ fn add_at(out: &mut String, inserts: &[(usize, String)], at: usize) {
 /// missing file is written; a held file gains the keys it lacks; a symlink is left as it is.
 pub fn install(root: &Path, name: &str, shipped: &str) -> Result<String, Error> {
     let path = root.join(name);
-    if path.is_symlink() {
-        return Ok(format!(
-            "  kept      {name} is a symlink, so chock leaves it"
-        ));
-    }
-    let Ok(held) = fs::read_to_string(&path) else {
-        return Ok(install_file(root, name, shipped)?.to_string());
+    let kept = || format!("  kept      {name} is a symlink, so chock leaves it");
+    let brought = || -> Result<String, Error> {
+        let Ok(held) = fs::read_to_string(&path) else {
+            return Ok(install_file(root, name, shipped)?.to_string());
+        };
+        let (grown, added) = merged(&held, shipped);
+        if added.is_empty() {
+            return Ok(format!("  unchanged {name}"));
+        }
+        crate::project::document::write(&path, &grown).map_err(|e| unwritable(&path, &e))?;
+        Ok(format!(
+            "  merged    {name} — added {}; every line of yours stays",
+            added.join(", ")
+        ))
     };
-    let (grown, added) = merged(&held, shipped);
-    if added.is_empty() {
-        return Ok(format!("  unchanged {name}"));
-    }
-    crate::project::document::write(&path, &grown).map_err(|e| unwritable(&path, &e))?;
-    Ok(format!(
-        "  merged    {name} — added {}; every line of yours stays",
-        added.join(", ")
-    ))
+    path.is_symlink().then(kept).map_or_else(brought, Ok)
 }
 
 #[cfg(test)]

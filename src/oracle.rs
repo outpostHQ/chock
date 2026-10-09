@@ -6,7 +6,7 @@ mod side;
 use std::collections::{BTreeMap, BTreeSet};
 // Off unix a link is copied as the file it names.
 #[cfg(not(unix))]
-use std::fs::copy as linked;
+use std::fs::copy as placed;
 use std::hash::{Hash as _, Hasher as _};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -277,22 +277,21 @@ fn copied(from: &Path, to: &Path) -> Result<(), String> {
     for entry in std::fs::read_dir(from).map_err(failed)? {
         let entry = entry.map_err(failed)?;
         let (source, target) = (entry.path(), to.join(entry.file_name()));
-        let kind = entry.file_type().map_err(failed)?;
-        if kind.is_dir() {
+        if entry.file_type().map_err(failed)?.is_dir() {
             copied(&source, &target)?;
-        } else if kind.is_symlink() {
-            linked(&source, &target).map_err(failed)?;
         } else {
-            std::fs::copy(&source, &target).map_err(failed)?;
+            placed(&source, &target).map_err(failed)?;
         }
     }
     Ok(())
 }
 
-/// A link at `target` to what the link at `source` names.
+/// At `target`, a copy of the file at `source`, or a link to what the link at `source` names.
 #[cfg(unix)]
-fn linked(source: &Path, target: &Path) -> std::io::Result<u64> {
-    let names = std::fs::read_link(source)?;
+fn placed(source: &Path, target: &Path) -> std::io::Result<u64> {
+    let Ok(names) = std::fs::read_link(source) else {
+        return std::fs::copy(source, target);
+    };
     std::os::unix::fs::symlink(names, target).map(|()| 0)
 }
 
@@ -313,13 +312,11 @@ fn run_bits(_: &std::fs::Metadata) -> u32 {
 fn held(path: &Path) -> std::io::Result<(bool, u64)> {
     let meta = std::fs::symlink_metadata(path)?;
     let mut hasher = std::hash::DefaultHasher::new();
-    if meta.is_symlink() {
-        ("link", std::fs::read_link(path)?).hash(&mut hasher);
-    } else if meta.is_dir() {
-        "dir".hash(&mut hasher);
-    } else {
-        (std::fs::read(path)?, run_bits(&meta)).hash(&mut hasher);
-    }
+    let names = || std::fs::read_link(path);
+    let link = meta.is_symlink().then(names).transpose()?;
+    let read = || std::fs::read(path).map(|bytes| (bytes, run_bits(&meta)));
+    let file = (!meta.is_dir() && link.is_none()).then(read).transpose()?;
+    (link, file).hash(&mut hasher);
     Ok((meta.is_dir(), hasher.finish()))
 }
 
@@ -889,47 +886,72 @@ mod tests {
         assert!(held(&dir.join("absent")).is_err());
     }
 
-    #[cfg(unix)]
     #[test]
-    fn a_fixture_is_copied_with_its_directories_and_its_links_stay_links() {
+    #[cfg_attr(miri, ignore = "Miri cannot copy a file")]
+    fn a_fixture_is_copied_with_its_directories_and_one_that_is_absent_is_named() {
         let from = crate::testdir::tree(
             "oracle-from",
             &[("a.txt", "one"), ("sub/deep/b.txt", "two")],
         );
-        std::os::unix::fs::symlink("a.txt", from.join("link")).unwrap();
         let to = crate::testdir::make("oracle-to");
         copied(&from, &to.join("work")).unwrap();
         let read = |path: &str| std::fs::read_to_string(to.join("work").join(path)).unwrap();
         assert_eq!(read("a.txt"), "one");
         assert_eq!(read("sub/deep/b.txt"), "two");
-        let link = std::fs::read_link(to.join("work/link")).unwrap();
-        assert_eq!(link, Path::new("a.txt"));
         let why = copied(&from.join("absent"), &to.join("other")).unwrap_err();
         assert!(why.starts_with("cannot copy "), "{why}");
     }
 
-    /// One corpus line that runs `script` in a shell.
     #[cfg(unix)]
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot copy a file")]
+    fn a_link_in_a_fixture_stays_a_link_and_the_file_it_names_stays_a_file() {
+        let from = crate::testdir::tree("oracle-linked", &[("a.txt", "one")]);
+        std::os::unix::fs::symlink("a.txt", from.join("link")).unwrap();
+        let to = crate::testdir::make("oracle-links");
+        copied(&from, &to).unwrap();
+        let link = std::fs::read_link(to.join("link")).unwrap();
+        assert_eq!(link, Path::new("a.txt"));
+        assert!(!to.join("a.txt").is_symlink());
+        assert_eq!(std::fs::read_to_string(to.join("link")).unwrap(), "one");
+    }
+
+    /// One corpus line that runs `script` in a shell.
     fn scenario(name: &str, script: &str) -> String {
         format!("{}\n", json!({"name": name, "steps": [["-c", script]]}))
     }
 
+    #[cfg(unix)]
+    fn shell(name: &str) -> String {
+        format!("/bin/{name}")
+    }
+
+    /// Off unix the shells are in the directory of `PATH` that also holds the tools a script calls.
+    #[cfg(not(unix))]
+    fn shell(name: &str) -> String {
+        let held = |dir: &PathBuf, tool: &str| dir.join(format!("{tool}.exe")).is_file();
+        let whole = |dir: &PathBuf| ["sh", "bash", "sleep"].iter().all(|tool| held(dir, tool));
+        let path = std::env::var_os("PATH").unwrap();
+        let dir = std::env::split_paths(&path).find(whole).unwrap();
+        let shell = dir.join(format!("{name}.exe"));
+        shell.to_str().unwrap().to_string()
+    }
+
     /// A run with `sh` as the old build and `bash` as the new one. A script tells the two apart by
     /// `$0`, so no test has to write a program of its own.
-    #[cfg(unix)]
     fn compared_shells(name: &str, corpus: &str, more: &[(&str, &str)]) -> Report {
         let dir = crate::testdir::tree(name, &[("corpus.jsonl", corpus)]);
         let corpus = dir.join("corpus.jsonl");
-        let mut args = vec!["--old", "/bin/sh", "--new", "/bin/bash", "--corpus"];
+        let (old, new) = (shell("sh"), shell("bash"));
+        let mut args = vec!["--old", old.as_str(), "--new", new.as_str(), "--corpus"];
         args.push(corpus.to_str().unwrap());
         args.extend(more.iter().flat_map(|(flag, value)| [*flag, *value]));
         run(&asked(&args).unwrap()).unwrap()
     }
 
     /// Prints `$0`-dependent text: what the new build says, and what the old one says.
-    #[cfg(unix)]
     fn each(new: &str, old: &str) -> String {
-        format!("case $0 in *bash) {new};; *) {old};; esac")
+        format!("case $0 in *bash*) {new};; *) {old};; esac")
     }
 
     #[cfg(unix)]
@@ -969,7 +991,6 @@ mod tests {
         assert_eq!(report.rows[0]["verdict"], "equal", "{:?}", report.rows);
     }
 
-    #[cfg(unix)]
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_difference_names_its_step_its_stream_and_both_values() {
@@ -991,7 +1012,6 @@ mod tests {
         assert_eq!(report.code(), 1);
     }
 
-    #[cfg(unix)]
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn an_accepted_difference_stays_in_the_report_and_no_longer_fails_the_run() {
@@ -1008,7 +1028,6 @@ mod tests {
         assert_eq!(report.code(), 0);
     }
 
-    #[cfg(unix)]
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn text_a_rule_covers_is_equal_and_the_report_counts_what_the_rule_replaced() {
@@ -1024,7 +1043,6 @@ mod tests {
         assert_eq!(unruled.rows[0]["verdict"], "different");
     }
 
-    #[cfg(unix)]
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_file_the_builds_wrote_differently_is_named_and_the_fixture_itself_is_not_touched() {
@@ -1042,11 +1060,10 @@ mod tests {
         assert_eq!(seed, "seed\n");
     }
 
-    #[cfg(unix)]
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_probe_runs_after_the_steps_and_what_it_shows_is_compared() {
-        let more = [("--probe", "-c pwd"), ("--probe", "-c echo$IFS$0")];
+        let more = [("--probe", "-c echo$IFS$TZ"), ("--probe", "-c echo$IFS$0")];
         let report = compared_shells("oracle-probe", &scenario("quiet", "true"), &more);
         let row = &report.rows[0];
         assert_eq!(row["verdict"], "different", "{row}");
@@ -1055,10 +1072,10 @@ mod tests {
         assert_eq!(found["field"], "probe");
         assert_eq!(found["at"]["part"], "stdout");
         assert_eq!(found["at"]["probe"][1], "echo$IFS$0");
-        assert_eq!(found["old"], "/bin/sh\n");
+        let bash = |side: &str| found[side].as_str().unwrap().contains("bash");
+        assert_eq!((bash("old"), bash("new")), (false, true), "{row}");
     }
 
-    #[cfg(unix)]
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn two_builds_that_both_run_out_of_time_are_a_difference_and_never_equal() {
@@ -1072,7 +1089,6 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(60));
     }
 
-    #[cfg(unix)]
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_step_that_writes_more_than_chock_keeps_is_an_error_and_is_not_compared() {
@@ -1085,7 +1101,6 @@ mod tests {
         assert_eq!(report.code(), 2);
     }
 
-    #[cfg(unix)]
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_build_that_does_not_start_is_an_error_and_a_run_with_an_error_exits_two() {
@@ -1093,7 +1108,8 @@ mod tests {
             crate::testdir::tree("oracle-broken", &[("corpus.jsonl", &scenario("s", "true"))]);
         let corpus = dir.join("corpus.jsonl");
         let corpus = corpus.to_str().unwrap();
-        let not_a_program = asked(&["--old", "/bin/sh", "--new", corpus, "--corpus", corpus]);
+        let old = shell("sh");
+        let not_a_program = asked(&["--old", &old, "--new", corpus, "--corpus", corpus]);
         let report = run(&not_a_program.unwrap()).unwrap();
         assert_eq!(report.rows[0]["verdict"], "error", "{:?}", report.rows);
         assert!(
