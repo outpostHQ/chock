@@ -53,10 +53,6 @@ fn checked(ctx: &Ctx) -> Result<Outcome, String> {
 /// it stopped.
 type Interpret<'a> = dyn Fn(&[String], Duration) -> Result<exec::Output, String> + Sync + 'a;
 
-/// A group under libtest prints a line as each test ends, so a group this long without one holds a
-/// test past nextest's five minutes. It stops, and nextest runs its tests under their own limit.
-const GROUP_IDLE: Duration = Duration::from_secs(6 * 60);
-
 /// Runs one command under miri; opt-in, since interpreting costs tens of times a normal run.
 fn interpret(ctx: &Ctx, args: &[String], idle: Duration) -> Result<exec::Output, String> {
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -84,9 +80,10 @@ fn suite(ctx: &Ctx, asked: &[String], args: &[String], run: &Interpret) -> Resul
         started.elapsed(),
     );
     let at_once = exec::budget::interpreters();
+    // A group waits the whole deadline for its next test: one slow on this machine still ends.
     let timed = crate::run::workers::on_workers(&grouped, &lanes, at_once, &|group| match run(
         &groups::command(group, asked),
-        GROUP_IDLE.min(exec::deadline()),
+        exec::deadline(),
     ) {
         Ok(out) if out.success() => Ok(groups::times(group, &out.stdout)),
         out => Err(out.ok().and_then(|out| never_ran(&out.stderr))),
@@ -148,10 +145,18 @@ fn moving(line: &str) -> bool {
     !said.is_empty() && !said.starts_with("SLOW")
 }
 
-/// nextest's Miri profile only warns about a slow test, so one test could run unbounded and
-/// unnamed. A project's own `default-miri` setting still wins over this one.
-const PER_TEST: &str =
-    "[profile.default-miri]\nslow-timeout = { period = \"60s\", terminate-after = 5 }\n";
+/// The seconds between two of nextest's notes that a test still runs.
+const PERIOD_SECS: u64 = 60;
+
+/// One test's limit under nextest, the tool's deadline less one period, so nextest names the test
+/// before chock ends the run. A project's own `default-miri` setting still wins over this one.
+fn per_test(deadline: Duration) -> String {
+    let periods = (deadline.as_secs() / PERIOD_SECS).saturating_sub(1).max(1);
+    format!(
+        "[profile.default-miri]\nslow-timeout = {{ period = \"{PERIOD_SECS}s\", terminate-after = \
+         {periods} }}\n"
+    )
+}
 
 /// The per-test limit, in a file of this run's own, removed when the run ends.
 struct Limit(PathBuf);
@@ -179,7 +184,8 @@ fn limited(ctx: &Ctx, asked: &[String]) -> Result<(Limit, Vec<String>), String> 
     // A new file only, so a path already there, or a link planted there, is never written through.
     let mut file = std::fs::File::create_new(&path).map_err(failed)?;
     let limit = Limit(path);
-    file.write_all(PER_TEST.as_bytes()).map_err(failed)?;
+    file.write_all(per_test(exec::deadline()).as_bytes())
+        .map_err(failed)?;
     let mut args = invocation(&ctx.miri, asked);
     args.extend(
         ctx.miri_part
@@ -217,9 +223,10 @@ fn judged(out: &exec::Output, root: &Path) -> Outcome {
 const FAILED: &str = "failed under miri; `cargo +nightly miri nextest run` with this test's name \
                       prints why";
 
-const STOPPED: &str = "ran past its limit under miri, five minutes unless the project's \
-                       `[profile.default-miri]` sets one, so it was stopped; give it a smaller \
-                       input when `cfg(miri)` holds, or `#[cfg_attr(miri, ignore = \"too slow\")]`";
+const STOPPED: &str = "ran past its limit under miri, so it was stopped: the limit is \
+                       CHOCK_TIMEOUT less a minute, or the one in the project's \
+                       `[profile.default-miri]`; raise it where the test is only slow, or give \
+                       the test a smaller input when `cfg(miri)` holds";
 
 /// The feature and build flags to pass on; a cargo profile is refused, since miri cannot take one.
 fn asked(ctx: &Ctx) -> Result<Vec<String>, String> {
@@ -436,7 +443,8 @@ mod tests {
         let path = named.strip_prefix("--tool-config-file=chock:").unwrap();
         assert_eq!(Path::new(path), limit.0);
         assert!(limit.0.starts_with(root.join("target/test-scratch")));
-        assert_eq!(std::fs::read_to_string(&limit.0).unwrap(), PER_TEST);
+        let wrote = std::fs::read_to_string(&limit.0).unwrap();
+        assert_eq!(wrote, per_test(exec::deadline()));
         assert!(args.contains(&"--all-features".to_string()));
         let kept = limit.0.clone();
         drop(limit);
@@ -476,12 +484,32 @@ mod tests {
         assert!(said.ends_with("is not under a project root"), "{said}");
     }
 
+    /// Five minutes stopped a test on a slow CI machine that a faster machine ended in 90 s.
+    #[test]
+    fn one_test_has_the_deadline_less_one_period_so_nextest_names_it_before_the_run_ends() {
+        let after = |secs: u64| {
+            let wrote = per_test(Duration::from_secs(secs));
+            let (head, periods) = wrote.split_once(", terminate-after = ").unwrap();
+            assert_eq!(
+                head,
+                "[profile.default-miri]\nslow-timeout = { period = \"60s\""
+            );
+            periods.strip_suffix(" }\n").unwrap().to_string()
+        };
+        assert_eq!(after(exec::TIMEOUT_SECS), "29");
+        assert_eq!(after(600), "9");
+        assert_eq!(after(179), "1");
+        assert_eq!(after(60), "1", "never no limit");
+        assert_eq!(after(0), "1");
+    }
+
     #[test]
     fn a_test_the_limit_stopped_is_named_with_how_to_shorten_it() {
+        assert!(STOPPED.contains(exec::TIMEOUT), "{STOPPED}");
         let out = exec::Output::of(
             Some(100),
             "",
-            "     TIMEOUT [ 300.004s] (2/2) chock vcs::tests::slow\n",
+            "     TIMEOUT [1740.004s] (2/2) chock vcs::tests::slow\n",
         );
         let outcome = judged(&out, Path::new("/w"));
         assert!(!outcome.passed);
@@ -525,11 +553,7 @@ mod tests {
         let asked = std::sync::Mutex::new(Vec::new());
         let run = |argv: &[String], idle: Duration| {
             asked.lock().unwrap().push(argv.to_vec());
-            assert_eq!(
-                argv[2] == "test",
-                idle == GROUP_IDLE,
-                "only a group waits less"
-            );
+            assert_eq!(idle, exec::deadline(), "a group waits as long as nextest");
             match (argv[2].as_str(), argv[3].as_str()) {
                 ("nextest", "list") => Ok(list.clone()),
                 ("test", _) => group.cloned().ok_or("stopped".to_string()),

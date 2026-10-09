@@ -127,8 +127,12 @@ group takes every n-th test of the list, so the slow tests that sit side by side
 to different groups. Groups run at once, one for each core, and one for each 512 MB of free memory.
 When the last run recorded each test's time, the slowest groups start first.
 
-A group with no progress for 6 minutes is stopped. Only `CHOCK_TIMEOUT` limits the whole run. At the end, chock prints one line: the build time, the number
-of groups, how many ran at once, and the sum of the test times.
+One test may run for `CHOCK_TIMEOUT` less one minute, which is 29 minutes by default. No shorter
+limit applies, so a slow CI machine does not stop a test that a faster machine ends. A test that
+runs past the limit is stopped, and the finding names it. A `[profile.default-miri]` limit in the
+project's own nextest settings wins over this one. Only `CHOCK_TIMEOUT` limits the whole run. At
+the end, chock prints one line: the build time, the number of groups, how many ran at once, and
+the sum of the test times.
 
 chock's own [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs the whole Miri suite as
 one job on each system, `chock run --ci miri`. Where the suite does not fit one CI job, split it

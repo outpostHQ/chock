@@ -36,6 +36,12 @@ commands are new: `chock lean` and `chock oracle`.
 - **`lean` reads past a file that does not parse.** Before, the first such file stopped the gate
   with no findings. Now the gate shows what every other file holds and names each file it could
   not read. It still exits 2 and records nothing, and `chock baseline lean` still refuses.
+- **`miri` does not stop a slow test on a slow machine.** Each test had five minutes under Miri,
+  and a group stopped after 6 minutes with no test ended. A test that took 90 s on a 32-core
+  machine took more than five minutes on a Windows CI runner, so the gate tripped there on correct
+  code. Now one test may run for `CHOCK_TIMEOUT` less one minute, 29 minutes by default, in a
+  group and under nextest. A test that hangs is still stopped and named, after up to two times
+  `CHOCK_TIMEOUT`. A `default-miri` limit in the project's own nextest settings still wins.
 - **The release binary is built with `opt-level = "z"`.** It was `"s"`. The two commands add
   code, and with `"s"` the Linux binary is 3.85 MB, which is over the `binsize` limit. With `"z"`
   it is 3.61 MB, so no record changes. `chock lean` on chock's own tree takes 0.03 s longer.
