@@ -51,19 +51,19 @@ fn checked(ctx: &Ctx) -> Result<Outcome, String> {
 
 /// One cargo command under miri, stopped after its longest wait for progress: its output, or why
 /// it stopped.
-type Interpret<'a> = dyn Fn(&[String], Duration) -> Result<exec::Output, String> + Sync + 'a;
+type Interpret<'a> =
+    dyn Fn(&[String], Duration) -> Result<exec::Output, exec::ExecError> + Sync + 'a;
 
 /// Runs one command under miri; opt-in, since interpreting costs tens of times a normal run.
-fn interpret(ctx: &Ctx, args: &[String], idle: Duration) -> Result<exec::Output, String> {
+fn interpret(ctx: &Ctx, args: &[String], idle: Duration) -> Result<exec::Output, exec::ExecError> {
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let flags = miriflags(&ctx.miri);
     let env = [("MIRIFLAGS", flags.as_str())];
     exec::run_paced("cargo", &argv, &ctx.root, &env, (moving, idle))
-        .map_err(|failed| advice(failed.hung(), &failed.to_string()))
 }
 
-/// The suite in groups, one interpreter each, as many at once as the lane's cores; a failed group
-/// runs again under nextest, which names each test. With no list to group, one nextest run.
+/// The suite in groups, one interpreter each, as many at once as the lane's cores. nextest runs a
+/// failed group again and names each test. With no list to group, one nextest run.
 fn suite(ctx: &Ctx, asked: &[String], args: &[String], run: &Interpret) -> Result<Outcome, String> {
     let started = std::time::Instant::now();
     let listed = run(&groups::listing(args), exec::deadline())
@@ -72,7 +72,10 @@ fn suite(ctx: &Ctx, asked: &[String], args: &[String], run: &Interpret) -> Resul
     let Some((listed, grouped)) =
         listed.and_then(|out| groups::grouped(&out.stdout).map(|grouped| (out, grouped)))
     else {
-        return judge(&ctx.root, &run(args, exec::deadline())?);
+        return judge(
+            &ctx.root,
+            &run(args, exec::deadline()).map_err(|failed| advice(&failed))?,
+        );
     };
     let recorded = crate::run::recorded_tests(&ctx.root, GATE.name);
     let (lanes, built) = (
@@ -81,28 +84,16 @@ fn suite(ctx: &Ctx, asked: &[String], args: &[String], run: &Interpret) -> Resul
     );
     let at_once = exec::budget::interpreters();
     // A group waits the whole deadline for its next test: one slow on this machine still ends.
-    let timed = crate::run::workers::on_workers(&grouped, &lanes, at_once, &|group| match run(
-        &groups::command(group, asked),
-        exec::deadline(),
-    ) {
-        Ok(out) if out.success() => Ok(groups::times(group, &out.stdout)),
-        out => Err(out.ok().and_then(|out| never_ran(&out.stderr))),
+    let ended = crate::run::workers::on_workers(&grouped, &lanes, at_once, &|group| {
+        groups::ended(
+            group,
+            &run(&groups::command(group, asked), exec::deadline()),
+        )
     });
     // nextest would meet the same refusal, so the suite ends here rather than paying for it twice.
-    if let Some(why) = timed
-        .iter()
-        .flatten()
-        .find_map(|timed| timed.clone().err()?)
-    {
-        return Err(why);
-    }
-    let failed: Vec<&groups::Group> = grouped
-        .iter()
-        .zip(&timed)
-        .filter(|(_, timed)| !matches!(timed, Some(Ok(_))))
-        .map(|(group, _)| group)
-        .collect();
-    let tests_ms: std::collections::BTreeMap<String, u64> = timed
+    let (failed, stopped) = groups::left(&grouped, &ended)?;
+    let failed: Vec<&groups::Group> = failed.iter().collect();
+    let tests_ms: std::collections::BTreeMap<String, u64> = ended
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
@@ -120,13 +111,32 @@ fn suite(ctx: &Ctx, asked: &[String], args: &[String], run: &Interpret) -> Resul
         true => super::verdict(&listed, &ctx.root),
         false => judge(
             &ctx.root,
-            &run(&groups::rerun(args, &failed), exec::deadline())?,
+            &run(&groups::rerun(args, &failed), exec::deadline())
+                .map_err(|failed| advice(&failed))?,
         )?,
     };
     Ok(Outcome {
         tests_ms,
-        ..outcome
+        ..with_stopped(outcome, &stopped)
     })
+}
+
+/// The outcome with each test chock stopped a group in. One that nextest named too is not twice.
+fn with_stopped(mut outcome: Outcome, stopped: &[String]) -> Outcome {
+    let named = |test: &&String| {
+        outcome
+            .findings
+            .iter()
+            .all(|found| found.item.as_ref() != Some(*test))
+    };
+    let fresh: Vec<Finding> = stopped
+        .iter()
+        .filter(named)
+        .map(|test| Finding::at("", STOPPED).item(test))
+        .collect();
+    outcome.passed &= stopped.is_empty();
+    outcome.findings.extend(fresh);
+    outcome
 }
 
 /// nextest's verdict, or why miri never tested the code.
@@ -224,7 +234,7 @@ const FAILED: &str = "failed under miri; `cargo +nightly miri nextest run` with 
                       prints why";
 
 const STOPPED: &str = "ran past its limit under miri, so it was stopped: the limit is \
-                       CHOCK_TIMEOUT less a minute, or the one in the project's \
+                       CHOCK_TIMEOUT, or under nextest the one in the project's \
                        `[profile.default-miri]`; raise it where the test is only slow, or give \
                        the test a smaller input when `cfg(miri)` holds";
 
@@ -254,16 +264,16 @@ fn invocation(scope: &crate::project::config::Scope, features: &[String]) -> Vec
 }
 
 /// The remedy for a failed run: a per-test limit or longer deadline if it hung, else install miri.
-fn advice(hung: bool, said: &str) -> String {
-    if hung {
+fn advice(failed: &exec::ExecError) -> String {
+    if failed.hung() {
         format!(
-            "{said}; no test finished in that time, so a build stalled or a test hangs with no \
+            "{failed}; no test finished in that time, so a build stalled or a test hangs with no \
              `terminate-after` in the project's `[profile.default-miri]`: set one there, or \
              raise {}",
             exec::TIMEOUT
         )
     } else {
-        format!("{said} — this gate needs miri: `rustup +nightly component add miri`")
+        format!("{failed} — this gate needs miri: `rustup +nightly component add miri`")
     }
 }
 
@@ -424,12 +434,20 @@ mod tests {
 
     #[test]
     fn a_deadline_reached_is_told_apart_from_a_component_that_is_not_installed() {
-        let said = advice(true, "cargo gave up waiting");
+        let said = advice(&stopped(exec::Stage::Hung, "it waited"));
+        assert!(
+            said.starts_with("gave up waiting for cargo: it waited; "),
+            "{said}"
+        );
         assert!(said.contains("terminate-after"), "{said}");
         assert!(said.contains(exec::TIMEOUT), "{said}");
         assert!(!said.contains("component add"), "{said}");
 
-        let said = advice(false, "cargo could not start");
+        let said = advice(&stopped(exec::Stage::Spawn, "no such file"));
+        assert!(
+            said.starts_with("could not start cargo: no such file "),
+            "{said}"
+        );
         assert!(said.contains("component add miri"), "{said}");
         assert!(!said.contains(exec::TIMEOUT), "{said}");
     }
@@ -539,6 +557,19 @@ mod tests {
         exec::Output::of(Some(code), stdout, stderr)
     }
 
+    /// cargo as chock failed to run it at `stage`, with what the failure quotes.
+    fn stopped(stage: exec::Stage, reason: &str) -> exec::ExecError {
+        exec::ExecError {
+            program: "cargo".to_string(),
+            stage,
+            reason: reason.to_string(),
+        }
+    }
+
+    /// What chock quotes of a group it stopped while the group ran test `b`.
+    const IN_B: &str = "no progress for 1800s; cleanup requested\nstdout (partial capture) \
+                        (bounded output):\ntest a ... ok <0.100s>\ntest b ... ";
+
     const LISTED: &str = r#"{"rust-suites": {"chock": {"package-name": "chock",
         "binary-name": "chock", "kind": "lib", "testcases": {
         "a": {"ignored": false, "filter-match": {"status": "matches"}},
@@ -550,13 +581,23 @@ mod tests {
         group: Option<&exec::Output>,
         nextest: &exec::Output,
     ) -> (Result<Outcome, String>, Vec<Vec<String>>) {
+        let group = group.ok_or(stopped(exec::Stage::Hung, "stopped"));
+        suite_as(list, &group, nextest)
+    }
+
+    /// `suite_with`, where a group may also end as a run chock could not finish.
+    fn suite_as(
+        list: &exec::Output,
+        group: &Result<&exec::Output, exec::ExecError>,
+        nextest: &exec::Output,
+    ) -> (Result<Outcome, String>, Vec<Vec<String>>) {
         let asked = std::sync::Mutex::new(Vec::new());
         let run = |argv: &[String], idle: Duration| {
             asked.lock().unwrap().push(argv.to_vec());
             assert_eq!(idle, exec::deadline(), "a group waits as long as nextest");
             match (argv[2].as_str(), argv[3].as_str()) {
                 ("nextest", "list") => Ok(list.clone()),
-                ("test", _) => group.cloned().ok_or("stopped".to_string()),
+                ("test", _) => group.clone().cloned(),
                 _ => Ok(nextest.clone()),
             }
         };
@@ -598,6 +639,57 @@ mod tests {
             let filter = "(binary_id(=chock) & (test(=a) | test(=b)))";
             assert!(asked[2].ends_with(&["-E".to_string(), filter.to_string()]));
         }
+    }
+
+    /// nextest ran a stopped group again and waited a second deadline for the same test.
+    #[test]
+    fn a_group_chock_stopped_names_its_test_and_nextest_runs_only_the_rest() {
+        let hung = stopped(exec::Stage::Hung, IN_B);
+        let (outcome, asked) = suite_as(&said(0, LISTED, ""), &Err(hung), &said(0, "", ""));
+        let outcome = outcome.unwrap();
+        assert!(!outcome.passed, "the rest passed, and one test never ended");
+        assert_eq!(
+            Finding::rendered(&outcome.findings),
+            [format!("chock b: {STOPPED}")]
+        );
+        assert_eq!(verbs(&asked), ["list", "-p", "run"]);
+        let rest = "(binary_id(=chock) & (test(=a)))";
+        assert!(asked[2].ends_with(&["-E".to_string(), rest.to_string()]));
+    }
+
+    #[test]
+    fn a_group_stopped_in_its_only_test_names_it_and_nextest_never_starts() {
+        let one = LISTED.replace("\"a\": {\"ignored\": false,", "\"a\": {\"ignored\": true,");
+        let hung = stopped(exec::Stage::Hung, IN_B);
+        let (outcome, asked) = suite_as(&said(0, &one, ""), &Err(hung), &said(0, "", ""));
+        let outcome = outcome.unwrap();
+        assert!(!outcome.passed);
+        assert_eq!(
+            Finding::rendered(&outcome.findings),
+            [format!("chock b: {STOPPED}")]
+        );
+        assert_eq!(verbs(&asked), ["list", "-p"]);
+    }
+
+    #[test]
+    fn a_group_that_ended_some_other_way_runs_whole_under_nextest() {
+        let lost = stopped(exec::Stage::Wait, IN_B);
+        let (outcome, asked) = suite_as(&said(0, LISTED, ""), &Err(lost), &said(0, "", ""));
+        assert!(outcome.unwrap().passed, "nextest ran both, and both passed");
+        let whole = "(binary_id(=chock) & (test(=a) | test(=b)))";
+        assert!(asked[2].ends_with(&["-E".to_string(), whole.to_string()]));
+    }
+
+    #[test]
+    fn a_stopped_test_that_nextest_names_too_is_one_finding_with_nextests_verdict() {
+        let mut outcome = Outcome::failed(vec![Finding::at("", FAILED).item("chock b")]);
+        outcome = with_stopped(outcome, &["chock b".to_string(), "chock c".to_string()]);
+        assert_eq!(
+            Finding::rendered(&outcome.findings),
+            [format!("chock b: {FAILED}"), format!("chock c: {STOPPED}")]
+        );
+        let passed = with_stopped(Outcome::passed(), &[]);
+        assert!(passed.passed && passed.findings.is_empty());
     }
 
     #[test]

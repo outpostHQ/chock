@@ -3,6 +3,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::exec;
+
 /// Tests one interpreter runs: enough that its compile is a small share, few enough to spread.
 const PER_GROUP: usize = 32;
 
@@ -115,6 +117,63 @@ pub(super) fn times(group: &Group, stdout: &str) -> Vec<(String, u64)> {
 fn key(binary: &str, test: &str) -> String {
     format!("{binary} {test}")
 }
+
+/// Why a group did not pass: miri cannot run the suite, chock stopped it in one test, or the rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Fault {
+    Refused(String),
+    Stopped(String),
+    Failed,
+}
+
+/// Each test's time in ms, or why the group did not pass.
+pub(super) type Ended = Result<Vec<(String, u64)>, Fault>;
+
+/// How a group's run ended, from what it printed or from why chock stopped it.
+pub(super) fn ended(group: &Group, ran: &Result<exec::Output, exec::ExecError>) -> Ended {
+    match ran {
+        Ok(out) if out.success() => Ok(times(group, &out.stdout)),
+        Ok(out) => Err(super::never_ran(&out.stderr).map_or(Fault::Failed, Fault::Refused)),
+        Err(stopped) => Err(stopped_on(group, stopped).map_or(Fault::Failed, Fault::Stopped)),
+    }
+}
+
+/// The test a group was in when chock stopped it. libtest names a test before it runs, so the
+/// last test line then has no verdict.
+fn stopped_on(group: &Group, stopped: &exec::ExecError) -> Option<String> {
+    let lines = stopped.reason.lines();
+    let (named, verdict) = lines
+        .filter_map(|line| line.strip_prefix("test ")?.split_once(" ... "))
+        .next_back()?;
+    let test = named.split_once(" - ").map_or(named, |(test, _)| test);
+    let running = stopped.hung() && verdict.is_empty() && group.tests.iter().any(|own| own == test);
+    running.then(|| test.to_string())
+}
+
+/// What nextest runs again: each group that did not pass, less the test chock stopped it in. With
+/// them, each such test under its binary's name. A group miri refused ends the suite instead.
+pub(super) fn left(grouped: &[Group], ended: &[Option<Ended>]) -> Result<Left, String> {
+    let mut left = (Vec::new(), Vec::new());
+    for (group, ended) in grouped.iter().zip(ended) {
+        let mut group = group.clone();
+        match ended {
+            Some(Ok(_)) => continue,
+            Some(Err(Fault::Refused(why))) => return Err(why.clone()),
+            Some(Err(Fault::Stopped(test))) => {
+                left.1.push(key(&group.binary, test));
+                group.tests.retain(|own| own != test);
+            }
+            _ => {}
+        }
+        if !group.tests.is_empty() {
+            left.0.push(group);
+        }
+    }
+    Ok(left)
+}
+
+/// The groups nextest runs again, and the tests chock stopped, which no run names again.
+pub(super) type Left = (Vec<Group>, Vec<String>);
 
 /// Each group a lane of its own, the longest on record first, so the last to start ends soonest.
 /// A group with a test on no record starts first, as it may be the longest.
@@ -310,6 +369,102 @@ mod tests {
                    test g ... ok <100000000000000000s>\ntest result: ok. 2 passed";
         let timed = [("chock a::b".to_string(), 1250), ("chock c".to_string(), 0)];
         assert_eq!(times(&group("chock", "a::b c"), out), timed);
+    }
+
+    /// cargo as chock failed to run it at `stage`, with what the failure quotes.
+    fn stopped(stage: exec::Stage, reason: &str) -> exec::ExecError {
+        exec::ExecError {
+            program: "cargo".to_string(),
+            stage,
+            reason: reason.to_string(),
+        }
+    }
+
+    /// What chock quotes of a group it stopped in test `b`: the end of each stream.
+    const IN_B: &str = "no progress for 60s; cleanup requested\nstdout (partial capture) (bounded \
+                        output):\ntest a ... ok <0.100s>\ntest b ... \nstderr (partial capture) \
+                        (bounded output):\n     Running unittests src/lib.rs";
+
+    #[test]
+    fn the_test_a_stopped_group_was_in_is_the_last_one_libtest_named_with_no_verdict() {
+        let both = group("chock", "a b");
+        let named = |reason: &str| stopped_on(&both, &stopped(exec::Stage::Hung, reason));
+        assert_eq!(named(IN_B), Some("b".to_string()));
+        let panics = "test a ... ok\ntest b - should panic ... ";
+        assert_eq!(named(panics), Some("b".to_string()), "the mode is no name");
+        assert_eq!(
+            named("test a ... \ntest b ... FAILED"),
+            None,
+            "the last ended"
+        );
+        assert_eq!(named("test a ... ok\ntest b ... ok <2.000s>\n"), None);
+        assert_eq!(named("test c ... "), None, "not a test of this group");
+        assert_eq!(
+            named("   Compiling chock v0.4.0"),
+            None,
+            "the build stalled"
+        );
+        let lost = stopped(exec::Stage::Wait, IN_B);
+        assert_eq!(
+            stopped_on(&both, &lost),
+            None,
+            "chock did not stop this one"
+        );
+    }
+
+    #[test]
+    fn a_group_ends_with_its_times_or_with_why_it_did_not_pass() {
+        let both = group("chock", "a b");
+        let said = |code, stdout, stderr| Ok(exec::Output::of(Some(code), stdout, stderr));
+        let timed = vec![("chock a".to_string(), 1250)];
+        assert_eq!(
+            ended(&both, &said(0, "test a ... ok <1.250s>\n", "")),
+            Ok(timed)
+        );
+        assert_eq!(
+            ended(&both, &said(101, "test a ... FAILED\n", "")),
+            Err(Fault::Failed)
+        );
+        let refused = "error: unsupported operation: can't call foreign function `posix_spawn`\n";
+        let why = ended(&both, &said(1, "", refused)).unwrap_err();
+        assert!(
+            matches!(&why, Fault::Refused(why) if why.contains("`posix_spawn`")),
+            "{why:?}"
+        );
+        let hung = |reason| Err(stopped(exec::Stage::Hung, reason));
+        assert_eq!(
+            ended(&both, &hung(IN_B)),
+            Err(Fault::Stopped("b".to_string()))
+        );
+        assert_eq!(
+            ended(&both, &hung("no progress for 60s")),
+            Err(Fault::Failed)
+        );
+    }
+
+    #[test]
+    fn nextest_runs_each_failed_group_again_less_the_test_chock_stopped_it_in() {
+        let grouped = [
+            group("lib", "a b"),
+            group("cli", "c"),
+            group("bin", "d e"),
+            group("doc", "f"),
+            group("xtask", "g"),
+        ];
+        let stopped = |test: &str| Some(Err(Fault::Stopped(test.to_string())));
+        let mut ended = vec![
+            Some(Ok(Vec::new())),
+            stopped("c"),
+            stopped("d"),
+            Some(Err(Fault::Failed)),
+            None,
+        ];
+        let again = vec![group("bin", "e"), group("doc", "f"), group("xtask", "g")];
+        let named = vec!["cli c".to_string(), "bin d".to_string()];
+        assert_eq!(left(&grouped, &ended), Ok((again, named)));
+        ended[4] = Some(Err(Fault::Refused("miri cannot emulate it".to_string())));
+        let why = left(&grouped, &ended).unwrap_err();
+        assert_eq!(why, "miri cannot emulate it");
     }
 
     #[test]
