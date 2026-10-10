@@ -47,24 +47,20 @@ pub struct FileScan {
 /// A file that does not lex compiles nowhere, so it holds no test.
 pub fn scan_source(file: &str, raw: &str) -> FileScan {
     let lexed = Lexed::new(raw).unwrap_or_default();
-    let mut tests = Vec::new();
-    let items = lexed.items();
-    for item in &items {
-        let body = lexed.pair[item.end]..item.end + 1;
-        let fn_kw = (item.head..body.start).find(|&i| lexed.ident(i) == "fn");
-        let name = fn_kw.map_or("", |kw| lexed.ident(kw + 1));
-        let is_test = lexed.opens(body.start, '{') && marks_a_test(&lexed, item.first..item.head);
-        if name.is_empty() || !is_test {
-            continue;
-        }
-        tests.push(TestItem {
-            line: lexed.line[item.first],
-            name: name.to_string(),
+    let (items, functions) = (lexed.items(), lexed.functions());
+    let test = |item: &Item| {
+        let own = |f: &&(usize, Range<usize>)| f.1.start == lexed.pair[item.end];
+        let (name, body) = functions.iter().find(own)?;
+        let lines = lexed.line[item.first]..=lexed.line[item.end];
+        marks_a_test(&lexed, item.first..item.head).then(|| TestItem {
+            line: *lines.start(),
+            name: lexed.ident(*name).to_string(),
             attrs: item.first..item.head,
-            body,
-            waivers: waivers_in(raw, lexed.line[item.first]..=lexed.line[item.end]),
-        });
-    }
+            body: body.clone(),
+            waivers: waivers_in(raw, lines),
+        })
+    };
+    let tests = items.iter().filter_map(test).collect();
     FileScan {
         file: file.to_string(),
         raw: raw.to_string(),
@@ -147,6 +143,19 @@ mod tests {
     fn names(src: &str) -> Vec<String> {
         let tests = scan_source("src/thing.rs", src).tests;
         tests.into_iter().map(|test| test.name).collect()
+    }
+
+    #[test]
+    fn a_test_under_another_item_keeps_its_block_and_the_waiver_on_its_last_line() {
+        let src = "#[derive(Debug)]\nstruct A;\n#[inline]\nfn helper() {}\n#[test]\n\
+            fn it_holds() {\n    check();\n} // test-lint: allow(no-assertion) — it asserts\n\
+            fn next() {}";
+        let scan = scan_source("src/thing.rs", src);
+        let test = &scan.tests[0];
+        let block = Lexed::new("{ check(); }").unwrap_or_default().toks;
+        assert_eq!(scan.lexed.toks[test.body.clone()], block);
+        assert_eq!((test.name.as_str(), test.line), ("it_holds", 5));
+        assert_eq!(test.waivers[0].rule, "no-assertion");
     }
 
     /// Whether the body of the first test holds the identifier `word` as code.

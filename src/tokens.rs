@@ -129,7 +129,7 @@ impl Lexed {
     pub fn items(&self) -> Vec<Item> {
         let mut out = Vec::new();
         let mut i = 0;
-        while i < self.toks.len() {
+        while self.toks.get(i).is_some() {
             let Some((_, false)) = self.attr(i).filter(|_| !self.is_doc_comment(i)) else {
                 i += 1;
                 continue;
@@ -161,8 +161,9 @@ impl Lexed {
             let named = !self.ident(keyword + 1).is_empty();
             (closes && named).then(|| (keyword + 1, self.pair[end]..end + 1))
         };
-        let keywords = (0..self.toks.len()).filter(|&i| self.ident(i) == "fn");
-        keywords.filter_map(block).collect()
+        let places = self.toks.iter().enumerate();
+        let keywords = places.filter(|(i, _)| self.ident(*i) == "fn");
+        keywords.filter_map(|(i, _)| block(i)).collect()
     }
 
     /// Where the item at `head` ends: the brace closing its first block, its `;`, or the token
@@ -547,6 +548,13 @@ mod tests {
             matches!(docless, Verdict::CodeChanged { at: 0, .. }),
             "{docless:?}"
         );
+    }
+
+    #[test]
+    fn an_attribute_with_another_name_and_code_that_says_doc_are_no_doc_comment() {
+        let src = "#[path = \"a.rs\"]\nmod a;\nfn f() { let s = [1]; m![doc = 1]; }";
+        let toks = lex(src).unwrap();
+        assert_eq!(without_docs(&toks), (toks.clone(), 0));
     }
 
     #[test]

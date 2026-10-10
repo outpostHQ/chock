@@ -378,7 +378,8 @@ fn definitions(src: &str) -> Vec<(String, &'static str, usize)> {
         let shipped = !tested.iter().any(|span| span.contains(&i));
         (named && shipped).then(|| (name.to_string(), kind, lexed.line[at]))
     };
-    (0..lexed.toks.len()).filter_map(defines).collect()
+    let places = lexed.toks.iter().enumerate();
+    places.filter_map(|(i, _)| defines(i)).collect()
 }
 
 #[cfg(test)]

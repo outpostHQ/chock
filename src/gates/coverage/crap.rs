@@ -965,8 +965,8 @@ mod tests {
       {"file":"src/e.rs","function":"old","line":9,"crap":56.0},
       {"file":"src/b.rs","function":"edge","line":3,"crap":30.0}]}"#;
 
-    fn kept(name: &str, record: &str) -> std::path::PathBuf {
-        let dir = crate::testdir::make(name).to_path_buf();
+    fn kept(name: &str, record: &str) -> crate::testdir::Scratch {
+        let dir = crate::testdir::make(name);
         std::fs::create_dir_all(dir.join(".chock")).unwrap();
         std::fs::write(dir.join(baseline()), record).unwrap();
         dir
@@ -1009,7 +1009,7 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_record_chock_cannot_read_stops_the_gate_and_names_the_file() {
         let dir = kept("crap-bad-record", "not json");
-        let why = check(&ctx_in(dir.clone())).unwrap_err();
+        let why = check(&ctx_in(dir.to_path_buf())).unwrap_err();
         assert!(why.starts_with(&baseline()), "{why}");
         assert!(why.contains("a report chock cannot read"), "{why}");
         assert_eq!(debt(&dir), Err(why));
