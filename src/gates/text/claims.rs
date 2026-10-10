@@ -5,6 +5,7 @@ use std::ops::RangeInclusive;
 
 use crate::gates::metrics::prodlines;
 use crate::gates::metrics::testlint::finding;
+use crate::gates::source::targets::TARGET_DIRS;
 use crate::project;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Inspection, Kind};
@@ -117,12 +118,17 @@ impl Tree {
         tree
     }
 
-    /// The files whose path is `cited` or ends in it, since a document may write a path from the
-    /// crate or from `src/`.
-    fn named(&self, cited: &str) -> Vec<&str> {
+    /// The files `cited` names in `doc`. A path that starts at a directory of cargo's layout is read
+    /// from this root or from a directory above the document; another names each file ending in it.
+    fn named(&self, doc: &str, cited: &str) -> Vec<&str> {
         let name = cited.rsplit_once('/').map_or(cited, |(_, name)| name);
-        let ends = format!("/{cited}");
-        let hit = |file: &&String| *file == cited || file.ends_with(&ends);
+        let starts = |dir: &&str| project::under(cited, dir).is_some();
+        let rooted = TARGET_DIRS.iter().any(starts);
+        let hit = |file: &&String| {
+            let whole = |dir: &&str| dir.is_empty() || dir.ends_with('/');
+            let from = file.strip_suffix(cited).filter(whole);
+            from.is_some_and(|dir| !rooted || doc.starts_with(dir))
+        };
         let same_name = self.by_name.get(name).map_or(&[][..], Vec::as_slice);
         same_name.iter().filter(hit).map(String::as_str).collect()
     }
@@ -283,10 +289,10 @@ fn stale(
 ) -> Vec<Finding> {
     let mut found = Vec::new();
     for on_a_line in anchors.chunk_by(|a, b| a.line == b.line) {
-        let lacks = |a: &Anchor| a.foreign || tree.named(&a.path).is_empty();
+        let lacks = |a: &Anchor| a.foreign || tree.named(doc, &a.path).is_empty();
         let foreign = on_a_line.iter().any(lacks);
         for anchor in on_a_line {
-            let named = tree.named(&anchor.path);
+            let named = tree.named(doc, &anchor.path);
             let (Some(cited), [file]) = (anchor.last, named.as_slice()) else {
                 continue;
             };
@@ -310,7 +316,9 @@ fn refuted(doc: &str, absent: &[Absent], tree: &Tree) -> Vec<Finding> {
     let held = |claim: &Absent| {
         let name = &claim.name;
         let is = if is_a_path(name) {
-            tree.named(name).first().map(|file| format!("is {file}"))
+            tree.named(doc, name)
+                .first()
+                .map(|file| format!("is {file}"))
         } else {
             definition(claim, tree)
         };
@@ -508,28 +516,63 @@ mod tests {
     }
 
     #[test]
-    fn a_cited_path_names_each_file_that_is_it_or_ends_in_it() {
+    fn a_path_from_inside_a_crate_names_each_file_that_is_it_or_ends_in_it() {
         let tree = Tree::of(["src/gates/a.rs", "tests/gates/a.rs", "src/data.rs", "a.rs"]);
+        let named = |cited: &str| tree.named("docs/plan.md", cited);
+        assert_eq!(named("gates/a.rs"), ["src/gates/a.rs", "tests/gates/a.rs"]);
         assert_eq!(
-            tree.named("gates/a.rs"),
-            ["src/gates/a.rs", "tests/gates/a.rs"]
-        );
-        assert_eq!(
-            tree.named("a.rs"),
+            named("a.rs"),
             ["src/gates/a.rs", "tests/gates/a.rs", "a.rs"]
         );
-        assert_eq!(tree.named("src/gates/a.rs"), ["src/gates/a.rs"]);
-        assert_eq!(tree.named("ata.rs"), [""; 0]);
-        assert_eq!(tree.named("s/a.rs"), [""; 0]);
-        assert_eq!(tree.named("src/gone.rs"), [""; 0]);
+        assert_eq!(named("ata.rs"), [""; 0]);
+        assert_eq!(named("s/a.rs"), [""; 0]);
     }
 
-    /// The stale anchors in a tree whose every readable file has 120 lines.
+    #[test]
+    fn a_path_from_a_root_names_a_file_of_this_root_or_of_a_directory_above_the_document() {
+        let tree = Tree::of([
+            "src/lib.rs",
+            "crates/core/src/push.rs",
+            "crates/core/tests/it.rs",
+        ]);
+        for (doc, cited, file) in [
+            ("docs/plan.md", "src/lib.rs", Some("src/lib.rs")),
+            ("docs/plan.md", "src/gone.rs", None),
+            ("docs/plan.md", "src/push.rs", None),
+            ("docs/plan.md", "tests/it.rs", None),
+            (
+                "docs/plan.md",
+                "core/src/push.rs",
+                Some("crates/core/src/push.rs"),
+            ),
+            (
+                "docs/plan.md",
+                "crates/core/src/push.rs",
+                Some("crates/core/src/push.rs"),
+            ),
+            (
+                "crates/core/README.md",
+                "src/push.rs",
+                Some("crates/core/src/push.rs"),
+            ),
+            (
+                "crates/core/docs/deep/plan.md",
+                "tests/it.rs",
+                Some("crates/core/tests/it.rs"),
+            ),
+            ("crates/corex/README.md", "src/push.rs", None),
+        ] {
+            let expected: Vec<&str> = file.into_iter().collect();
+            assert_eq!(tree.named(doc, cited), expected, "{doc} cites {cited}");
+        }
+    }
+
+    /// The stale anchors of one document in a tree whose every readable file has 120 lines.
     fn stale_among(anchors: &[Anchor]) -> Vec<String> {
         let tree = Tree::of([
             "crates/core/src/push.rs",
-            "src/lib.rs",
-            "a/src/lib.rs",
+            "a/gates/run.rs",
+            "b/gates/run.rs",
             "data/blob.json",
         ]);
         let mut lines = |file: &str| (file != "data/blob.json").then_some(120);
@@ -540,16 +583,16 @@ mod tests {
     fn an_anchor_past_the_end_of_its_one_file_is_stale() {
         let stale = |cited: usize| {
             let what = "crates/core/src/push.rs has 120 lines; the code it named moved";
-            format!("docs/plan.md:7: stale-doc-anchor: `src/push.rs:{cited}` — {what}")
+            format!("docs/plan.md:7: stale-doc-anchor: `core/src/push.rs:{cited}` — {what}")
         };
         let found = stale_among(&[
-            cited(7, "src/push.rs", Some(121), false),
-            cited(7, "src/push.rs", Some(120), false),
-            cited(7, "src/push.rs", None, false),
+            cited(7, "core/src/push.rs", Some(121), false),
+            cited(7, "core/src/push.rs", Some(120), false),
+            cited(7, "core/src/push.rs", None, false),
             cited(7, "push.rs", Some(500), false),
-            cited(7, "src/lib.rs", Some(500), false),
+            cited(7, "gates/run.rs", Some(500), false),
             cited(7, "data/blob.json", Some(500), false),
-            cited(7, "src/push.rs", Some(500), false),
+            cited(7, "core/src/push.rs", Some(500), false),
         ]);
         assert_eq!(found, [stale(121), stale(500)]);
     }
@@ -558,11 +601,13 @@ mod tests {
     fn a_line_about_another_tree_is_checked_only_where_it_cites_a_path_from_the_root() {
         let found = stale_among(&[
             cited(3, "engine/merge.rs", Some(9), false),
-            cited(3, "src/push.rs", Some(500), false),
+            cited(3, "core/src/push.rs", Some(500), false),
             cited(3, "crates/core/src/push.rs", Some(501), false),
-            cited(4, "src/push.rs", Some(502), true),
+            cited(4, "core/src/push.rs", Some(502), true),
             cited(4, "crates/core/src/push.rs", Some(503), true),
-            cited(5, "src/push.rs", Some(504), false),
+            cited(5, "core/src/push.rs", Some(504), false),
+            cited(6, "src/push.rs", Some(505), false),
+            cited(6, "crates/core/src/push.rs", Some(120), false),
         ]);
         let stale = |line: u8, cited: &str| {
             let what = "crates/core/src/push.rs has 120 lines; the code it named moved";
@@ -571,7 +616,7 @@ mod tests {
         let expected = [
             stale(3, "crates/core/src/push.rs:501"),
             stale(4, "crates/core/src/push.rs:503"),
-            stale(5, "src/push.rs:504"),
+            stale(5, "core/src/push.rs:504"),
         ];
         assert_eq!(found, expected);
     }

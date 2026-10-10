@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+use crate::gates::cargo::modcheck;
 use crate::gates::metrics::prodlines;
 use crate::project;
 use crate::run::report::{Finding, Place};
@@ -32,13 +33,18 @@ const NO_ASSERTION: &str = "no-assertion";
 const AMBIGUOUS: &str = "ambiguous-test-name";
 const PIPEFAIL: &str = "harness-without-pipefail";
 
+/// Most tests of the same name that one finding lists; its message counts them all.
+const TWINS_SHOWN: usize = 3;
+
 /// The root directories whose scripts run a build or a test suite.
 const HARNESS_DIRS: [&str; 2] = ["bin", "scripts"];
 
 fn inspect(ctx: &Ctx) -> Result<Inspection, String> {
+    let targets = modcheck::reach(&ctx.root)?;
+    let sources = prodlines::sources(ctx)?.into_iter();
+    let shown = sources.map(|path| (project::relative(&ctx.root, &path), path));
     let mut scans = Vec::new();
-    for path in prodlines::sources(ctx)? {
-        let shown = project::relative(&ctx.root, &path);
+    for (shown, path) in shown.filter(|(shown, _)| targets.compiles(shown)) {
         let raw = std::fs::read_to_string(&path).map_err(|e| format!("{shown}: {e}"))?;
         scans.push(scan::scan_source(&shown, &raw));
     }
@@ -164,9 +170,9 @@ fn ambiguous_names(scans: &[FileScan]) -> Vec<Finding> {
             let others = tests.iter().filter(|(_, other)| !std::ptr::eq(*other, *t));
             let place =
                 |(at, other): &(&str, &TestItem)| Place::at("same name", at, line(other.line));
-            let detail = format!("`{name}` is the name of another test too");
+            let detail = format!("`{name}` is the name of {} tests", tests.len());
             let mut twin = finding(file, t.line, AMBIGUOUS, &detail);
-            twin.places = others.map(place).collect();
+            twin.places = others.take(TWINS_SHOWN).map(place).collect();
             found.extend((!twin.places.is_empty()).then_some(twin));
         }
     }
@@ -469,10 +475,11 @@ mod tests {
                 "tests/c.rs",
                 "#[test]\n// test-lint: allow(ambiguous-test-name) — one per backend\nfn round_trips() {}\n",
             ),
+            scan("tests/d.rs", "#[test]\nfn round_trips() {}\n"),
         ];
         let twins = ambiguous_names(&scans);
         let lines: Vec<String> = twins.iter().flat_map(Finding::lines).collect();
-        let message = "ambiguous-test-name: `round_trips` is the name of another test too";
+        let message = "ambiguous-test-name: `round_trips` is the name of 5 tests";
         let expected = [
             format!("tests/a.rs:1: {message}"),
             "  same name: tests/b.rs:2".to_string(),
@@ -486,6 +493,10 @@ mod tests {
             "  same name: tests/a.rs:1".to_string(),
             "  same name: tests/b.rs:2".to_string(),
             "  same name: tests/c.rs:1".to_string(),
+            format!("tests/d.rs:1: {message}"),
+            "  same name: tests/a.rs:1".to_string(),
+            "  same name: tests/b.rs:2".to_string(),
+            "  same name: tests/b.rs:5".to_string(),
         ];
         assert_eq!(lines, expected);
     }
@@ -532,6 +543,7 @@ mod tests {
                     "#[test]\nfn reads_a_file() { assert!(seen); }\n#[test]\nfn it_works() { assert!(true); }\n",
                 ),
                 ("src/notes.rs", "fn broken( {\n"),
+                ("tests/ui/pass.rs", "#[test]\nfn test() {}\n"),
                 ("scripts/ci", piped),
                 ("bin/check", piped),
                 (
@@ -545,7 +557,7 @@ mod tests {
         let inspection = inspect(&ctx).unwrap();
         assert_eq!(Finding::rendered(&inspection.blockers), [""; 0]);
         let pipe = "harness-without-pipefail: a pipe in this script hides a failed command: it does not `set -o pipefail`";
-        let twin = "ambiguous-test-name: `reads_a_file` is the name of another test too";
+        let twin = "ambiguous-test-name: `reads_a_file` is the name of 2 tests";
         let expected = [
             format!("bin/check:1: {pipe}"),
             format!("scripts/ci:1: {pipe}"),

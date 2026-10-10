@@ -95,14 +95,59 @@ fn faults(tree: &Tree) -> Result<Vec<Finding>, String> {
     Ok(findings)
 }
 
+/// What the walk from every target root found.
+#[derive(Default)]
+pub(crate) struct Reach {
+    /// Each file a root reaches by `mod`, `#[path]` or `include!`.
+    reached: BTreeSet<String>,
+    /// The directory of each file marked exempt.
+    waived: Vec<String>,
+    /// Each `mod` that names no file.
+    absent: Vec<Finding>,
+}
+
+impl Reach {
+    fn waives(&self, path: &str) -> bool {
+        let holds = |dir: &String| project::under(path, dir).is_some();
+        self.waived.iter().any(holds)
+    }
+
+    /// Whether a cargo target compiles `path`, as far as the tree says.
+    pub(crate) fn compiles(&self, path: &str) -> bool {
+        self.reached.contains(path) || self.waives(path)
+    }
+}
+
+/// What the targets under `root` compile. A tree with no manifest compiles nothing.
+pub(crate) fn reach(root: &Path) -> Result<Reach, String> {
+    let tree = Tree(read(root)?);
+    walked(&tree, &tree.crates())
+}
+
 fn inspected(tree: &Tree) -> Result<Inspection, String> {
     let crates = tree.crates();
     if crates.is_empty() {
         return Err("no Cargo.toml under the project root".to_string());
     }
-    let mut reached = BTreeSet::new();
-    let mut waived: Vec<String> = Vec::new();
-    let mut findings = Vec::new();
+    let reach = walked(tree, &crates)?;
+    let debt = tree
+        .paths()
+        .filter(|path| path.ends_with(".rs"))
+        .filter(|path| !reach.reached.contains(*path))
+        .filter(|path| compiled(&crates, path))
+        .filter(|path| project::is_crate_code(path, &crates))
+        .filter(|path| !reach.waives(path))
+        .map(undeclared)
+        .collect();
+    Ok(Inspection {
+        debt,
+        blockers: reach.absent,
+    })
+}
+
+/// Follows each `mod`, `#[path]` and `include!` from every target root of `crates`.
+fn walked(tree: &Tree, crates: &[String]) -> Result<Reach, String> {
+    let mut reach = Reach::default();
     let mut queue: VecDeque<Site> = crates
         .iter()
         .flat_map(|dir| roots(tree, dir))
@@ -113,14 +158,14 @@ fn inspected(tree: &Tree) -> Result<Inspection, String> {
         .collect();
 
     while let Some(site) = queue.pop_front() {
-        if !reached.insert(site.path.clone()) {
+        if !reach.reached.insert(site.path.clone()) {
             continue;
         }
         let Some(src) = tree.get(&site.path) else {
             continue;
         };
         if src.contains(WAIVER) {
-            waived.push(site.base);
+            reach.waived.push(site.base);
             continue;
         }
         let found = match reaches(src, &site.base, &beside(&site.path)) {
@@ -128,7 +173,7 @@ fn inspected(tree: &Tree) -> Result<Inspection, String> {
             // Outside `src/` a file may be test input that never parses, as may an `include!`d
             // fragment; under `src/` the build would fail too.
             Err(_)
-                if !project::is_crate_code(&site.path, &crates) || pulled_in(tree, &site.path) =>
+                if !project::is_crate_code(&site.path, crates) || pulled_in(tree, &site.path) =>
             {
                 continue;
             }
@@ -137,26 +182,13 @@ fn inspected(tree: &Tree) -> Result<Inspection, String> {
         for (decl, reportable) in found.declarations() {
             let named = sites(tree, decl);
             if named.is_empty() && reportable {
-                findings.push(absent(&site.path, decl));
+                reach.absent.push(absent(&site.path, decl));
             }
             queue.extend(named);
         }
         queue.extend(found.spliced);
     }
-
-    let debt = tree
-        .paths()
-        .filter(|path| path.ends_with(".rs"))
-        .filter(|path| !reached.contains(*path))
-        .filter(|path| compiled(&crates, path))
-        .filter(|path| project::is_crate_code(path, &crates))
-        .filter(|path| !waived.iter().any(|dir| project::under(path, dir).is_some()))
-        .map(undeclared)
-        .collect();
-    Ok(Inspection {
-        debt,
-        blockers: findings,
-    })
+    Ok(reach)
 }
 
 /// A blocker: `cargo fmt --all` aborts on a `mod` with no file, breaking every commit hook.
@@ -1050,6 +1082,33 @@ mod tests {
             ]),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn a_target_compiles_what_a_root_reaches_and_what_a_waived_file_owns() {
+        let files = [
+            ("Cargo.toml", ""),
+            ("src/lib.rs", "mod held;\n"),
+            ("src/held.rs", ""),
+            ("src/loose.rs", ""),
+            ("tests/it.rs", "mod made;\n"),
+            ("tests/made/mod.rs", "// chock:modcheck-exempt\n"),
+            ("tests/made/by_a_macro.rs", ""),
+            ("tests/ui/pass.rs", ""),
+        ];
+        let tree = tree(&files);
+        let reach = walked(&tree, &tree.crates()).unwrap();
+        let compiled: Vec<&str> = (files.iter().map(|(path, _)| *path))
+            .filter(|path| reach.compiles(path))
+            .collect();
+        let expected = [
+            "src/lib.rs",
+            "src/held.rs",
+            "tests/it.rs",
+            "tests/made/mod.rs",
+            "tests/made/by_a_macro.rs",
+        ];
+        assert_eq!(compiled, expected);
     }
 
     #[test]

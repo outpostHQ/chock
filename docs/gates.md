@@ -120,8 +120,9 @@ whole tree.
   rustfmt breaks it over lines. A copy can bind at most 3 names that later code reads, and the
   function returns them. A group counts only when it removes 6 lines or more. Each file holds its
   share of each group, and the lines of each private function that only passes its parameters on.
-- **How `testlint` reads a test.** It reads each `#[test]` function of the tree. Each finding
-  names one of ten rules:
+- **How `testlint` reads a test.** It reads each `#[test]` function in the files that a cargo
+  target compiles. A file that no target reaches by `mod`, `#[path]` or `include!` is data that a
+  harness reads, such as a UI fixture; it holds no test. Each finding names one of ten rules:
 
   | rule | what it finds |
   |---|---|
@@ -146,6 +147,10 @@ whole tree.
 
   A comment between the first attribute of a test and its closing brace leaves one rule out for
   that test: `// test-lint: allow(<rule>) — <reason>`.
+
+  An `ambiguous-test-name` finding gives the number of tests with that name and lists at most 3
+  of them. A file with the comment `chock:modcheck-exempt` declares its modules with a macro, so
+  each file in its directory counts as compiled.
 - **How `claims` reads a document.** It reads each `.md` file of the tree. A fenced block claims
   nothing. A code span that names a file of the tree and a line is an anchor: one line, a range
   or a list. A comment states what the tree does not hold, and the gate checks it:
@@ -162,6 +167,11 @@ whole tree.
   | `absent-claim-refuted` | an `absent:` item that production code defines, or a path that the tree holds |
   | `unverifiable-absence-claim` | an `absent:` item that is neither a symbol nor a path |
   | `absence-waiver-without-reason` | an `absent-by-design:` comment with no reason |
+
+  A path that starts at `src/`, `tests/`, `examples/` or `benches/` is written from a root. It
+  names a file from the root of this tree, or from a directory above the document, such as the
+  crate that holds the document. Any other path with a `/` names the one file that ends in it. A
+  path that names no file of this tree is about another tree, and the gate does not check it.
 
   The text after `doc-check: foreign` describes another tree, up to `doc-check: ours`. There the
   gate checks only a path written from the root of this tree.

@@ -5,6 +5,22 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-10
+
+Two gates of 0.5.0 gave wrong findings. No command, flag or JSON field changes. A record of
+`testlint` or `claims` can only go down.
+
+- **`testlint` reads only the files that a cargo target compiles.** 0.5.0 read each `.rs` file,
+  so a UI fixture with `#[test] fn test()` counted as a test of the project, and each new fixture
+  tripped the gate. A file that no target reaches by `mod`, `#[path]` or `include!` is data now.
+- **`ambiguous-test-name` counts the tests of one name.** The finding lists at most 3 of them.
+  0.5.0 listed each one, which gave 22861 lines for one tree.
+- **`claims` reads a path that starts at `src/` from a root.** 0.5.0 matched each cited path by
+  its end, so a note about another repository that cited a line of a `src/` file was checked
+  against a file of that name in a crate of this tree. A path that starts at `src/`, `tests/`,
+  `examples/` or `benches/` now names a file from the root of the tree, or from a directory above
+  the document. Any other path still names the one file that ends in it.
+
 ## [0.5.0] - 2026-10-10
 
 No command or flag is removed or renamed. The JSON report of `chock run` does not change. Two
