@@ -52,15 +52,13 @@ fn have(start: Start, cwd: &Path) -> Have {
 }
 
 fn complete(listing: &str) -> bool {
-    PARTS
-        .iter()
-        .all(|part| listing.lines().any(|line| names(line.trim(), part)))
-}
-
-/// `miri-x86_64-unknown-linux-gnu` names `miri`; `rust-src` has no host in its name.
-fn names(line: &str, part: &str) -> bool {
-    line.strip_prefix(part)
-        .is_some_and(|host| host.is_empty() || host.starts_with('-'))
+    PARTS.iter().all(|part| {
+        // `miri-x86_64-unknown-linux-gnu` names `miri`; `rust-src` has no host in its name.
+        let mut hosts = listing
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix(*part));
+        hosts.any(|host| host.is_empty() || host.starts_with('-'))
+    })
 }
 
 /// Adds what is missing; an installed `nightly` keeps its date. `Ok` and `Err` both hold the line

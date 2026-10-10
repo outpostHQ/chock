@@ -12,6 +12,8 @@ chock baseline GATE...      raise a record to where this tree is; read the rule 
 chock lean [DIR] --json     every line this tree could lose, file by file; no record
 chock oracle --old A --new B --corpus FILE --json
                             two builds over the same scenarios; each answer compared
+chock sweep REV [PATH...]   proof that only comments changed since REV; exit 1 where code did
+chock moved REV PATH...     proof that code only moved between these files since REV
 ```
 
 Exit codes: `0` every gate passed, `1` a gate tripped, `2` a gate could not run.

@@ -59,14 +59,9 @@ pub enum Command<'a> {
 /// A command that takes its own arguments apart, or the error for a word that is no command.
 fn named<'a>(cmd: &'a str, rest: &'a [&'a str]) -> Command<'a> {
     match cmd {
-        "lean" | "oracle" => Command::Tree(cmd, rest),
+        "lean" | "oracle" | "sweep" | "moved" => Command::Tree(cmd, rest),
         _ => Command::Usage(format!("unknown command `{cmd}`")),
     }
-}
-
-/// `--help` or `-h` anywhere after a command; `init` answers it with its own text.
-fn asks_for_help(rest: &[&str]) -> bool {
-    rest.iter().any(|arg| matches!(*arg, "--help" | "-h"))
 }
 
 /// Accepts `--json` anywhere after the subcommand.
@@ -147,7 +142,12 @@ fn miri_part(names: &[&str]) -> Result<Option<Part>, String> {
 #[must_use]
 pub fn parse<'a>(args: &'a [&'a str]) -> Command<'a> {
     match args {
-        [cmd, rest @ ..] if *cmd != "init" && asks_for_help(rest) => Command::Print(USAGE),
+        // `--help` or `-h` anywhere after a command; `init` answers it with its own text.
+        [cmd, rest @ ..]
+            if *cmd != "init" && rest.iter().any(|arg| matches!(*arg, "--help" | "-h")) =>
+        {
+            Command::Print(USAGE)
+        }
         ["run", rest @ ..] => to_run(rest),
         ["gates", rest @ ..] => json_only("gates", rest, |json| Command::Gates { json }),
         ["enable", rest @ ..] => configures("enable", rest.to_vec(), Change::On),
@@ -258,6 +258,9 @@ mod tests {
             parse(&["oracle", "--old", "a"]),
             Command::Tree("oracle", &["--old", "a"])
         );
+        assert_eq!(parse(&["sweep", "main"]), Command::Tree("sweep", &["main"]));
+        let moved = Command::Tree("moved", &["main", "a.rs"]);
+        assert_eq!(parse(&["moved", "main", "a.rs"]), moved);
     }
 
     #[test]

@@ -145,7 +145,12 @@ pub fn crates(root: &Path, metadata_json: &str) -> Result<Vec<Crate>, String> {
                 .collect(),
             ..Crate::default()
         };
-        for file in files.iter().filter(|file| owner(file, &dirs) == Some(dir)) {
+        // A file belongs to the deepest crate directory holding it, never to that crate's parent.
+        let own = files.iter().filter(|file| {
+            let holding = dirs.iter().filter(|dir| file.starts_with(dir));
+            holding.max_by_key(|dir| dir.components().count()) == Some(dir)
+        });
+        for file in own {
             sort(&mut held, dir, file)?;
         }
         read.push(held);
@@ -159,13 +164,6 @@ fn rust_files(root: &Path) -> Result<Vec<PathBuf>, String> {
         &|name| !crate::project::SKIPPED.contains(&name),
         &|name, _| name.ends_with(".rs"),
     )
-}
-
-/// The deepest crate directory holding a file, so a nested crate's sources are never its parent's.
-fn owner<'a>(file: &Path, dirs: &'a [PathBuf]) -> Option<&'a PathBuf> {
-    dirs.iter()
-        .filter(|dir| file.starts_with(dir))
-        .max_by_key(|dir| dir.components().count())
 }
 
 /// Adds a file's text to the crate's production or test code. A file that does not parse counts as

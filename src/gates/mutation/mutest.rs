@@ -188,11 +188,6 @@ fn survivor_counts(
     Ok(found)
 }
 
-/// Whether more than `TIMEOUT_LIMIT` percent of the mutations a run attempted timed out.
-fn over_limit(totals: &survivors::Totals) -> bool {
-    u128::from(totals.timed_out) * 100 > u128::from(totals.total) * u128::from(TIMEOUT_LIMIT)
-}
-
 /// What mutest prints once it has re-run each timed-out mutation alone with a longer limit.
 const CONFIRMED: &str = "timeouts confirmed:";
 
@@ -211,7 +206,8 @@ fn confirmed(out: &exec::Output) -> bool {
 
 /// Whether the timeouts may come from load: past `TIMEOUT_LIMIT` percent, and none re-run alone.
 fn untrusted(out: &exec::Output, totals: &survivors::Totals) -> bool {
-    over_limit(totals) && !confirmed(out)
+    u128::from(totals.timed_out) * 100 > u128::from(totals.total) * u128::from(TIMEOUT_LIMIT)
+        && !confirmed(out)
 }
 
 /// `read` for a run of only some files, or `None` where their mutations alone pass the timeout

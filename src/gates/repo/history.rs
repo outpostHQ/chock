@@ -118,7 +118,8 @@ const SHORTEST: usize = 7;
 /// The leaks no entry in `accepted` names. An entry with no reason, or too little of its commit to
 /// name one without doubt, is an error: it could accept a leak nobody reviewed.
 fn unaccepted(found: &[Leak], accepted: &[Accepted]) -> Result<Vec<Finding>, String> {
-    if let Some(entry) = accepted.iter().find(|entry| vague(entry)) {
+    let vague = |entry: &&Accepted| entry.commit.len() < SHORTEST || entry.reason.trim().is_empty();
+    if let Some(entry) = accepted.iter().find(vague) {
         return Err(format!(
             "the accepted {} leak in {} needs a reason and at least {SHORTEST} characters of its \
              commit",
@@ -130,10 +131,6 @@ fn unaccepted(found: &[Leak], accepted: &[Accepted]) -> Result<Vec<Finding>, Str
         .filter(|leak| !accepted.iter().any(|entry| accepts(entry, leak)))
         .map(finding)
         .collect())
-}
-
-fn vague(entry: &Accepted) -> bool {
-    entry.commit.len() < SHORTEST || entry.reason.trim().is_empty()
 }
 
 /// Whether the entry names this leak: its rule, its file, and the commit the scan names or a start
@@ -251,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn output_in_a_shape_chock_does_not_know_stops_the_gate() {
+    fn a_scan_in_a_shape_chock_does_not_know_stops_the_history_gate() {
         assert!(
             leaks(&said("not json"), WHOLE, &[])
                 .unwrap_err()

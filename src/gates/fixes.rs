@@ -65,7 +65,7 @@ fn installing(tool: &str) -> &'static str {
     }
 }
 
-const FIXES: [(&str, &str); 55] = [
+const FIXES: [(&str, &str); 57] = [
     (
         "test",
         "run the rerun command, read each failing test's output, and fix the code or the test; a crate with no tests needs one",
@@ -87,8 +87,18 @@ const FIXES: [(&str, &str); 55] = [
         "assert the values the test produced, such as `assert_eq!(found, [..])`, rather than how many there are",
     ),
     (
+        "testlint",
+        "give the test an assertion on what the code returned, a reason on its `#[ignore]`, the \
+         expected text on its `#[should_panic]`, or a name that states the claim; a rule that is \
+         wrong for one test is waived in it with `// test-lint: allow(<rule>) — reason`.",
+    ),
+    (
         "citations",
         "point the doc comment at a path that exists, or stop backticking a path that is only an example",
+    ),
+    (
+        "claims",
+        "cite a line the file still has, or the path with no line; drop from the `<!-- absent: … -->` list what the tree now holds, and give each `absent-by-design` its reason after a dash",
     ),
     (
         "commits",

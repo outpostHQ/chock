@@ -310,11 +310,6 @@ impl Config {
         asked
     }
 
-    #[must_use]
-    pub fn render(&self) -> String {
-        document::render(self)
-    }
-
     /// `true` when this changed the set, so a caller can tell "switched on" from "already on".
     pub fn enable(&mut self, gate: &str) -> bool {
         self.left_off.remove(gate);
@@ -475,14 +470,14 @@ mod tests {
     fn a_config_round_trips_through_its_file_format() {
         let config = Config::of(["lint", "slop"]);
         assert_eq!(
-            document::parse::<Config>(&config.render(), "c").unwrap(),
+            document::parse::<Config>(&document::render(&config), "c").unwrap(),
             config
         );
     }
 
     #[test]
     fn the_rendered_file_is_sorted_so_two_runs_of_init_agree() {
-        let text = Config::of(["slop", "lint", "deps"]).render();
+        let text = document::render(&Config::of(["slop", "lint", "deps"]));
         assert!(text.find("\"deps\"") < text.find("\"lint\""));
         assert!(text.find("\"lint\"") < text.find("\"slop\""));
         assert!(text.ends_with("}\n"));
@@ -583,7 +578,7 @@ mod tests {
         let dir = crate::testdir::make("config-roundtrip");
         let config = Config::of(["lint"]);
         std::fs::create_dir_all(dir.join(".chock")).unwrap();
-        std::fs::write(dir.join(FILE), config.render()).unwrap();
+        std::fs::write(dir.join(FILE), document::render(&config)).unwrap();
         assert_eq!(document::read::<Config>(&dir), Ok(Some(config)));
     }
 
@@ -616,7 +611,7 @@ mod tests {
             ]),
             ..Config::of(["test"])
         };
-        let read = document::parse::<Config>(&written.render(), "c.json").unwrap();
+        let read = document::parse::<Config>(&document::render(&written), "c.json").unwrap();
         assert_eq!(
             read.runner,
             Some(vec![
@@ -634,14 +629,14 @@ mod tests {
             coverage_tools: Some(vec!["cargo-llvm-cov".to_string()]),
             ..Config::of(["test"])
         };
-        let read = document::parse::<Config>(&written.render(), "c.json").unwrap();
+        let read = document::parse::<Config>(&document::render(&written), "c.json").unwrap();
         assert_eq!(read, written);
-        assert!(!Config::of(["test"]).render().contains("_tools"));
+        assert!(!document::render(&Config::of(["test"])).contains("_tools"));
     }
 
     #[test]
     fn a_config_on_the_default_runner_writes_no_runner_key() {
-        assert!(!Config::of(["test"]).render().contains("runner"));
+        assert!(!document::render(&Config::of(["test"])).contains("runner"));
     }
 
     #[test]

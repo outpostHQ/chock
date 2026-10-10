@@ -92,7 +92,7 @@ fn release_profile(doc: &Doc, binary: bool, review: &mut Review) {
         free_wins(doc, review);
         unchecked_overflow(doc, review);
     }
-    if full_debug(doc) && !strips(doc) {
+    if doc.get(&under(RELEASE, "debug")).is_some_and(is_full_debug) && !strips(doc) {
         review.fail(about(
             doc,
             "debug",
@@ -226,12 +226,6 @@ fn linked_whole(doc: &Doc) -> bool {
         Some(Value::Text(mode)) => matches!(mode.as_str(), "fat" | "thin" | "true"),
         _ => false,
     }
-}
-
-/// Whether release asks for full debug information (`true`, `2` or `"full"`); lower levels carry
-/// only line tables.
-fn full_debug(doc: &Doc) -> bool {
-    doc.get(&under(RELEASE, "debug")).is_some_and(is_full_debug)
 }
 
 fn is_full_debug(value: &Value) -> bool {
@@ -375,17 +369,17 @@ fn rustflags(sources: &Sources, review: &mut Review) -> Result<(), String> {
         return Ok(());
     };
     let doc = parse(text).map_err(|e| format!("{file}: {e}"))?;
-    for (key, (value, line)) in doc.keys.iter().filter(|(key, _)| carries_flags(key)) {
+    let carry_flags = doc.keys.iter().filter(|(key, _)| {
+        key.as_str() == "build.rustflags"
+            || (key.starts_with("target.") && key.ends_with(".rustflags"))
+    });
+    for (key, (value, line)) in carry_flags {
         for flag in neutralizing(&arguments(value)) {
             let message = format!("\"{flag}\" switches a check off for every build");
             review.fail(Finding::at(file, &message).line(*line).item(key));
         }
     }
     Ok(())
-}
-
-fn carries_flags(key: &str) -> bool {
-    key == "build.rustflags" || (key.starts_with("target.") && key.ends_with(".rustflags"))
 }
 
 /// The flags from a list or one space-separated string, as cargo accepts. Any other shape yields

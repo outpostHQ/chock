@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    fn a_file_cargo_never_compiles_that_the_parser_rejects_is_passed_over() {
+    fn the_line_count_passes_over_a_file_cargo_never_compiles_that_the_parser_rejects() {
         let root = tree(
             "prodlines-corpus",
             &[

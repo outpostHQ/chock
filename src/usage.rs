@@ -43,6 +43,8 @@ Cut code, then show that nothing changed
   chock lean --tests --min N      count test code too; list only files with N lines to lose
   chock oracle --old A --new B --corpus FILE
                                   run two builds over the same scenarios and compare each answer
+  chock sweep REV [PATH...]       prove that only comments changed since REV, file by file
+  chock moved REV PATH...         prove that code only moved between the files since REV
 
 Options
   --json                          machine-readable output, for an agent or a CI job

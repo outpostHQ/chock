@@ -6,7 +6,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use crate::project::workspace::{Metadata, Package};
-use proc_macro2::{Delimiter, Span, TokenStream, TokenTree};
+use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use syn::visit::Visit;
 
 use crate::gates::source::targets::{TARGET_DIRS, join};
@@ -225,7 +225,9 @@ fn reached<'a>(package: &'a Package, read: &'a Read) -> BTreeSet<&'a str> {
         .features
         .values()
         .flatten()
-        .filter_map(|entry| plain(entry.as_str()));
+        // `dep:serde` and `serde/derive` name a dependency, not a feature of this manifest.
+        .filter(|entry| !entry.contains('/') && !entry.starts_with("dep:"))
+        .map(String::as_str);
     let required = package
         .targets
         .iter()
@@ -242,12 +244,6 @@ fn reached<'a>(package: &'a Package, read: &'a Read) -> BTreeSet<&'a str> {
         .chain(required)
         .chain(scripted)
         .collect()
-}
-
-/// The entry as a feature of this manifest, or `None` for `dep:serde` or `serde/derive`, which
-/// name a dependency.
-fn plain(entry: &str) -> Option<&str> {
-    (!entry.contains('/') && !entry.starts_with("dep:")).then_some(entry)
 }
 
 /// The build-script variable for a feature: `slow-tests` becomes `CARGO_FEATURE_SLOW_TESTS`.
@@ -332,7 +328,7 @@ fn named(tokens: TokenStream, out: &mut Vec<Site>) {
         if let syn::Lit::Str(text) = syn::Lit::new(value.clone()) {
             out.push(Site {
                 feature: text.value(),
-                line: line_of(value.span()),
+                line: u32::try_from(value.span().start().line).unwrap_or(u32::MAX),
             });
         }
     }
@@ -399,10 +395,6 @@ fn literals(tokens: TokenStream, out: &mut BTreeSet<String>) {
             _ => {}
         }
     }
-}
-
-fn line_of(span: Span) -> u32 {
-    u32::try_from(span.start().line).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]
@@ -607,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn both_directions_are_reported_in_one_run() {
+    fn both_directions_of_a_feature_fault_are_reported_in_one_run() {
         assert_eq!(
             rendered(
                 r#""stale":[]"#,
@@ -783,7 +775,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_that_is_not_json_is_refused_rather_than_read_as_clean() {
+    fn feature_metadata_that_is_not_json_is_refused_rather_than_read_as_clean() {
         assert!(faults(root(), "not json", &tree(&[])).is_err());
     }
 

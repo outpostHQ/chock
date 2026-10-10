@@ -22,7 +22,7 @@ pub fn from_version_output(output: &str) -> Option<String> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i].is_ascii_digit()
-            && (i == 0 || !is_version_char(bytes[i - 1]))
+            && (i == 0 || !matches!(bytes[i - 1], b'0'..=b'9' | b'.'))
             && let Some(end) = semver_end(bytes, i)
         {
             return Some(output[i..end].to_string());
@@ -30,10 +30,6 @@ pub fn from_version_output(output: &str) -> Option<String> {
         i += 1;
     }
     None
-}
-
-fn is_version_char(b: u8) -> bool {
-    b.is_ascii_digit() || b == b'.'
 }
 
 /// The end of a `digits.digits.digits` run starting at `start`, or `None` if there is not one.

@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_the_parser_rejects_stops_the_gate() {
+    fn a_file_the_parser_rejects_stops_the_nesting_gate() {
         assert!(depths("fn f( {\n").is_err());
     }
 }

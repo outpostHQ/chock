@@ -226,7 +226,11 @@ pub fn holding(root: &Path, said: Option<&crate::project::config::Config>) -> Op
 #[must_use]
 pub fn live_holder(root: &Path) -> Option<Kind> {
     match holders(root).as_slice() {
-        [] => enclosed_by_git(root).then_some(Kind::Git),
+        // Git finds a repository above a project holding none itself, as a nested crate does. Its
+        // walk stops at `GIT_CEILING_DIRECTORIES`, which keeps test scratch out of this one.
+        [] => exec::run("git", &["rev-parse", "--show-toplevel"], root)
+            .is_ok_and(|out| out.success())
+            .then_some(Kind::Git),
         [only] => Some(*only),
         // Measured rather than preferring one: either system can be the mirror.
         _ => Some(live(
@@ -234,12 +238,6 @@ pub fn live_holder(root: &Path) -> Option<Kind> {
             commits_of(root, Kind::Outpost).ok(),
         )),
     }
-}
-
-/// Whether git finds a repository above a project holding none itself, as a nested crate does.
-/// Git's own walk stops at `GIT_CEILING_DIRECTORIES`, which keeps test scratch out of this one.
-fn enclosed_by_git(root: &Path) -> bool {
-    exec::run("git", &["rev-parse", "--show-toplevel"], root).is_ok_and(|out| out.success())
 }
 
 /// The git repository above a project that holds none itself, and the project's path within it
@@ -764,6 +762,37 @@ struct Branch {
     commit_id: String,
 }
 
+/// Every Rust file under `root` that differs between `rev` and the working tree and is still
+/// there, relative to `root`.
+pub fn rust_changed_since(root: &Path, rev: &str) -> Result<Vec<String>, String> {
+    let filter = ["--relative", "--diff-filter=d", rev, "--", "*.rs"];
+    let args = [&["diff", "--name-only"][..], &filter].concat();
+    let out = exec::tool(root, "git", &args)?;
+    if !out.success() {
+        return Err(reason(&format!("git could not compare with `{rev}`"), &out));
+    }
+    let paths = out.stdout.lines().filter(|path| !path.is_empty());
+    Ok(paths.map(str::to_string).collect())
+}
+
+/// The text `rev` holds for a file named from `root`, or none when it holds no such file.
+pub fn text_at(root: &Path, rev: &str, path: &str) -> Result<Option<String>, String> {
+    let out = exec::tool(root, "git", &["show", &format!("{rev}:./{path}")])?;
+    read_text_at(&out).map_err(|why| format!("git could not read `{path}` at `{rev}`: {why}"))
+}
+
+/// Git exits the same for a path the revision lacks as for any other failure, so its words tell
+/// the two apart. A capture cut short is no file.
+fn read_text_at(out: &exec::Output) -> Result<Option<String>, String> {
+    let lacks = ["does not exist", "exists on disk, but not in"];
+    match out.success() {
+        true if out.truncated => Err("the file is larger than chock reads".to_string()),
+        true => Ok(Some(out.stdout.clone())),
+        false if lacks.iter().any(|said| out.stderr.contains(said)) => Ok(None),
+        false => Err(out.why_it_failed().to_string()),
+    }
+}
+
 fn reason(what: &str, out: &exec::Output) -> String {
     format!("{what}: {}", out.why_it_failed())
 }
@@ -1033,6 +1062,84 @@ mod tests {
     fn git(root: &Path, args: &[&str]) {
         let out = exec::run("git", args, root).unwrap();
         assert!(out.success(), "git {args:?}: {}", out.stderr);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn the_rust_files_that_differ_from_a_revision_are_named_from_the_directory_asked() {
+        let root = repo("vcs-sweep");
+        std::fs::create_dir(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/b.rs"), "fn g() {}\n").unwrap();
+        std::fs::write(root.join("sub/notes.md"), "notes\n").unwrap();
+        git(&root, &["add", "sub"]);
+        git(&root, &["commit", "--quiet", "-m", "third"]);
+        std::fs::write(root.join("sub/b.rs"), "fn g() { }\n").unwrap();
+        std::fs::write(root.join("sub/notes.md"), "more\n").unwrap();
+        assert_eq!(
+            rust_changed_since(&root, "HEAD~2").unwrap(),
+            ["a.rs", "sub/b.rs"]
+        );
+        assert_eq!(rust_changed_since(&root, "HEAD").unwrap(), ["sub/b.rs"]);
+        assert_eq!(
+            rust_changed_since(&root.join("sub"), "HEAD~2").unwrap(),
+            ["b.rs"]
+        );
+        std::fs::remove_file(root.join("a.rs")).unwrap();
+        assert_eq!(rust_changed_since(&root, "HEAD~2").unwrap(), ["sub/b.rs"]);
+        let err = rust_changed_since(&root, "no-such-rev").unwrap_err();
+        assert!(
+            err.starts_with("git could not compare with `no-such-rev`: "),
+            "{err}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_file_s_text_at_a_revision_is_read_and_a_file_the_revision_lacks_is_none() {
+        let root = repo("vcs-text-at");
+        std::fs::create_dir(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/b.rs"), "fn g() {}\n").unwrap();
+        git(&root, &["add", "sub"]);
+        git(&root, &["commit", "--quiet", "-m", "third"]);
+        let first = Some("fn f() -> u8 { 1 }\n".to_string());
+        assert_eq!(text_at(&root, "HEAD~2", "a.rs"), Ok(first));
+        let sub = root.join("sub");
+        assert_eq!(
+            text_at(&sub, "HEAD", "b.rs"),
+            Ok(Some("fn g() {}\n".to_string()))
+        );
+        assert_eq!(text_at(&root, "HEAD~1", "sub/b.rs"), Ok(None));
+        assert_eq!(text_at(&root, "HEAD", "never.rs"), Ok(None));
+        let err = text_at(&root, "no-such-rev", "a.rs").unwrap_err();
+        let said = "git could not read `a.rs` at `no-such-rev`: ";
+        assert!(err.starts_with(said), "{err}");
+    }
+
+    #[test]
+    fn a_capture_of_a_file_cut_short_is_an_error_and_not_the_file() {
+        let whole = exec::Output::of(Some(0), "fn f() {}\n", "");
+        assert_eq!(read_text_at(&whole), Ok(Some("fn f() {}\n".to_string())));
+        let cut = exec::Output {
+            truncated: true,
+            ..exec::Output::of(Some(0), "fn f() {", "")
+        };
+        let err = "the file is larger than chock reads".to_string();
+        assert_eq!(read_text_at(&cut), Err(err));
+        let on_disk = "fatal: path 'b.rs' exists on disk, but not in 'HEAD~1'";
+        assert_eq!(
+            read_text_at(&exec::Output::of(Some(128), "", on_disk)),
+            Ok(None)
+        );
+        let lacks = "fatal: path 'b.rs' does not exist in 'HEAD'";
+        assert_eq!(
+            read_text_at(&exec::Output::of(Some(128), "", lacks)),
+            Ok(None)
+        );
+        let cut_lack = exec::Output {
+            truncated: true,
+            ..exec::Output::of(Some(128), "", lacks)
+        };
+        assert_eq!(read_text_at(&cut_lack), Ok(None));
     }
 
     fn repo(name: &str) -> crate::testdir::Scratch {

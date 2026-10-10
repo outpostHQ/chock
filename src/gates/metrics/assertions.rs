@@ -602,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_the_parser_rejects_stops_the_gate() {
+    fn a_file_the_parser_rejects_stops_the_assertions_gate() {
         assert!(counted("fn f( {\n").is_err());
     }
 }

@@ -51,7 +51,11 @@ pub(super) fn within(measured: Measurement, was: &Series, files: &[String]) -> M
     let mut series = Series(
         was.0
             .iter()
-            .filter(|(key, _)| !files.iter().any(|file| file == file_of(key)))
+            .filter(|(key, _)| {
+                // The file in a `file#operator` key.
+                let named = key.rsplit_once('#').map_or(key.as_str(), |(file, _)| file);
+                !files.iter().any(|file| file == named)
+            })
             .map(|(key, count)| (key.clone(), *count))
             .collect(),
     );
@@ -99,11 +103,6 @@ fn widening(files: usize) -> Finding {
 /// A note on what a local run mutated.
 fn local(text: &str) -> Finding {
     Finding::at("", text).item("local run")
-}
-
-/// The file in a `file#operator` key.
-fn file_of(key: &str) -> &str {
-    key.rsplit_once('#').map_or(key, |(file, _)| file)
 }
 
 #[cfg(test)]

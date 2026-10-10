@@ -276,10 +276,10 @@ pub fn gathered(
         crate::setup::miri::standing(start, root)
     }));
     rows.extend(machine_health(root, extra));
-    rows.extend(editor_hook(
-        wired_into_an_editor(root),
-        crate::edited::since_firing(root),
-    ));
+    // Doctor does not report on an editor hook that chock did not wire into the settings it writes.
+    let wired = std::fs::read_to_string(root.join(".claude/settings.json"))
+        .is_ok_and(|held| held.contains(crate::setup::agents::ON_EDIT));
+    rows.extend(editor_hook(wired, crate::edited::since_firing(root)));
     rows.extend(git_hooks(&crate::setup::hooks::installed_hooks(root)));
     // Only where Outpost holds this tree: elsewhere Outpost answers for an ancestor repository.
     let outpost_holds = vcs::holders(root).contains(&vcs::Kind::Outpost);
@@ -295,13 +295,6 @@ pub fn gathered(
         rows.extend(recounted(&held, &ratchet_units()));
     }
     rows
-}
-
-/// Whether chock's own editor hook is in the settings it writes. Doctor does not report on a hook
-/// that chock did not wire.
-fn wired_into_an_editor(root: &std::path::Path) -> bool {
-    std::fs::read_to_string(root.join(".claude/settings.json"))
-        .is_ok_and(|held| held.contains(crate::setup::agents::ON_EDIT))
 }
 
 /// Default gates neither on nor recorded as off, which an older `init` dropped. `enable` or

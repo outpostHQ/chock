@@ -10,4 +10,5 @@ pub mod lean;
 pub mod nesting;
 pub mod prodlines;
 pub mod splits;
+pub mod testlint;
 pub mod unsafety;

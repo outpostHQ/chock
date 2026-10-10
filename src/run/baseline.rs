@@ -62,12 +62,6 @@ impl Keys {
             Self::Measures | Self::Census | Self::Items => was,
         }
     }
-
-    /// Whether a key a run no longer produces is a fix to drop from the record. A census row that
-    /// stops arriving is a check that stopped, which the comparison fails instead.
-    fn drops_gone(self) -> bool {
-        !matches!(self, Self::Census)
-    }
 }
 
 /// One gate's numbers, lower always better. A `BTreeMap` so the file is sorted and diffs are small.
@@ -123,7 +117,9 @@ impl Series {
         for (key, &was) in &held.0 {
             match self.get(key) {
                 Some(now) => out.set(key, now.min(was)),
-                None if keys.drops_gone() => {
+                // A key a run no longer produces is a fix to drop. A census row that stops
+                // arriving is a check that stopped, which the comparison fails instead.
+                None if !matches!(keys, Keys::Census) => {
                     out.0.remove(key);
                 }
                 None => {}
@@ -306,11 +302,6 @@ impl Baseline {
 
     pub fn set(&mut self, name: &str, series: Series) {
         self.gates.insert(kept_here(name), series);
-    }
-
-    #[must_use]
-    pub fn render(&self) -> String {
-        document::render(self)
     }
 }
 
@@ -711,7 +702,7 @@ mod tests {
     fn a_baseline_round_trips_through_its_file_format() {
         let mut base = Baseline::empty("0.1.0");
         base.set("bigfiles", series(&[("src/init.rs", 888)]));
-        let text = base.render();
+        let text = document::render(&base);
         assert_eq!(document::parse::<Baseline>(&text, "t").unwrap(), base);
     }
 
@@ -719,7 +710,7 @@ mod tests {
     fn the_rendered_file_is_sorted_and_ends_in_a_newline() {
         let mut base = Baseline::empty("0.1.0");
         base.set("g", series(&[("z", 1), ("a", 2)]));
-        let text = base.render();
+        let text = document::render(&base);
         assert!(text.ends_with("}\n"));
         assert!(text.find("\"a\"") < text.find("\"z\""));
     }
@@ -764,7 +755,7 @@ mod tests {
         let mut base = Baseline::empty("0.1.0");
         base.set("slop", series(&[("src/a.rs", 3)]));
         std::fs::create_dir_all(dir.join(".chock")).unwrap();
-        std::fs::write(dir.join(FILE), base.render()).unwrap();
+        std::fs::write(dir.join(FILE), document::render(&base)).unwrap();
         assert_eq!(document::read::<Baseline>(&dir), Ok(Some(base)));
     }
 
@@ -813,7 +804,7 @@ mod tests {
     /// On Windows this path holds `\`, which the report writes as `\\`.
     #[test]
     fn a_path_in_this_systems_own_form_loses_the_root() {
-        let root = std::env::temp_dir().join("proj");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("proj");
         let file = root.join("src").join("a.rs").display().to_string();
         let report = serde_json::json!({"file": file});
         assert_eq!(

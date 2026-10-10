@@ -7,7 +7,7 @@ use super::args::split_json;
 use super::{VERSION, cannot_run, emit, usage};
 use crate::gates::metrics::lean::report;
 use crate::run::{Ctx, baseline::Baseline, report::Verdict};
-use crate::{oracle, slop};
+use crate::{oracle, slop, sweep};
 
 /// Why a command stopped with no exit code of its own: its words were wrong, or it could not read.
 enum Stop {
@@ -37,6 +37,7 @@ pub(super) fn reads(name: &str, args: &[&str]) -> ExitCode {
     let done = match name {
         "lean" => lean(&rest, json),
         "oracle" => compare(&rest, json),
+        "sweep" | "moved" => proof(name, &rest, json),
         _ => long_comments(&rest, json),
     };
     done.map_or_else(|stop| stop.exit(name), ExitCode::from)
@@ -91,4 +92,22 @@ fn compare(rest: &[&str], json: bool) -> Result<u8, Stop> {
     let found = oracle::run(&asked)?;
     shown(json, &found.render_json(VERSION), &found.render());
     Ok(found.code())
+}
+
+/// `chock sweep` and `chock moved`: a report for a person, tripped when code changed or was lost.
+fn proof(name: &str, rest: &[&str], json: bool) -> Result<u8, Stop> {
+    if json {
+        return Err(Stop::Usage(format!("{name} has no `--json` report")));
+    }
+    let (rev, paths) = sweep::asked(name, rest).map_err(Stop::Usage)?;
+    let here = dir_or_here(None)?;
+    let (report, tripped) = match name {
+        "moved" => sweep::moved(&here, rev, paths)?,
+        _ => sweep::sweep(&here, rev, paths)?,
+    };
+    emit(&report);
+    Ok(match tripped {
+        true => Verdict::Tripped.code(),
+        false => 0,
+    })
 }

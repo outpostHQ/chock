@@ -229,8 +229,11 @@ mod tests {
             let decision = adoption(gate, &report);
             assert_eq!(decision, Decision::Unmeasurable("tool missing".to_string()));
             let config = selected(&[(gate.name, decision)]);
-            let saved =
-                crate::project::document::parse::<Config>(&config.render(), "config.json").unwrap();
+            let saved = crate::project::document::parse::<Config>(
+                &crate::project::document::render(&config),
+                "config.json",
+            )
+            .unwrap();
             assert_eq!(
                 saved.enabled,
                 std::collections::BTreeSet::from([gate.name.to_string()])

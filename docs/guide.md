@@ -212,7 +212,7 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/run-v1.json",
   "version": 1,
-  "chock": "0.4.0",
+  "chock": "0.5.0",
   "gates": [
     {
       "gate": "complexity",
@@ -300,6 +300,8 @@ record. [Cut code with proof](#10-cut-code-with-proof) explains them.
 | `chock lean --tests` | counts repeated test code too |
 | `chock lean --min N` | lists only the files that could lose `N` lines or more |
 | `chock oracle --old A --new B --corpus FILE` | runs two builds over the same scenarios and compares each answer |
+| `chock sweep REV [PATH...]` | proves that only comments changed since `REV` |
+| `chock moved REV PATH...` | proves that code only moved between the named files since `REV` |
 
 Exit codes: `0` every gate passed, `1` a gate tripped, `2` a gate could not run.
 
@@ -418,6 +420,40 @@ Limits of the comparison:
   store holds.
 - A file that holds a build's own directory differs between the builds. Add an allow line for it.
 - A probe's arguments are split at spaces. A probe cannot hold an argument with a space in it.
+
+### `chock sweep`
+
+`chock sweep REV [PATH...]` proves that a change of comments changed no code. It reads each `.rs`
+file that differs from the revision `REV`, or only the files below each `PATH`. It compares the
+tokens of the file now with its tokens at `REV`. A comment is no token.
+
+```sh
+chock sweep main
+chock sweep HEAD~3 src/gates
+```
+
+| verdict | meaning |
+|---|---|
+| `clean` | the same tokens: only comments and layout changed |
+| `docs only` | only doc comments changed; the report counts them |
+| `CODE` | a token changed; the report gives the first token that differs |
+
+A file that `REV` does not hold is `skipped`: use `chock moved` for it. The command exits `0` when
+no file has the verdict `CODE`, `1` when one has, and `2` when it could not read the revision.
+
+### `chock moved`
+
+`chock moved REV PATH...` proves that code only moved between files. Name each file that the code
+left or reached. The command pools the tokens of those files now and at `REV`, and compares the
+two pools.
+
+```sh
+chock moved main src/run/mod.rs src/run/report.rs
+```
+
+The report lists each token that the move removed and each token that it added. A split adds
+`mod`, `use` and `pub` tokens, so read the added list. The command exits `0` when no token was
+lost, `1` when one was, and `2` when it could not read the revision.
 
 ## Limits
 

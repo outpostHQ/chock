@@ -175,13 +175,10 @@ fn receives(root: &std::path::Path, package: &Package, not_shipped: &[String]) -
 /// Where each shipped binary's bytes go, as `cargo bsize` reports it.
 pub(super) fn bsize(ctx: &Ctx) -> Result<Outcome, String> {
     let named = shipped_binaries(&project::metadata(&ctx.root)?, &ctx.not_shipped)?;
-    let said = each_binary(ctx, &named)?;
+    // One `cargo bsize` per binary: the tool reports one and refuses a workspace of several.
+    let each = named.iter().map(|binary| instrument(ctx, binary));
+    let said = each.collect::<Result<Vec<String>, String>>()?;
     Ok(measured_sizes(&named, &said))
-}
-
-/// One `cargo bsize` per binary, because the tool reports one and refuses a workspace of several.
-fn each_binary(ctx: &Ctx, named: &[String]) -> Result<Vec<String>, String> {
-    named.iter().map(|binary| instrument(ctx, binary)).collect()
 }
 
 fn instrument(ctx: &Ctx, binary: &str) -> Result<String, String> {

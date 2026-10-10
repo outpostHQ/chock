@@ -447,7 +447,10 @@ pub fn settle(
     // The file names the chock that wrote it, as `chock baseline` leaves it.
     settled.record.chock = chock_version.to_string();
     let file = crate::run::baseline::FILE;
-    let said = match crate::project::document::write(&root.join(file), &settled.record.render()) {
+    let said = match crate::project::document::write(
+        &root.join(file),
+        &crate::project::document::render(&settled.record),
+    ) {
         Ok(()) => format!("{}; commit {file} with this change", settled.said()),
         Err(error) => format!("could not write {file}, so this run recorded nothing: {error}"),
     };

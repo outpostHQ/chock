@@ -109,17 +109,14 @@ fn needs_pointer(held: &str) -> bool {
     !held.contains(AGENT_FILE)
 }
 
-/// Whether the held contract is one chock wrote: it opens with the heading chock's contract has.
-fn is_chocks(held: &str) -> bool {
-    held.lines().next() == AGENT_CONTRACT.lines().next()
-}
-
 /// The contract file's line of the report. A contract chock wrote is replaced by this version's;
 /// any other file under that name, and a symlink, is kept as `install_file` keeps it.
 fn refreshed(root: &Path) -> Result<String, Error> {
     let path = root.join(AGENT_FILE);
     let held = held_or_empty(&path)?;
-    if held == AGENT_CONTRACT || !is_chocks(&held) || path.is_symlink() {
+    // A held contract is one chock wrote when it opens with the heading chock's contract has.
+    let is_chocks = held.lines().next() == AGENT_CONTRACT.lines().next();
+    if held == AGENT_CONTRACT || !is_chocks || path.is_symlink() {
         return Ok(install_file(root, AGENT_FILE, AGENT_CONTRACT)?.to_string());
     }
     crate::project::document::write(&path, AGENT_CONTRACT).map_err(|e| unwritable(&path, &e))?;

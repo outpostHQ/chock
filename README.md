@@ -6,7 +6,7 @@
 
 **Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers.**
 
-chock runs 55 gates over a Rust project and gives one result and one exit code. The gates cover
+chock runs 57 gates over a Rust project and gives one result and one exit code. The gates cover
 your tests, clippy, rustfmt, coverage, mutation testing, the supply chain, complexity and
 duplication.
 
@@ -182,6 +182,8 @@ can work through it. chock measures and refuses. It does not rewrite your code.
 | `chock slop [DIR]` | lists comment blocks longer than the limit, in any tree |
 | `chock lean [DIR]` | lists every line a tree could lose, file by file, largest first; it reads no record and writes none |
 | `chock oracle --old A --new B --corpus FILE` | runs two builds of one program over the same scenarios and compares each answer |
+| `chock sweep REV [PATH...]` | proves that only comments changed since `REV`, file by file |
+| `chock moved REV PATH...` | proves that code only moved between the named files since `REV` |
 
 `chock --help` lists every command, and `--json` gives machine-readable output. The
 [guide](docs/guide.md#9-every-command) has the full list.
@@ -214,14 +216,14 @@ with each field explained.
 
 ## The gates
 
-55 gates: 33 are on by default and 22 are opt-in. `chock gates` prints the list from the binary,
+57 gates: 35 are on by default and 22 are opt-in. `chock gates` prints the list from the binary,
 and [docs/gates.md](docs/gates.md) says when each one trips.
 
 | topic | on by default | opt-in |
 |---|---|---|
-| Tests | `test`, `coverage`, `crap`, `assertions` | `mutest`, `idempotent`, `miri`, `proof` |
+| Tests | `test`, `coverage`, `crap`, `assertions`, `testlint` | `mutest`, `idempotent`, `miri`, `proof` |
 | Lints and format | `lint`, `codeslop`, `source`, `typos` | `fmt` |
-| Docs and comments | `doc`, `slop`, `citations` | `phrases` |
+| Docs and comments | `doc`, `slop`, `citations`, `claims` | `phrases` |
 | Code shape | `complexity`, `nesting`, `bigfiles`, `splits`, `lean`, `duplication`, `unsafety`, `modcheck` | `duplicates`, `dead` |
 | Dependencies | `deps`, `manifest`, `placement`, `features`, `sort`, `dupdeps`, `unused`, `supply` | `unused-deep`, `acl` |
 | Build and release | `msrv`, `profile`, `binsize` | `bsize` |

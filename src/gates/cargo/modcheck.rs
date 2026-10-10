@@ -440,16 +440,12 @@ impl Walk<'_> {
     }
 }
 
-/// Every path the `#[path]` attributes here could set, as written.
-fn path_attributes(attrs: &[syn::Attribute]) -> Vec<String> {
-    attrs.iter().flat_map(redirects_of).collect()
-}
-
-/// Those paths resolved from `anchor`, the directory of the file holding them.
+/// Every path the `#[path]` attributes here could set, resolved from `anchor`, the directory of
+/// the file holding them.
 fn redirects_from(attrs: &[syn::Attribute], anchor: &str) -> Vec<String> {
-    path_attributes(attrs)
-        .iter()
-        .map(|value| normalise(&join(anchor, value)))
+    let written = attrs.iter().flat_map(redirects_of);
+    written
+        .map(|value| normalise(&join(anchor, &value)))
         .collect()
 }
 
@@ -1026,6 +1022,24 @@ mod tests {
         );
     }
 
+    /// A shape once reported as a false orphan: a workspace member whose root holds a public
+    /// inline module with no file of its own, and one child that has children in turn.
+    #[test]
+    fn a_public_inline_module_in_a_workspace_member_reaches_each_file_below_it() {
+        let root = "pub mod handlers {\n    pub mod action;\n    pub mod landing;\n}\n";
+        assert_eq!(
+            rendered(&[
+                ("Cargo.toml", "[workspace]\n"),
+                ("crates/a/Cargo.toml", ""),
+                ("crates/a/src/lib.rs", root),
+                ("crates/a/src/handlers/action.rs", ""),
+                ("crates/a/src/handlers/landing.rs", "mod page;\n"),
+                ("crates/a/src/handlers/landing/page.rs", ""),
+            ]),
+            Vec::<String>::new()
+        );
+    }
+
     #[test]
     fn a_waived_file_is_taken_at_its_word_in_both_directions() {
         assert_eq!(
@@ -1039,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn both_directions_are_reported_in_one_run() {
+    fn both_directions_of_a_module_fault_are_reported_in_one_run() {
         assert_eq!(
             rendered(&[
                 ("Cargo.toml", ""),
@@ -1145,7 +1159,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    fn the_gate_reads_a_real_tree_and_reports_paths_relative_to_its_root() {
+    fn modcheck_reads_a_real_tree_and_reports_paths_relative_to_its_root() {
         let ctx = ctx_of(&[("Cargo.toml", ""), ("src/lib.rs", "mod parser;\n")]);
         let inspection = inspect(&ctx).unwrap();
         assert_eq!(inspection.debt, Vec::new());

@@ -13,6 +13,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use chock::cli::VERSION;
+use chock::project::document;
 use chock::run::report::{Run, SCHEMA, Verdict};
 
 /// Three comment lines, escaped: as real comments they would trip `slop` on this file.
@@ -162,10 +163,15 @@ fn exits(cwd: &Path, args: &[&str], code: i32) -> Ran {
     ran
 }
 
+/// Writes a configuration or a record as chock itself writes it.
+fn put_document(dir: &Path, name: &str, doc: &impl serde::Serialize) {
+    put(dir, name, &document::render(doc));
+}
+
 /// Writes a config that turns on only `gates`.
 fn turn_on(dir: &Path, gates: &[&str]) {
     let config = chock::project::config::Config::of(gates.iter().copied());
-    put(dir, chock::project::config::FILE, &config.render());
+    put_document(dir, chock::project::config::FILE, &config);
 }
 
 fn says(haystack: &str, needle: &str) {
@@ -466,6 +472,53 @@ fn oracle_exits_zero_for_builds_that_answer_alike_and_one_for_builds_that_do_not
 }
 
 #[test]
+fn sweep_and_moved_name_what_they_need_and_have_no_json_report() {
+    let dir = scratch("sweep-words");
+    let bare = exits(&dir, &["sweep"], 2);
+    says(&bare.err, "chock: sweep needs the revision to compare with");
+    let pathless = exits(&dir, &["moved", "main"], 2);
+    let needs = "chock: moved needs each file the code left or reached";
+    says(&pathless.err, needs);
+    let flag = exits(&dir, &["moved", "main", "--all"], 2);
+    says(&flag.err, "chock: unknown option `--all`");
+    for name in ["sweep", "moved"] {
+        let json = exits(&dir, &[name, "main", "a.rs", "--json"], 2);
+        says(&json.err, &format!("chock: {name} has no `--json` report"));
+        assert_eq!(json.out, "");
+    }
+}
+
+#[test]
+fn sweep_exits_one_when_code_changed_and_moved_exits_one_when_a_token_was_lost() {
+    let dir = scratch("sweep-proof");
+    put(&dir, "src/a.rs", "fn a() -> u8 { 1 }\nfn b() {}\n");
+    first_commit(&dir);
+
+    put(&dir, "src/a.rs", "// Why one.\nfn a() -> u8 { 1 }\n");
+    put(&dir, "src/b.rs", "fn b() {}\n");
+    let split = exits(&dir, &["moved", "HEAD", "src/a.rs", "src/b.rs"], 0);
+    says(&split.out, "Identical token multiset.");
+    let half = exits(&dir, &["moved", "HEAD", "src/a.rs"], 1);
+    says(&half.out, "Tokens were lost — this is not a pure move.");
+    let changed = exits(&dir, &["sweep", "HEAD"], 1);
+    says(&changed.out, "  CODE       src/a.rs\n");
+
+    put(
+        &dir,
+        "src/a.rs",
+        "// Why one.\nfn a() -> u8 { 1 }\nfn b() {}\n",
+    );
+    let swept = exits(&dir, &["sweep", "HEAD"], 0);
+    says(&swept.out, "  clean      src/a.rs\n");
+    says(&swept.out, "\n1 clean, 0 docs-only, 0 with code changes\n");
+    let unknown = exits(&dir, &["sweep", "no-such-rev"], 2);
+    says(
+        &unknown.err,
+        "chock: sweep: git could not compare with `no-such-rev`",
+    );
+}
+
+#[test]
 fn doctor_without_a_pin_file_says_to_run_chock_init_local() {
     let dir = project("doctor-unpinned", &[]);
 
@@ -513,7 +566,7 @@ fn doctor_names_a_record_in_a_unit_this_chock_no_longer_counts() {
     let mut baseline = chock::run::baseline::Baseline::empty(VERSION);
     let series = chock::run::baseline::Series::new();
     baseline.record("slop", "comment line(s) of an older chock", series);
-    put(&dir, chock::run::baseline::FILE, &baseline.render());
+    put_document(&dir, chock::run::baseline::FILE, &baseline);
 
     let ran = exits(&dir, &["doctor"], 1);
     says(&ran.out, "RECOUNTED");
@@ -984,6 +1037,16 @@ fn git(dir: &Path, args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
+/// Makes `dir` a git repository whose one commit holds every file in it.
+fn first_commit(dir: &Path) {
+    let message = "A first commit so a history exists";
+    assert!(git(dir, &["init", "-q"]).status.success());
+    git(dir, &["config", "user.email", "t@e"]);
+    git(dir, &["config", "user.name", "t"]);
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", message]);
+}
+
 /// A commit with the built chock first on PATH, which is what the declared hook resolves.
 fn commit(dir: &Path, message: &str) -> std::process::Output {
     let bin = Path::new(env!("CARGO_BIN_EXE_chock")).parent().unwrap();
@@ -1341,6 +1404,7 @@ fn the_hook_reads_the_file_the_editor_names_and_answers_where_the_agent_hears_it
 }
 
 #[test]
+// test-lint: allow(escapes-the-run-dir) — must sit outside chock's own tree, and is removed
 fn the_hook_is_silent_about_a_file_no_project_holds_and_a_direct_ask_still_judges_it() {
     let outside = std::env::temp_dir().join(format!("chock-outside-{}.rs", std::process::id()));
     std::fs::write(&outside, OVER_LIMIT).unwrap();
@@ -1359,6 +1423,7 @@ fn the_hook_is_silent_about_a_file_no_project_holds_and_a_direct_ask_still_judge
 
 /// A global hook fires in crates that never ran `init`, and must leave no `.chock` there.
 #[test]
+// test-lint: allow(escapes-the-run-dir) — must sit outside chock's own tree, and is removed
 fn the_hook_is_silent_in_a_crate_not_set_up_for_chock() {
     // Outside chock's own tree, which is set up and would hold the file otherwise.
     let crate_dir = std::env::temp_dir().join(format!("chock-unadopted-{}", std::process::id()));
@@ -1542,14 +1607,7 @@ fn after_init_the_wiring_gate_passes_on_every_shape_of_project() {
                 put(&dir, "src/lib.rs", "pub fn f() -> u32 {\n    1\n}\n");
             }
         }
-        assert!(git(&dir, &["init", "-q"]).status.success(), "{shape}");
-        git(&dir, &["config", "user.email", "t@e"]);
-        git(&dir, &["config", "user.name", "t"]);
-        git(&dir, &["add", "-A"]);
-        git(
-            &dir,
-            &["commit", "-q", "-m", "A first commit so a history exists"],
-        );
+        first_commit(&dir);
 
         let init = chock(&dir, &["init", "--local", "--fast"]);
         assert_eq!(init.code, 0, "{shape}: {}{}", init.out, init.err);
@@ -1568,14 +1626,7 @@ fn after_init_the_wiring_gate_passes_on_every_shape_of_project() {
 #[test]
 fn init_run_again_switches_on_a_gate_newer_than_the_config_that_wiring_asks_for() {
     let dir = project("init-newer-gate", &[("src/lib.rs", "pub fn f() {}\n")]);
-    assert!(git(&dir, &["init", "-q"]).status.success());
-    git(&dir, &["config", "user.email", "t@e"]);
-    git(&dir, &["config", "user.name", "t"]);
-    git(&dir, &["add", "-A"]);
-    git(
-        &dir,
-        &["commit", "-q", "-m", "A first commit so a history exists"],
-    );
+    first_commit(&dir);
     exits(&dir, &["init", "--local", "--fast"], 0);
     let path = dir.join(chock::project::config::FILE);
     let mut config: serde_json::Value =
@@ -1745,7 +1796,7 @@ esac
     make_runnable(&dir.join("bin/cargo"));
     let config = chock::project::config::Config::of(["coverage", "crap"])
         .with_coverage(["bin/coverage", "{lcov}"]);
-    put(&dir, chock::project::config::FILE, &config.render());
+    put_document(&dir, chock::project::config::FILE, &config);
     put(
         &dir,
         &chock::gates::coverage::crap::baseline(),
@@ -1755,7 +1806,7 @@ esac
     let mut series = chock::run::baseline::Series::new();
     series.set("src/lib.rs", 1);
     baseline.record("coverage", "uncovered line(s)", series);
-    put(&dir, chock::run::baseline::FILE, &baseline.render());
+    put_document(&dir, chock::run::baseline::FILE, &baseline);
     dir
 }
 
@@ -1849,7 +1900,7 @@ fn a_local_run_adopts_orphan_debt_without_weakening_missing_module_checks() {
         ],
     );
     let config = chock::project::config::Config::of(["modcheck"]);
-    put(&dir, chock::project::config::FILE, &config.render());
+    put_document(&dir, chock::project::config::FILE, &config);
     // A module that names no file is no debt to record, so it fails with no record written.
     let unresolved = exits(&dir, &["run", "modcheck", "--json"], 1);
     says(&unresolved.out, "names no file");
@@ -1880,7 +1931,7 @@ fn a_local_run_adopts_orphan_debt_without_weakening_missing_module_checks() {
     );
     assert_eq!(
         std::fs::read_to_string(dir.join(chock::project::config::FILE)).unwrap(),
-        config.render()
+        document::render(&config)
     );
 }
 
@@ -1942,7 +1993,7 @@ fn ci_cannot_silently_exclude_an_explicit_local_only_gate() {
     let dir = project("ci-explicit", &[("src/lib.rs", "pub fn f() {}\n")]);
     let mut config = chock::project::config::Config::of(["manifest"]);
     config.local_only = Some(vec!["manifest".to_string()]);
-    put(&dir, chock::project::config::FILE, &config.render());
+    put_document(&dir, chock::project::config::FILE, &config);
     let result = exits(&dir, &["run", "--ci", "manifest", "--json"], 2);
     says(&result.err, "manifest");
     says(&result.err, "leaves out what you named");
@@ -1973,7 +2024,7 @@ esac
         features: Some(vec!["testkit".to_string()]),
         ..chock::project::config::Config::of(["proof"])
     };
-    put(&dir, chock::project::config::FILE, &config.render());
+    put_document(&dir, chock::project::config::FILE, &config);
     let result = with_tools(&dir, &["run", "proof", "--json"], &[]);
     assert_eq!(result.code, 2, "{}{}", result.out, result.err);
     let report = parsed(&result.out);
@@ -2019,7 +2070,7 @@ esac
     }
     let mut config = chock::project::config::Config::of(["acl"]);
     config.features = Some(vec!["testkit".to_string()]);
-    put(&dir, chock::project::config::FILE, &config.render());
+    put_document(&dir, chock::project::config::FILE, &config);
     let acl = with_tools(&dir, &["run", "acl", "--json"], &[]);
     if cfg!(target_os = "linux") {
         assert_eq!(acl.code, 0, "{}{}", acl.out, acl.err);
@@ -2036,7 +2087,7 @@ esac
     );
     assert_eq!(failed.code, 2, "{}{}", failed.out, failed.err);
     config.all_features = Some(true);
-    put(&dir, chock::project::config::FILE, &config.render());
+    put_document(&dir, chock::project::config::FILE, &config);
     let result = with_tools(&dir, &["run", "acl", "--json"], &[]);
     assert_eq!(result.code, 2, "{}{}", result.out, result.err);
     if cfg!(target_os = "linux") {
@@ -2288,7 +2339,7 @@ fn configured_features_reach_default_test_and_coverage_processes() {
         no_default_features: Some(true),
         ..chock::project::config::Config::of(["test", "coverage"])
     };
-    put(&dir, chock::project::config::FILE, &config.render());
+    put_document(&dir, chock::project::config::FILE, &config);
     put(
         &dir,
         "bin/cargo",
@@ -2479,7 +2530,7 @@ fn mutation_target_failure_never_replaces_a_baseline_with_partial_results() {
     let mut series = chock::run::baseline::Series::new();
     series.set("src/lib.rs#eq_op_invert", 7);
     baseline.record("mutest", "mutation(s) no test killed", series.clone());
-    put(&dir, chock::run::baseline::FILE, &baseline.render());
+    put_document(&dir, chock::run::baseline::FILE, &baseline);
     for code in ["0", "4", "101"] {
         let result = mutation_tool(&dir, &["run", "mutest", "--json"], code, true);
         assert_eq!(result.code, 2, "{}{}", result.out, result.err);

@@ -524,7 +524,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    fn a_file_cargo_never_compiles_that_the_parser_rejects_is_passed_over() {
+    fn complexity_passes_over_a_file_cargo_never_compiles_that_the_parser_rejects() {
         let root = tree(
             "complexity-corpus",
             &[
@@ -757,7 +757,7 @@ fn f(a: bool, b: Option<u8>) {
 
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    fn two_functions_of_the_same_name_in_one_file_keep_the_worst() {
+    fn two_functions_of_the_same_name_in_one_file_keep_the_worst_complexity() {
         let source = format!("{}\n{}", with_ifs("parse", 18), with_ifs("parse", 25));
         let dir = tree("complexity-duplicate", &[("src/a.rs", source.as_str())]);
         assert_eq!(measured(&dir).unwrap().get("src/a.rs#parse"), Some(25));
@@ -765,7 +765,7 @@ fn f(a: bool, b: Option<u8>) {
 
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    fn a_file_that_does_not_parse_is_a_failure_to_run_rather_than_a_zero() {
+    fn a_file_that_does_not_parse_is_a_failure_to_run_complexity_rather_than_a_zero() {
         let dir = tree("complexity-broken", &crate::testdir::UNPARSABLE);
         let err = measured(&dir).unwrap_err();
         assert!(err.starts_with("src/lib.rs:1:"), "{err}");

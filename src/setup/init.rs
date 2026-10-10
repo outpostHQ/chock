@@ -540,7 +540,7 @@ nothing. `chock enable GATE` switches one on, and `chock run` says where the tre
 /// would switch off gates somebody turned on, so it only gains the gates `wiring` asks for.
 fn keep_the_choices_already_made(path: &Path, measured: &Config) -> Result<String, Error> {
     let Ok(text) = fs::read_to_string(path) else {
-        crate::project::document::write(path, &measured.render())
+        crate::project::document::write(path, &crate::project::document::render(measured))
             .map_err(|e| unwritable(path, &e))?;
         return Ok(format!("  created   {}\n", crate::project::config::FILE));
     };
@@ -562,7 +562,7 @@ fn keep_the_choices_already_made(path: &Path, measured: &Config) -> Result<Strin
     }
     let mut kept = held;
     kept.enabled.extend(offered.iter().map(ToString::to_string));
-    crate::project::document::write(path, &kept.render())
+    crate::project::document::write(path, &crate::project::document::render(&kept))
         .map(|()| {
             format!(
                 "  updated   {}: switched on {}, which pass here and `wiring` asks to be on\n",
@@ -1051,14 +1051,18 @@ mod tests {
         let dir = crate::testdir::make("init-held-config");
         let path = dir.join("config.json");
         let held = Config::of(["lint"]);
-        fs::write(&path, held.render()).unwrap();
+        fs::write(&path, crate::project::document::render(&held)).unwrap();
         let file = crate::project::config::FILE;
         assert_eq!(
             keep_the_choices_already_made(&path, &held),
             Ok(format!("  unchanged {file}\n"))
         );
         // `wiring` on asks for every passing gate, so the gate is switched on, not offered.
-        fs::write(&path, Config::of(["lint", "wiring"]).render()).unwrap();
+        fs::write(
+            &path,
+            crate::project::document::render(&Config::of(["lint", "wiring"])),
+        )
+        .unwrap();
         assert_eq!(
             keep_the_choices_already_made(&path, &Config::of(["lint", "typos", "wiring"])),
             Ok(format!(
@@ -1067,7 +1071,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
-            Config::of(["lint", "typos", "wiring"]).render()
+            crate::project::document::render(&Config::of(["lint", "typos", "wiring"]))
         );
     }
 
@@ -1998,7 +2002,8 @@ mod tests {
             let dir = crate::testdir::make("init-held-wiring");
             let path = dir.join(crate::project::config::FILE);
             fs::create_dir_all(dir.join(".chock")).unwrap();
-            crate::project::document::write(&path, &held.render()).unwrap();
+            crate::project::document::write(&path, &crate::project::document::render(&held))
+                .unwrap();
             let report = write_local_with(&dir, passing, &never_measured).unwrap();
             let after = crate::project::document::parse::<Config>(
                 &fs::read_to_string(&path).unwrap(),
@@ -2021,8 +2026,11 @@ mod tests {
         fs::write(dir.join("Cargo.toml"), "[package]\nname = \"a\"\n").unwrap();
         fs::create_dir_all(dir.join(".chock")).unwrap();
         let held = Config::of(["slop", "nesting"]);
-        crate::project::document::write(&dir.join(crate::project::config::FILE), &held.render())
-            .unwrap();
+        crate::project::document::write(
+            &dir.join(crate::project::config::FILE),
+            &crate::project::document::render(&held),
+        )
+        .unwrap();
 
         // The chooser is what runs every gate against the tree, so a chooser that is never called
         // is a tree that was never measured.

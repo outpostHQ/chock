@@ -5,6 +5,35 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-10
+
+No command or flag is removed or renamed. The JSON report of `chock run` does not change. Two
+gates are new: `testlint` and `claims`. Two commands are new: `chock sweep` and `chock moved`.
+
+- **`testlint`, a new gate for tests that protect nothing.** It reads each `#[test]` function of
+  the tree and reports, by file and rule: a test that asserts nothing, an assertion that is always
+  true, `#[ignore]` with no reason, `#[should_panic]` with no `expected` text, a placeholder name,
+  a name of one word, a name that two tests have, a test that reaches the shared temp directory
+  or the home directory, and a shell script in `bin/` or `scripts/` that pipes with no `pipefail`.
+  A test asserts through a helper of the test code too, also when it gives the helper to a runner
+  by name. `// test-lint: allow(<rule>) — <reason>` in a test leaves one rule out for that test.
+- **`claims`, a new gate for documents that the tree contradicts.** It reads each `.md` file and
+  reports a code span that cites a line past the end of its file. A comment `absent:` lists the
+  symbols and paths that the tree does not hold, and the gate reports each one that the tree does
+  hold. `absent-by-design:` needs a reason. `doc-check: foreign` marks text about another tree.
+  A fenced block claims nothing.
+- **Both new gates are ratchets and are on for a new project.** `chock init` switches them on in
+  a project that an older chock set up. The first run writes their records, so the debt that a
+  tree already holds does not trip; new debt does.
+- **`chock sweep REV [PATH...]` proves that a change touched only comments.** It compares the
+  tokens of each `.rs` file with its tokens at `REV`. Each file is `clean`, `docs only` or `CODE`,
+  and the report gives the first token that differs. It exits 1 when code changed.
+- **`chock moved REV PATH...` proves that code only moved between files.** It pools the tokens of
+  the named files now and at `REV`, and lists each token that the move lost or added. It exits 1
+  when a token was lost.
+- **chock is smaller.** 24 private functions that only passed their parameters on are gone; each
+  caller now holds the one call. No output changes.
+
 ## [0.4.0] - 2026-10-09
 
 No command or flag is removed or renamed. The JSON report of `chock run` does not change. Two

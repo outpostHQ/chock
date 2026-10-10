@@ -36,6 +36,7 @@
       "scattered_groups_production": 2
     },
     "citations": {},
+    "claims": {},
     "codeslop": {},
     "commands": {},
     "commands-build": {},
@@ -600,6 +601,7 @@
       "serde_json#build-script": 1,
       "zmij#build-script": 1
     },
+    "testlint": {},
     "typos": {},
     "unreferenced": {},
     "unsafety": {},
@@ -610,6 +612,7 @@
     "binsize": "byte(s)",
     "boundaries": "file(s) off one concern, tree-wide",
     "citations": "stale citation(s)",
+    "claims": "stale claim(s)",
     "commands": "declared finding(s)",
     "commands-build": "declared finding(s)",
     "coverage": "uncovered line(s)",
@@ -629,6 +632,7 @@
     "slop": "over-long comment block(s)",
     "sort": "unsorted manifest(s)",
     "splits": "movable parts",
+    "testlint": "test defect(s)",
     "unreferenced": "line(s) no shipped path reaches",
     "unused": "unused dependency(ies)"
   }

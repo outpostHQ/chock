@@ -77,7 +77,7 @@ pub fn dispatch(args: &[&str]) -> ExitCode {
                 miri_part,
                 skip: &skip,
             };
-            run_gates(&names, tier_for(fast, ci), how)
+            ExitCode::from(run_gates_code(&names, tier_for(fast, ci), how))
         }
         Command::CacheClear => clear_cache(),
         Command::Gates { json } => list_gates(json),
@@ -121,7 +121,7 @@ fn refused(message: &str) -> u8 {
     2
 }
 
-/// Every command except `slop`, `lean`, `oracle` and `edited` needs the project root.
+/// Every command except `edited` and the ones `tree` runs needs the project root.
 fn root() -> Result<PathBuf, String> {
     project::here()
 }
@@ -231,13 +231,17 @@ fn run_hook(args: &[&str]) -> ExitCode {
         Asked::Committing => hooked(Tier::Committing, "pre-commit", EXPLAIN),
         Asked::Pushing => hooked(Tier::Pushing, "pre-push", NO_VERIFY),
         Asked::Message(file) => check_message(message.as_deref().unwrap_or(file)),
-        Asked::MessageGitIsComposing => match vcs::message_being_composed(&root_or_here()) {
-            Some(path) => check_message(&path.to_string_lossy()),
-            None => cannot_run(
-                "chock hook commit-msg was given no file and git names no message being \
+        Asked::MessageGitIsComposing => {
+            // A hook runs in the tree it gates, so the current directory is the fallback root.
+            let here = root().unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
+            match vcs::message_being_composed(&here) {
+                Some(path) => check_message(&path.to_string_lossy()),
+                None => cannot_run(
+                    "chock hook commit-msg was given no file and git names no message being \
                      composed, so there is nothing to check",
-            ),
-        },
+                ),
+            }
+        }
         Asked::Unnamed => {
             cannot_run("chock hook needs a hook name: pre-commit, pre-push or commit-msg")
         }
@@ -301,11 +305,6 @@ fn hooked(tier: Tier, when: &str, fix: &str) -> ExitCode {
     gated(run_gates_code(&[], tier, how), when, fix)
 }
 
-/// A hook runs in the tree it gates, so the current directory is the fallback root.
-fn root_or_here() -> std::path::PathBuf {
-    root().unwrap_or_else(|_| std::env::current_dir().unwrap_or_default())
-}
-
 const EXPLAIN: &str = "Run `chock explain <gate>` for the findings of one.";
 const NO_VERIFY: &str = "Fix it, or push with --no-verify and say why.";
 
@@ -329,10 +328,6 @@ struct How<'a> {
     miri_part: Option<crate::gates::tools::miri::Part>,
     /// Gates left out, though the tier and the config would run them.
     skip: &'a [&'a str],
-}
-
-fn run_gates(names: &[&str], tier: Tier, how: How<'_>) -> ExitCode {
-    ExitCode::from(run_gates_code(names, tier, how))
 }
 
 fn run_gates_code(names: &[&str], tier: Tier, how: How<'_>) -> u8 {
@@ -758,7 +753,8 @@ fn explain(name: &str) -> ExitCode {
         return cannot_run(&format!("the last run did not include `{name}`"));
     };
     emit(&format!("{}\n", report.summary()));
-    if let Some(ago) = elapsed_since(report.ran_at) {
+    // How long ago this gate ran, so nobody reads an old report as a fresh pass.
+    if let Some(ago) = ago(report.ran_at, std::time::SystemTime::now()) {
         emit(&format!("  measured {ago}\n"));
     }
     for line in report.explained(&root) {
@@ -769,11 +765,6 @@ fn explain(name: &str) -> ExitCode {
     )));
     emit(&format!("\nre-run with: {}\n", report.rerun));
     ExitCode::from(report.verdict.code())
-}
-
-/// How long ago this gate ran, so nobody reads an old report as a fresh pass.
-fn elapsed_since(ran_at: Option<u64>) -> Option<String> {
-    ago(ran_at, std::time::SystemTime::now())
 }
 
 /// `now` is a parameter so a test can fix it. A record from a clock that is ahead gives `None`.
@@ -817,7 +808,7 @@ fn record_baseline(asked: &[&str]) -> ExitCode {
         return cannot_run(&format!("cannot create {}: {e}", dir.display()));
     }
     let path = ctx.root.join(crate::run::baseline::FILE);
-    if let Err(e) = document::write(&path, &recorded.render()) {
+    if let Err(e) = document::write(&path, &document::render(&recorded)) {
         return cannot_run(&format!("cannot write {}: {e}", path.display()));
     }
     emit(&format!("wrote {}\n", crate::run::baseline::FILE));
@@ -1111,7 +1102,7 @@ mod tests {
     fn the_usage_text_lists_every_subcommand_that_parses() {
         for name in [
             "run", "gates", "enable", "disable", "explain", "baseline", "cache", "doctor",
-            "message", "edited", "slop", "lean", "oracle", "init",
+            "message", "edited", "slop", "lean", "oracle", "sweep", "moved", "init",
         ] {
             assert!(
                 USAGE.contains(&format!("chock {name}")),

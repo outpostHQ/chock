@@ -10,6 +10,8 @@ pub mod project;
 pub mod run;
 pub mod setup;
 pub mod slop;
+pub mod sweep;
+pub mod tokens;
 mod usage;
 
 #[cfg(test)]

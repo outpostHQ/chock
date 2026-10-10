@@ -165,7 +165,9 @@ const CREDENTIALS: [Credential; 4] = [
 /// and this gate has no way to suppress one.
 fn credentials_in(path: &str, read: &dyn Fn(&str) -> Option<String>) -> Vec<Finding> {
     let name = file_name(path);
-    if non_production(path) || is_template(name) || !is_configuration(name) {
+    let extension = name.rsplit_once('.').map(|(_, extension)| extension);
+    let configuration = extension.is_some_and(|extension| CONFIGURATION.contains(&extension));
+    if non_production(path) || is_template(name) || !configuration {
         return Vec::new();
     }
     let Some(text) = read(path) else {
@@ -195,11 +197,6 @@ const CONFIGURATION: [&str; 10] = [
     "tfvars",
     "sh",
 ];
-
-fn is_configuration(name: &str) -> bool {
-    name.rsplit_once('.')
-        .is_some_and(|(_, extension)| CONFIGURATION.contains(&extension))
-}
 
 /// The first credential a line holds, by name. The value is never carried out of here.
 fn credential_in(line: &str) -> Option<&'static str> {

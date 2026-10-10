@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_that_is_not_json_is_refused_rather_than_read_as_clean() {
+    fn manifest_metadata_that_is_not_json_is_refused_rather_than_read_as_clean() {
         assert!(faults("not json").is_err());
     }
 }

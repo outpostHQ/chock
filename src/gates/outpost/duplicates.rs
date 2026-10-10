@@ -81,7 +81,7 @@ mod tests {
     }
 
     #[test]
-    fn a_measure_outpost_stopped_reporting_is_a_gate_that_could_not_run() {
+    fn a_duplicates_measure_outpost_stopped_reporting_is_a_gate_that_could_not_run() {
         let check = checked_from(r#"{"contract": 1, "measures": []}"#);
         assert!(
             check

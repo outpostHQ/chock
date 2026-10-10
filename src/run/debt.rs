@@ -174,7 +174,7 @@ mod tests {
         let file = dir.join(crate::run::baseline::FILE);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         let held = holding("slop", &[("src/a.rs", 2)]);
-        crate::project::document::write(&file, &held.render()).unwrap();
+        crate::project::document::write(&file, &crate::project::document::render(&held)).unwrap();
         let told = shown(&dir, false).unwrap();
         assert!(
             told.contains("slop — 2 over-long comment block(s) in 1 place(s)"),

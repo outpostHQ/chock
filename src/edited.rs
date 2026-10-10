@@ -439,7 +439,11 @@ mod tests {
         std::fs::create_dir_all(dir.join(".chock")).unwrap();
         std::fs::write(dir.join("src/a.rs"), HELD).unwrap();
         let held = holding(&[("slop", "src/a.rs", 1), ("slop", "src/gone.rs", 1)]);
-        std::fs::write(dir.join(crate::run::baseline::FILE), held.render()).unwrap();
+        std::fs::write(
+            dir.join(crate::run::baseline::FILE),
+            crate::project::document::render(&held),
+        )
+        .unwrap();
         let mut passed = crate::run::report::GateReport::new(
             "slop",
             crate::run::report::Verdict::Pass,
@@ -592,7 +596,11 @@ mod tests {
             "nothing is held yet"
         );
         let held = holding(&[("nesting", "src/a.rs#f", 1)]);
-        std::fs::write(dir.join(crate::run::baseline::FILE), held.render()).unwrap();
+        std::fs::write(
+            dir.join(crate::run::baseline::FILE),
+            crate::project::document::render(&held),
+        )
+        .unwrap();
         assert_eq!(
             told(),
             Vec::<String>::new(),

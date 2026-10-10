@@ -1,6 +1,6 @@
 # The gates
 
-`chock gates` prints this list from the binary: 55 gates, 33 on by default and 22 opt-in.
+`chock gates` prints this list from the binary: 57 gates, 35 on by default and 22 opt-in.
 `chock gates --json` gives the same list to a program.
 
 A gate is one of two kinds.
@@ -51,6 +51,8 @@ A gate is one of two kinds.
 | `unsafety` | ✓ | a file gains an `unsafe` block, function, trait, impl or `extern` |
 | `citations` | ✓ | a doc comment names one more path the repository does not have |
 | `assertions` | ✓ | a test gains an assertion about *how many* instead of *what* |
+| `testlint` | ✓ | a file gains a test that asserts nothing, cannot fail, is skipped with no reason or has a name that states no claim |
+| `claims` | ✓ | a document gains a citation of a line past the end of its file, or names as absent a thing that the tree holds |
 
 ## Opt-in
 
@@ -118,6 +120,51 @@ whole tree.
   rustfmt breaks it over lines. A copy can bind at most 3 names that later code reads, and the
   function returns them. A group counts only when it removes 6 lines or more. Each file holds its
   share of each group, and the lines of each private function that only passes its parameters on.
+- **How `testlint` reads a test.** It reads each `#[test]` function of the tree. Each finding
+  names one of ten rules:
+
+  | rule | what it finds |
+  |---|---|
+  | `no-assertion` | a test that holds nothing that can fail it |
+  | `tautological-assertion` | `assert!(true)`, or `assert_eq!` with the same text on both sides |
+  | `ignore-without-reason` | `#[ignore]` with no reason |
+  | `should-panic-without-expected` | `#[should_panic]` with no `expected` text |
+  | `placeholder-test-name` | a name such as `it_works`, `test_1` or `foo` |
+  | `one-word-test-name` | a name of one word, which states no claim |
+  | `ambiguous-test-name` | a name that another test of the tree has too |
+  | `escapes-the-run-dir` | a call of `env::temp_dir`, `set_current_dir` or `dirs::home_dir` |
+  | `harness-without-pipefail` | a shell script in `bin/` or `scripts/` that pipes and does not set `pipefail` |
+  | `waiver-without-reason` | a waiver that gives no reason; it silences nothing |
+
+  A test asserts when its body holds an assert macro of any family, a panic macro, an `unwrap`,
+  or a call of a function named `require…`, `expect…`, `verify…` or `must_…`. A test asserts
+  through a helper too: it calls a helper that asserts, or gives the name of that helper to a
+  runner as one argument. A helper is a function of the test code: a function in a `tests` or
+  `benches` directory, in a `tests.rs` file, or below an item with `#[cfg(test)]`. A helper
+  asserts when it holds an assert macro or a panic macro, or calls a helper that does. A
+  production function is no helper.
+
+  A comment between the first attribute of a test and its closing brace leaves one rule out for
+  that test: `// test-lint: allow(<rule>) — <reason>`.
+- **How `claims` reads a document.** It reads each `.md` file of the tree. A fenced block claims
+  nothing. A code span that names a file of the tree and a line is an anchor: one line, a range
+  or a list. A comment states what the tree does not hold, and the gate checks it:
+
+  ```md
+  <!-- absent: Scheduler, fn retry_all, src/queue/legacy.rs -->
+  <!-- absent-by-design: Scheduler — one process runs each gate -->
+  <!-- doc-check: foreign -->
+  ```
+
+  | rule | what it finds |
+  |---|---|
+  | `stale-doc-anchor` | an anchor past the end of its file: the code that it named moved |
+  | `absent-claim-refuted` | an `absent:` item that production code defines, or a path that the tree holds |
+  | `unverifiable-absence-claim` | an `absent:` item that is neither a symbol nor a path |
+  | `absence-waiver-without-reason` | an `absent-by-design:` comment with no reason |
+
+  The text after `doc-check: foreign` describes another tree, up to `doc-check: ours`. There the
+  gate checks only a path written from the root of this tree.
 - **`unused` and `dead` give leads.** Neither sees a dependency used only in a doc example, or a
   function reached only through a name a macro builds; mark such a function `#[expect(dead_code)]`.
 
@@ -204,6 +251,8 @@ A gate leaves these out on purpose. Each one has a place that shows it.
 | `mutest` | a mutation that times out counts as detected, for up to 2% of the mutations, or for any number once mutest re-ran each alone (`timeouts confirmed:`) | each timed-out mutation is a `candidate` finding at its file and line |
 | `lean` | a file that a tool wrote: a part of its path is `generated`, or one of its first 5 lines says `@generated`, `do not edit`, `automatically generated` or `auto-generated` | the path or the header of the file |
 | `lean` | copies that differ in a string that a macro reads, except format strings with the same placeholders, and copies where code after them reads more than 3 names that they bind; a production function that only tests call; copies of the fields of one struct that a `derive` would write | `duplication`, which compares whole function bodies |
+| `testlint` | a rule that a test waives with `// test-lint: allow(<rule>) — <reason>`; a test that asserts only through a production function is a finding | the comment in the test, with its reason |
+| `claims` | a fenced block; a citation with no `/` in its path; a file name that two files of the tree have; a name that only test code defines | the document |
 | `modcheck` | the directory of a file that holds the text `chock:modcheck-exempt` | the comment in that file |
 | `modcheck` | a `mod` name that a macro builds and no file has; a `.rs` file that does not parse and is outside `src/` or read by `include!` | the compiler, where a build uses it |
 

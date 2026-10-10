@@ -2,5 +2,6 @@
 //! file that does not exist.
 
 pub mod citations;
+pub mod claims;
 pub mod phrases;
 pub mod slop;

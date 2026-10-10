@@ -291,7 +291,9 @@ impl<'a> Scan<'a> {
         Self {
             path,
             src,
-            starts: line_starts(src),
+            starts: std::iter::once(0)
+                .chain(src.match_indices('\n').map(|(index, _)| index + 1))
+                .collect(),
             imports,
             attrs: Vec::new(),
             tests: 0,
@@ -811,12 +813,6 @@ fn is_inner(attr: &Attribute) -> bool {
 
 fn line_of(at: LineColumn) -> u32 {
     u32::try_from(at.line).unwrap_or(u32::MAX)
-}
-
-fn line_starts(src: &str) -> Vec<usize> {
-    std::iter::once(0)
-        .chain(src.match_indices('\n').map(|(index, _)| index + 1))
-        .collect()
 }
 
 /// A span's byte offset. The column counts characters, not bytes, so its line is walked.
@@ -1979,7 +1975,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
-    fn the_gate_reads_a_real_tree_and_reports_paths_relative_to_its_root() {
+    fn source_reads_a_real_tree_and_reports_paths_relative_to_its_root() {
         let ctx = ctx_of(&[
             ("Cargo.toml", MANIFEST),
             ("src/lib.rs", "#![allow(dead_code)]\n"),

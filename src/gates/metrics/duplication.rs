@@ -983,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_that_does_not_parse_is_a_failure_to_run_rather_than_a_zero() {
+    fn a_file_that_does_not_parse_is_a_failure_to_run_duplication_rather_than_a_zero() {
         let err = functions("fn f( { this is not rust", "t.rs").unwrap_err();
         assert!(err.starts_with("1: "), "{err}");
     }
@@ -1264,7 +1264,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    fn two_functions_of_the_same_name_in_one_file_keep_the_worst() {
+    fn two_functions_of_the_same_name_in_one_file_keep_the_worst_duplication() {
         let shared = format!(
             "struct A; impl A {{ {} }} struct B; impl B {{ {} }}",
             wide("parse", "out", "3", ""),

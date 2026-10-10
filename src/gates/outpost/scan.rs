@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn output_in_a_shape_chock_does_not_know_stops_the_gate() {
+    fn a_scan_in_a_shape_chock_does_not_know_stops_the_scan_gate() {
         let odd = exec::Output::of(Some(0), "not json", "");
         assert!(
             read_scan(&odd)
