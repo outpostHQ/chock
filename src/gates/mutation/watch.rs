@@ -854,6 +854,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri answers a read of `/proc/<pid>/exe` with not found"
+    )]
     fn malformed_executable_identity_is_refused_but_an_exited_process_can_be_read() {
         let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
         let ticks = stat

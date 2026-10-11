@@ -8,6 +8,9 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`harness-without-pipefail` gives advice that works for a plain `sh` script.** `dash` refuses
   `set -o pipefail`, so for a `sh` or `dash` shebang the finding now says: a bash shebang with
   `set -o pipefail`, or no pipe.
+- The fix text of `miri` says what to do with a test of something Miri does not model, such as
+  a file in `/proc`: ignore it under Miri, with the reason. The nightly of 2026-10-10 answers a
+  read of `/proc/<pid>/exe` with "not found", which stopped one of chock's own tests.
 - The fix text of `testlint` also names the two rules it left out: a name that another test has,
   and the shared temp directory.
 - `docs/gates.md` names all five calls that `escapes-the-run-dir` reads, and says that the rule

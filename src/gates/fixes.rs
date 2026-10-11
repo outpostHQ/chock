@@ -262,7 +262,8 @@ const FIXES: [(&str, &str); 57] = [
     ),
     (
         "miri",
-        "fix the undefined behaviour Miri reports at the line it names",
+        "fix the undefined behaviour Miri reports at the line it names; a test of what Miri does \
+         not model, such as a file in `/proc`, takes `#[cfg_attr(miri, ignore = \"reason\")]`",
     ),
     (
         "mutest",
