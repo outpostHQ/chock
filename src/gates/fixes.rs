@@ -89,8 +89,9 @@ const FIXES: [(&str, &str); 57] = [
     (
         "testlint",
         "give the test an assertion on what the code returned, a reason on its `#[ignore]`, the \
-         expected text on its `#[should_panic]`, or a name that states the claim; a rule that is \
-         wrong for one test is waived in it with `// test-lint: allow(<rule>) — reason`.",
+         expected text on its `#[should_panic]`, a name of its own that states the claim, or a \
+         directory of its own in place of the shared one; a rule that is wrong for one test is \
+         waived in it with `// test-lint: allow(<rule>) — reason`.",
     ),
     (
         "citations",

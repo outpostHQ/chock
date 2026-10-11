@@ -133,8 +133,8 @@ whole tree.
   | `placeholder-test-name` | a name such as `it_works`, `test_1` or `foo` |
   | `one-word-test-name` | a name of one word, which states no claim |
   | `ambiguous-test-name` | a name that another test of the tree has too |
-  | `escapes-the-run-dir` | a call of `env::temp_dir`, `set_current_dir` or `dirs::home_dir` |
-  | `harness-without-pipefail` | a shell script in `bin/` or `scripts/` that pipes and does not set `pipefail` |
+  | `escapes-the-run-dir` | a call of `env::temp_dir`, `set_current_dir`, `dirs::home_dir`, `dirs::data_dir` or `dirs::config_dir` in the body of the test |
+  | `harness-without-pipefail` | a shell script in `bin/` or `scripts/` that pipes and does not set `pipefail`; a plain `sh` can refuse `pipefail`, so the finding on a `sh` or `dash` script asks for a bash shebang |
   | `waiver-without-reason` | a waiver that gives no reason; it silences nothing |
 
   A test asserts when its body holds an assert macro of any family, a panic macro, an `unwrap`,
@@ -144,6 +144,9 @@ whole tree.
   `benches` directory, in a `tests.rs` file, or below an item with `#[cfg(test)]`. A helper
   asserts when it holds an assert macro or a panic macro, or calls a helper that does. A
   production function is no helper.
+
+  `escapes-the-run-dir` reads the calls in the body of the test. It does not read what the test
+  does with the path, and it does not read what a helper calls.
 
   A comment between the first attribute of a test and its closing brace leaves one rule out for
   that test: `// test-lint: allow(<rule>) — <reason>`.

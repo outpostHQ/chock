@@ -5,6 +5,14 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- **`harness-without-pipefail` gives advice that works for a plain `sh` script.** `dash` refuses
+  `set -o pipefail`, so for a `sh` or `dash` shebang the finding now says: a bash shebang with
+  `set -o pipefail`, or no pipe.
+- The fix text of `testlint` also names the two rules it left out: a name that another test has,
+  and the shared temp directory.
+- `docs/gates.md` names all five calls that `escapes-the-run-dir` reads, and says that the rule
+  reads the body of the test: not what the test does with the path, and not what a helper calls.
+
 ## [0.5.1] - 2026-10-10
 
 Two gates of 0.5.0 gave wrong findings. No command, flag or JSON field changes. A record of

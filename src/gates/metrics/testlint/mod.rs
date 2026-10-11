@@ -32,6 +32,11 @@ pub const GATE: Gate = Gate {
 const NO_ASSERTION: &str = "no-assertion";
 const AMBIGUOUS: &str = "ambiguous-test-name";
 const PIPEFAIL: &str = "harness-without-pipefail";
+/// What a script hears whose shell knows `pipefail`, and what a plain `sh` script hears.
+const NO_PIPEFAIL: &str =
+    "a pipe in this script hides a failed command: it does not `set -o pipefail`";
+const PLAIN_SH: &str = "a pipe in this script hides a failed command, and its `sh` may not know \
+                        `pipefail`: give it a bash shebang with `set -o pipefail`, or no pipe";
 
 /// Most tests of the same name that one finding lists; its message counts them all.
 const TWINS_SHOWN: usize = 3;
@@ -185,17 +190,19 @@ fn is_harness(shown: &str) -> bool {
     shown.split_once('/').is_some_and(direct)
 }
 
-/// A shell script that pipes and never sets `pipefail`: a failed build piped into `tail` reads as
-/// a pass.
-fn hides_a_failed_pipe(text: &str) -> bool {
+/// What a shell script that pipes and never sets `pipefail` is told: a failed build piped into
+/// `tail` reads as a pass. A plain `sh` can refuse `pipefail`, so its advice names bash.
+fn hidden_pipe(text: &str) -> Option<&'static str> {
     const SHELLS: [&str; 5] = ["sh", "bash", "dash", "ksh", "zsh"];
     let mut lines = text.lines();
     let first = lines.next().unwrap_or_default();
-    let shell =
-        first.starts_with("#!") && first.split([' ', '/']).any(|word| SHELLS.contains(&word));
+    let named = first.split([' ', '/']).find(|word| SHELLS.contains(word));
+    let shell = named.filter(|_| first.starts_with("#!"))?;
     let mut code = lines.filter(|line| !line.trim_start().starts_with('#'));
     let pipes = code.any(|line| line.contains(" | ") || line.trim_end().ends_with(" |"));
-    shell && pipes && !text.contains("pipefail")
+    let plain = matches!(shell, "sh" | "dash");
+    let advice = if plain { PLAIN_SH } else { NO_PIPEFAIL };
+    (pipes && !text.contains("pipefail")).then_some(advice)
 }
 
 /// Each harness script whose pipe hides a failure. One that is not text is a compiled tool,
@@ -205,11 +212,9 @@ fn shell_harnesses(ctx: &Ctx) -> Result<Vec<Finding>, String> {
     let enter = |dir: &str| HARNESS_DIRS.contains(&dir);
     let harness = |_: &str, path: &Path| is_harness(&shown(path));
     let files = project::walked(&ctx.listing, &ctx.root, &enter, &harness)?;
-    let text = |path: &Path| std::fs::read_to_string(path).unwrap_or_default();
-    let hiding = files.iter().filter(|path| hides_a_failed_pipe(&text(path)));
-    let detail = "a pipe in this script hides a failed command: it does not `set -o pipefail`";
-    let named = |path: &PathBuf| finding(&shown(path), 1, PIPEFAIL, detail);
-    Ok(hiding.map(named).collect())
+    let advice = |path: &Path| hidden_pipe(&std::fs::read_to_string(path).unwrap_or_default());
+    let named = |path: &PathBuf| Some(finding(&shown(path), 1, PIPEFAIL, advice(path)?));
+    Ok(files.iter().filter_map(named).collect())
 }
 
 #[cfg(test)]
@@ -517,16 +522,27 @@ mod tests {
 
     #[test]
     fn a_shell_script_that_pipes_without_pipefail_hides_a_failure() {
-        let hides = hides_a_failed_pipe;
-        assert!(hides("#!/usr/bin/env bash\ncargo test | tail -5\n"));
-        assert!(hides("#!/bin/sh\ncargo build 2>&1 |\n  tail -5\n"));
-        assert!(!hides("#!/bin/sh\nset -o pipefail\ncargo test | tail\n"));
-        assert!(!hides("#!/bin/bash\ncargo test\n"));
-        assert!(!hides("#!/bin/sh\n # a | b\ncargo test || exit 1\n"));
-        assert!(!hides("#!/usr/bin/env python3\nprint(a | b)\n"));
-        assert!(!hides("cargo test | tail -5\n"));
-        assert!(!hides("bash\ncargo test | tail -5\n"));
-        assert!(!hides(""));
+        for (script, advice) in [
+            (
+                "#!/usr/bin/env bash\ncargo test | tail -5\n",
+                Some(NO_PIPEFAIL),
+            ),
+            ("#!/bin/zsh\ncargo test | tail -5\n", Some(NO_PIPEFAIL)),
+            ("#!/bin/sh\ncargo build 2>&1 |\n  tail -5\n", Some(PLAIN_SH)),
+            (
+                "#!/usr/bin/env dash\ncargo test | tail -5\n",
+                Some(PLAIN_SH),
+            ),
+            ("#!/bin/sh\nset -o pipefail\ncargo test | tail\n", None),
+            ("#!/bin/bash\ncargo test\n", None),
+            ("#!/bin/sh\n # a | b\ncargo test || exit 1\n", None),
+            ("#!/usr/bin/env python3\nprint(a | b)\n", None),
+            ("cargo test | tail -5\n", None),
+            ("bash\ncargo test | tail -5\n", None),
+            ("", None),
+        ] {
+            assert_eq!(hidden_pipe(script), advice, "{script:?}");
+        }
     }
 
     #[test]
@@ -552,15 +568,23 @@ mod tests {
                 ),
                 ("bin/deep/check", piped),
                 ("check", piped),
+                ("bin/plain", "#!/bin/sh\ncargo test | tail -5\n"),
+                (
+                    "scripts/dashed",
+                    "#!/usr/bin/env dash\ncargo test | tail -5\n",
+                ),
             ],
         );
         let inspection = inspect(&ctx).unwrap();
         assert_eq!(Finding::rendered(&inspection.blockers), [""; 0]);
         let pipe = "harness-without-pipefail: a pipe in this script hides a failed command: it does not `set -o pipefail`";
+        let plain = "harness-without-pipefail: a pipe in this script hides a failed command, and its `sh` may not know `pipefail`: give it a bash shebang with `set -o pipefail`, or no pipe";
         let twin = "ambiguous-test-name: `reads_a_file` is the name of 2 tests";
         let expected = [
             format!("bin/check:1: {pipe}"),
+            format!("bin/plain:1: {plain}"),
             format!("scripts/ci:1: {pipe}"),
+            format!("scripts/dashed:1: {plain}"),
             format!("src/lib.rs:2: {twin}"),
             "src/lib.rs:2: no-assertion: `reads_a_file` asserts nothing".to_string(),
             format!("tests/it.rs:1: {twin}"),
