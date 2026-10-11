@@ -343,6 +343,10 @@ A place with `exact` evidence is a fact that the source settles: a private funct
 passes its parameters on. A place with `estimate` evidence is a shape that a person must judge. A
 trait with one implementation can be a test seam, and a module of re-exports can be a public API.
 
+`single_impl_trait` names a trait that one type of the tree implements. An impl in test code
+counts. An impl that a macro writes, or a generic one, counts as many. A trait whose one impl is
+for a type of another crate is an extension of that type, and the report does not name it.
+
 A repeat counts once: each copy holds its share of the lines that one function would remove.
 
 ### `chock oracle`

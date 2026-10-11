@@ -145,14 +145,18 @@ whole tree.
   asserts when it holds an assert macro or a panic macro, or calls a helper that does. A
   production function is no helper.
 
+  A test in a `proptest!` block takes generated arguments, written `name in strategy`. It claims
+  that its body panics for no input, so `no-assertion` does not name it.
+
   `escapes-the-run-dir` reads the calls in the body of the test. It does not read what the test
   does with the path, and it does not read what a helper calls.
 
   A comment between the first attribute of a test and its closing brace leaves one rule out for
   that test: `// test-lint: allow(<rule>) — <reason>`.
 
-  An `ambiguous-test-name` finding gives the number of tests with that name and lists at most 3
-  of them. A file with the comment `chock:modcheck-exempt` declares its modules with a macro, so
+  `ambiguous-test-name` compares the names of all tests of the tree, across crates: a name filter
+  at the root runs each of them. A finding gives the number of tests with that name and lists at
+  most 3 of them. A file with the comment `chock:modcheck-exempt` declares its modules with a macro, so
   each file in its directory counts as compiled.
 - **How `claims` reads a document.** It reads each `.md` file of the tree. A fenced block claims
   nothing. A code span that names a file of the tree and a line is an anchor: one line, a range

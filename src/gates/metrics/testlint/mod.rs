@@ -74,12 +74,16 @@ fn waived(t: &TestItem, rule: &str) -> bool {
     t.waivers.iter().any(reasoned)
 }
 
-/// Each test that holds nothing that can fail it, in its own body or in a helper it calls.
+/// Each test that holds nothing that can fail it, in its own body or in a helper it calls. A test
+/// with generated arguments, `x in strategy`, claims that its body panics for no input.
 fn assertionless(scans: &[FileScan]) -> Vec<Finding> {
     let helpers = asserting_helpers(scans);
     let mut found = Vec::new();
     for s in scans {
-        let asserts = |t: &TestItem| has_an_assertion(&s.lexed, t.body.clone(), &helpers);
+        let generated =
+            |t: &TestItem| (t.attrs.end..t.body.start).any(|i| s.lexed.ident(i) == "in");
+        let checks = |t: &TestItem| has_an_assertion(&s.lexed, t.body.clone(), &helpers);
+        let asserts = |t: &TestItem| generated(t) || checks(t);
         let silent = |t: &&TestItem| !waived(t, NO_ASSERTION) && !asserts(t);
         found.extend(s.tests.iter().filter(silent).map(|t| {
             let detail = format!("`{}` asserts nothing", t.name);
@@ -175,7 +179,7 @@ fn ambiguous_names(scans: &[FileScan]) -> Vec<Finding> {
             let others = tests.iter().filter(|(_, other)| !std::ptr::eq(*other, *t));
             let place =
                 |(at, other): &(&str, &TestItem)| Place::at("same name", at, line(other.line));
-            let detail = format!("`{name}` is the name of {} tests", tests.len());
+            let detail = format!("`{name}` is the name of {} tests in this tree", tests.len());
             let mut twin = finding(file, t.line, AMBIGUOUS, &detail);
             twin.places = others.take(TWINS_SHOWN).map(place).collect();
             found.extend((!twin.places.is_empty()).then_some(twin));
@@ -248,6 +252,17 @@ mod tests {
         let src = "#[tokio::test]\nasync fn pushes_and_pulls() -> R { push().await?; Ok(()) }\n";
         let expected = "src/thing.rs:1: no-assertion: `pushes_and_pulls` asserts nothing";
         assert_eq!(found(src), [expected]);
+    }
+
+    #[test]
+    fn a_test_with_generated_arguments_claims_that_no_input_panics() {
+        let property = "proptest! {\n#[test]\nfn decode_never_panics(bytes in any::<Vec<u8>>()) \
+                        {\n    let _ = decode(&bytes);\n}\n}\n";
+        assert_eq!(found(property), [""; 0]);
+        let case = "#[rstest]\n#[case(1)]\nfn decode_takes_a_case(#[case] within: u8) {\n    \
+                    for it in 0..within { decode(it); }\n}\n";
+        let expected = "src/thing.rs:1: no-assertion: `decode_takes_a_case` asserts nothing";
+        assert_eq!(found(case), [expected]);
     }
 
     #[test]
@@ -484,7 +499,7 @@ mod tests {
         ];
         let twins = ambiguous_names(&scans);
         let lines: Vec<String> = twins.iter().flat_map(Finding::lines).collect();
-        let message = "ambiguous-test-name: `round_trips` is the name of 5 tests";
+        let message = "ambiguous-test-name: `round_trips` is the name of 5 tests in this tree";
         let expected = [
             format!("tests/a.rs:1: {message}"),
             "  same name: tests/b.rs:2".to_string(),
@@ -579,7 +594,7 @@ mod tests {
         assert_eq!(Finding::rendered(&inspection.blockers), [""; 0]);
         let pipe = "harness-without-pipefail: a pipe in this script hides a failed command: it does not `set -o pipefail`";
         let plain = "harness-without-pipefail: a pipe in this script hides a failed command, and its `sh` may not know `pipefail`: give it a bash shebang with `set -o pipefail`, or no pipe";
-        let twin = "ambiguous-test-name: `reads_a_file` is the name of 2 tests";
+        let twin = "ambiguous-test-name: `reads_a_file` is the name of 2 tests in this tree";
         let expected = [
             format!("bin/check:1: {pipe}"),
             format!("bin/plain:1: {plain}"),

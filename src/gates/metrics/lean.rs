@@ -71,13 +71,14 @@ pub struct Read {
 }
 
 /// Every file read once: each production forwarder with its file, the candidates, the crate files
-/// that do not parse, each production file's lines, and the corpus of all code, tests too.
+/// that do not parse, each production file's lines, each test file, and the corpus of all code.
 #[derive(Debug, Default)]
 struct Tree {
     forwarders: Vec<(String, Forwarder)>,
     candidates: Vec<Finding>,
     unread: Vec<String>,
     lines: BTreeMap<String, u64>,
+    tests: Vec<String>,
     corpus: repeats::Corpus,
 }
 
@@ -104,6 +105,7 @@ fn read_tree(ctx: &Ctx) -> Result<Tree, String> {
     for path in tests {
         if let Some((shown, src)) = source(ctx, &path)? {
             tree.corpus.add(&shown, &src, true);
+            tree.tests.push(shown);
         }
     }
     Ok(tree)

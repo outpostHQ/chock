@@ -81,7 +81,9 @@ fn long_comments(rest: &[&str], json: bool) -> Result<u8, Stop> {
 /// `chock lean`: a report and never a verdict, so it exits zero unless a file did not read.
 fn lean(rest: &[&str], json: bool) -> Result<u8, Stop> {
     let (asked, path) = report::asked(rest).map_err(Stop::Usage)?;
-    let ctx = Ctx::for_root(dir_or_here(path)?, Baseline::empty(VERSION));
+    let root = dir_or_here(path)
+        .map_err(|why| format!("{why}; lean reads a tree, and `--json` has a row for each file"))?;
+    let ctx = Ctx::for_root(root, Baseline::empty(VERSION));
     let found = report::survey(&ctx, asked, VERSION)?;
     shown(json, &found.render_json(), &found.render());
     found.whole().map_err(Stop::CannotRun)

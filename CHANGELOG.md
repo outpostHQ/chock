@@ -15,6 +15,14 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and the shared temp directory.
 - `docs/gates.md` names all five calls that `escapes-the-run-dir` reads, and says that the rule
   reads the body of the test: not what the test does with the path, and not what a helper calls.
+- **`chock lean` names fewer traits that must stay.** `single_impl_trait` now counts an impl in
+  a file of test code, counts an impl that a macro writes as many, and leaves out a trait whose
+  one impl is for a type of another crate, which is an extension of that type.
+- **`no-assertion` leaves out a property test.** A test with generated arguments, written
+  `name in strategy` in a `proptest!` block, claims that its body panics for no input.
+- An `ambiguous-test-name` finding says "in this tree": the rule compares the names of all tests
+  of the tree, across crates.
+- `chock lean FILE` says that lean reads a tree and that `--json` has a row for each file.
 
 ## [0.5.1] - 2026-10-10
 

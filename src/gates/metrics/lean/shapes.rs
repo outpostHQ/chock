@@ -1,10 +1,12 @@
 //! Shapes that span files: a module that only re-exports, a trait that one type implements, and
 //! two structs with the same fields and a `From` between them. Each is an estimate for a person.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use proc_macro2::{TokenStream, TokenTree};
 use syn::spanned::Spanned;
-use syn::{Fields, GenericArgument, Item, ItemImpl, PathArguments, Type, Visibility};
+use syn::visit::Visit;
+use syn::{Fields, GenericArgument, Item, ItemImpl, Macro, PathArguments, Type, Visibility};
 
 use super::report::Cut;
 use crate::gates::metrics::prodlines;
@@ -19,13 +21,18 @@ struct Named {
     fields: Vec<String>,
 }
 
-/// What the production code of every file defines, and how often each trait is implemented,
+/// For each trait, what each impl is for: the name of one type, or `None` for an impl that
+/// stands for many types, which is a generic one or one that a macro writes.
+type Impls = BTreeMap<String, Vec<Option<String>>>;
+
+/// What the production code of every file defines, and the types and the impls of all code,
 /// test code included.
 #[derive(Debug, Default)]
 pub struct Seen {
     structs: Vec<Named>,
     traits: Vec<Named>,
-    impls: BTreeMap<String, u32>,
+    types: BTreeSet<String>,
+    impls: Impls,
     conversions: Vec<(String, Named)>,
     reexports: Vec<String>,
 }
@@ -55,6 +62,56 @@ fn first_argument(path: &syn::Path) -> Option<String> {
     })
 }
 
+/// The name of the type that an item declares.
+fn declared(item: &Item) -> Option<String> {
+    let name = match item {
+        Item::Struct(it) => &it.ident,
+        Item::Enum(it) => &it.ident,
+        Item::Union(it) => &it.ident,
+        Item::Type(it) => &it.ident,
+        _ => return None,
+    };
+    Some(name.to_string())
+}
+
+/// Each trait that tokens implement, as `Keyed` for `impl Keyed for $t`: the last name outside
+/// angle brackets between an `impl` and its `for`. A group ends an `impl` that names no trait.
+fn written(tokens: TokenStream, traits: &mut Vec<String>) {
+    let (mut open, mut depth, mut name) = (false, 0_u32, None);
+    for token in tokens {
+        if let TokenTree::Group(group) = &token {
+            written(group.stream(), traits);
+            open &= depth > 0;
+            continue;
+        }
+        let word = token.to_string();
+        match word.as_str() {
+            "impl" => (open, depth, name) = (true, 0, None),
+            "<" => depth += 1,
+            ">" => depth = depth.saturating_sub(1),
+            "for" if open && depth == 0 => {
+                traits.extend(name.take());
+                open = false;
+            }
+            _ if open && depth == 0 && matches!(token, TokenTree::Ident(_)) => name = Some(word),
+            _ => {}
+        }
+    }
+}
+
+/// Reads the impls that the macros of a file write, in a definition or in a call.
+struct Macros<'a>(&'a mut Impls);
+
+impl<'ast> Visit<'ast> for Macros<'_> {
+    fn visit_macro(&mut self, node: &'ast Macro) {
+        let mut traits = Vec::new();
+        written(node.tokens.clone(), &mut traits);
+        for name in traits {
+            self.0.entry(name).or_default().push(None);
+        }
+    }
+}
+
 /// A struct's field names in order of name; a tuple struct has none.
 fn field_names(fields: &Fields) -> Vec<String> {
     let mut names: Vec<String> = (fields.iter())
@@ -65,9 +122,9 @@ fn field_names(fields: &Fields) -> Vec<String> {
 }
 
 impl Seen {
-    /// Reads one production file. A file whose every item is a `pub use` is a re-export module,
-    /// unless it is a crate's `lib.rs`, whose `pub use` lines are the crate's interface.
-    pub fn read(&mut self, shown: &str, src: &str) {
+    /// Reads one file; `test` is a file of test code. A production file whose every item is a
+    /// `pub use` is a re-export module, unless it is `lib.rs`, the crate's interface.
+    pub fn read(&mut self, shown: &str, src: &str, test: bool) {
         let Ok(file) = prodlines::parse_rust(src) else {
             return;
         };
@@ -75,14 +132,18 @@ impl Seen {
             Item::Use(it) => !matches!(it.vis, Visibility::Inherited),
             _ => false,
         };
-        if !file.items.is_empty() && file.items.iter().all(public) && !shown.ends_with("lib.rs") {
+        let only_uses = !file.items.is_empty() && file.items.iter().all(public);
+        if only_uses && !test && !shown.ends_with("lib.rs") {
             self.reexports.push(shown.to_string());
         }
-        self.items(&file.items, shown, prodlines::is_test_gated(&file.attrs));
+        Macros(&mut self.impls).visit_file(&file);
+        let gated = test || prodlines::is_test_gated(&file.attrs);
+        self.items(&file.items, shown, gated);
     }
 
     fn items(&mut self, items: &[Item], shown: &str, test: bool) {
         for item in items {
+            self.types.extend(declared(item));
             match item {
                 Item::Struct(it) if !test => {
                     let fields = field_names(&it.fields);
@@ -102,19 +163,16 @@ impl Seen {
         }
     }
 
-    /// Counts the trait's impl, twice where it is generic and so stands for many types, and keeps
-    /// a production `impl From<A> for B`.
+    /// Keeps what the trait's impl is for, which is no one type where the impl is generic, and
+    /// keeps a production `impl From<A> for B`.
     fn implemented(&mut self, node: &ItemImpl, shown: &str, test: bool) {
         let path = node.trait_.as_ref().map(|(path, _)| path);
         let Some((path, last)) = path.and_then(|it| Some((it, it.segments.last()?))) else {
             return;
         };
-        let many = if node.generics.params.is_empty() {
-            1
-        } else {
-            2
-        };
-        *self.impls.entry(last.ident.to_string()).or_default() += many;
+        let one = named(&node.self_ty).filter(|_| node.generics.params.is_empty());
+        let impls = self.impls.entry(last.ident.to_string()).or_default();
+        impls.push(one);
         if last.ident == "From"
             && !test
             && let (Some(from), Some(into)) = (first_argument(path), named(&node.self_ty))
@@ -135,7 +193,12 @@ impl Seen {
                 Cut::estimate("reexport_module", (1, last), whole, fix),
             ));
         }
-        for it in (self.traits.iter()).filter(|it| self.impls.get(&it.name) == Some(&1)) {
+        // A type of another crate takes no inherent `impl`, so its one trait is an extension.
+        let sole = |it: &&Named| match self.impls.get(&it.name).map(Vec::as_slice) {
+            Some([Some(ty)]) => self.types.contains(ty),
+            _ => false,
+        };
+        for it in self.traits.iter().filter(sole) {
             let fix = format!(
                 "one type implements `{0}`: move its methods into an inherent `impl`, then remove \
                  `{0}`",
@@ -197,7 +260,7 @@ mod tests {
         let mut seen = Seen::default();
         let mut lines = BTreeMap::new();
         for (shown, src) in files {
-            seen.read(shown, src);
+            seen.read(shown, src, shown.starts_with("tests/"));
             lines.insert((*shown).to_string(), src.lines().count() as u64);
         }
         seen.cuts(&lines)
@@ -254,13 +317,87 @@ mod tests {
     fn a_trait_with_no_impl_two_impls_a_generic_impl_or_a_test_impl_is_not_named() {
         let shape = "trait Shape {}\n";
         assert!(kinds(&[("src/a.rs", shape)]).is_empty());
-        let two = "trait Shape {}\nimpl Shape for A {}\nimpl Shape for B {}\n";
+        let two =
+            "trait Shape {}\nstruct A;\nstruct B;\nimpl Shape for A {}\nimpl Shape for B {}\n";
         assert!(kinds(&[("src/a.rs", two)]).is_empty());
-        let generic = "trait Shape {}\nimpl<T: Clone> Shape for T {}\n";
+        let generic = "trait Shape {}\nstruct T;\nimpl<T: Clone> Shape for T {}\n";
         assert!(kinds(&[("src/a.rs", generic)]).is_empty());
-        let mock = "trait Shape {}\nimpl Shape for A {}\n#[cfg(test)]\nmod tests {\n    \
-                    impl super::Shape for Mock {}\n}\n";
+        let mock = "trait Shape {}\nstruct A;\nimpl Shape for A {}\n#[cfg(test)]\nmod tests {\n    \
+                    struct Mock;\n    impl super::Shape for Mock {}\n}\n";
         assert!(kinds(&[("src/a.rs", mock)]).is_empty());
+    }
+
+    /// One trait with one impl for a type of the tree, which `single_impl_trait` names at line 1.
+    const SHAPE: &str = "trait Shape {}\nstruct A;\nimpl Shape for A {}\n";
+
+    fn named_at_line_one(files: &[(&str, &str)]) -> bool {
+        let one = ("src/a.rs".to_string(), "single_impl_trait", 1, 1, 1);
+        kinds(files) == [one]
+    }
+
+    #[test]
+    fn an_impl_in_a_file_of_test_code_is_an_impl_and_the_file_declares_nothing_to_remove() {
+        assert!(named_at_line_one(&[("src/a.rs", SHAPE)]));
+        let fake = "struct Fake;\nimpl crate::Shape for Fake {}\n";
+        assert!(kinds(&[("src/a.rs", SHAPE), ("tests/fake.rs", fake)]).is_empty());
+        let own = "pub trait Probe {}\npub struct One;\nimpl Probe for One {}\n";
+        assert!(named_at_line_one(&[
+            ("src/a.rs", SHAPE),
+            ("tests/own.rs", own)
+        ]));
+        let uses = "pub use a::A;\n";
+        assert!(named_at_line_one(&[
+            ("src/a.rs", SHAPE),
+            ("tests/uses.rs", uses)
+        ]));
+    }
+
+    #[test]
+    fn a_trait_whose_one_impl_is_for_a_type_of_another_crate_is_an_extension() {
+        for foreign in [
+            "clap::ArgMatches",
+            "ArgMatches",
+            "str",
+            "[A]",
+            "&A",
+            "(A, A)",
+        ] {
+            let src = format!("trait Reader {{}}\nstruct A;\nimpl Reader for {foreign} {{}}\n");
+            assert!(kinds(&[("src/a.rs", &src)]).is_empty(), "{foreign}");
+        }
+        for own in [
+            "enum A {}",
+            "union A { x: u8 }",
+            "type A = u8;",
+            "struct A<T>(T);",
+        ] {
+            let src = format!("trait Shape {{}}\n{own}\nimpl Shape for A {{}}\n");
+            assert!(named_at_line_one(&[("src/a.rs", &src)]), "{own}");
+        }
+        let in_tests = "trait Shape {}\n#[cfg(test)]\nmod tests {\n    struct Fake;\n    \
+                        impl super::Shape for Fake {}\n}\n";
+        assert!(named_at_line_one(&[("src/a.rs", in_tests)]));
+    }
+
+    #[test]
+    fn a_trait_that_a_macro_implements_stands_for_many_types() {
+        let free = |with: &str| kinds(&[("src/a.rs", &format!("{SHAPE}{with}\n"))]).is_empty();
+        assert!(free("macro_rules! m { ($t:ty) => {impl Shape for $t {}} }"));
+        assert!(free("m! { impl<T> $crate::Shape<(T, u8)> for $t {} }"));
+        assert!(free("m! { impl<F: for<'a> Fn(&'a u8)> Shape for B {} }"));
+        assert!(free("fn derive() { quote! { impl Shape for #name {} }; }"));
+        assert!(free("#[test]\nfn t() { m! { impl Shape for B {} }; }"));
+    }
+
+    #[test]
+    fn a_macro_that_implements_another_trait_or_no_trait_leaves_the_trait_named() {
+        let named = |with: &str| named_at_line_one(&[("src/a.rs", &format!("{SHAPE}{with}\n"))]);
+        assert!(named("macro_rules! m { () => { impl Other for B {} } }"));
+        assert!(named("m! { impl Wrap<Shape> for $t {} }"));
+        assert!(named("m! { fn f(x: impl Shape) { for a in x {} } }"));
+        assert!(named("m! { fn f() -> impl Shape { for a in b {} } }"));
+        assert!(named("m! { impl A {} Shape for B }"));
+        assert!(named("m! { Shape for B }"));
     }
 
     #[test]
@@ -339,8 +476,7 @@ mod tests {
             let found = kinds(&[("src/a.rs", POINT), ("src/b.rs", &built)]);
             assert!(found.is_empty(), "{from}: {found:?}");
         }
-        let inherent = "trait Shape {}\nimpl Shape for A {}\nimpl A {}\n";
-        let one = ("src/a.rs".to_string(), "single_impl_trait", 1, 1, 1);
-        assert_eq!(kinds(&[("src/a.rs", inherent)]), [one]);
+        let inherent = format!("{SHAPE}impl A {{}}\n");
+        assert!(named_at_line_one(&[("src/a.rs", &inherent)]));
     }
 }

@@ -135,9 +135,10 @@ pub fn survey(ctx: &Ctx, asked: Asked, version: &str) -> Result<Report, String> 
     let mut cuts = forwarders(&tree);
     cuts.extend(repeats(&tree, asked.tests));
     let mut seen = Seen::default();
-    for shown in tree.lines.keys() {
+    let production = tree.lines.keys().map(|shown| (shown, false));
+    for (shown, test) in production.chain(tree.tests.iter().map(|shown| (shown, true))) {
         if let Ok(src) = std::fs::read_to_string(ctx.root.join(shown)) {
-            seen.read(shown, &src);
+            seen.read(shown, &src, test);
         }
     }
     cuts.extend(seen.cuts(&tree.lines));
@@ -433,6 +434,29 @@ mod tests {
         assert_eq!(rows(&report), [("src/lib.rs", 4, 3)]);
         assert_eq!(report.rows[0].places[0].kind, "single_impl_trait");
         assert!(matches!(report.unread.as_slice(), [one] if one.starts_with("src/broken.rs: ")));
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn an_impl_in_a_test_module_file_keeps_its_trait_out_of_the_report() {
+        let files = [
+            ("Cargo.toml", ""),
+            ("src/lib.rs", "pub trait Probe {}\nmod s3;\n"),
+            (
+                "src/s3.rs",
+                "struct S3;\nimpl crate::Probe for S3 {}\n#[cfg(test)]\nmod probe_tests;\n",
+            ),
+            (
+                "src/s3/probe_tests.rs",
+                "struct Fake;\nimpl crate::Probe for Fake {}\n",
+            ),
+        ];
+        let root = Held::tree("lean-report-test-impl", &files);
+        let report = survey(&root, Asked::default(), "1").unwrap();
+        assert_eq!(rows(&report), [("", 0, 0); 0]);
+        std::fs::write(root.root.join("src/s3/probe_tests.rs"), "").unwrap();
+        let alone = survey(&root, Asked::default(), "1").unwrap();
+        assert_eq!(rows(&alone), [("src/lib.rs", 3, 1)]);
     }
 
     #[test]

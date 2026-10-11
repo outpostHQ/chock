@@ -417,7 +417,9 @@ fn lean_names_a_word_it_does_not_take_and_a_path_that_is_no_directory() {
     let flag = exits(&dir, &["lean", "--nope"], 2);
     says(&flag.err, "chock: lean does not take `--nope`");
     let path = exits(&dir, &["lean", "no/such"], 2);
-    says(&path.err, "chock: lean: no/such is not a directory");
+    let refusal = "chock: lean: no/such is not a directory; lean reads a tree, and `--json` has \
+                   a row for each file";
+    says(&path.err, refusal);
 }
 
 #[test]
