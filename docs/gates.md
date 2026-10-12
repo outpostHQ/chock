@@ -98,7 +98,9 @@ whole tree.
 ## Notes on some gates
 
 - **Names that sound alike.** `slop` measures comment length; `codeslop` counts clippy's code-shape
-  lints. `unused` and `unused-deep` each find dependencies the other misses.
+  lints. `unused` and `unused-deep` each find dependencies the other misses. `unreferenced` counts
+  only what Outpost is certain nothing reaches; `measures` holds `dead_items_production`, a wider
+  analysis, so a new public function with no caller trips `measures` and not `unreferenced`.
 - **When `bigfiles` and `boundaries` disagree.** Splitting a file for `bigfiles` can leave the new
   file calling helpers that stayed behind, and `boundaries` counts that edge. Split along a concern,
   and move what both halves need to where both can reach it.

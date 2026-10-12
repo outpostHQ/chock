@@ -785,9 +785,14 @@ fn setup_command(line: &str) -> Option<(&str, Vec<&str>)> {
     Some((program, parts.collect()))
 }
 
+/// How often a setup line runs before its install counts as failed, and the wait that grows before
+/// each new attempt: the line downloads, and GitHub once answered Kani's bundle with a 500.
+const SETUP_ATTEMPTS: u32 = 3;
+const SETUP_PAUSE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The second half of installing a tool that fetches the rest of itself. A failure here leaves the
 /// tool on PATH but unusable, so it counts as the install failing rather than as a warning.
-fn run_setup(pin: &Pin) -> bool {
+fn run_setup(pin: &Pin, pause: &dyn Fn(u32)) -> bool {
     let Some(line) = &pin.setup else {
         return true;
     };
@@ -798,12 +803,17 @@ fn run_setup(pin: &Pin) -> bool {
         );
         return false;
     };
-    match Command::new(program).args(&args).status() {
-        Ok(s) if s.success() => {
+    let finishes = |again: u32| {
+        pause(again);
+        let ran = Command::new(program).args(&args).status();
+        ran.is_ok_and(|status| status.success())
+    };
+    match (0..SETUP_ATTEMPTS).any(finishes) {
+        true => {
             println!("  set up    {} — {line}", pin.crate_name);
             true
         }
-        _ => {
+        false => {
             println!("  FAILED    {} — `{line}` did not finish", pin.crate_name);
             false
         }
@@ -976,7 +986,7 @@ fn install_one(pin: &Pin, installed: &dyn Fn(&Pin) -> Option<String>, binstall: 
         return false;
     }
     println!("  installed {} {}", pin.crate_name, pin.want);
-    run_setup(pin)
+    run_setup(pin, &|again| std::thread::sleep(SETUP_PAUSE * again))
 }
 
 #[cfg(test)]
@@ -1410,18 +1420,34 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_setup_command_that_cannot_run_fails_the_install() {
-        assert!(!run_setup(&pinned(Some("chock-no-such-command-exists"))));
+        assert!(!run_setup(
+            &pinned(Some("chock-no-such-command-exists")),
+            &|_| ()
+        ));
+    }
+
+    /// The false red this answers: one 500 from GitHub for Kani's bundle failed the whole install.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_setup_line_that_fails_runs_three_times_and_one_that_passes_runs_once() {
+        let waits = std::cell::RefCell::new(Vec::new());
+        let pause = |again: u32| waits.borrow_mut().push(again);
+        assert!(!run_setup(&pinned(Some("false")), &pause));
+        assert_eq!(waits.take(), [0, 1, 2]);
+        assert!(run_setup(&pinned(Some("true")), &pause));
+        assert_eq!(waits.take(), [0]);
+        assert_eq!(SETUP_PAUSE * 2, std::time::Duration::from_secs(20));
     }
 
     #[test]
     fn a_setup_line_naming_no_command_fails_rather_than_being_skipped() {
-        assert!(!run_setup(&pinned(Some("   "))));
+        assert!(!run_setup(&pinned(Some("   ")), &|_| ()));
     }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_setup_command_that_succeeds_leaves_the_install_good() {
-        assert!(run_setup(&pinned(Some("true"))));
+        assert!(run_setup(&pinned(Some("true")), &|_| ()));
     }
 
     /// A command that starts and then exits non-zero is the case that separates "could not run"
@@ -1429,12 +1455,12 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_setup_command_that_runs_and_fails_is_not_a_successful_install() {
-        assert!(!run_setup(&pinned(Some("false"))));
+        assert!(!run_setup(&pinned(Some("false")), &|_| ()));
     }
 
     #[test]
     fn a_tool_with_no_setup_line_needs_no_second_step() {
-        assert!(run_setup(&pinned(None)));
+        assert!(run_setup(&pinned(None), &|_| ()));
     }
 
     #[test]

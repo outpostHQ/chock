@@ -191,7 +191,11 @@ fn join(at: &str, name: &str) -> String {
     }
 }
 
-/// How many commits the system holding this tree can walk back from HEAD.
+/// What git counts behind HEAD: the commits that change a file, from the top of the repository.
+/// One that changes none holds nothing to scan, and Outpost stores none when it mirrors git.
+const CHANGING: [&str; 6] = ["rev-list", "--count", "--full-history", "HEAD", "--", ":/"];
+
+/// How many commits that change a file the system holding this tree can walk back from HEAD.
 pub fn commits(root: &Path, held: Option<Kind>) -> Result<u64, String> {
     match held {
         None => Err("no repository here, so nothing says how many commits there are".to_string()),
@@ -203,8 +207,7 @@ pub fn commits(root: &Path, held: Option<Kind>) -> Result<u64, String> {
 fn commits_of(root: &Path, kind: Kind) -> Result<u64, String> {
     match kind {
         Kind::Git => {
-            let out = exec::run("git", &["rev-list", "--count", "HEAD"], root)
-                .map_err(|e| e.to_string())?;
+            let out = exec::run("git", &CHANGING, root).map_err(|e| e.to_string())?;
             read_git_count(&out)
         }
         Kind::Outpost => {
@@ -291,7 +294,7 @@ fn live(git: Option<u64>, outpost: Option<u64>) -> Kind {
 /// Where counting outpost's history stops.
 const COUNTED: &str = "100000";
 
-/// `git rev-list --count HEAD` prints the number and nothing else. A repository holding no commit
+/// `git rev-list --count` prints the number and nothing else. A repository holding no commit
 /// has no HEAD and git refuses, rather than answering zero.
 fn read_git_count(out: &exec::Output) -> Result<u64, String> {
     if !out.success() {
@@ -1651,7 +1654,15 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_commits_behind_head_are_counted_in_the_repository_that_holds_them() {
-        assert_eq!(commits(&repo("vcs-commits"), Some(Kind::Git)), Ok(2));
+        let root = repo("vcs-commits");
+        assert_eq!(commits(&root, Some(Kind::Git)), Ok(2));
+        // An empty commit, counted from below the top: still the two that change a file.
+        git(
+            &root,
+            &["commit", "--quiet", "--allow-empty", "-m", "third"],
+        );
+        std::fs::create_dir(root.join("below")).unwrap();
+        assert_eq!(commits(&root.join("below"), Some(Kind::Git)), Ok(2));
         assert_eq!(
             commits(&crate::testdir::make("vcs-uncounted"), None),
             Err("no repository here, so nothing says how many commits there are".to_string())

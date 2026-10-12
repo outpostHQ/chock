@@ -329,18 +329,30 @@ fn worse(line: &str) -> Option<Finding> {
     Some(Finding::at("", &message).item(measure))
 }
 
-/// Every test nextest gave a failing verdict, from both streams.
+/// Every test given a failing verdict, from both streams: nextest's lines, or libtest's own where
+/// nextest named none, as under a runner that calls `cargo test`.
 pub(super) fn failing_tests(out: &exec::Output) -> BTreeSet<String> {
-    let mut named = failed_tests(&out.stdout);
-    named.extend(failed_tests(&out.stderr));
-    named
+    // A set, since the same line can reach both streams.
+    let named = |verdict: fn(&str) -> Option<String>| -> BTreeSet<String> {
+        [&out.stdout, &out.stderr]
+            .into_iter()
+            .flat_map(|text| text.lines())
+            .filter_map(|line| verdict(&exec::strip_colour(line)))
+            .collect()
+    };
+    Some(named(failed_test))
+        .filter(|nextest| !nextest.is_empty())
+        .unwrap_or_else(|| named(libtest_failure))
 }
 
-/// Every test nextest gave a failing verdict. A set, since the same line can reach both streams.
-fn failed_tests(text: &str) -> BTreeSet<String> {
-    text.lines()
-        .filter_map(|line| failed_test(&exec::strip_colour(line)))
-        .collect()
+/// `test <path> ... FAILED`, or the header over what a failed test printed, `---- <path> stdout
+/// ----`, which still names a test whose own output split the first.
+fn libtest_failure(line: &str) -> Option<String> {
+    let line = line.trim();
+    let between = |start: &str, end: &str| line.strip_prefix(start)?.strip_suffix(end);
+    between("test ", " ... FAILED")
+        .or_else(|| between("---- ", " stdout ----"))
+        .map(|named| named.trim().to_string())
 }
 
 /// `FAIL [   0.005s] <binary-id> <test path>`. `FLAKY` is not a failure: the test passed on retry.
@@ -1193,11 +1205,59 @@ mod tests {
                            PASS [   0.001s] chock other::fine\n\
                       FLAKY 2/2 [   2.000s] chock retried::eventually_passed\n";
         assert_eq!(
-            failed_tests(out)
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
+            named(&failing_tests(&ran(out, Some(100), false))),
             ["chock lock::tests::a_lock_is_taken", "chock slow::hangs"]
+        );
+    }
+
+    fn named(tests: &BTreeSet<String>) -> Vec<&str> {
+        tests.iter().map(String::as_str).collect()
+    }
+
+    /// As `cargo test` prints it under a runner of the project's own: seed's `just unit`.
+    const LIBTEST: &str = "running 3 tests\n\
+                           test zz_probe::the_gate_can_fail ... FAILED\n\
+                           test other::fine ... ok\n\
+                           test spawns::a_child ... the child wrote this\nFAILED\n\n\
+                           failures:\n\n\
+                           ---- spawns::a_child stdout ----\n\
+                           thread 'spawns::a_child' panicked at src/lib.rs:9:5:\n\n\
+                           test result: FAILED. 1 passed; 2 failed; 0 ignored\n";
+
+    #[test]
+    fn a_test_that_libtest_failed_is_named_by_its_verdict_line_or_its_output_header() {
+        assert_eq!(
+            named(&failing_tests(&ran(LIBTEST, Some(101), false))),
+            ["spawns::a_child", "zz_probe::the_gate_can_fail"]
+        );
+        let on_stderr =
+            exec::Output::of(Some(101), "", "\u{1b}[31mtest a::b ... FAILED\u{1b}[0m\n");
+        assert_eq!(named(&failing_tests(&on_stderr)), ["a::b"]);
+        assert_eq!(libtest_failure("test a::b ... ok"), None);
+        assert_eq!(libtest_failure("---- a::b stderr ----"), None);
+    }
+
+    /// The false red this answers: seed's failing unit test read as a suite that could not run.
+    #[test]
+    fn a_suite_that_libtest_failed_trips_and_names_each_test() {
+        assert_eq!(
+            said(&read_suite(&ran(LIBTEST, Some(101), false), root())),
+            [
+                "spawns::a_child: this test failed",
+                "zz_probe::the_gate_can_fail: this test failed"
+            ]
+        );
+    }
+
+    /// nextest prints what a failed test wrote, and libtest's verdict line is in it.
+    #[test]
+    fn a_test_that_nextest_named_is_not_named_again_from_its_own_output() {
+        let out = "        FAIL [   0.005s] chock lock::tests::a_lock_is_taken\n\
+                   --- STDOUT:              chock lock::tests::a_lock_is_taken ---\n\
+                   test lock::tests::a_lock_is_taken ... FAILED\n";
+        assert_eq!(
+            named(&failing_tests(&ran(out, Some(100), false))),
+            ["chock lock::tests::a_lock_is_taken"]
         );
     }
 

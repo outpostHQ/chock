@@ -83,7 +83,7 @@ impl Scan {
         if walked < held {
             let unscanned = held - walked;
             return Err(format!(
-                "outpost walked {walked} of the {held} commits this repository holds, so \
+                "outpost walked {walked} of the {held} commits that change a file here, so \
                  {unscanned} went unscanned; `outpost git import` brings the rest in"
             ));
         }
@@ -210,8 +210,8 @@ mod tests {
     fn a_scan_covering_fewer_commits_than_the_repository_holds_could_not_run() {
         assert_eq!(
             leaks(&scanned(""), 1277, &[]).unwrap_err(),
-            "outpost walked 3 of the 1277 commits this repository holds, so 1274 went unscanned; \
-             `outpost git import` brings the rest in"
+            "outpost walked 3 of the 1277 commits that change a file here, so 1274 went \
+             unscanned; `outpost git import` brings the rest in"
         );
     }
 

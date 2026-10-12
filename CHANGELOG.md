@@ -7,6 +7,22 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.5.2] - 2026-10-12
 
+- **`history` runs in a repository whose git history holds an empty commit.** Outpost stores no
+  commit that changes no file, so its walk was shorter than the count from git and the gate could
+  not run; `outpost git import` could not help. chock now counts the commits that change a file.
+- **A suite that fails in a stage after its tests now shows that stage's words.** A runner script
+  wrote the rows of the stage that failed to stdout, and the build before it ended on stderr, so
+  the reason of `test` held 20 lines of the build and no line of the failure. The reason now
+  holds the last lines of each stream that the tool wrote to: 10 of each, or 20 of the one.
+- **`test` names the failing tests of a runner that calls `cargo test`.** chock read only the
+  failure lines of nextest, so one failing unit test under such a runner gave "cannot run" with
+  20 lines of other output. `test`, `idempotent` and `miri` now also read the lines of libtest
+  where nextest named no test.
+- **`chock init --global` runs the setup line of a tool up to three times.** GitHub answered the
+  download of Kani's bundle with a 500, and that one answer failed the whole install on a CI
+  runner. chock waits 10 seconds before the second attempt and 20 before the third.
+- `docs/gates.md` says why a new public function with no caller trips `measures` and not
+  `unreferenced`.
 - **`typos` no longer reads a hex id as words.** A tree id of 12 characters in a record that a
   script writes gave two misspellings, and each later commit was refused. A hex id of 7
   characters or more, such as a commit id, is now no word; a project's own `typos.toml` still

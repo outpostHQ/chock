@@ -82,14 +82,19 @@ impl Outcome {
         self
     }
 
-    /// Everything the tool wrote, kept so a failure no finding could be read from still shows it.
+    /// Everything the tool wrote, each stream apart, kept so a failure no finding could be read
+    /// from still shows the end of both.
     #[must_use]
     pub fn saying(mut self, out: &crate::exec::Output) -> Self {
-        let cut = cut_short(out.truncated);
-        self.said = Some(format!("{}{}{cut}", out.stdout, out.stderr));
+        let wrote = [out.stdout.as_str(), out.stderr.as_str()];
+        let wrote: Vec<&str> = wrote.into_iter().filter(|text| !text.is_empty()).collect();
+        self.said = Some(wrote.join(STREAMS) + cut_short(out.truncated));
         self
     }
 }
+
+/// Parts what a tool printed from its errors in what an outcome keeps. No tool's line holds one.
+const STREAMS: &str = "\u{c}";
 
 /// Ends what a cut capture said, so the last lines chock kept are not read as the tool's last.
 const CUT_SHORT: &str =
@@ -585,17 +590,23 @@ fn said_nothing(said: Option<&str>) -> String {
         .and_then(crate::exec::marked)
         .map(|line| format!(" What it marked as the error: {line}."))
         .unwrap_or_default();
-    format!("{SAID_NOTHING}.{marked} Its last {QUOTED_LINES} lines:\n{tail}")
+    format!("{SAID_NOTHING}.{marked} {LAST_LINES}:\n{tail}")
 }
 
-/// The last lines a tool wrote, blank ones dropped, in the order it wrote them.
+const LAST_LINES: &str = "The last lines it wrote, what it printed before its errors";
+
+/// The last lines of each stream a tool wrote to, blank ones dropped: the streams share the quote,
+/// since a script's stage fails on one while the build before it ends on the other.
 fn tail_of(said: &str) -> String {
-    let kept: Vec<&str> = said
-        .lines()
-        .map(str::trim_end)
-        .filter(|line| !line.is_empty())
-        .collect();
-    kept[kept.len().saturating_sub(QUOTED_LINES)..].join("\n")
+    let written = |stream: &str| -> Vec<String> {
+        let lines = stream.lines().map(|line| line.trim_end().to_string());
+        lines.filter(|line| !line.is_empty()).collect()
+    };
+    let wrote = said.split(STREAMS).map(written);
+    let wrote: Vec<Vec<String>> = wrote.filter(|lines| !lines.is_empty()).collect();
+    let share = QUOTED_LINES / wrote.len().max(1);
+    let end = |lines: &Vec<String>| lines[lines.len().saturating_sub(share)..].join("\n");
+    wrote.iter().map(end).collect::<Vec<String>>().join("\n")
 }
 
 /// Why this run cannot be compared with the record, if it cannot. Sharing no key at all is a reader
@@ -2476,7 +2487,7 @@ mod tests {
         let reason = said_nothing(Some(&wrote(3)));
         assert_eq!(
             reason,
-            format!("{SAID_NOTHING}. Its last {QUOTED_LINES} lines:\nline 1\nline 2\nline 3")
+            format!("{SAID_NOTHING}. {LAST_LINES}:\nline 1\nline 2\nline 3")
         );
         // More than it quotes: the tail is what a diagnostic and its notes sit in.
         let long = said_nothing(Some(&wrote(50)));
@@ -2491,7 +2502,7 @@ mod tests {
         let told = said_nothing(Some(&buried));
         let lead = format!(
             "{SAID_NOTHING}. What it marked as the error: error: failed to run custom build \
-             command for `glib-sys`. Its last"
+             command for `glib-sys`. The last"
         );
         assert!(told.starts_with(&lead), "{told}");
         // Nothing written, and nothing but blank lines, both fall back to saying so.
@@ -2513,12 +2524,32 @@ mod tests {
             truncated,
         };
         let whole = Outcome::failed(Vec::new()).saying(&wrote(false));
-        assert_eq!(whole.said.as_deref(), Some("one\ntwo"));
+        assert_eq!(
+            said_nothing(whole.said.as_deref()),
+            format!("{SAID_NOTHING}. {LAST_LINES}:\none\ntwo")
+        );
         let cut = Outcome::failed(Vec::new()).saying(&wrote(true));
         assert_eq!(
             said_nothing(cut.said.as_deref()),
-            format!("{SAID_NOTHING}. Its last {QUOTED_LINES} lines:\none\ntwo{CUT_SHORT}")
+            format!("{SAID_NOTHING}. {LAST_LINES}:\none\ntwo{CUT_SHORT}")
         );
+    }
+
+    #[test]
+    fn a_stage_that_fails_on_stdout_is_quoted_beside_the_build_that_ended_on_stderr() {
+        fn wrote(stream: &str, from: u32) -> Vec<String> {
+            (from..=30).map(|i| format!("{stream} {i}")).collect()
+        }
+        let reason = |stdout: &[String], stderr: &[String]| {
+            let ran = crate::exec::Output::of(Some(1), &stdout.join("\n"), &stderr.join("\n"));
+            said_nothing(Outcome::failed(Vec::new()).saying(&ran).said.as_deref())
+        };
+        let both = reason(&wrote("row", 1), &wrote("built", 1));
+        let quoted: Vec<&str> = both.lines().skip(1).collect();
+        assert_eq!(quoted, [wrote("row", 21), wrote("built", 21)].concat());
+        // One silent stream leaves the whole quote to the other.
+        let alone = reason(&wrote("row", 1), &[]);
+        assert_eq!(alone.lines().skip(1).collect::<Vec<_>>(), wrote("row", 11));
     }
 
     #[test]
