@@ -5,6 +5,12 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-12
+
+- **`coverage` and `crap` run beside the suite.** `coverage` builds instrumented code in a
+  directory of its own, as `miri` and `mutest` do. With jobs for two lanes or more, it now takes a
+  lane of its own when its recorded memory fits. `crap` reads the coverage report, so it runs after
+  `coverage` in that lane. The suite's lane is shorter by the time of the two gates.
 - **`mutest` says which tests failed before any mutation.** mutest stops with exit 4 when a test
   fails in its first run, and writes an incomplete end to its progress record. chock read that end
   as a fault and stopped the run, so the reason was "gave up waiting for cargo: incomplete terminal

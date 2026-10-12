@@ -2429,6 +2429,37 @@ mod tests {
     }
 
     #[test]
+    fn crap_reads_the_coverage_report_in_the_lane_of_coverage() {
+        let named = |name| Gate {
+            name,
+            builds: true,
+            ..gate_of(Kind::Binary(agreeable))
+        };
+        let (test, coverage, crap, miri) = (
+            named("test"),
+            named("coverage"),
+            named("crap"),
+            named("miri"),
+        );
+        let gates = [&test, &coverage, &crap, &miri];
+        let ctx = ctx_with("probe", &[]);
+        let peaks = [("coverage", 5), ("crap", 1), ("miri", 7), ("test", 2)]
+            .map(|(gate, mb)| (gate.to_string(), mb));
+        let lanes = |room| lanes::lanes_of(&gates, &ctx, &peaks, room);
+        assert_eq!(
+            lanes(14),
+            [vec![0], vec![], vec![1, 2], vec![3]],
+            "5 + 7 + 2"
+        );
+        assert_eq!(lanes(13), [vec![0, 3], vec![], vec![1, 2]], "5 + 7");
+        assert_eq!(
+            lanes(11),
+            [vec![0, 1, 2, 3], vec![]],
+            "crap stays with the suite"
+        );
+    }
+
+    #[test]
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_gate_that_starts_processes_records_the_most_they_held_at_once() {

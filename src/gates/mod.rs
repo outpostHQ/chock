@@ -162,8 +162,11 @@ pub fn builds_apart(gate: &str, build: &[String]) -> bool {
 }
 
 /// Gates whose tool builds in a directory of its own under `target`, so each may take a lane of its
-/// own beside the suite's once its recorded memory fits.
-pub(crate) const BUILDS_ALONE: [&str; 2] = ["mutest", "miri"];
+/// own beside the suite's once its recorded memory fits. A coverage build is instrumented.
+pub(crate) const BUILDS_ALONE: [&str; 3] = ["mutest", "miri", "coverage"];
+
+/// A gate that reads what another writes, and that gate: it runs in that gate's lane when it has one.
+pub(crate) const FOLLOWS: [(&str, &str); 1] = [("crap", "coverage")];
 
 #[must_use]
 pub fn find(name: &str) -> Option<&'static Gate> {

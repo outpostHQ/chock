@@ -22,8 +22,8 @@ fn room(available_mb: u64) -> u64 {
     available_mb / 4 * 3
 }
 
-/// The lanes as indexes into `gates`: the compiling gates that share the suite's target directory,
-/// those that build apart (so no two release builds run at once), then one per gate `alone` frees.
+/// The lanes as indexes into `gates`: the gates on the suite's target directory, those that build
+/// apart (no two release builds at once), then one per gate `alone` frees, with the gates it leads.
 pub(super) fn lanes_of(
     gates: &[&Gate],
     ctx: &Ctx,
@@ -49,15 +49,24 @@ pub(super) fn lanes_of(
         &peak,
         room,
     );
-    let rest = beside
-        .into_iter()
-        .filter(|at| !alone.contains(at))
+    // The lane of the gate `at` follows, when that gate runs alone.
+    let led = |at: usize| {
+        let (_, leader) =
+            (crate::gates::FOLLOWS.iter()).find(|(gate, _)| *gate == gates[at].name)?;
+        alone
+            .iter()
+            .copied()
+            .find(|&lead| gates[lead].name == *leader)
+    };
+    let rest = (beside.iter().copied())
+        .filter(|&at| !alone.contains(&at) && led(at).is_none())
         .collect();
-    [
-        vec![rest, apart],
-        alone.into_iter().map(|at| vec![at]).collect(),
-    ]
-    .concat()
+    let own = (alone.iter()).map(|&lead| {
+        (beside.iter().copied())
+            .filter(|&at| at == lead || led(at) == Some(lead))
+            .collect()
+    });
+    [vec![rest, apart], own.collect()].concat()
 }
 
 /// The gates of `beside` that build alone, each on a lane of its own, while all the peaks that
