@@ -14,7 +14,9 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`mutest` says which tests failed before any mutation.** mutest stops with exit 4 when a test
   fails in its first run, and writes an incomplete end to its progress record. chock read that end
   as a fault and stopped the run, so the reason was "gave up waiting for cargo: incomplete terminal
-  or active invocation". chock now lets mutest end, and the reason names the failing tests.
+  or active invocation". chock now lets mutest end, and the reason names the failing tests. From
+  mutest-rs 2b888d3 on, mutest prints what each failed test wrote above its line; chock reads
+  past that output, so it names every failed test.
 
 ## [0.5.2] - 2026-10-12
 

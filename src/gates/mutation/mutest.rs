@@ -282,28 +282,27 @@ fn failed_target(out: &exec::Output) -> Option<String> {
         line.contains("the test harness of `")
             && line.contains("did not build, so none of its mutations were evaluated")
     });
+    let failed_at = |end: usize| {
+        (lines.get(end.checked_sub(1)?)?.strip_prefix("test ")?).strip_suffix(" ... fail")
+    };
     let failing = |at: usize| {
-        let above = lines.iter().take(at).rev();
-        let mut names: Vec<&str> = above
-            .map_while(|line| line.strip_prefix("test ")?.strip_suffix(" ... fail"))
-            .collect();
+        let (mut names, mut top) = (Vec::new(), at);
+        while let Some(name) = failed_at(top) {
+            names.push(name);
+            // A failed test's output, when it printed any, sits between its header and its line.
+            let header = format!("---- {name} stdout ----");
+            top = (lines[..top - 1].iter().rposition(|line| *line == header)).unwrap_or(top - 1);
+        }
         names.reverse();
-        let more = names.len().saturating_sub(NAMED);
-        let rest = if more > 0 {
-            format!(" and {more} more")
-        } else {
-            String::new()
+        let rest = match names.len().saturating_sub(NAMED) {
+            0 => String::new(),
+            more => format!(" and {more} more"),
         };
         format!(
             "{} test(s) failed when mutest ran the tests before any mutation, so it measured \
              nothing: {}{rest}",
             names.len(),
-            names
-                .iter()
-                .take(NAMED)
-                .copied()
-                .collect::<Vec<_>>()
-                .join(", ")
+            names[..names.len().min(NAMED)].join(", ")
         )
     };
     let stopped = lines.iter().position(|line| line == STOPPED);
@@ -717,9 +716,25 @@ mod tests {
                  nothing: cli::t1, cli::t2",
             ),
         ];
-        for (count, reason) in cases {
+        // From mutest-rs 2b888d3 on, the output a failed test printed sits above its line.
+        let printed = |n: usize| {
+            format!(
+                "---- cli::t{n} stdout ----\npanicked at tests/cli.rs\n  test cli::inner ... fail\n\n"
+            )
+        };
+        for ((count, reason), shown) in cases
+            .into_iter()
+            .flat_map(|case| [(case, false), (case, true)])
+        {
+            let output = |n| {
+                if shown && n != 2 {
+                    printed(n)
+                } else {
+                    String::new()
+                }
+            };
             let failing: String = (1..=count)
-                .map(|n| format!("  test cli::t{n} ... fail\n"))
+                .map(|n| format!("{}  test cli::t{n} ... fail\n", output(n)))
                 .collect();
             for before in ["", TOTALS] {
                 let out = ran(
