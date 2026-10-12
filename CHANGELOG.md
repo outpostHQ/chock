@@ -5,6 +5,10 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- **`typos` no longer reads a hex id as words.** A tree id of 12 characters in a record that a
+  script writes gave two misspellings, and each later commit was refused. A hex id of 7
+  characters or more, such as a commit id, is now no word; a project's own `typos.toml` still
+  applies.
 - **`harness-without-pipefail` gives advice that works for a plain `sh` script.** `dash` refuses
   `set -o pipefail`, so for a `sh` or `dash` shebang the finding now says: a bash shebang with
   `set -o pipefail`, or no pipe.

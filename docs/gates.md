@@ -36,7 +36,7 @@ A gate is one of two kinds.
 | `dupdeps` | ✓ | one more crate is compiled twice, at two versions or feature sets |
 | `unused` | ✓ | one more declared dependency is referred to nowhere |
 | `supply` | ✓ | one more dependency runs code at build time |
-| `typos` | ✓ | one more misspelling in code, comments or docs |
+| `typos` | ✓ | one more misspelling in code, comments or docs; a hex id of 7 characters or more, such as a commit id, is no word |
 | `source` | ✓ | one more lint is allowed crate-wide or suppressed without a reason |
 | `slop` | ✓ | one more comment block runs past two lines |
 | `bigfiles` | ✓ | a file over 1000 production lines grows, or another one crosses 1000 |

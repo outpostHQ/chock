@@ -1814,6 +1814,25 @@ esac
     dir
 }
 
+/// The stand-in records the rule file chock names and the first line it holds during the run.
+#[cfg(unix)]
+#[test]
+fn typos_is_given_the_rule_for_hex_ids_in_a_file_that_is_gone_after_the_run() {
+    let seen = "for a; do [ \"$n\" = y ] && f=\"$a\"; n=; [ \"$a\" = --config ] && n=y; done";
+    let shown = "[ -z \"$f\" ] && echo fixture && exit 0\nread -r first < \"$f\"";
+    let script = format!("#!/bin/sh\n{seen}\n{shown}\necho \"$f $first\" > asked\n");
+    let dir = project("typos-rules", &[("bin/typos", &script), ("src/lib.rs", "")]);
+    make_runnable(&dir.join("bin/typos"));
+    let config = chock::project::config::Config::of(["typos"]);
+    put_document(&dir, chock::project::config::FILE, &config);
+    let result = with_tools(&dir, &["run", "typos", "--json"], &[]);
+    assert_eq!(result.code, 0, "{}{}", result.out, result.err);
+    let asked = std::fs::read_to_string(dir.join("asked")).unwrap();
+    let (file, first) = asked.trim_end().rsplit_once(' ').unwrap();
+    assert_eq!(first, "[default]");
+    assert!(!Path::new(file).exists(), "{file}");
+}
+
 #[cfg(unix)]
 #[test]
 fn coverage_and_crap_share_only_the_report_from_their_own_invocation() {

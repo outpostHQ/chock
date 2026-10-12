@@ -705,19 +705,27 @@ fn read_udeps(stdout: &str, root: &Path) -> Result<Outcome, String> {
     Ok(Outcome::failed(found))
 }
 
+/// What typos must not read as words: a hex id of 7 characters or more, such as a commit id.
+const NOT_PROSE: &str = "[default]\nextend-ignore-identifiers-re = ['^[0-9a-f]{7,}$']\n";
+
 /// Runs typos for JSON, since its human format draws spans the shared reader cannot follow.
+/// typos takes `NOT_PROSE` only from a config file, so the run writes one and removes it.
 fn typos(ctx: &Ctx) -> Result<Series, String> {
-    let asked = typos_invocation(&crate::project::SKIPPED);
+    let rules = std::env::temp_dir().join(format!("chock-typos-{}.toml", std::process::id()));
+    let asked = typos_invocation(&crate::project::SKIPPED, &rules.to_string_lossy());
     let argv: Vec<&str> = asked.iter().map(String::as_str).collect();
-    let out = exec::tool(&ctx.root, "typos", &argv)?;
-    read_typos(&out)
+    let put = crate::project::document::write(&rules, NOT_PROSE);
+    let written = put.map_err(|e| format!("typos rules: {e}"));
+    let out = written.and_then(|()| exec::tool(&ctx.root, "typos", &argv));
+    drop(std::fs::remove_file(&rules));
+    read_typos(&out?)
 }
 
 /// Excludes every skipped directory explicitly, since typos honours `.gitignore` only inside git.
-fn typos_invocation(skipped: &[&str]) -> Vec<String> {
+fn typos_invocation(skipped: &[&str], rules: &str) -> Vec<String> {
     let directories = skipped.iter().map(|name| format!("**/{name}/**"));
     let excluded = directories.chain(WRITTEN_BY_CHOCK.iter().map(ToString::to_string));
-    ["--format", "json"]
+    ["--format", "json", "--config", rules]
         .map(String::from)
         .into_iter()
         .chain(excluded.flat_map(|glob| ["--exclude".to_string(), glob]))
@@ -1294,12 +1302,14 @@ mod tests {
 
     #[test]
     fn every_directory_chock_skips_is_named_to_typos_rather_than_left_to_gitignore() {
-        let asked = typos_invocation(&["target", "vendor"]);
+        let asked = typos_invocation(&["target", "vendor"], "rules.toml");
         assert_eq!(
             asked,
             [
                 "--format",
                 "json",
+                "--config",
+                "rules.toml",
                 "--exclude",
                 "**/target/**",
                 "--exclude",
