@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::gates::metrics::{complexity, nesting, prodlines};
+use crate::gates::metrics::{bigfiles, complexity, nesting, prodlines};
 use crate::gates::source;
 use crate::run::report::Finding;
 
@@ -22,6 +22,12 @@ pub fn faults(path: &str, src: &str, rules: &Rules) -> Vec<Finding> {
         Ok(suppressions) => found.extend(rules.past("source", &|_| rules.uncompiled, suppressions)),
         Err(why) => return vec![Finding::at(path, &format!("does not parse: {why}"))],
     }
+    // Counted as the `bigfiles` gate counts: the lines outside the file's test modules.
+    let lines = prodlines::split(src).map_or(0, |(kept, _)| kept.matches('\n').count());
+    let held = usize::try_from(rules.held("bigfiles", &rules.shown)).unwrap_or(usize::MAX);
+    let told = format!("{lines} production lines, over {}", bigfiles::BUDGET);
+    let big = (lines > held.max(bigfiles::BUDGET)).then(|| Finding::at(path, &told));
+    found.extend(big.filter(|_| rules.speaks("bigfiles", &not_production)));
     found.extend(too_complicated(path, src, rules));
     found.extend(too_deep(path, src, rules));
     found
@@ -483,6 +489,22 @@ mod tests {
     }
 
     const NOWHERE: fn(&str) -> bool = |_| false;
+
+    #[test]
+    fn a_file_is_told_once_it_is_past_the_budget_and_past_what_the_baseline_holds() {
+        let big = "\n".repeat(bigfiles::BUDGET);
+        let told = |shown: &str, gates: &[&str], level: u64| {
+            let rules = at(shown, gates, holding(&[("bigfiles", shown, level)]));
+            Finding::rendered(&faults(shown, &big, &rules))
+        };
+        let over = ["src/big.rs: 1001 production lines, over 1000"];
+        assert_eq!(told("src/big.rs", &["bigfiles"], 1000), over);
+        assert_eq!(told("src/big.rs", &["bigfiles"], 1001), [""; 0]);
+        assert_eq!(told("src/big.rs", &["slop"], 0), [""; 0]);
+        assert_eq!(told("tests/big.rs", &["bigfiles"], 0), [""; 0]);
+        assert_eq!(rendered("src/big.rs", &big), over);
+        assert_eq!(rendered("src/big.rs", &big[1..]), [""; 0]);
+    }
 
     #[test]
     fn a_score_is_told_only_past_what_the_baseline_holds_for_that_function() {

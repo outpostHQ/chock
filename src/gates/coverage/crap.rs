@@ -54,20 +54,27 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
     judged(&out.stdout, out.success(), &ctx.root, &record)
 }
 
+/// What cargo-crap leaves out: a build script, which no coverage run reaches, and a file of test
+/// code, which it would score as production code that no test ran.
+const LEFT_OUT: [&str; 4] = ["build.rs", "**/tests.rs", "**/*_tests.rs", "**/tests/**"];
+
 /// cargo-crap over the run's coverage report, as JSON; `more` asks for a comparison or an order.
-/// A build script runs only while cargo builds, so no coverage run reaches it and it stays out.
 fn crap(root: &Path, more: &[&str]) -> Result<exec::Output, String> {
     let report = [
         "crap",
         "--lcov",
         COVERAGE,
         "--workspace",
-        "--exclude",
-        "build.rs",
         "--format",
         "json",
     ];
-    exec::run("cargo", &[&report, more].concat(), root).map_err(|e| e.to_string())
+    let left_out = LEFT_OUT.iter().flat_map(|glob| ["--exclude", *glob]);
+    let args: Vec<&str> = report
+        .into_iter()
+        .chain(left_out)
+        .chain(more.iter().copied())
+        .collect();
+    exec::run("cargo", &args, root).map_err(|e| e.to_string())
 }
 
 /// The record this run is held to, or `None` where a local run has none and writes the first one.

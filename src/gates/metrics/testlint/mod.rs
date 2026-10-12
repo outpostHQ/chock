@@ -38,7 +38,7 @@ const NO_PIPEFAIL: &str =
 const PLAIN_SH: &str = "a pipe in this script hides a failed command, and its `sh` may not know \
                         `pipefail`: give it a bash shebang with `set -o pipefail`, or no pipe";
 
-/// Most tests of the same name that one finding lists; its message counts them all.
+/// Most tests with the same failure line that one finding lists; its message counts them all.
 const TWINS_SHOWN: usize = 3;
 
 /// The root directories whose scripts run a build or a test suite.
@@ -163,23 +163,46 @@ fn has_an_assertion(lexed: &Lexed, body: Range<usize>, helpers: &BTreeSet<&str>)
     fails(lexed, body.clone(), helpers) || body.into_iter().any(named_for_checking)
 }
 
-/// Each test whose name another test has: a name filter runs both, and a failure line names
-/// neither.
+/// Each test whose failure line a test of another file has too: the same name at the same module
+/// path, so `test s3::round_trips ... FAILED` names neither and no name filter runs one alone.
 fn ambiguous_names(scans: &[FileScan]) -> Vec<Finding> {
-    let mut by_name: BTreeMap<&str, Vec<(&str, &TestItem)>> = BTreeMap::new();
+    const ROOTS: [&str; 4] = ["src", "tests", "benches", "examples"];
+    // The modules cargo prints for a file: below `src`, or below the file of another target.
+    let below = |file: &str| -> String {
+        let parts: Vec<&str> = file.trim_end_matches(".rs").split('/').collect();
+        let root = parts.iter().position(|part| ROOTS.contains(part));
+        let cut = root.map_or(0, |at| at + 1 + usize::from(parts.get(at) != Some(&"src")));
+        let mut modules: Vec<&str> = parts.into_iter().skip(cut).collect();
+        modules.pop_if(|last| matches!(*last, "lib" | "main" | "mod"));
+        modules.iter().map(|part| format!("{part}::")).collect()
+    };
+    let mut by_path: BTreeMap<String, Vec<(&str, &TestItem)>> = BTreeMap::new();
     for s in scans {
+        let (lexed, file) = (&s.lexed, below(&s.file));
+        let inline = |(_, at): &(usize, &[Tok])| match at {
+            [Tok::Ident(word), Tok::Ident(_), Tok::Open('{')] => word == "mod",
+            _ => false,
+        };
+        let found = lexed.toks.windows(3).enumerate().filter(inline);
+        let mods: Vec<usize> = found.map(|(i, _)| i).collect();
+        let within = |i: usize| i..=lexed.pair[i + 2];
         for t in &s.tests {
-            let named = by_name.entry(t.name.as_str()).or_default();
-            named.push((s.file.as_str(), t));
+            let ends = [t.attrs.start, t.body.end];
+            let holds = |i: &&usize| ends.iter().all(|at| within(**i).contains(at));
+            let around = mods.iter().filter(holds).map(|i| lexed.ident(i + 1));
+            let inner: String = around.map(|name| format!("{name}::")).collect();
+            let named = by_path.entry(format!("{file}{inner}{}", t.name));
+            named.or_default().push((s.file.as_str(), t));
         }
     }
     let mut found = Vec::new();
-    for (name, tests) in &by_name {
+    for (path, tests) in &by_path {
+        let count = tests.len();
         for (file, t) in tests.iter().filter(|(_, t)| !waived(t, AMBIGUOUS)) {
-            let others = tests.iter().filter(|(_, other)| !std::ptr::eq(*other, *t));
+            let others = tests.iter().filter(|(at, _)| at != file);
             let place =
                 |(at, other): &(&str, &TestItem)| Place::at("same name", at, line(other.line));
-            let detail = format!("`{name}` is the name of {} tests in this tree", tests.len());
+            let detail = format!("`{path}` is the failure line of {count} tests in this tree");
             let mut twin = finding(file, t.line, AMBIGUOUS, &detail);
             twin.places = others.take(TWINS_SHOWN).map(place).collect();
             found.extend((!twin.places.is_empty()).then_some(twin));
@@ -203,7 +226,13 @@ fn hidden_pipe(text: &str) -> Option<&'static str> {
     let named = first.split([' ', '/']).find(|word| SHELLS.contains(word));
     let shell = named.filter(|_| first.starts_with("#!"))?;
     let mut code = lines.filter(|line| !line.trim_start().starts_with('#'));
-    let pipes = code.any(|line| line.contains(" | ") || line.trim_end().ends_with(" |"));
+    // A `case` pattern such as `x86_64 | amd64)` separates its alternatives with a bar: no pipe.
+    let bare = |part: &str| !part.trim().contains([' ', '(']);
+    let piped = |run: &str| run.contains(" | ") || run.trim_end().ends_with(" |");
+    let pipes = code.any(|line| match line.split_once(')') {
+        Some((pattern, run)) if pattern.split(" | ").all(bare) => piped(run),
+        _ => piped(line),
+    });
     let plain = matches!(shell, "sh" | "dash");
     let advice = if plain { PLAIN_SH } else { NO_PIPEFAIL };
     (pipes && !text.contains("pipefail")).then_some(advice)
@@ -496,29 +525,56 @@ mod tests {
                 "#[test]\n// test-lint: allow(ambiguous-test-name) — one per backend\nfn round_trips() {}\n",
             ),
             scan("tests/d.rs", "#[test]\nfn round_trips() {}\n"),
+            scan("tests/e.rs", "#[test]\nfn round_trips() {}\n"),
         ];
         let twins = ambiguous_names(&scans);
         let lines: Vec<String> = twins.iter().flat_map(Finding::lines).collect();
-        let message = "ambiguous-test-name: `round_trips` is the name of 5 tests in this tree";
+        let message =
+            "ambiguous-test-name: `round_trips` is the failure line of 5 tests in this tree";
         let expected = [
             format!("tests/a.rs:1: {message}"),
             "  same name: tests/b.rs:2".to_string(),
-            "  same name: tests/b.rs:5".to_string(),
             "  same name: tests/c.rs:1".to_string(),
+            "  same name: tests/d.rs:1".to_string(),
             format!("tests/b.rs:2: {message}"),
             "  same name: tests/a.rs:1".to_string(),
-            "  same name: tests/b.rs:5".to_string(),
             "  same name: tests/c.rs:1".to_string(),
-            format!("tests/b.rs:5: {message}"),
-            "  same name: tests/a.rs:1".to_string(),
-            "  same name: tests/b.rs:2".to_string(),
-            "  same name: tests/c.rs:1".to_string(),
+            "  same name: tests/d.rs:1".to_string(),
             format!("tests/d.rs:1: {message}"),
             "  same name: tests/a.rs:1".to_string(),
             "  same name: tests/b.rs:2".to_string(),
-            "  same name: tests/b.rs:5".to_string(),
+            "  same name: tests/c.rs:1".to_string(),
+            format!("tests/e.rs:1: {message}"),
+            "  same name: tests/a.rs:1".to_string(),
+            "  same name: tests/b.rs:2".to_string(),
+            "  same name: tests/c.rs:1".to_string(),
         ];
         assert_eq!(lines, expected);
+    }
+
+    #[test]
+    fn a_failure_line_is_shared_only_at_one_module_path_in_two_files() {
+        const T: &str = "#[test]\nfn t() {}\n";
+        type Src<'a> = (&'a str, &'a str);
+        let scan = |(file, src): Src| scan::scan_source(file, src);
+        let shared = |a: Src, b: Src| !ambiguous_names(&[scan(a), scan(b)]).is_empty();
+        let files = |a: &str, b: &str| shared((a, T), (b, T));
+        assert!(files("a/src/s3.rs", "b/src/s3.rs"));
+        assert!(files("a/src/s3/mod.rs", "b/src/s3.rs"));
+        assert!(files("a/src/lib.rs", "b/src/main.rs"));
+        assert!(files("tests/a.rs", "tests/b/main.rs"));
+        assert!(files("tests/a/help.rs", "benches/b/help.rs"));
+        assert!(!files("src/s3.rs", "src/gcs.rs"));
+        assert!(!files("x/a.rs", "y/a.rs"));
+        assert!(!files("a/src/s3.rs", "b/src/s3/v2.rs"));
+        let inner = "mod m {\n#[test]\nfn t() {}\n}\nstruct S {}\n";
+        assert!(shared(("src/m.rs", T), ("tests/a.rs", inner)));
+        assert!(!shared(("src/lib.rs", T), ("tests/a.rs", inner)));
+        let both = "#[test]\nfn t() {}\nmod m {\n#[test]\nfn t() {}\n}\n";
+        assert!(shared(("src/lib.rs", T), ("tests/a.rs", both)));
+        assert!(shared(("src/m.rs", T), ("tests/a.rs", both)));
+        let twice = "#[cfg(unix)]\n#[test]\nfn t() {}\n#[cfg(windows)]\n#[test]\nfn t() {}\n";
+        assert!(!shared(("src/lib.rs", twice), ("src/other.rs", "")));
     }
 
     #[test]
@@ -551,6 +607,15 @@ mod tests {
             ("#!/bin/sh\nset -o pipefail\ncargo test | tail\n", None),
             ("#!/bin/bash\ncargo test\n", None),
             ("#!/bin/sh\n # a | b\ncargo test || exit 1\n", None),
+            (
+                "#!/bin/sh\ncase $1 in\n  x86_64 | amd64) a=1 ;;\nesac\n",
+                None,
+            ),
+            (
+                "#!/bin/sh\ncase $1 in\n  a | b) make | tail ;;\nesac\n",
+                Some(PLAIN_SH),
+            ),
+            ("#!/bin/sh\nout=$(make | tail)\n", Some(PLAIN_SH)),
             ("#!/usr/bin/env python3\nprint(a | b)\n", None),
             ("cargo test | tail -5\n", None),
             ("bash\ncargo test | tail -5\n", None),
@@ -594,7 +659,8 @@ mod tests {
         assert_eq!(Finding::rendered(&inspection.blockers), [""; 0]);
         let pipe = "harness-without-pipefail: a pipe in this script hides a failed command: it does not `set -o pipefail`";
         let plain = "harness-without-pipefail: a pipe in this script hides a failed command, and its `sh` may not know `pipefail`: give it a bash shebang with `set -o pipefail`, or no pipe";
-        let twin = "ambiguous-test-name: `reads_a_file` is the name of 2 tests in this tree";
+        let twin =
+            "ambiguous-test-name: `reads_a_file` is the failure line of 2 tests in this tree";
         let expected = [
             format!("bin/check:1: {pipe}"),
             format!("bin/plain:1: {plain}"),

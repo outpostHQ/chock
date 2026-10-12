@@ -30,7 +30,7 @@ A gate is one of two kinds.
 | `wiring` | | a gate passes on this tree but is switched off, and is not opt-in |
 | `modcheck` | ✓ | a `mod` names no file, or more files are reached by no `mod` |
 | `manifest` | ✓ | more dependency declarations are unpinned |
-| `placement` | ✓ | a dependency is declared outside the repository, or for every build when only tests use it |
+| `placement` | ✓ | a path dependency is outside the repository or written as an absolute path, or a dependency is declared for every build when only tests use it |
 | `features` | ✓ | more features are unused or undeclared |
 | `sort` | ✓ | dependency tables fall further out of order |
 | `dupdeps` | ✓ | one more crate is compiled twice, at two versions or feature sets |
@@ -132,9 +132,9 @@ whole tree.
   | `should-panic-without-expected` | `#[should_panic]` with no `expected` text |
   | `placeholder-test-name` | a name such as `it_works`, `test_1` or `foo` |
   | `one-word-test-name` | a name of one word, which states no claim |
-  | `ambiguous-test-name` | a name that another test of the tree has too |
+  | `ambiguous-test-name` | a name at a module path that a test in another file has too, so one failure line stands for both |
   | `escapes-the-run-dir` | a call of `env::temp_dir`, `set_current_dir`, `dirs::home_dir`, `dirs::data_dir` or `dirs::config_dir` in the body of the test |
-  | `harness-without-pipefail` | a shell script in `bin/` or `scripts/` that pipes and does not set `pipefail`; a plain `sh` can refuse `pipefail`, so the finding on a `sh` or `dash` script asks for a bash shebang |
+  | `harness-without-pipefail` | a shell script in `bin/` or `scripts/` that pipes and does not set `pipefail`; a plain `sh` can refuse `pipefail`, so the finding on a `sh` or `dash` script asks for a bash shebang; a `case` pattern such as `a \| b)` is no pipe |
   | `waiver-without-reason` | a waiver that gives no reason; it silences nothing |
 
   A test asserts when its body holds an assert macro of any family, a panic macro, an `unwrap`,
@@ -154,13 +154,17 @@ whole tree.
   A comment between the first attribute of a test and its closing brace leaves one rule out for
   that test: `// test-lint: allow(<rule>) — <reason>`.
 
-  `ambiguous-test-name` compares the names of all tests of the tree, across crates: a name filter
-  at the root runs each of them. A finding gives the number of tests with that name and lists at
+  `ambiguous-test-name` compares the failure line of each test of the tree, across crates: the
+  modules below `src`, or below the file of a test target, and then the name. Two tests in two
+  files with one failure line, such as `s3::round_trips` in two crates, are named, because no
+  name filter runs one of them alone. One name in two modules of a crate is not named. A finding
+  gives the number of tests with that failure line and lists at
   most 3 of them. A file with the comment `chock:modcheck-exempt` declares its modules with a macro, so
   each file in its directory counts as compiled.
 - **How `claims` reads a document.** It reads each `.md` file of the tree. A fenced block claims
   nothing. A code span that names a file of the tree and a line is an anchor: one line, a range
-  or a list. A comment states what the tree does not hold, and the gate checks it:
+  or a list. A span with a revision in it, such as `src/main.rs:12 @ 3f2a91c`, is no anchor: it
+  cites the file as that revision has it. A comment states what the tree does not hold, and the gate checks it:
 
   ```md
   <!-- absent: Scheduler, fn retry_all, src/queue/legacy.rs -->
@@ -242,6 +246,10 @@ chock holds a function to the record by its file and its name. Where one file ha
 with one name, such as two `impl From` blocks, chock pairs them in file order. Where their number
 changed since the record, chock compares the scores from the worst down, so a pass means that no
 score level holds more of them than the record does.
+
+`crap` leaves out a file of test code: a `tests.rs`, a name that ends in `_tests.rs`, and each
+file below a `tests` directory. No coverage row counts such a file, so cargo-crap would score each
+of its functions as production code that no test ran.
 
 `cargo crap` with no coverage file scores every function as if no test ran it, so it shows far more
 functions than chock does. Give it the coverage file chock wrote to see the same scores:

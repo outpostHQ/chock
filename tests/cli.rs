@@ -1785,9 +1785,11 @@ printf 'SF:src/lib.rs\nDA:1,%s\nend_of_record\n' "$FIXTURE_HITS" > "$1"
         "bin/cargo",
         r#"#!/bin/sh
 nothing='{"entries":[]}'
+report='crap --lcov lcov.info --workspace --format json --exclude build.rs'
+report="$report --exclude **/tests.rs --exclude **/*_tests.rs --exclude **/tests/**"
 case "$*" in
   --version | 'crap --version') printf 'cargo fixture\n';;
-  'crap --lcov lcov.info --workspace --exclude build.rs --format json --sort file' | 'crap --lcov lcov.info --workspace --exclude build.rs --format json --baseline .chock/crap-baseline'*'.json --fail-regression')
+  "$report --sort file" | "$report --baseline .chock/crap-baseline"*'.json --fail-regression')
     printf 'crap\n' >> calls
     printf '%s\n' "${FIXTURE_CRAP:-$nothing}";;
   *) printf 'unexpected invocation\n' >&2; exit 1;;

@@ -24,37 +24,53 @@ pub const GATE: Gate = Gate {
 fn inspect(ctx: &Ctx) -> Result<Inspection, String> {
     let read = crate::project::metadata(&ctx.root)?;
     let repository = crate::project::vcs::repository_root(&ctx.root, ctx.vcs);
-    let mut found = outside(&read, repository.as_deref())?;
+    let written = |manifest: &Path| std::fs::read_to_string(manifest).unwrap_or_default();
+    let mut found = outside(&read, repository.as_deref(), &written)?;
     found.extend(test_only(&crates(&ctx.root, &read)?));
     Ok(Inspection::debt(found))
 }
 
-/// Path dependencies outside the repository, which build only where the sibling checkout exists.
-pub fn outside(metadata_json: &str, repository: Option<&Path>) -> Result<Vec<Finding>, String> {
+/// Path dependencies a clone cannot build: one outside the repository, which needs the sibling
+/// checkout, and one inside it that a manifest of `written` holds as an absolute path.
+pub fn outside(
+    metadata_json: &str,
+    repository: Option<&Path>,
+    written: &dyn Fn(&Path) -> String,
+) -> Result<Vec<Finding>, String> {
     let Some(repository) = repository else {
         return Ok(Vec::new());
     };
     let metadata = parsed(metadata_json)?;
+    let root = metadata["workspace_root"].as_str().unwrap_or_default();
+    let shared = written(&Path::new(root).join("Cargo.toml"));
+    // A manifest holds the resolved path in quotes only where the path is written in full.
+    let fixed = |text: &str, path: &str| {
+        let quoted = |q: char| [format!("{q}{path}{q}"), format!("{q}{path}/{q}")];
+        let mut forms = ['"', '\''].into_iter().flat_map(quoted);
+        forms.any(|form| text.contains(&form))
+    };
     Ok(members(&metadata)
         .flat_map(|package| {
+            let text = written(&manifest_of(package)) + &shared;
             let manifest = crate::project::relative(repository, &manifest_of(package));
             let name = package["name"].as_str().unwrap_or_default().to_string();
             dependencies(package)
                 .filter_map(|dep| Some((key(dep), dep["path"].as_str()?)))
-                .filter(|(_, path)| !Path::new(path).starts_with(repository))
-                .map(move |(dep, path)| {
-                    Finding::at(
-                        &manifest,
-                        &format!(
-                            "path dependency \"{dep}\" is at {path}, outside the repository, so a \
-                             clone cannot build it"
-                        ),
-                    )
-                    .item(&format!("{name}: {dep}"))
+                .filter_map(move |(dep, path)| {
+                    let why = match Path::new(path).starts_with(repository) {
+                        false => "outside the repository, so a clone cannot build it",
+                        true if fixed(&text, path) => ABSOLUTE,
+                        true => return None,
+                    };
+                    let told = format!("path dependency \"{dep}\" is at {path}, {why}");
+                    Some(Finding::at(&manifest, &told).item(&format!("{name}: {dep}")))
                 })
         })
         .collect())
 }
+
+/// What a path dependency inside the repository is told where its manifest holds the full path.
+const ABSOLUTE: &str = "written as an absolute path, so a clone at another place cannot build it";
 
 /// Parsed as a `Value`: derived structs for this rule would exceed the binary's size budget.
 fn parsed(metadata_json: &str) -> Result<Value, String> {
@@ -240,7 +256,8 @@ mod tests {
             {"name":"sibling","path":"/work/app/crates/sibling"},
             {"name":"serde","kind":null}]}]}"#;
         let repository = Path::new("/work/app");
-        let found: Vec<String> = outside(text, Some(repository))
+        let unread = |_: &Path| String::new();
+        let found: Vec<String> = outside(text, Some(repository), &unread)
             .unwrap()
             .iter()
             .map(Finding::render)
@@ -253,11 +270,36 @@ mod tests {
             ]
         );
         assert_eq!(
-            outside(text, None).unwrap(),
+            outside(text, None, &unread).unwrap(),
             vec![],
             "no repository, nothing to say"
         );
-        assert!(outside("not json", Some(repository)).is_err());
+        assert!(outside("not json", Some(repository), &unread).is_err());
+    }
+
+    #[test]
+    fn a_path_dependency_written_as_an_absolute_path_is_one_a_clone_elsewhere_cannot_build() {
+        let text = r#"{"workspace_root":"/work/app","workspace_members":["me"],"packages":[
+          {"id":"me","name":"demo","manifest_path":"/work/app/crates/demo/Cargo.toml",
+           "dependencies":[{"name":"fixed","path":"/work/app/crates/fixed"},
+            {"name":"shared","path":"/work/app/crates/shared"},
+            {"name":"near","path":"/work/app/crates/near"}]}]}"#;
+        let member = "fixed = { path = \"/work/app/crates/fixed\" }\nnear = { path = \"../near\" }\n\
+                      nearby = { path = \"/work/app/crates/nearby\" }\n";
+        let root = "[workspace.dependencies]\nshared = { path = '/work/app/crates/shared/' }\n";
+        let written = |manifest: &Path| match manifest.ends_with("demo/Cargo.toml") {
+            true => member.to_string(),
+            false => root.to_string(),
+        };
+        let found = outside(text, Some(Path::new("/work/app")), &written).unwrap();
+        let told = |dep: &str| {
+            format!(
+                "crates/demo/Cargo.toml: demo: {dep}: path dependency \"{dep}\" is at \
+                 /work/app/crates/{dep}, written as an absolute path, so a clone at another place \
+                 cannot build it"
+            )
+        };
+        assert_eq!(Finding::rendered(&found), [told("fixed"), told("shared")]);
     }
 
     #[test]

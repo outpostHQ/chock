@@ -20,8 +20,19 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   one impl is for a type of another crate, which is an extension of that type.
 - **`no-assertion` leaves out a property test.** A test with generated arguments, written
   `name in strategy` in a `proptest!` block, claims that its body panics for no input.
-- An `ambiguous-test-name` finding says "in this tree": the rule compares the names of all tests
-  of the tree, across crates.
+- **`ambiguous-test-name` names only tests with one failure line.** Two tests in two files are
+  named when the name and the module path are the same, such as `s3::round_trips` in two crates.
+  One name in two modules of a crate is not named now. The finding gives the failure line.
+- **`harness-without-pipefail` reads a `case` pattern as no pipe.** A pattern such as
+  `x86_64 | amd64)` separates its alternatives with a bar, and 0.5.1 counted it as a pipe.
+- **`placement` reports a path dependency written as an absolute path.** The path is inside the
+  repository, so 0.5.1 passed it, but a clone at another place cannot build it.
+- **`chock edited` reports a file over 1000 production lines**, as the `bigfiles` gate does, where
+  the record holds a lower number for it.
+- **`crap` leaves out a file of test code:** a `tests.rs`, a `*_tests.rs` and each file below a
+  `tests` directory. cargo-crap scored each function of such a file as 0% covered.
+- `docs/gates.md` says that a code span with a revision in it, `path:line @ rev`, is no `claims`
+  anchor.
 - `chock lean FILE` says that lean reads a tree and that `--json` has a row for each file.
 
 ## [0.5.1] - 2026-10-10

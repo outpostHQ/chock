@@ -439,6 +439,7 @@ mod tests {
             "src/a",
             "src/a.exe",
             "src/a.rs:run",
+            "src/a.rs:12 @ 3f2a91c",
             "a b.rs",
             "f(x).rs",
         ] {
