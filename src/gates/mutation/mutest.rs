@@ -16,6 +16,10 @@ use super::tool;
 
 const CALL_GRAPH_DEPTH: &str = "3";
 const TIMEOUT_LIMIT: u64 = 2;
+/// What mutest prints when a test failed before any mutation, below a `test NAME ... fail` for each.
+const STOPPED: &str = "not all tests passed, cannot continue";
+/// How many of those tests a reason names.
+const NAMED: usize = 5;
 const SKIP: &str = " links no mutant crate, so no mutation can reach its tests";
 const NOT_LINKED: &str = "not applicable to linked-crate mutation: no mutant crate is linked; \
                          this target was skipped, not mutation-covered. Ordinary integration tests remain required";
@@ -154,9 +158,7 @@ fn read_survivors(out: &exec::Output, results: Survivors) -> Result<Joined, Stri
         return Err("mutest printed more than chock keeps; the survivors would be partial".into());
     }
     if let Some(reason) = failed_target(out) {
-        return Err(format!(
-            "mutest failed to analyse an eligible target: {reason}"
-        ));
+        return Err(reason);
     }
     let totals = survivors::totals(&out.stdout)?.ok_or_else(|| unmeasured(out))?;
     completed(out)?;
@@ -268,18 +270,46 @@ fn completed(out: &exec::Output) -> Result<(), String> {
     }
 }
 
-/// mutest's diagnostic for a test harness that did not build. It may arrive with exit zero, and it
-/// overrides any other target's totals.
+/// Why mutest could not evaluate a target: a test harness that did not build, or tests that failed
+/// before any mutation. It may arrive with exit zero, and it overrides any other target's totals.
 fn failed_target(out: &exec::Output) -> Option<String> {
-    [&out.stdout, &out.stderr]
+    let lines: Vec<String> = [&out.stdout, &out.stderr]
         .into_iter()
         .flat_map(|text| text.lines())
-        .map(exec::strip_colour)
-        .find(|line| {
-            line.contains("the test harness of `")
-                && line.contains("did not build, so none of its mutations were evaluated")
-        })
-        .map(|line| line.trim().to_string())
+        .map(|line| exec::strip_colour(line).trim().to_string())
+        .collect();
+    let unbuilt = lines.iter().find(|line| {
+        line.contains("the test harness of `")
+            && line.contains("did not build, so none of its mutations were evaluated")
+    });
+    let failing = |at: usize| {
+        let above = lines.iter().take(at).rev();
+        let mut names: Vec<&str> = above
+            .map_while(|line| line.strip_prefix("test ")?.strip_suffix(" ... fail"))
+            .collect();
+        names.reverse();
+        let more = names.len().saturating_sub(NAMED);
+        let rest = if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        };
+        format!(
+            "{} test(s) failed when mutest ran the tests before any mutation, so it measured \
+             nothing: {}{rest}",
+            names.len(),
+            names
+                .iter()
+                .take(NAMED)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let stopped = lines.iter().position(|line| line == STOPPED);
+    unbuilt
+        .map(|line| format!("mutest failed to analyse an eligible target: {line}"))
+        .or_else(|| stopped.map(failing))
 }
 
 /// An advisory per integration test mutest skipped. It changes no survivor baseline; the test gate
@@ -671,6 +701,35 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn tests_that_failed_before_any_mutation_are_named_as_the_reason_nothing_was_measured() {
+        let cases = [
+            (
+                7,
+                "7 test(s) failed when mutest ran the tests before any mutation, so it measured \
+                 nothing: cli::t1, cli::t2, cli::t3, cli::t4, cli::t5 and 2 more",
+            ),
+            (
+                2,
+                "2 test(s) failed when mutest ran the tests before any mutation, so it measured \
+                 nothing: cli::t1, cli::t2",
+            ),
+        ];
+        for (count, reason) in cases {
+            let failing: String = (1..=count)
+                .map(|n| format!("  test cli::t{n} ... fail\n"))
+                .collect();
+            for before in ["", TOTALS] {
+                let out = ran(
+                    &format!("{before}  test cli::kept ... ok\n{failing}{STOPPED}\n"),
+                    Some(4),
+                    false,
+                );
+                assert_eq!(unrecorded(&out, &one).unwrap_err(), reason);
+            }
+        }
     }
 
     #[test]

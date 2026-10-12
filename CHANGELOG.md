@@ -5,6 +5,11 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- **`mutest` says which tests failed before any mutation.** mutest stops with exit 4 when a test
+  fails in its first run, and writes an incomplete end to its progress record. chock read that end
+  as a fault and stopped the run, so the reason was "gave up waiting for cargo: incomplete terminal
+  or active invocation". chock now lets mutest end, and the reason names the failing tests.
+
 ## [0.5.2] - 2026-10-12
 
 - **`crap` no longer trips on a function that only got shorter.** Two lines of a function became

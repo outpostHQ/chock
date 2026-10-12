@@ -566,14 +566,17 @@ impl Progress {
             matches!(status, "completed" | "incomplete"),
             "unknown terminal status",
         )?;
+        // An incomplete terminal is mutest saying it stopped; its exit and its words tell why.
         require(
-            status == "completed" && self.active.is_empty(),
-            "incomplete terminal or active invocation",
+            status == "incomplete" || self.active.is_empty(),
+            "completed terminal with an active invocation",
         )?;
+        let measured = matches!(exit_code, 0 | 2 | 3);
         require(
-            matches!(exit_code, 0 | 2 | 3),
-            "terminal reports an abnormal exit",
+            measured == (status == "completed"),
+            "terminal exit does not match its status",
         )?;
+        self.active.clear();
         self.terminal = true;
         Ok(())
     }
@@ -689,7 +692,7 @@ mod tests {
     fn completed_terminals_reject_abnormal_exit_codes() {
         for code in [i64::MIN, -1, 1, 4, i64::MAX] {
             let mut progress = ready("evaluation");
-            let expected = Err("terminal reports an abnormal exit".into());
+            let expected = Err("terminal exit does not match its status".into());
             assert_eq!(
                 ingest(&mut progress, terminal(2, 0, "completed", code), 100),
                 expected,
@@ -697,6 +700,19 @@ mod tests {
             );
             assert_eq!(progress.complete(), expected);
         }
+    }
+
+    #[test]
+    fn an_incomplete_terminal_ends_the_run_and_leaves_the_reason_to_the_exit() {
+        let mut progress = ready("evaluation");
+        ingest(&mut progress, start(2, 10, 7, "evaluation", Some(100)), 110).unwrap();
+        ingest(&mut progress, terminal(3, 20, "incomplete", 4), 120).unwrap();
+        assert_eq!(progress.check(Duration::from_millis(60_000)), Ok(()));
+        assert_eq!(progress.complete(), Ok(()));
+        assert_eq!(
+            ingest(&mut progress, end(4, 30, 7, "ok", "complete"), 130),
+            Err("event after terminal".into())
+        );
     }
 
     #[test]
@@ -848,7 +864,7 @@ mod tests {
         }
         for (status, expected) in [
             ("unknown", "unknown terminal status"),
-            ("incomplete", "incomplete terminal or active invocation"),
+            ("incomplete", "terminal exit does not match its status"),
         ] {
             assert_eq!(
                 ingest(&mut ready("evaluation"), terminal(2, 0, status, 0), 100),
