@@ -146,6 +146,13 @@ struct Gone {
 /// cargo-crap's own tolerance: a score this close to the record is the same score.
 const EPSILON: f64 = 0.01;
 
+/// A run of lines that no test ran, both ends counted.
+#[derive(serde::Deserialize)]
+struct Span {
+    start: u32,
+    end: u32,
+}
+
 /// What cargo-crap says about one function: only the fields this gate reads.
 #[derive(serde::Deserialize)]
 struct Scored {
@@ -160,6 +167,9 @@ struct Scored {
     cyclomatic: Option<f64>,
     /// A percent. `None` where the coverage report does not name the function's file.
     coverage: Option<f64>,
+    /// The lines no test ran. A record older than this field holds none for any function.
+    #[serde(default)]
+    uncovered: Vec<Span>,
 }
 
 /// What a CRAP score is made of: the function's complexity, and the percent of it the tests run.
@@ -167,6 +177,8 @@ struct Scored {
 struct Inputs {
     complexity: f64,
     coverage: Option<f64>,
+    /// How many lines no test ran. `None` where the report names no such line.
+    untested: Option<u32>,
 }
 
 impl Inputs {
@@ -199,8 +211,10 @@ impl Inputs {
     /// For the input that got worse; nothing where neither reads worse than the record's.
     fn remedy_since(self, was: Self) -> &'static str {
         let more_branches = self.complexity > was.complexity;
-        let less_tested =
-            matches!((was.coverage, self.coverage), (Some(then), Some(now)) if now < then);
+        let lower = matches!((was.coverage, self.coverage), (Some(then), Some(now)) if now < then);
+        // A shorter function has a lower percent with the same lines untested, so lines decide.
+        let lines = self.untested.zip(was.untested);
+        let less_tested = lines.map_or(lower, |(now, then)| now > then);
         let all_tested = self.coverage.is_some_and(|now| now >= 100.0);
         match (more_branches, less_tested, all_tested) {
             (true, true, _) => {
@@ -250,9 +264,12 @@ impl Scored {
     /// `None` for a report that names no complexity.
     fn inputs(&self) -> Option<Inputs> {
         let (complexity, coverage) = (self.cyclomatic?, self.coverage);
+        let lines = |run: &Span| run.end.saturating_sub(run.start) + 1;
+        let untested: u32 = self.uncovered.iter().map(lines).sum();
         Some(Inputs {
             complexity,
             coverage,
+            untested: Some(untested).filter(|lines| *lines > 0),
         })
     }
 
@@ -445,11 +462,23 @@ fn judged(json: &str, succeeded: bool, root: &Path, record: &[Scored]) -> Result
             .any(|entry| entry.status == "regressed");
     let held = record.iter().filter(|entry| entry.over()).count() as u64;
     let delta = paired(report, record, root);
+    // A function that only got shorter scores higher with no new branch and no new untested line.
+    let no_worse = |now: Inputs, was: Inputs| {
+        let lines = now.untested.zip(was.untested);
+        now.complexity <= was.complexity && lines.is_some_and(|(now, then)| now <= then)
+    };
     let worse: Vec<Finding> = delta
         .entries
         .iter()
         .filter(|entry| entry.worse())
-        .map(|entry| entry.finding(root, before(entry, record, root)))
+        .map(|entry| (entry, before(entry, record, root)))
+        .filter(|(entry, was)| {
+            !entry
+                .inputs()
+                .zip(*was)
+                .is_some_and(|(now, was)| no_worse(now, was))
+        })
+        .map(|(entry, was)| entry.finding(root, was))
         .collect();
     let over = delta.entries.iter().filter(|entry| entry.over()).count() as u64;
     let outcome = match (worse.is_empty(), explained) {
@@ -796,6 +825,43 @@ mod tests {
     }
 
     #[test]
+    fn a_function_that_only_got_shorter_with_the_same_lines_untested_passes() {
+        let lines = |runs: &str| format!(r#","uncovered":[{runs}]"#);
+        let two = lines(r#"{"start":12,"end":13}"#);
+        let apart = lines(r#"{"start":12,"end":12},{"start":15,"end":15}"#);
+        let three = lines(r#"{"start":12,"end":14}"#);
+        let record = |rest: &str| held(&entries(&[scored(5.034, 5.0, "88.9", rest)]));
+        let report = |cyclomatic: f64, rest: &str| {
+            let status = r#","status":"regressed","baseline_crap":5.034"#;
+            entries(&[scored(
+                5.049,
+                cyclomatic,
+                "87.5",
+                &format!("{status}{rest}"),
+            )])
+        };
+        let judge = |report: &str, record: &[Scored]| {
+            judged(report, false, Path::new("/w"), record).unwrap()
+        };
+        let said = |report: &str, record: &[Scored]| {
+            Finding::rendered(&judge(report, record).findings).join("\n")
+        };
+        // A line that a test ran is gone and two are untested as before: cargo-crap fails alone.
+        let shorter = judge(&report(5.0, &apart), &record(&two));
+        assert_eq!(shorter, Outcome::passed().counting(0, 0, UNIT));
+        let less = "src/a.rs:10: parse: CRAP 5.0, was 5.0: complexity 5 → 5, coverage 88.9% → \
+                    87.5%. The tests run less of it: test the lines that no test runs now";
+        assert_eq!(said(&report(5.0, &three), &record(&two)), less);
+        // A record from before cargo-crap named the lines gives no count, so the score decides.
+        assert_eq!(said(&report(5.0, &two), &record("")), less);
+        assert_eq!(
+            said(&report(6.0, &two), &record(&two)),
+            "src/a.rs:10: parse: CRAP 5.0, was 5.0: complexity 5 → 6, coverage 88.9% → 87.5%. It \
+             has more branches: test the new ones, or split the function"
+        );
+    }
+
+    #[test]
     fn a_function_with_no_record_is_told_whether_tests_alone_can_bring_it_under() {
         let new = |crap: f64, cyclomatic: f64, coverage: &str| {
             let rest = r#","status":"new","baseline_crap":null"#;
@@ -844,6 +910,7 @@ mod tests {
         let was = Some(Inputs {
             complexity: 12.0,
             coverage: Some(78.0),
+            untested: None,
         });
         assert_eq!(before(entry, &record(&[twin(34.0, 12.0)]), root), was);
         assert_eq!(before(entry, &record(&[twin(34.005, 12.0)]), root), was);

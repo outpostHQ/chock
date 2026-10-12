@@ -7,6 +7,11 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.5.2] - 2026-10-12
 
+- **`crap` no longer trips on a function that only got shorter.** Two lines of a function became
+  one, so its coverage went from 88.9% to 87.5% with the same one line untested, its score rose
+  by 0.015 and the gate tripped. `crap` now passes a function that has no more branches and no
+  more untested lines than the record holds for it. A record written before cargo-crap listed
+  the untested lines gives no count, so there the score still decides.
 - **`history` runs in a repository whose git history holds an empty commit.** Outpost stores no
   commit that changes no file, so its walk was shorter than the count from git and the gate could
   not run; `outpost git import` could not help. chock now counts the commits that change a file.

@@ -244,6 +244,10 @@ record, and says which of the two got worse. A pass says how many functions the 
 because a rise in one of them passes until it is over 30; `chock baseline crap` records them, and
 `chock baseline --lower crap` also records each score that went down.
 
+A function that only got shorter is no finding. Its coverage percent falls when a line that a test
+ran goes away, and so its score goes up. `crap` passes it where it has no more branches and no more
+lines without a test than the record holds for it.
+
 chock holds a function to the record by its file and its name. Where one file has two functions
 with one name, such as two `impl From` blocks, chock pairs them in file order. Where their number
 changed since the record, chock compares the scores from the worst down, so a pass means that no
