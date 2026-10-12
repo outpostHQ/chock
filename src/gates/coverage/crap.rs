@@ -60,20 +60,9 @@ const LEFT_OUT: [&str; 4] = ["build.rs", "**/tests.rs", "**/*_tests.rs", "**/tes
 
 /// cargo-crap over the run's coverage report, as JSON; `more` asks for a comparison or an order.
 fn crap(root: &Path, more: &[&str]) -> Result<exec::Output, String> {
-    let report = [
-        "crap",
-        "--lcov",
-        COVERAGE,
-        "--workspace",
-        "--format",
-        "json",
-    ];
-    let left_out = LEFT_OUT.iter().flat_map(|glob| ["--exclude", *glob]);
-    let args: Vec<&str> = report
-        .into_iter()
-        .chain(left_out)
-        .chain(more.iter().copied())
-        .collect();
+    let report = ["crap", "--lcov", COVERAGE, "--workspace"];
+    let left_out = LEFT_OUT.map(|glob| ["--exclude", glob]).concat();
+    let args = [&report[..], &["--format", "json"], &left_out[..], more].concat();
     exec::run("cargo", &args, root).map_err(|e| e.to_string())
 }
 

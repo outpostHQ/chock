@@ -709,27 +709,30 @@ fn read_udeps(stdout: &str, root: &Path) -> Result<Outcome, String> {
 const NOT_PROSE: &str = "[default]\nextend-ignore-identifiers-re = ['^[0-9a-f]{7,}$']\n";
 
 /// Runs typos for JSON, since its human format draws spans the shared reader cannot follow.
-/// typos takes `NOT_PROSE` only from a config file, so the run writes one and removes it.
 fn typos(ctx: &Ctx) -> Result<Series, String> {
     let rules = std::env::temp_dir().join(format!("chock-typos-{}.toml", std::process::id()));
-    let asked = typos_invocation(&crate::project::SKIPPED, &rules.to_string_lossy());
-    let argv: Vec<&str> = asked.iter().map(String::as_str).collect();
-    let put = crate::project::document::write(&rules, NOT_PROSE);
-    let written = put.map_err(|e| format!("typos rules: {e}"));
-    let out = written.and_then(|()| exec::tool(&ctx.root, "typos", &argv));
-    drop(std::fs::remove_file(&rules));
-    read_typos(&out?)
+    let run = |argv: &[&str]| exec::tool(&ctx.root, "typos", argv);
+    read_typos(&typos_with_rules(&crate::project::SKIPPED, &rules, &run)?)
 }
 
 /// Excludes every skipped directory explicitly, since typos honours `.gitignore` only inside git.
-fn typos_invocation(skipped: &[&str], rules: &str) -> Vec<String> {
+/// typos takes `NOT_PROSE` only from a config file, so `rules` holds it for the length of `run`.
+fn typos_with_rules(
+    skipped: &[&str],
+    rules: &Path,
+    run: &dyn Fn(&[&str]) -> Result<exec::Output, String>,
+) -> Result<exec::Output, String> {
     let directories = skipped.iter().map(|name| format!("**/{name}/**"));
     let excluded = directories.chain(WRITTEN_BY_CHOCK.iter().map(ToString::to_string));
-    ["--format", "json", "--config", rules]
-        .map(String::from)
-        .into_iter()
-        .chain(excluded.flat_map(|glob| ["--exclude".to_string(), glob]))
-        .collect()
+    let named = ["--format", "json", "--config", &rules.to_string_lossy()].map(String::from);
+    let left_out = excluded.flat_map(|glob| ["--exclude".to_string(), glob]);
+    let asked: Vec<String> = named.into_iter().chain(left_out).collect();
+    let argv: Vec<&str> = asked.iter().map(String::as_str).collect();
+    let put = crate::project::document::write(rules, NOT_PROSE);
+    let written = put.map_err(|e| format!("typos rules: {e}"));
+    let out = written.and_then(|()| run(&argv));
+    drop(std::fs::remove_file(rules));
+    out
 }
 
 /// Files chock's own gates write into the tree, which typos must not read.
@@ -1301,15 +1304,36 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn typos_is_not_started_when_its_rule_file_cannot_be_written() {
+        let dir = crate::testdir::make("typos-no-rules");
+        let run = |_: &[&str]| Err("typos ran with no rule file".to_string());
+        let err = typos_with_rules(&[], &dir.join("none/rules.toml"), &run).unwrap_err();
+        assert!(err.starts_with("typos rules: "), "{err}");
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn every_directory_chock_skips_is_named_to_typos_rather_than_left_to_gitignore() {
-        let asked = typos_invocation(&["target", "vendor"], "rules.toml");
+        let dir = crate::testdir::make("typos-rules");
+        let rules = dir.join("rules.toml");
+        let seen = std::cell::RefCell::new((Vec::new(), String::new()));
+        let run = |argv: &[&str]| {
+            let held = std::fs::read_to_string(&rules).unwrap();
+            seen.replace((argv.iter().map(ToString::to_string).collect(), held));
+            Ok(ran("", Some(0), false))
+        };
+        typos_with_rules(&["target", "vendor"], &rules, &run).unwrap();
+        let (asked, held): (Vec<String>, String) = seen.into_inner();
+        assert_eq!(held, NOT_PROSE, "typos reads the rule while it runs");
+        assert!(!rules.exists(), "the rule file outlived the run");
         assert_eq!(
             asked,
             [
                 "--format",
                 "json",
                 "--config",
-                "rules.toml",
+                &rules.to_string_lossy(),
                 "--exclude",
                 "**/target/**",
                 "--exclude",
