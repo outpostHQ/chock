@@ -72,7 +72,8 @@ the whole command as a list, program first, started from the project root with n
 "commands": [
   { "name": "shipped-config", "run": ["scripts/check-config"] },
   { "name": "doc-check", "run": ["scripts/doc-check"], "counts": true },
-  { "name": "api-diff", "run": ["cargo", "semver-checks"], "builds": true }
+  { "name": "api-diff", "run": ["cargo", "semver-checks"], "builds": true },
+  { "name": "schema", "run": ["scripts/gen-schema"], "outputs": ["schema/"] }
 ]
 ```
 
@@ -81,5 +82,8 @@ the whole command as a list, program first, started from the project root with n
   each count to its record.
 - An entry with `builds` compiles, so the `commands-build` gate runs it; the `commands` gate runs
   the others at each commit.
+- An entry with `outputs` names the files or directories, from the root, that the command writes.
+  The gate fails at each one whose bytes the command changed, so a committed generated file cannot
+  go stale. The `test` gate does not count a change to them.
 
 `chock enable commands commands-build` switches both gates on.

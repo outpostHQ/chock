@@ -103,6 +103,10 @@ pub struct Command {
     pub counts: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub builds: bool,
+    /// The files or directories, from the root, that the command writes. Its gate fails at each
+    /// one whose bytes the run changed, so a committed generated file is never stale.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<String>,
 }
 
 /// A phrase refused in source, matched without regard to case, and the reason given with it.

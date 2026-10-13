@@ -5,6 +5,26 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-13
+
+- **`test` fails when the suite changes a file the repository holds.** A test that writes the file
+  it should compare with, such as a snapshot or a generated file, passes without a check. chock
+  now hashes each changed file before and after the suite, and names each file whose bytes moved.
+  A `Cargo.lock`, a file under `.chock` and a declared command's `outputs` do not count.
+- **`testlint` finds a test that returns before it checks.** The new `early-return` rule names a
+  test that returns before anything in it can fail, with an assertion after the return. A
+  `return` in a closure, a nested function or an `async` block does not count.
+- **Annotations and a job summary in GitHub Actions.** A run in Actions writes an error annotation
+  at each finding, up to 10 and then a count, and a table of every gate to the job summary.
+- **New gate `toolchain`, on by default.** It fails when a `rust-toolchain` file names a channel
+  that moves, such as `stable` or `nightly`, and not a release or a dated nightly.
+- **New gate `shellcheck`, opt-in.** It ratchets what shellcheck says about each shell script the
+  repository tracks, per file and check.
+- **A declared command can name its `outputs`.** The command's gate fails at each named file whose
+  bytes the run changed, so a committed generated file cannot go stale.
+- **`mutest` documents its skip.** `docs/gates.md` names `#[cfg_attr(mutest, mutest::skip)]` for a
+  function that mutation testing should leave out.
+
 ## [0.5.4] - 2026-10-13
 
 - **A record goes down at a commit, not at every run.** A `chock run` on work in progress lowered

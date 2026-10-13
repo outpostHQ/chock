@@ -162,8 +162,9 @@ const TOOLCHAIN: [&str; 5] = [
 
 /// Tools a gate runs without declaring them for its verdict cache. `test` and `coverage` are absent
 /// on purpose: a project may replace either command, and then the default tool is not needed.
-const UNDECLARED: [(&str, &str); 4] = [
+const UNDECLARED: [(&str, &str); 5] = [
     ("sort", "cargo-sort"),
+    ("shellcheck", "shellcheck"),
     ("typos", "typos"),
     ("unused", "cargo-machete"),
     ("deps", "cargo-deny"),

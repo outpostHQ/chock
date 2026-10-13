@@ -59,7 +59,18 @@ fn inspect(ctx: &Ctx, builds: bool) -> Result<Inspection, String> {
             return Err(format!("`{}` names no command to run", command.name));
         };
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let before = crate::project::contents(&ctx.root, &command.outputs);
         judge(command, &exec::tool(&ctx.root, program, &args)?, &mut found)?;
+        let after = crate::project::contents(&ctx.root, &command.outputs);
+        let said = format!(
+            "`{}` changed this file it generates: commit what it wrote",
+            command.name
+        );
+        let drifted = crate::project::differing(&before, &after);
+        let blocked = drifted
+            .iter()
+            .map(|path| Finding::at(path, &said).item(&command.name));
+        found.blockers.extend(blocked);
     }
     Ok(found)
 }
@@ -126,6 +137,7 @@ mod tests {
             run: run.iter().map(|arg| (*arg).to_string()).collect(),
             counts,
             builds,
+            outputs: Vec::new(),
         }
     }
 
@@ -273,6 +285,33 @@ mod tests {
             ..Ctx::at(&dir)
         };
         assert_eq!(quick_or_reason(&empty), "`nothing` names no command to run");
+    }
+
+    /// A command that rewrites a file it names among its `outputs` blocks at that file, until the
+    /// new bytes are what the tree holds.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_command_that_changes_a_file_it_generates_blocks() {
+        let files = [("gen/a.json", "1\n"), ("gen/b.json", "1\n")];
+        let dir = crate::testdir::tree("declared-outputs", &files);
+        let script = "echo 2 > gen/a.json; echo 1 > gen/b.json; echo 1 > gen/new.json";
+        let mut writes = declared("schema", &["sh", "-c", script], false, false);
+        writes.outputs = vec!["gen/".to_string()];
+        let ctx = Ctx {
+            commands: vec![writes],
+            ..Ctx::at(&dir)
+        };
+        let said = "`schema` changed this file it generates: commit what it wrote";
+        let at = |file: &str| Finding::at(file, said).item("schema");
+        assert_eq!(
+            quick(&ctx).unwrap().blockers,
+            [at("gen/a.json"), at("gen/new.json")]
+        );
+        assert_eq!(
+            quick(&ctx).unwrap().blockers,
+            Vec::new(),
+            "the same bytes again"
+        );
     }
 
     fn quick_or_reason(ctx: &Ctx) -> String {

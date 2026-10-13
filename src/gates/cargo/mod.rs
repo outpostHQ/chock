@@ -7,3 +7,4 @@ pub mod modcheck;
 pub mod placement;
 pub mod profile;
 pub mod supply;
+pub mod toolchain;

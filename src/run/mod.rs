@@ -4,6 +4,7 @@
 pub mod baseline;
 pub mod debt;
 pub mod evidence;
+pub mod github;
 pub mod lock;
 pub mod report;
 pub mod verdicts;
@@ -226,8 +227,10 @@ pub struct Gate {
     pub kind: Kind,
 }
 
-/// One run of the project's suite, shared by the gates that begin with one.
-pub type FirstRun = std::sync::Arc<std::sync::OnceLock<Result<crate::exec::Output, String>>>;
+/// One run of the project's suite, shared by the gates that begin with one, and the files the
+/// repository holds that it changed.
+pub type FirstRun =
+    std::sync::Arc<std::sync::OnceLock<Result<(crate::exec::Output, Vec<String>), String>>>;
 
 impl Gate {
     /// What this gate counts in, or `None` where it answers pass or fail. It takes any gate, so

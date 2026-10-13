@@ -98,6 +98,12 @@ Install the pinned tools, then run every gate but the `local_only` ones:
 `chock run --fast --ci` runs only the gates of the commit set, with CI's rules. chock's own CI runs
 it as a quick first job on Linux.
 
+Inside GitHub Actions, a run also writes an annotation on stderr for each finding of a gate that
+tripped, and for each gate that could not run. The pull request shows each one beside its line.
+GitHub keeps 10 errors from one step, so chock writes the first 10 and one notice that counts the
+rest. chock also appends a table of each gate, its result and its rerun command to
+`$GITHUB_STEP_SUMMARY`. Outside Actions, a run writes neither.
+
 Three environment variables change how a run uses the machine:
 
 | Variable | Default | What it sets |

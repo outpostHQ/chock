@@ -1,18 +1,30 @@
 //! The suite's gates: `test` runs it once, and `idempotent` runs it a second time in the same
 //! tree.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use super::{spans, verdict, whole};
 use crate::exec;
+use crate::project::config::Command;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Outcome};
 
 pub(super) fn test(ctx: &Ctx) -> Result<Outcome, String> {
-    let out = first_run(ctx)?;
-    Ok(read_suite(&out, &ctx.root))
+    let (out, changed) = first_run(ctx)?;
+    let mut outcome = read_suite(&out, &ctx.root);
+    outcome.passed &= changed.is_empty();
+    outcome
+        .findings
+        .extend(changed.iter().map(|path| Finding::at(path, CHANGED)));
+    Ok(outcome)
 }
+
+/// What a file says that the suite changed: a test that writes the file it compares with cannot
+/// fail.
+const CHANGED: &str = "the suite changed this file, which the repository holds: a test that \
+                       writes the file it should compare with passes without a check. If you \
+                       edited the file during the run, run `chock run test` again";
 
 /// The suite's outcome: the failing tests or worsened measures it names, else compiler spans.
 pub(super) fn read_suite(out: &exec::Output, root: &Path) -> Outcome {
@@ -162,7 +174,7 @@ pub(super) fn uncounted(named: &str) -> &str {
 /// as a file left behind.
 pub(super) fn idempotent(ctx: &Ctx) -> Result<Outcome, String> {
     // Reuses the run `test` already took when both gates are on.
-    let first = first_run(ctx)?;
+    let (first, _) = first_run(ctx)?;
     if !first.success() {
         return Err("the suite fails on its first run, so a second says nothing".to_string());
     }
@@ -216,9 +228,52 @@ pub(super) fn failed_twice(second: &exec::Output, root: &Path) -> Vec<Finding> {
 /// How many of a failed run's last lines a finding quotes, from each stream.
 const TAIL: usize = 3;
 
-/// The suite's first run in this invocation, shared by every gate that needs one.
-fn first_run(ctx: &Ctx) -> Result<exec::Output, String> {
-    ctx.suite.get_or_init(|| suite(ctx)).clone()
+/// The suite's first run in this invocation, shared by every gate that needs one, with the files
+/// the repository holds that it changed.
+fn first_run(ctx: &Ctx) -> Result<(exec::Output, Vec<String>), String> {
+    ctx.suite.get_or_init(|| watched(ctx)).clone()
+}
+
+/// Runs the suite, and names each file the repository holds whose bytes differ after it.
+fn watched(ctx: &Ctx) -> Result<(exec::Output, Vec<String>), String> {
+    let before = changes(ctx);
+    let out = suite(ctx)?;
+    let changed = match (before, changes(ctx)) {
+        (Some(before), Some(after)) => crate::project::differing(&before, &after),
+        _ => Vec::new(),
+    };
+    Ok((out, changed))
+}
+
+/// Each file the repository holds that differs from its last commit, with a hash of its bytes, or
+/// `None` once it is deleted; `None` where no repository says which files it holds.
+fn changes(ctx: &Ctx) -> Option<BTreeMap<String, Option<u64>>> {
+    let dirty = crate::project::vcs::dirty(&ctx.root, ctx.vcs).ok()?;
+    let held: Vec<String> = dirty
+        .into_iter()
+        .filter(|path| !written_on_purpose(&ctx.commands, path))
+        .collect();
+    let hashes = crate::project::contents(&ctx.root, &held);
+    let hashed = held.into_iter().map(|path| {
+        let hash = hashes.get(&path).copied();
+        (path, hash)
+    });
+    Some(hashed.collect())
+}
+
+/// A file that a run writes by design: the lockfile cargo settles, a report a gate asks for,
+/// chock's own state, or what a declared command names among its `outputs`.
+fn written_on_purpose(commands: &[Command], path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let declared = commands.iter().flat_map(|it| &it.outputs).any(|output| {
+        let output = output.trim_end_matches('/');
+        let rest = path.strip_prefix(output);
+        rest.is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    });
+    name == "Cargo.lock"
+        || crate::project::PRODUCED.contains(&name)
+        || path.split('/').any(|part| part == ".chock")
+        || declared
 }
 
 /// Runs whatever the project's `runner` setting names, since some suites need their own setup.
@@ -230,4 +285,69 @@ pub(super) fn suite(ctx: &Ctx) -> Result<exec::Output, String> {
         .ok_or("the configured `runner` names no command")?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     exec::tool(&ctx.root, program, &args)
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "a failed unwrap in a test is the test failing"
+)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_a_run_writes_by_design_is_not_watched() {
+        let schema = Command {
+            name: "schema".to_string(),
+            run: vec!["scripts/gen-schema".to_string()],
+            counts: false,
+            builds: false,
+            outputs: vec!["schema/".to_string(), "docs/cli.md".to_string()],
+        };
+        let commands = [schema];
+        let by_design = [
+            "Cargo.lock",
+            "crates/a/Cargo.lock",
+            "lcov.info",
+            ".chock/baseline.json",
+            "schema/config.json",
+            "docs/cli.md",
+        ];
+        for path in by_design {
+            assert!(written_on_purpose(&commands, path), "{path}");
+        }
+        for path in ["schemas.json", "docs/cli.md.bak", "src/lib.rs"] {
+            assert!(!written_on_purpose(&commands, path), "{path}");
+        }
+    }
+
+    /// A suite that changes a file the repository holds fails at that file. One that leaves each
+    /// file as it found it passes, an edit from before the run included.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_suite_that_changes_a_file_the_repository_holds_fails() {
+        let files = [("src/a.rs", "a"), ("src/b.rs", "b")];
+        let root = crate::testdir::repo("suite-changes", &files);
+        let edit = || std::fs::write(root.join("src/a.rs"), "edited before the run").unwrap();
+        let ran = |argv: &[&str], vcs| {
+            let baseline = crate::run::baseline::Baseline::empty("0.1.0");
+            let mut ctx = Ctx::for_root(root.to_path_buf(), baseline);
+            ctx.vcs = vcs;
+            ctx.runner.argv = argv.iter().map(|arg| (*arg).to_string()).collect();
+            let outcome = test(&ctx).unwrap();
+            (outcome.passed, outcome.findings)
+        };
+        let git = Some(crate::project::vcs::Kind::Git);
+        let restores = ["git", "checkout", "-q", "HEAD", "--", "src/a.rs"];
+        edit();
+        let changed = vec![Finding::at("src/a.rs", CHANGED)];
+        assert_eq!(ran(&restores, git), (false, changed));
+        edit();
+        assert_eq!(ran(&["git", "status", "--short"], git), (true, Vec::new()));
+        assert_eq!(
+            ran(&restores, None),
+            (true, Vec::new()),
+            "no repository to ask"
+        );
+    }
 }

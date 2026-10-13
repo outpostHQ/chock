@@ -1,6 +1,6 @@
 # The gates
 
-`chock gates` prints this list from the binary: 57 gates, 35 on by default and 22 opt-in.
+`chock gates` prints this list from the binary: 59 gates, 36 on by default and 23 opt-in.
 `chock gates --json` gives the same list to a program.
 
 A gate is one of two kinds.
@@ -18,7 +18,7 @@ A gate is one of two kinds.
 
 | gate | ratchet | trips when |
 |---|:-:|---|
-| `test` | | a test fails, or the crate has none; the run lists every failing test |
+| `test` | | a test fails, or the crate has none, or the suite changes a file the repository holds; the run lists every failing test |
 | `lint` | | rustfmt would change a file, or clippy warns; both run, and the run lists both |
 | `doc` | | the documentation of a package builds with a warning; the run lists every such package |
 | `deps` | | `cargo deny` finds an advisory, a disallowed licence or an unapproved source |
@@ -26,6 +26,7 @@ A gate is one of two kinds.
 | `crap` | | a function's complexity-times-uncoverage score goes up, or a new function scores over 30 |
 | `commits` | | an unpushed commit's subject is too wide, its body repeats the diff, or a tool is credited as author |
 | `profile` | | the release profile skips a free win or silences a compiler check |
+| `toolchain` | | a `rust-toolchain` file names a channel that moves, such as `stable` or `nightly`, not a release or a dated nightly |
 | `hygiene` | | the repository tracks a secret, a credential or build output |
 | `wiring` | | a gate passes on this tree but is switched off, and is not opt-in |
 | `modcheck` | ✓ | a `mod` names no file, or more files are reached by no `mod` |
@@ -51,7 +52,7 @@ A gate is one of two kinds.
 | `unsafety` | ✓ | a file gains an `unsafe` block, function, trait, impl or `extern` |
 | `citations` | ✓ | a doc comment names one more path the repository does not have |
 | `assertions` | ✓ | a test gains an assertion about *how many* instead of *what* |
-| `testlint` | ✓ | a file gains a test that asserts nothing, cannot fail, is skipped with no reason or has a name that states no claim |
+| `testlint` | ✓ | a file gains a test that asserts nothing, cannot fail, returns before it checks, is skipped with no reason or has a name that states no claim |
 | `claims` | ✓ | a document gains a citation of a line past the end of its file, or names as absent a thing that the tree holds |
 
 ## Opt-in
@@ -73,6 +74,7 @@ records the reason under `left_off` in the config.
 | `miri` | | a test fails under Miri; the run lists every failing test |
 | `unused-deep` | | a real (nightly) compile shows an unused dependency |
 | `fmt` | | rustfmt would change a file; needs no compiler, so a commit can run it |
+| `shellcheck` | ✓ | shellcheck has one more thing to say about a shell script the repository tracks, per file and check |
 | `history` | | any commit holds a credential, not only the current tree |
 | `unread` | | never; reports regions Outpost could not parse |
 | `bsize` | | never; reports where a binary's bytes went |
@@ -124,11 +126,12 @@ whole tree.
   share of each group, and the lines of each private function that only passes its parameters on.
 - **How `testlint` reads a test.** It reads each `#[test]` function in the files that a cargo
   target compiles. A file that no target reaches by `mod`, `#[path]` or `include!` is data that a
-  harness reads, such as a UI fixture; it holds no test. Each finding names one of ten rules:
+  harness reads, such as a UI fixture; it holds no test. Each finding names one of eleven rules:
 
   | rule | what it finds |
   |---|---|
   | `no-assertion` | a test that holds nothing that can fail it |
+  | `early-return` | a test that returns before anything in it can fail, with a check after the return; a `return` in a closure, a nested function or an `async` block leaves only that |
   | `tautological-assertion` | `assert!(true)`, or `assert_eq!` with the same text on both sides |
   | `ignore-without-reason` | `#[ignore]` with no reason |
   | `should-panic-without-expected` | `#[should_panic]` with no `expected` text |
@@ -283,9 +286,12 @@ A gate leaves these out on purpose. Each one has a place that shows it.
 | `features` | a `.rs` file that does not parse and is outside `src/` or read by `include!` | the compiler, where a build uses the file |
 | `placement` | a path dependency outside the tree, where the tree is in no repository | the `path` in `Cargo.toml` |
 | `mutest` | on your machine, the files that the change did not touch. Where more than 2% of the mutations in the touched files time out and mutest did not confirm them by a re-run alone, the run mutates the whole crate | the run says which it did; CI mutates the whole crate |
+| `mutest` | a function marked `#[cfg_attr(mutest, mutest::skip)]`, with a comment beside it that says why | the attribute in the source |
 | `mutest` | a mutation that times out counts as detected, for up to 2% of the mutations, or for any number once mutest re-ran each alone (`timeouts confirmed:`) | each timed-out mutation is a `candidate` finding at its file and line |
 | `lean` | a file that a tool wrote: a part of its path is `generated`, or one of its first 5 lines says `@generated`, `do not edit`, `automatically generated` or `auto-generated` | the path or the header of the file |
 | `lean` | copies that differ in a string that a macro reads, except format strings with the same placeholders, and copies where code after them reads more than 3 names that they bind; a production function that only tests call; copies of the fields of one struct that a `derive` would write | `duplication`, which compares whole function bodies |
+| `test` | a change to a `Cargo.lock`, to a file under `.chock`, or to a file a declared command names in `outputs`; with no repository, every change | `git status` |
+| `shellcheck` | a file that neither ends in `.sh` or `.bash` nor starts with a `sh`, `bash`, `dash`, `ksh` or `busybox` shebang | the first line of the file |
 | `testlint` | a rule that a test waives with `// test-lint: allow(<rule>) — <reason>`; a test that asserts only through a production function is a finding | the comment in the test, with its reason |
 | `claims` | a fenced block; a citation with no `/` in its path; a file name that two files of the tree have; a name that only test code defines | the document |
 | `modcheck` | the directory of a file that holds the text `chock:modcheck-exempt` | the comment in that file |

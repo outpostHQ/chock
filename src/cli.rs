@@ -362,6 +362,7 @@ fn run_gates_code(names: &[&str], tier: Tier, how: How<'_>) -> u8 {
         eprintln!("{}", done.progress())
     });
     emit_run(&result, how.json);
+    run::github::tell(&result, &ctx.root);
     run::report::settle(
         &ctx.root,
         &ctx.baseline,

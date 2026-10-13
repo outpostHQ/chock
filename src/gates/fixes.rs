@@ -55,17 +55,27 @@ const NIGHTLY: &str =
 
 const PINNED: &str = "run `chock init --global`: it installs each tool that `tool-versions.env` pins, or says why it cannot on this system";
 
+const RUSTUP: &str = "install Rust with rustup: https://rustup.rs";
+
+/// The repair for each tool that `chock init --global` does not install from `tool-versions.env`.
+const INSTALLS: [(&str, &str); 6] = [
+    ("cargo-mutest", tool::REPAIR),
+    ("rustfmt", "run `rustup component add rustfmt`"),
+    ("clippy-driver", "run `rustup component add clippy`"),
+    ("cargo", RUSTUP),
+    ("rustdoc", RUSTUP),
+    (
+        "shellcheck",
+        "install shellcheck with your package manager, such as apt or brew",
+    ),
+];
+
 fn installing(tool: &str) -> &'static str {
-    match tool {
-        "cargo-mutest" => tool::REPAIR,
-        "rustfmt" => "run `rustup component add rustfmt`",
-        "clippy-driver" => "run `rustup component add clippy`",
-        "cargo" | "rustdoc" => "install Rust with rustup: https://rustup.rs",
-        _ => PINNED,
-    }
+    let found = INSTALLS.iter().find(|(name, _)| *name == tool);
+    found.map_or(PINNED, |(_, repair)| repair)
 }
 
-const FIXES: [(&str, &str); 57] = [
+const FIXES: [(&str, &str); 59] = [
     (
         "test",
         "run the rerun command, read each failing test's output, and fix the code or the test; a crate with no tests needs one",
@@ -116,6 +126,10 @@ const FIXES: [(&str, &str); 57] = [
     (
         "profile",
         "set what the finding names in `[profile.release]`, or remove the override that silences a check for the whole build",
+    ),
+    (
+        "toolchain",
+        "set `channel` in `rust-toolchain.toml` to a release such as `1.98.1`, or to a dated nightly such as `nightly-2026-09-17`",
     ),
     (
         "features",
@@ -206,6 +220,10 @@ const FIXES: [(&str, &str); 57] = [
     (
         "typos",
         "fix the spelling, or add a real word to `typos.toml`",
+    ),
+    (
+        "shellcheck",
+        "fix the script at the line, or put `# shellcheck disable=SCnnnn` above it with the reason",
     ),
     (
         "msrv",

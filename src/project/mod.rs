@@ -47,6 +47,40 @@ pub fn relative(root: &Path, path: &Path) -> String {
     lexically(shown)
 }
 
+/// A hash of the bytes of each file that `paths` name from the root, or hold when a path is a
+/// directory; a path that names nothing adds nothing. Two calls compare within one process.
+#[must_use]
+pub fn contents(root: &Path, paths: &[String]) -> std::collections::BTreeMap<String, u64> {
+    let mut found = std::collections::BTreeMap::new();
+    let mut left: Vec<PathBuf> = paths.iter().map(|path| root.join(path)).collect();
+    // A link is never entered, so a loop of links ends.
+    while let Some(path) = left.pop() {
+        let meta = path.symlink_metadata();
+        if meta.as_ref().is_ok_and(std::fs::Metadata::is_dir) {
+            let entries = std::fs::read_dir(&path).into_iter().flatten().flatten();
+            left.extend(entries.map(|entry| entry.path()));
+        } else if meta.is_ok() {
+            let mut hasher = std::hash::DefaultHasher::new();
+            std::fs::read(&path).unwrap_or_default().hash(&mut hasher);
+            found.insert(relative(root, &path), hasher.finish());
+        }
+    }
+    found
+}
+
+/// The keys whose values differ between two maps, a key that only one holds included, in order.
+#[must_use]
+pub fn differing<V: PartialEq>(
+    before: &std::collections::BTreeMap<String, V>,
+    after: &std::collections::BTreeMap<String, V>,
+) -> Vec<String> {
+    let keys: std::collections::BTreeSet<&String> = before.keys().chain(after.keys()).collect();
+    keys.into_iter()
+        .filter(|key| before.get(*key) != after.get(*key))
+        .cloned()
+        .collect()
+}
+
 /// Resolves each `..` against the part before it, as a `#[path = "../x.rs"]` module needs.
 fn lexically(shown: &Path) -> String {
     let mut parts: Vec<std::borrow::Cow<'_, str>> = Vec::new();
@@ -463,6 +497,38 @@ pub fn includes_by_name(src: &str, name: &str) -> bool {
 )]
 mod tests {
     use super::*;
+
+    /// The same bytes hash the same, and a change, an addition or a removal under a path shows.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn contents_hashes_each_file_a_path_names_or_holds() {
+        let files = [
+            ("gen/a.json", "1"),
+            ("gen/deep/b.json", "2"),
+            ("c.txt", "1"),
+        ];
+        let root = crate::testdir::tree("project-contents", &files);
+        let paths = [
+            "gen/".to_string(),
+            "c.txt".to_string(),
+            "missing".to_string(),
+        ];
+        let before = contents(&root, &paths);
+        let keys: Vec<&str> = before.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["c.txt", "gen/a.json", "gen/deep/b.json"]);
+        assert_eq!(
+            before["c.txt"], before["gen/a.json"],
+            "the same bytes hash the same"
+        );
+        std::fs::write(root.join("gen/deep/b.json"), "3").unwrap();
+        std::fs::remove_file(root.join("c.txt")).unwrap();
+        std::fs::write(root.join("missing"), "").unwrap();
+        let after = contents(&root, &paths);
+        assert_eq!(
+            differing(&before, &after),
+            ["c.txt", "gen/deep/b.json", "missing"]
+        );
+    }
 
     #[test]
     fn a_file_is_included_elsewhere_only_when_another_file_includes_it() {

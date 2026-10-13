@@ -9,6 +9,7 @@ pub mod dupdeps;
 pub mod machete;
 pub mod miri;
 pub mod proof;
+pub mod shellcheck;
 mod suite;
 
 use std::collections::BTreeSet;

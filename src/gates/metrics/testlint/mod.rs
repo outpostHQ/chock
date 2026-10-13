@@ -19,7 +19,7 @@ use scan::{FileScan, Helper, TestItem};
 
 pub const GATE: Gate = Gate {
     name: "testlint",
-    about: "tests that assert nothing, cannot fail, are skipped with no reason or are named for no claim, per file and rule",
+    about: "tests that assert nothing, cannot fail, return before they check, are skipped with no reason or are named for no claim, per file and rule",
     group: Group::Quality,
     builds: false,
     reads: None,
@@ -32,6 +32,7 @@ pub const GATE: Gate = Gate {
 const NO_ASSERTION: &str = "no-assertion";
 const AMBIGUOUS: &str = "ambiguous-test-name";
 const PIPEFAIL: &str = "harness-without-pipefail";
+const EARLY_RETURN: &str = "early-return";
 /// What a script hears whose shell knows `pipefail`, and what a plain `sh` script hears.
 const NO_PIPEFAIL: &str =
     "a pipe in this script hides a failed command: it does not `set -o pipefail`";
@@ -55,6 +56,7 @@ fn inspect(ctx: &Ctx) -> Result<Inspection, String> {
     }
     let mut found: Vec<Finding> = scans.iter().flat_map(per_test::in_file).collect();
     found.extend(assertionless(&scans));
+    found.extend(early_returns(&scans));
     found.extend(ambiguous_names(&scans));
     found.extend(shell_harnesses(ctx)?);
     found.sort_by(|a, b| (&a.file, a.line, &a.item).cmp(&(&b.file, b.line, &b.item)));
@@ -91,6 +93,55 @@ fn assertionless(scans: &[FileScan]) -> Vec<Finding> {
         }));
     }
     found
+}
+
+/// Each test that returns before it can fail, with a check after the return that then never runs.
+/// A `return` inside a closure, a nested function or an `async` block leaves only that block.
+fn early_returns(scans: &[FileScan]) -> Vec<Finding> {
+    let helpers = asserting_helpers(scans);
+    let mut found = Vec::new();
+    for s in scans {
+        let lexed = &s.lexed;
+        let functions: Vec<Range<usize>> = lexed.functions().into_iter().map(|it| it.1).collect();
+        for t in s.tests.iter().filter(|t| !waived(t, EARLY_RETURN)) {
+            let Some(at) = quitting_return(lexed, t.body.clone(), &functions) else {
+                continue;
+            };
+            let checked_first = has_an_assertion(lexed, t.body.start..at, &helpers);
+            if !checked_first && has_an_assertion(lexed, at..t.body.end, &helpers) {
+                let detail = format!(
+                    "`{}` returns on line {} before it asserts anything, so it passes without a \
+                     check: fail instead, or mark it `#[ignore = \"why\"]`",
+                    t.name, lexed.line[at]
+                );
+                found.push(finding(&s.file, t.line, EARLY_RETURN, &detail));
+            }
+        }
+    }
+    found
+}
+
+/// The first `return` in a test's body that leaves the test and says it passed: `return;`, a
+/// `return` that ends a block, or `return Ok(())`.
+fn quitting_return(lexed: &Lexed, body: Range<usize>, functions: &[Range<usize>]) -> Option<usize> {
+    let nested = nested_blocks(lexed, body.clone(), functions);
+    let unit = [Tok::Open('('), Tok::Close(')')];
+    let ok = |i: usize| lexed.ident(i) == "Ok" && lexed.inside(i + 1) == unit;
+    let ends = |i: usize| lexed.is_punct(i, ';') || lexed.toks.get(i) == Some(&Tok::Close('}'));
+    let outside = |i: &usize| !nested.iter().any(|block| block.contains(i));
+    let quits = |&i: &usize| lexed.ident(i) == "return" && (ends(i + 1) || ok(i + 1));
+    body.into_iter().filter(outside).find(quits)
+}
+
+/// The token ranges in a test's body that a `return` leaves without leaving the test: a nested
+/// function, and the block of a closure or of an `async` block.
+fn nested_blocks(lexed: &Lexed, body: Range<usize>, fns: &[Range<usize>]) -> Vec<Range<usize>> {
+    let inner = body.start + 1..body.end;
+    let within = |block: &&Range<usize>| inner.contains(&block.start);
+    let after = |i: usize| lexed.is_punct(i, '|') || matches!(lexed.ident(i), "async" | "move");
+    let opens = |i: &usize| lexed.opens(*i, '{') && after(i - 1);
+    let blocks = inner.clone().filter(opens).map(|i| i..lexed.pair[i] + 1);
+    fns.iter().filter(within).cloned().chain(blocks).collect()
 }
 
 /// Each helper of the tree with the file that holds it.
@@ -269,6 +320,44 @@ mod tests {
 
     fn found(src: &str) -> Vec<String> {
         found_in(&[("src/thing.rs", src)])
+    }
+
+    /// What the `early-return` rule finds in one file.
+    fn early(src: &str) -> Vec<String> {
+        let scans = [scan::scan_source("src/thing.rs", src)];
+        Finding::rendered(&early_returns(&scans))
+    }
+
+    #[test]
+    fn a_test_that_returns_before_its_check_passes_unchecked() {
+        let said = |line: u32| {
+            format!(
+                "src/thing.rs:1: early-return: `reads_a_file` returns on line {line} before it \
+                 asserts anything, so it passes without a check: fail instead, or mark it \
+                 `#[ignore = \"why\"]`"
+            )
+        };
+        let skips = "#[test]\nfn reads_a_file() {\n    if !ready() {\n        return;\n    }\n    \
+                     assert!(read());\n}\n";
+        assert_eq!(early(skips), [said(4)]);
+        let quits = "#[test]\nfn reads_a_file() -> R {\n    let Some(x) = ready() else { return \
+                     Ok(()) };\n    assert!(x);\n    Ok(())\n}\n";
+        assert_eq!(early(quits), [said(3)]);
+        let ends = "#[test]\nfn reads_a_file() {\n    let x = match ready() {\n        Some(x) => \
+                    x,\n        None => return\n    };\n    assert!(x);\n}\n";
+        assert_eq!(early(ends), [said(5)]);
+    }
+
+    #[test]
+    fn a_return_after_a_check_or_outside_the_test_is_no_early_return() {
+        let src = "#[test] fn a() { assert!(r()); if d() { return; } assert!(r()); }\n\
+                   #[test] fn b() { let f = || { return; }; fn s() { return; } assert!(r()); }\n\
+                   #[test] fn c() { block_on(async move { return; }); assert!(r()); }\n\
+                   #[test] fn e() { if d() { return; } r(); }\n\
+                   #[test] fn f() { if d() { return Err(e); } assert!(r()); }\n\
+                   #[test] fn g() { // test-lint: allow(early-return) optional\n\
+                   if d() { return; } assert!(r()); }\n";
+        assert_eq!(early(src), [""; 0]);
     }
 
     /// What a test named `reads_a_file` with this attribute block and body breaks.

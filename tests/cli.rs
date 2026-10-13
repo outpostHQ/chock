@@ -101,7 +101,8 @@ fn chock(cwd: &Path, args: &[&str]) -> Ran {
 
 /// The exit code and both streams of a command that ended on its own.
 fn ran(command: &mut Command) -> Ran {
-    let done = command.output().unwrap();
+    // Inside GitHub Actions a run annotates and writes the job summary; these tests read neither.
+    let done = command.env_remove("GITHUB_ACTIONS").output().unwrap();
     Ran {
         code: done.status.code().unwrap(),
         out: String::from_utf8(done.stdout).unwrap(),
@@ -114,6 +115,7 @@ fn chock_hook(cwd: &Path, tool_json: &str) -> Ran {
     use std::io::Write as _;
     let mut child = Command::new(env!("CARGO_BIN_EXE_chock"))
         .args(["edited", "--hook"])
+        .env_remove("GITHUB_ACTIONS")
         .current_dir(cwd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -1061,6 +1063,7 @@ fn a_declared_commit_msg_hook_finds_the_message_git_is_composing() {
 fn git(dir: &Path, args: &[&str]) -> std::process::Output {
     Command::new("git")
         .args(args)
+        .env_remove("GITHUB_ACTIONS")
         .current_dir(dir)
         .output()
         .unwrap()
@@ -1081,6 +1084,7 @@ fn commit(dir: &Path, message: &str) -> std::process::Output {
     let bin = Path::new(env!("CARGO_BIN_EXE_chock")).parent().unwrap();
     Command::new("git")
         .args(["commit", "-q", "-m", message])
+        .env_remove("GITHUB_ACTIONS")
         .env(
             "PATH",
             format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),

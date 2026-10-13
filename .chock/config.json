@@ -52,6 +52,7 @@
     "supply",
     "test",
     "testlint",
+    "toolchain",
     "typos",
     "unread",
     "unreferenced",

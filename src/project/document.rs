@@ -472,6 +472,7 @@ mod tests {
                 run: vec!["make".to_string(), "doc-check".to_string()],
                 counts: true,
                 builds: true,
+                outputs: Vec::new(),
             }]),
             forbidden: Some(vec![crate::project::config::Forbidden {
                 text: "mercurial".to_string(),

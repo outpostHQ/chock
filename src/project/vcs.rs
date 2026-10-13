@@ -518,6 +518,21 @@ pub fn changed(root: &Path, held: Option<Kind>, ci: bool) -> Result<Vec<String>,
     }
 }
 
+/// The files the repository holds that differ from its last commit, relative to the root: edited,
+/// staged or deleted. A file it does not hold is none of them.
+pub fn dirty(root: &Path, held: Option<Kind>) -> Result<Vec<String>, String> {
+    let differ = match held {
+        None => return Err(NO_REPOSITORY.to_string()),
+        Some(Kind::Git) => git_diff(root, &["HEAD"])?,
+        Some(Kind::Outpost) => outpost_diff(root, None)?,
+    };
+    let holds: std::collections::HashSet<String> = tracked(root, held)?.into_iter().collect();
+    Ok(differ
+        .into_iter()
+        .filter(|path| holds.contains(path))
+        .collect())
+}
+
 /// What the local tree changed since its fork, with each file that git does not track yet.
 fn git_local(root: &Path) -> Result<Vec<String>, String> {
     let mut found = match git_fork(root)? {
@@ -807,6 +822,23 @@ fn reason(what: &str, out: &exec::Output) -> String {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn dirty_names_each_held_file_that_differs_from_the_last_commit() {
+        let files = [("src/a.rs", ""), ("src/b.rs", ""), ("src/c.rs", "")];
+        let root = crate::testdir::repo("vcs-dirty", &files);
+        std::fs::write(root.join("src/a.rs"), "edited").unwrap();
+        std::fs::remove_file(root.join("src/c.rs")).unwrap();
+        std::fs::write(root.join("src/new.rs"), "").unwrap();
+        assert_eq!(
+            dirty(&root, Some(Kind::Git)).unwrap(),
+            ["src/a.rs", "src/c.rs"]
+        );
+        assert_eq!(dirty(&root, None).unwrap_err(), NO_REPOSITORY);
+        // Outpost may be absent on this machine; asking it answers either way, and never panics.
+        let _ = dirty(&root, Some(Kind::Outpost));
+    }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
