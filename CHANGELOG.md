@@ -26,6 +26,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`duplicates` names where the other copies are**, from Outpost's duplicate groups.
 - **At a commit, the hook writes a `crap` record from an older chock again in the compact layout,**
   one function to a line, with the same scores, and adds it to the commit.
+- **`chock baseline crap` writes the compact layout too.** It wrote the record pretty, one field
+  to a line, and the hook then wrote it compact again.
 - **`lean` no longer lists a public function that only passes its parameters on.** Code in other
   modules may call it, and `lean` cannot see those calls.
 - **`lean` lists two arms with the same body only where one arm is shorter.** It counts the lines

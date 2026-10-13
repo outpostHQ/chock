@@ -768,9 +768,8 @@ fn write_crap(root: &Path, json: &str, did: &str) -> bool {
     {
         return skipped(&unwritable(dir, &e).to_string());
     }
-    if let Err(e) =
-        crate::project::document::write(&path, &crate::run::baseline::relativize(json, root))
-    {
+    // `crap::scores` made each path relative, and a second pass would undo the compact layout.
+    if let Err(e) = crate::project::document::write(&path, json) {
         return skipped(&unwritable(&path, &e).to_string());
     }
     println!("  {did:<9} crap         {file}");
@@ -1301,16 +1300,16 @@ mod tests {
         serde_json::from_str(&held).unwrap()
     }
 
-    /// A path with an absolute root in it matches nothing when the baseline is read back on another
-    /// machine, and cargo-crap then falls back to name-only matching.
+    /// A record written pretty again once grew by 18,000 lines, one field to a line.
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    fn the_recorded_baseline_holds_paths_relative_to_the_project() {
-        let dir = crate::testdir::make("init-crap-relative");
-        let file = dir.join("src").join("a.rs").display().to_string();
-        let json = serde_json::json!({"file": file});
-        assert!(write_crap(&dir, &json.to_string(), "recorded"));
-        assert_eq!(written(&dir), serde_json::json!({"file": "src/a.rs"}));
+    fn the_recorded_baseline_keeps_one_function_to_a_line() {
+        let dir = crate::testdir::make("init-crap-compact");
+        let entry = serde_json::json!({"file": "src/a.rs", "function": "f", "crap": 2.0});
+        let record = crate::gates::coverage::crap::compact(serde_json::json!({"entries": [entry]}));
+        assert!(write_crap(&dir, &record, "recorded"));
+        let held = fs::read_to_string(dir.join(crate::gates::coverage::crap::baseline())).unwrap();
+        assert_eq!(held, record);
     }
 
     /// `.chock` occupied by a file leaves nowhere to put the baseline, and reporting that as a
