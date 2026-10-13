@@ -130,14 +130,14 @@ mod tests {
     fn each_word_in_code_is_counted_by_name() {
         let text = "axiom choice : False\ntheorem a : P := by\n  · sorry\n  · admit\n\
                     theorem b : 4 - 2 = 2 := by native_decide\n\
-                    def c := («a», \"(\", sorry, '\"', sorry, `sorry, sorry)\n";
+                    def c := («ab» sorry, \"(\", sorry, '\"', sorry, `sorry, sorry)\n";
         assert_eq!(
             words(text),
             [
                 ("admit", 1),
                 ("axiom", 1),
                 ("native_decide", 1),
-                ("sorry", 4)
+                ("sorry", 5)
             ]
         );
     }
