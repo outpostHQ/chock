@@ -62,7 +62,8 @@ number now and the number on record. It can add `places`, the other places the f
 with `role`, `file` and `line`, and `fix`, the change that clears that one finding.
 
 A finding with `grade` set to `candidate` is a lead: the gate cannot settle it from the source, and
-it never trips the gate. Judge each one before you change the code.
+it never trips the gate. Judge each one before you change the code. The text report only counts the
+candidates under the findings; `chock explain GATE` lists each one.
 
 The findings are what got worse than the record, not all the debt. `measured` and `baseline` on the
 gate count that debt, and `chock explain --json` lists every record, largest first.

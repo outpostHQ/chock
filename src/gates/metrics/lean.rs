@@ -189,6 +189,7 @@ pub fn scan(src: &str, shown: &str, below: &dyn Fn(&str) -> bool) -> Read {
     uses.visit_file(&file);
     let mut lean = walk::Lean {
         shown,
+        widths: src.lines().map(|line| line.chars().count()).collect(),
         uses: &uses,
         below,
         read: Read::default(),
@@ -406,7 +407,6 @@ mod tests {
         assert_eq!(
             candidates(src),
             [
-                "1: `a` only passes its parameters to `b`, but it is visible outside its module",
                 "3: `c` only passes its parameters to `b`, but it carries an attribute",
                 "4: `d` only passes its parameters to `b`, but it is generic",
                 "5: `e` only passes its parameters to `b`, but its name is used other than in a call",
@@ -419,7 +419,32 @@ mod tests {
         assert_eq!(told.grade, Grade::Candidate);
         assert_eq!(
             told.fix.as_deref(),
-            Some("call `b` where `a` is called if the types agree")
+            Some("call `b` where `c` is called if the types agree")
+        );
+    }
+
+    #[test]
+    fn same_arms_are_a_candidate_only_where_one_arm_with_both_patterns_takes_fewer_lines() {
+        let kinds = [
+            "\"a_long_kind_of_node\"",
+            "\"another_long_kind\"",
+            "\"one_more_kind\"",
+        ];
+        let a = kinds.join(" | ");
+        let b = a.replace("kind", "sort");
+        let (c, d) = (a.replace("\" | \"", "_"), b.replace("\" | \"", "_"));
+        let block = "{\n            g();\n            1\n        }";
+        let src = format!(
+            "pub fn f(x: &str) -> u8 {{\n    match x {{\n        \"1\" => {block}\n        \
+             \"2\" => {block}\n        \"\" => 0,\n        {a} => {block}\n        \
+             {b} => {block}\n        {c} =>\n            2,\n        {d} =>\n            2,\n        \
+             _ => 0,\n    }}\n}}\n"
+        );
+        // Long patterns take a line for each alternative, and the two long arms after them each
+        // take 2 lines, the same as one arm would.
+        assert_eq!(
+            candidates(&src),
+            ["7: this arm's body is the same as the arm's at line 3"]
         );
     }
 

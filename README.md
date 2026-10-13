@@ -32,7 +32,7 @@ complexity — chock run complexity
   src/parse.rs: render: 34 cognitive, over the recorded 26
   fix: split the function: move each branch's body into a named helper
 
-1 of 4 gates tripped.
+1 of 4 gates tripped (complexity).
 ```
 
 [Install](#install) · [Use it](#use-it) · [How chock decides](#how-chock-decides) ·
@@ -130,10 +130,10 @@ that, the record moves in one direction:
 ```
 $ chock run nesting
   nesting    ok          3 against 6
-chock: measured less for nesting, and the pre-commit hook lowers the record at the next commit
+chock: measured less for nesting (6 to 3), and the pre-commit hook lowers the record at the next commit
 $ git commit -m "Split the parser"
   nesting    ok          3 against 6
-chock: lowered the record for nesting; .chock/baseline.json is in this commit
+chock: lowered the record for nesting (6 to 3); .chock/baseline.json is in this commit
 ```
 
 Only `chock baseline GATE` raises a record. A person runs it, and a reviewer sees the number rise

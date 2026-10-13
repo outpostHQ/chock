@@ -125,7 +125,7 @@ complexity — chock run complexity
   src/parse.rs: render: 34 cognitive, over the recorded 26
   fix: split the function: move each branch's body into a named helper
 
-1 of 4 gates tripped.
+1 of 4 gates tripped (complexity).
 ```
 
 - **The first block has one line for each gate.** A ratchet adds what it measured and what the

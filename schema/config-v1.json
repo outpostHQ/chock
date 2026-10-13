@@ -169,6 +169,27 @@
       },
       "uniqueItems": true
     },
+    "test_wrapper": {
+      "description": "A command the suite runs under, such as a script that starts a service the tests need and then runs the command it is given. chock puts it before the `runner` command, the `coverage` command and `cargo mutest`.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
+    },
+    "mutest_exhaustive": {
+      "description": "Whether `mutest` runs every test on each mutation, rather than stopping at the first test that detects it. The run is slower, and `mutest` then names each test that detects no mutation, or only mutations another test detects too, as a candidate.",
+      "type": "boolean"
+    },
+    "mutest_args": {
+      "description": "Flags `cargo mutest run` takes after chock's own, such as `--timings`. The results directory under `target/test-scratch/` stays after such a run; delete it when you are done. Use `mutest_exhaustive`, not `--exhaustive` here.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "strict": {
       "description": "Ratchets held to zero rather than to their recorded numbers: any finding fails, whatever .chock/baseline.json holds, and the gate needs no baseline. For a check a team wants clean outright rather than merely no worse.",
       "type": "array",

@@ -50,22 +50,45 @@ fn scoped(
     was: &Series,
     named: &Series,
 ) -> Result<Measurement, String> {
-    mutated(ctx, Some(&scope::filter(files)), named, read_within)
+    mutated(ctx, Some(&scope::filter(files)), false, named, read_within)
         .and_then(|only| scope::widened(only, was, files, || whole(ctx, named)))
 }
 
 /// The whole crate, less the files the project leaves unmutated.
 fn whole(ctx: &Ctx, named: &Series) -> Result<Measurement, String> {
     let filter = scope::whole(ctx)?;
-    mutated(ctx, filter.as_deref(), named, read)
+    mutated(ctx, filter.as_deref(), ctx.exhaustive, named, read)
 }
 
 /// How a finished run's output and results are read.
 type Judge<T> = fn(&exec::Output, Survivors<'_>, &Series) -> Result<T, String>;
 
+/// Runs mutest over `filter`, and reads its results with `judge`.
+fn mutated<T>(
+    ctx: &Ctx,
+    filter: Option<&str>,
+    exhaustive: bool,
+    was: &Series,
+    judge: Judge<T>,
+) -> Result<T, String> {
+    let results = Results::create(&ctx.root)?.reading(exhaustive, !ctx.mutest_args.is_empty());
+    let flag = results.flag();
+    let argv = invocation(&ctx.features, &flag, filter, &added(ctx, exhaustive));
+    let measured = ran(ctx, ctx.wrapped("cargo", &argv), &|output| {
+        judge(output, &|expected| results.survivors(expected), was)
+            .and_then(|measured| accounted(ctx, output, &results).map(|()| measured))
+    })
+    .map_err(|error| format!("{error}{}", results.retained()))?;
+    results.accept()?;
+    Ok(measured)
+}
+
+/// How a finished run's output is judged.
+type Check<'a, T> = &'a dyn Fn(&exec::Output) -> Result<T, String>;
+
+/// Runs a command in the project with its progress watched, and judges its output with `check`.
 #[cfg(target_os = "linux")]
-fn mutated<T>(ctx: &Ctx, filter: Option<&str>, was: &Series, judge: Judge<T>) -> Result<T, String> {
-    let results = Results::create(&ctx.root)?;
+fn ran<T>(ctx: &Ctx, (program, args): (&str, Vec<&str>), check: Check<'_, T>) -> Result<T, String> {
     let mut watch = super::watch::Watch::create(&ctx.root)?;
     let values = watch
         .environment()?
@@ -74,21 +97,19 @@ fn mutated<T>(ctx: &Ctx, filter: Option<&str>, was: &Series, judge: Judge<T>) ->
         .iter()
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect();
-    let output = exec::run_watched(
-        "cargo",
-        &invocation(&ctx.features, &results.flag(), filter),
-        &ctx.root,
-        &env,
-        &mut watch,
-        moving,
-    )
-    .map_err(|error| format!("{error}{}{}", watch.retained(), results.retained()))?;
-    let measured = judge(&output, &|expected| results.survivors(expected), was)
-        .and_then(|measured| accounted(ctx, &output, &results).map(|()| measured))
-        .map_err(|error| format!("{error}{}{}", watch.retained(), results.retained()))?;
+    let output = exec::run_watched(program, &args, &ctx.root, &env, &mut watch, moving)
+        .map_err(|error| format!("{error}{}", watch.retained()))?;
+    let measured = check(&output).map_err(|error| format!("{error}{}", watch.retained()))?;
     watch.accept()?;
-    results.accept()?;
     Ok(measured)
+}
+
+/// Runs a command in the project under the deadline, and judges its output with `check`.
+#[cfg(not(target_os = "linux"))]
+fn ran<T>(ctx: &Ctx, (program, args): (&str, Vec<&str>), check: Check<'_, T>) -> Result<T, String> {
+    let output = exec::run_paced(program, &args, &ctx.root, &[], (moving, exec::deadline()))
+        .map_err(|error| error.to_string())?;
+    check(&output)
 }
 
 /// Checks that every target cargo tests either wrote results or was named ineligible.
@@ -97,30 +118,13 @@ fn accounted(ctx: &Ctx, out: &exec::Output, results: &Results) -> Result<(), Str
     super::targets::all_written(&metadata, &results.targets()?, &skipped_names(out))
 }
 
-#[cfg(not(target_os = "linux"))]
-fn mutated<T>(ctx: &Ctx, filter: Option<&str>, was: &Series, judge: Judge<T>) -> Result<T, String> {
-    let results = Results::create(&ctx.root)?;
-    let output = exec::run_paced(
-        "cargo",
-        &invocation(&ctx.features, &results.flag(), filter),
-        &ctx.root,
-        &[],
-        (moving, exec::deadline()),
-    )
-    .map_err(|error| error.to_string())?;
-    let measured = judge(&output, &|expected| results.survivors(expected), was)
-        .and_then(|measured| accounted(ctx, &output, &results).map(|()| measured))
-        .map_err(|error| format!("{error}{}", results.retained()))?;
-    results.accept()?;
-    Ok(measured)
-}
-
 // `--isolate all`: even a safe mutation can abort, e.g. a `Default::default` that calls itself.
 // Mutants run in parallel, so survivors come from `results`, not the interleaved text.
 fn invocation<'a>(
     features: &'a [String],
     results: &'a str,
     filter: Option<&'a str>,
+    more: &[&'a str],
 ) -> Vec<&'a str> {
     let mut argv = vec![
         "mutest",
@@ -134,9 +138,18 @@ fn invocation<'a>(
     ];
     #[cfg(target_os = "linux")]
     argv.push("--require-progress");
+    argv.extend(more);
     argv.extend(filter);
     argv.extend(features.iter().map(String::as_str));
     argv
+}
+
+/// What chock adds after its own flags: `--exhaustive` where the project asks for each test's
+/// verdict, then the project's own `mutest_args`.
+fn added(ctx: &Ctx, exhaustive: bool) -> Vec<&str> {
+    let exhaustive = exhaustive.then_some("--exhaustive");
+    let own = ctx.mutest_args.iter().map(String::as_str);
+    exhaustive.into_iter().chain(own).collect()
 }
 
 /// What a run's results name once joined, given how many undetected verdicts its totals counted.
@@ -153,6 +166,7 @@ pub(super) fn read(
     let mut findings = ineligible(out);
     findings.extend(timeouts(&found.timed_out, confirmed(out)));
     findings.extend(survivors::sites_over(&found.survivors, was));
+    findings.extend(found.tests);
     Ok(Measurement::of(
         Series(survivors::telling(&found.survivors)),
         findings,
@@ -403,7 +417,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_crate_cargo_cannot_read_measures_nothing_and_says_so() {
         let held = crate::testdir::Held::tree("mutest-unreadable", &[("Cargo.toml", "[")]);
-        let refused = mutated(&held, None, &Series::default(), read).unwrap_err();
+        let refused = mutated(&held, None, false, &Series::default(), read).unwrap_err();
         // Linux watches mutest's progress, so there a run that never starts left no record first.
         #[cfg(target_os = "linux")]
         let said = "could not collect the exit of cargo: mutest wrote no progress records";
@@ -517,6 +531,7 @@ mod tests {
             Ok(Joined {
                 survivors: vec![survivor("eq_op_invert")],
                 timed_out: vec![survivor("call_delete")],
+                tests: Vec::new(),
             })
         };
         let was = Series([("src/a.rs#eq_op_invert".to_string(), 1)].into());
@@ -568,6 +583,7 @@ mod tests {
             Ok(Joined {
                 survivors: vec![survivor("eq_op_invert")],
                 timed_out: vec![survivor("call_delete")],
+                tests: Vec::new(),
             })
         };
         let some = read(&ran(totals, Some(3), false), &timed, &was).unwrap();
@@ -787,19 +803,49 @@ mod tests {
         };
         let features = ["--no-default-features", "--features", "testkit,extra"];
         assert_eq!(
-            invocation(&features.map(String::from), at, None),
+            invocation(&features.map(String::from), at, None, &[]),
             expected(&features)
         );
         assert_eq!(
-            invocation(&["--all-features".into()], at, None),
+            invocation(&["--all-features".into()], at, None, &[]),
             expected(&["--all-features"])
         );
-        assert_eq!(invocation(&[], at, None), expected(&[]));
+        assert_eq!(invocation(&[], at, None, &[]), expected(&[]));
         let filter = "--filter-mutations=file:src/a.rs";
         assert_eq!(
-            invocation(&["--all-features".into()], at, Some(filter)),
+            invocation(&["--all-features".into()], at, Some(filter), &[]),
             expected(&[filter, "--all-features"])
         );
+        let more = ["--exhaustive", "--timings"];
+        assert_eq!(
+            invocation(&["--all-features".into()], at, Some(filter), &more),
+            expected(&["--exhaustive", "--timings", filter, "--all-features"])
+        );
+    }
+
+    #[test]
+    fn mutest_takes_exhaustive_and_the_projects_flags_after_chocks_own() {
+        let mut ctx = Ctx::at(Path::new(""));
+        assert_eq!(added(&ctx, false), Vec::<&str>::new());
+        ctx.mutest_args = vec!["--timings".to_string()];
+        assert_eq!(added(&ctx, true), ["--exhaustive", "--timings"]);
+        assert_eq!(added(&ctx, false), ["--timings"]);
+    }
+
+    /// Each test the results name as a lead is a note of the run, after its survivors.
+    #[test]
+    fn a_test_that_detects_nothing_is_a_lead_of_the_run() {
+        let lead = Finding::at("", "detects no mutation in chock/lib")
+            .item("tests::idle")
+            .candidate();
+        let tested = |expected: u64| {
+            one(expected).map(|joined| Joined {
+                tests: vec![lead.clone()],
+                ..joined
+            })
+        };
+        let measured = read(&ran(TOTALS, Some(2), false), &tested, &Series::default()).unwrap();
+        assert_eq!(measured.findings.last(), Some(&lead));
     }
 
     #[test]

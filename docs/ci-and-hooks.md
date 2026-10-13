@@ -126,7 +126,12 @@ writes the lower number and adds the file to the commit. A `chock run` outside t
 record, so work in progress that loses an item and gets it back trips nothing. When the file holds
 a change that nobody staged, the hook leaves it out of the commit; commit it yourself. CI fails a
 change that does not commit the lower number, so the record in the repository is always the true
-one.
+one. The hook says how far each record went down, such as `lowered the record for slop (9 to 4)`,
+and writes its own version into the file's `chock` field.
+
+At a commit the hook also writes a `crap` record from an older chock again in the compact layout,
+one function to a line, with the same scores. It adds the file to the commit, unless the file holds
+a change that nobody staged.
 
 CI writes no record. A ratchet whose first record no change committed is `CANNOT RUN` there:
 run `chock run GATE` outside CI and commit `.chock/baseline.json`. A gate that keeps a record for

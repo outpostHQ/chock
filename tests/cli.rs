@@ -870,7 +870,7 @@ fn a_fix_lowers_the_record_at_a_commit_and_ci_refuses_a_change_that_did_not_comm
     let local = exits(&dir, &["run", "slop"], 0);
     says(
         &local.err,
-        "chock: measured less for slop, and the pre-commit hook lowers the record",
+        "chock: measured less for slop (2 to 1), and the pre-commit hook lowers the record",
     );
     assert_eq!(
         slop_record(&dir),
@@ -882,7 +882,7 @@ fn a_fix_lowers_the_record_at_a_commit_and_ci_refuses_a_change_that_did_not_comm
     let hook = exits(&dir, &["hook", "pre-commit"], 0);
     says(
         &hook.err,
-        "chock: lowered the record for slop; .chock/baseline.json is in this commit",
+        "chock: lowered the record for slop (2 to 1); .chock/baseline.json is in this commit",
     );
     assert_eq!(slop_record(&dir), Some(1));
     let staged = git(&dir, &["diff", "--cached", "--name-only"]);
@@ -907,7 +907,7 @@ fn a_fix_lowers_the_record_at_a_commit_and_ci_refuses_a_change_that_did_not_comm
     let unstaged = exits(&dir, &["hook", "pre-commit"], 0);
     says(
         &unstaged.err,
-        "lowered the record for slop; commit .chock/baseline.json with this change",
+        "lowered the record for slop (2 to 1); commit .chock/baseline.json with this change",
     );
 }
 
@@ -2403,10 +2403,11 @@ fn doctor_names_a_missing_fork_of_mutest_and_a_missing_miri_with_the_install_for
         "doctor-fork",
         &[("tool-versions.env", "CARGO_MUTEST_VERSION=0.0.0\n")],
     );
+    // A tool that only switched-off gates run is no failure, so `mutest` is on.
     put(
         &dir,
         ".chock/config.json",
-        r#"{"version": 1, "enabled": ["miri"]}"#,
+        r#"{"version": 1, "enabled": ["miri", "mutest"]}"#,
     );
     for (tool, script) in [("bin/cargo", BARE_CARGO), ("bin/rustup", LOGGING_RUSTUP)] {
         put(&dir, tool, script);

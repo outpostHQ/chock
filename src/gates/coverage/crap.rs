@@ -103,6 +103,34 @@ fn as_record(report: &exec::Output, root: &Path) -> Result<String, String> {
     compacted(&crate::run::baseline::relativize(&report.stdout, root))
 }
 
+/// At a commit, each record still in an older layout, written again in the compact one with the
+/// same scores and added to the commit. A record with a change nobody staged stays as it is.
+#[must_use]
+pub fn relaid(root: &Path, committing: bool) -> Vec<String> {
+    let systems: &[&str] = match committing {
+        true => &["linux", "macos", "windows"],
+        false => &[],
+    };
+    systems
+        .iter()
+        .filter_map(|system| relay(root, &kept_on(system)))
+        .collect()
+}
+
+/// `relaid` for one record, or `None` where it is compact, untracked, unstaged or unreadable.
+fn relay(root: &Path, name: &str) -> Option<String> {
+    let held = std::fs::read_to_string(root.join(name)).ok()?;
+    let compact = compacted(&held).ok()?;
+    let git = |args: &[&str]| exec::run("git", args, root).is_ok_and(|out| out.success());
+    let tracked = git(&["ls-files", "--error-unmatch", "--", name]);
+    if compact == held || !tracked || !git(&["diff", "--quiet", "--", name]) {
+        return None;
+    }
+    crate::project::document::write(&root.join(name), &compact).ok()?;
+    let said = "again in the compact layout, with the same scores; it is in this commit";
+    git(&["add", "--", name]).then(|| format!("wrote {name} {said}"))
+}
+
 /// `compact` over a report that is still text.
 fn compacted(json: &str) -> Result<String, String> {
     let parsed = serde_json::from_str(json)
@@ -475,18 +503,6 @@ pub fn debt(root: &Path) -> Result<Option<Debt>, String> {
     }))
 }
 
-/// What a pass says where the record lacks functions: nothing holds one until it is over 30.
-fn unheld(delta: &Delta) -> Vec<Finding> {
-    let new = delta.entries.iter().filter(|entry| entry.status == "new");
-    let lacking = new.count();
-    let note = format!(
-        "{lacking} function(s) are not in the record, so a rise in one passes until it is over \
-         CRAP 30: `chock baseline crap` records them"
-    );
-    let noted = (lacking > 0).then(|| Finding::at("", &note).item("record"));
-    noted.into_iter().collect()
-}
-
 /// The verdict from cargo-crap's report, with how many functions are over the threshold now and
 /// on record. cargo-crap exits zero over a new function at any score, so the report decides.
 fn judged(json: &str, succeeded: bool, root: &Path, record: &[Scored]) -> Result<Outcome, String> {
@@ -524,7 +540,7 @@ fn judged(json: &str, succeeded: bool, root: &Path, record: &[Scored]) -> Result
                 "cargo-crap failed but named no regression, so nothing was measured".to_string(),
             );
         }
-        (true, true) => Outcome::noted(unheld(&delta)),
+        (true, true) => Outcome::passed(),
         (false, _) => Outcome::failed(worse),
     };
     Ok(outcome.counting(over, held, UNIT))
@@ -767,15 +783,7 @@ mod tests {
           {"file":"/w/src/b.rs","function":"fresh","line":3,"crap":30.0,"status":"new",
            "baseline_crap":null}]}"#;
         let outcome = judged(steady, true, Path::new("/w"), &held(HELD)).unwrap();
-        assert!(outcome.passed);
-        assert_eq!(outcome.counted, Some((1, 2, UNIT)));
-        assert_eq!(
-            Finding::rendered(&outcome.findings),
-            [
-                "record: 1 function(s) are not in the record, so a rise in one passes until it is \
-                 over CRAP 30: `chock baseline crap` records them"
-            ]
-        );
+        assert_eq!(outcome, Outcome::passed().counting(1, 2, UNIT));
     }
 
     const QUIET: &str = r#"{"entries":[{"file":"/w/src/e.rs","function":"old","line":9,
@@ -1142,5 +1150,43 @@ mod tests {
         assert!(why.starts_with(&baseline()), "{why}");
         assert!(why.contains("a report chock cannot read"), "{why}");
         assert_eq!(debt(&dir), Err(why));
+    }
+
+    /// At a commit an old record is written again in the compact layout and staged; a record with
+    /// a change nobody staged, and a run outside a commit, leave it as it is.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_commit_writes_an_old_record_again_in_the_compact_layout() {
+        let name = kept_on("macos");
+        let old = "{\n  \"version\": 1,\n  \"diagnostics\": [],\n  \"entries\": [\n    {\n      \
+                   \"crap\": 2.0\n    }\n  ]\n}\n";
+        let root = crate::testdir::repo("crap-relaid", &[(name.as_str(), old)]);
+        let git = |args: &[&str]| crate::exec::run("git", args, &root).unwrap().stdout;
+        assert_eq!(relaid(&root, false), Vec::<String>::new());
+        let said = format!(
+            "wrote {name} again in the compact layout, with the same scores; it is in this commit"
+        );
+        assert_eq!(relaid(&root, true), [said]);
+        assert_eq!(
+            std::fs::read_to_string(root.join(&name)).unwrap(),
+            "{\n  \"version\": 1,\n  \"entries\": [\n    {\"crap\":2.0}\n  ]\n}\n"
+        );
+        assert_eq!(
+            git(&["diff", "--cached", "--name-only"]),
+            format!("{name}\n")
+        );
+        assert_eq!(
+            relaid(&root, true),
+            Vec::<String>::new(),
+            "a compact record stays"
+        );
+        git(&["reset", "--quiet"]);
+        git(&["checkout", "--", &name]);
+        let edited = old.replace("2.0", "3.0");
+        std::fs::write(root.join(&name), &edited).unwrap();
+        assert_eq!(relaid(&root, true), Vec::<String>::new());
+        assert_eq!(std::fs::read_to_string(root.join(&name)).unwrap(), edited);
+        std::fs::write(root.join("untracked.json"), old).unwrap();
+        assert_eq!(relay(&root, "untracked.json"), None);
     }
 }

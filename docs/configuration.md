@@ -38,6 +38,9 @@ Without the parent, the gate cannot run.
 | `local_only` | gates CI cannot run; `chock run --ci` leaves them out |
 | `runner_tools` | tools your `runner` calls; with them named, `test` keeps its verdict until one of them changes |
 | `coverage_tools` | tools your `coverage` command calls; with them named, `coverage` and `crap` keep their verdict until one of them changes |
+| `test_wrapper` | a command your suite runs under, such as a script that starts a service; the suite, coverage and `mutest` commands follow it |
+| `mutest_exhaustive` | `true` runs every test on each mutation, so `mutest` names each test that detects no mutation |
+| `mutest_args` | flags `cargo mutest run` takes after chock's own, such as `--timings` |
 | `not_shipped` | members nobody receives (fuzz harnesses, benchmarks), held to test-code rules |
 | `miri` | which packages Miri runs over, and its flags |
 | `commands` | your own checks: a `name` and a `run` command; one that `counts` is ratcheted per item |
@@ -50,6 +53,26 @@ Without the parent, the gate cannot run.
 | `left_off` | default gates that are off, each with why; `init`, `enable` and `disable` keep it, and `doctor` names any gap |
 | `strict` | ratchets held to zero rather than to the record |
 | `clean_when_touched` | ratchets held to zero in each file the change touches |
+
+## A service the tests need
+
+When your tests need a service, such as a database, name a command that starts it in `test_wrapper`.
+chock runs the suite, the coverage command and `cargo mutest` under it: the wrapper gets the command
+as its arguments, runs it, and exits with its code.
+
+```json
+"test_wrapper": ["scripts/with-database", "--"]
+```
+
+## More from mutest
+
+`"mutest_exhaustive": true` runs every test on each mutation. The run is slower. `mutest` then names
+each test that detects no mutation, or only mutations that another test detects too, as a candidate.
+A candidate never trips the gate.
+
+`mutest_args` adds flags after chock's own, such as `["--timings"]`. Do not put `--exhaustive` there;
+use `mutest_exhaustive`. After such a run the results stay in
+`target/test-scratch/mutest-results-<process>-<time>/`. Delete the directory when you are done.
 
 ## Forbidden phrases
 

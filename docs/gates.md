@@ -126,6 +126,9 @@ whole tree.
   rustfmt breaks it over lines. A copy can bind at most 3 names that later code reads, and the
   function returns them. A group counts only when it removes 6 lines or more. Each file holds its
   share of each group, and the lines of each private function that only passes its parameters on.
+  A candidate is a note and never counts. Two arms with the same body are a candidate only where
+  one arm with both patterns takes fewer lines, at rustfmt's default width of 100. A public
+  function that only passes its parameters on is no candidate, since other modules may call it.
 - **How `testlint` reads a test.** It reads each `#[test]` function in the files that a cargo
   target compiles. A file that no target reaches by `mod`, `#[path]` or `include!` is data that a
   harness reads, such as a UI fixture; it holds no test. Each finding names one of eleven rules:

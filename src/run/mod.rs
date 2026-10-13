@@ -1461,7 +1461,7 @@ mod tests {
             (settled.first.clone(), settled.lowered.clone()),
             (Vec::new(), vec!["slop".to_string()])
         );
-        assert_eq!(settled.said(), "lowered the record for slop");
+        assert_eq!(settled.said(), "lowered the record for slop (20 to 15)");
         let unmoved = ctx_with("probe", &[("src/a.rs", 12), ("src/b.rs", 5)]);
         assert_eq!(
             run_one(&ratchet_gate(), &unmoved).tightened,

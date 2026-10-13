@@ -7,10 +7,15 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use super::survivors::Survivor;
+use crate::run::report::{Finding, plural};
 
 /// Where one run writes its results: a directory made for that run, so no earlier run's are read.
 pub(super) struct Results {
     directory: PathBuf,
+    /// Whether each test's detections are read, from a run that gave every test a verdict.
+    tests: bool,
+    /// Whether the directory stays once read, since the project's own flags may write there.
+    keep: bool,
 }
 
 impl Results {
@@ -27,11 +32,24 @@ impl Results {
             .unwrap_or_default();
         let directory = parent.join(format!("mutest-results-{}-{stamp}", std::process::id()));
         std::fs::create_dir(&directory).map_err(made)?;
-        Ok(Self { directory })
+        Ok(Self {
+            directory,
+            tests: false,
+            keep: false,
+        })
     }
 
     pub(super) fn flag(&self) -> String {
         format!("--metadata-out-root-dir={}", self.directory.display())
+    }
+
+    /// These results, reading each test's detections where `tests`, and kept where `keep`.
+    pub(super) fn reading(self, tests: bool, keep: bool) -> Self {
+        Self {
+            tests,
+            keep,
+            ..self
+        }
     }
 
     /// Every evaluated target's verdicts, joined per mutation. The undetected ones must number the
@@ -42,12 +60,18 @@ impl Results {
                 .map_err(|error| format!("cannot read {}: {error}", path.display()))
         };
         let mut judged = Vec::new();
+        let (mut tested, mut ids) = (Vec::new(), Ids::new());
         // A target no test reaches is analysed but never evaluated, so it has no evaluation.json.
         for evaluation in crate::project::walk(&self.directory, &|_| true, &|name, _| {
             name == "evaluation.json"
         })? {
             let mutations = read(&evaluation.with_file_name("mutations.json"))?;
-            judged.extend(verdicts(&mutations, &read(&evaluation)?)?);
+            let evaluated = read(&evaluation)?;
+            judged.extend(verdicts(&mutations, &evaluated)?);
+            if self.tests {
+                let target = self.label(&evaluation).unwrap_or_default();
+                tested.extend(tested_in(&target, &mutations, &evaluated, &mut ids)?);
+            }
         }
         let undetected = judged
             .iter()
@@ -58,7 +82,9 @@ impl Results {
                 "mutest reported {expected} undetected mutations but its results name {undetected}; the result is incomplete"
             ));
         }
-        Ok(joined(judged))
+        let mut found = joined(judged);
+        found.tests = idle(tested);
+        Ok(found)
     }
 
     /// Each target mutest analysed, as `package/lib` or `package/tests/cli`: where it wrote mutations.
@@ -66,15 +92,21 @@ impl Results {
         let found = crate::project::walk(&self.directory, &|_| true, &|name, _| {
             name == "mutations.json"
         })?;
-        Ok(found
-            .iter()
-            .filter_map(|file| file.parent()?.strip_prefix(&self.directory).ok())
-            .map(|dir| dir.to_string_lossy().replace('\\', "/"))
-            .collect())
+        Ok(found.iter().filter_map(|file| self.label(file)).collect())
     }
 
-    /// Removes the results once read; a run whose results could not be read keeps them to inspect.
+    /// The target `file` is under, such as `package/lib`: where mutest wrote it.
+    fn label(&self, file: &Path) -> Option<String> {
+        let target = file.parent()?.strip_prefix(&self.directory).ok()?;
+        Some(target.to_string_lossy().replace('\\', "/"))
+    }
+
+    /// Removes the results once read, unless kept for the project's own flags; a run whose results
+    /// could not be read keeps them to inspect.
     pub(super) fn accept(self) -> Result<(), String> {
+        if self.keep {
+            return Ok(());
+        }
         std::fs::remove_dir_all(&self.directory)
             .map_err(|error| format!("cannot remove mutest's results: {error}"))
     }
@@ -89,6 +121,8 @@ impl Results {
 pub(super) struct Joined {
     pub survivors: Vec<Survivor>,
     pub timed_out: Vec<Survivor>,
+    /// Each test that detects no mutation, or only ones another test detects too, as a lead.
+    pub tests: Vec<Finding>,
 }
 
 #[derive(Deserialize)]
@@ -161,6 +195,14 @@ impl Verdict {
 #[derive(Deserialize)]
 struct Evaluation {
     mutation_runs: Vec<Run>,
+    /// In the order of each run's `test_detections`; an older mutest writes none.
+    #[serde(default)]
+    tests: Vec<Test>,
+}
+
+#[derive(Deserialize)]
+struct Test {
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -171,31 +213,113 @@ struct Run {
 #[derive(Deserialize)]
 struct Matrix {
     overall_detections: String,
+    /// A row per test, a mark per mutation, as in `overall_detections`.
+    #[serde(default)]
+    test_detections: Vec<String>,
 }
 
 /// One target's mutations, each with its verdict. Verdicts are one character per mutation in id
 /// order, so a length mismatch or out-of-order ids is refused.
 fn verdicts(mutations: &str, evaluation: &str) -> Result<Vec<(Mutation, Verdict)>, String> {
-    let unreadable =
-        |error: serde_json::Error| format!("mutest wrote results chock cannot read: {error}");
-    let mutations: Mutations = serde_json::from_str(mutations).map_err(unreadable)?;
-    let evaluation: Evaluation = serde_json::from_str(evaluation).map_err(unreadable)?;
-    let [run] = evaluation.mutation_runs.as_slice() else {
-        return Err("mutest recorded other than one evaluation of a target".to_string());
-    };
-    let verdicts = run.mutation_detection_matrix.overall_detections.as_bytes();
+    let (mutations, _, matrix) = parsed(mutations, evaluation)?;
+    let verdicts = matrix.overall_detections.as_bytes();
     let in_order = (1..)
-        .zip(&mutations.mutations)
+        .zip(&mutations)
         .all(|(id, mutation)| mutation.mutation_id == id);
-    if verdicts.len() != mutations.mutations.len() || !in_order {
+    if verdicts.len() != mutations.len() || !in_order {
         return Err("mutest's verdicts do not line up with its mutations".to_string());
     }
     mutations
-        .mutations
         .into_iter()
         .zip(verdicts)
         .map(|(mutation, mark)| Ok((mutation, Verdict::of(*mark)?)))
         .collect()
+}
+
+/// One target's mutations, its tests, and its one evaluation of them.
+fn parsed(mutations: &str, evaluation: &str) -> Result<(Vec<Mutation>, Vec<Test>, Matrix), String> {
+    let unreadable =
+        |error: serde_json::Error| format!("mutest wrote results chock cannot read: {error}");
+    let mutations: Mutations = serde_json::from_str(mutations).map_err(unreadable)?;
+    let evaluation: Evaluation = serde_json::from_str(evaluation).map_err(unreadable)?;
+    let Ok([run]) = <[Run; 1]>::try_from(evaluation.mutation_runs) else {
+        return Err("mutest recorded other than one evaluation of a target".to_string());
+    };
+    Ok((
+        mutations.mutations,
+        evaluation.tests,
+        run.mutation_detection_matrix,
+    ))
+}
+
+/// A number for each mutation, the same in every target that reaches it.
+type Ids = BTreeMap<Identity, usize>;
+
+/// One test, and the number of each mutation it detected.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Tested {
+    target: String,
+    name: String,
+    detected: Vec<usize>,
+}
+
+/// One target's tests, each with the mutations it detected, from a run that gave every test a
+/// verdict. A timeout or a crash counts as a detection, as mutest counts it.
+fn tested_in(
+    target: &str,
+    mutations: &str,
+    evaluation: &str,
+    ids: &mut Ids,
+) -> Result<Vec<Tested>, String> {
+    let (mutations, tests, matrix) = parsed(mutations, evaluation)?;
+    let rows = matrix.test_detections;
+    let fits = rows.iter().all(|row| row.len() == mutations.len());
+    if rows.len() != tests.len() || !fits {
+        return Err("mutest's tests do not line up with their detections".to_string());
+    }
+    let numbered: Vec<usize> = mutations
+        .iter()
+        .map(|mutation| {
+            let next = ids.len();
+            *ids.entry(mutation.identity()).or_insert(next)
+        })
+        .collect();
+    let tested = tests.into_iter().zip(rows).map(|(test, row)| Tested {
+        target: target.to_string(),
+        name: test.name,
+        detected: numbered
+            .iter()
+            .zip(row.bytes())
+            .filter(|(_, mark)| matches!(mark, b'D' | b'T' | b'C'))
+            .map(|(id, _)| *id)
+            .collect(),
+    });
+    Ok(tested.collect())
+}
+
+/// Each test that detects no mutation, or only mutations another test detects too, as a lead: a
+/// test to cut, or to point at something no other test checks.
+fn idle(mut tested: Vec<Tested>) -> Vec<Finding> {
+    tested.sort();
+    let mut detections: BTreeMap<usize, usize> = BTreeMap::new();
+    for id in tested.iter().flat_map(|test| &test.detected) {
+        *detections.entry(*id).or_default() += 1;
+    }
+    let shared = |id: &usize| detections.get(id).is_some_and(|count| *count > 1);
+    let mut found = Vec::new();
+    for test in &tested {
+        let (target, count) = (&test.target, test.detected.len());
+        let said = match count {
+            0 => format!("detects no mutation in {target}"),
+            _ if test.detected.iter().all(&shared) => format!(
+                "detects {} in {target}, and another test detects each of them too",
+                plural(count, "mutation")
+            ),
+            _ => continue,
+        };
+        found.push(Finding::at("", &said).item(&test.name).candidate());
+    }
+    found
 }
 
 /// Each mutation once, under the strongest verdict any target gave it: a test in any target that
@@ -248,6 +372,97 @@ mod tests {
         )
     }
 
+    /// An evaluation that gave each test in `rows` a verdict on every mutation.
+    fn tested(overall: &str, rows: &[(&str, &str)]) -> String {
+        let names: Vec<String> = rows
+            .iter()
+            .map(|(name, _)| format!(r#"{{"name":"{name}"}}"#))
+            .collect();
+        let marks: Vec<String> = rows
+            .iter()
+            .map(|(_, marks)| format!(r#""{marks}""#))
+            .collect();
+        format!(
+            r#"{{"tests":[{}],"mutation_runs":[{{"mutation_detection_matrix":{{"overall_detections":"{overall}","test_detections":[{}]}}}}]}}"#,
+            names.join(","),
+            marks.join(",")
+        )
+    }
+
+    fn lead(name: &str, said: &str) -> Finding {
+        Finding::at("", said).item(name).candidate()
+    }
+
+    /// A test is a lead when it detects nothing, or when another test detects each thing it does.
+    #[test]
+    fn a_test_that_detects_nothing_or_only_what_another_detects_is_a_lead() {
+        let ops = mutations(&["call_delete", "eq_op_invert", "bool_expr_negate"]);
+        let rows = [
+            ("t::own", "DTC"),
+            ("t::none", "-.-"),
+            ("t::shared", "D--"),
+            ("t::timed", ".T."),
+        ];
+        let found = tested_in("pkg/lib", &ops, &tested("DTC", &rows), &mut Ids::new()).unwrap();
+        let also = "in pkg/lib, and another test detects each of them too";
+        assert_eq!(
+            idle(found),
+            [
+                lead("t::none", "detects no mutation in pkg/lib"),
+                lead("t::shared", &format!("detects 1 mutation {also}")),
+                lead("t::timed", &format!("detects 1 mutation {also}")),
+            ]
+        );
+    }
+
+    #[test]
+    fn tests_that_do_not_line_up_with_their_detections_are_refused() {
+        let ops = mutations(&["call_delete", "eq_op_invert"]);
+        let mut ids = Ids::new();
+        let refused = "mutest's tests do not line up with their detections".to_string();
+        let short = tested("DD", &[("t::a", "D")]);
+        assert_eq!(tested_in("p", &ops, &short, &mut ids), Err(refused.clone()));
+        let unnamed =
+            tested("DD", &[]).replace(r#""test_detections":[]"#, r#""test_detections":["DD"]"#);
+        assert_eq!(tested_in("p", &ops, &unnamed, &mut ids), Err(refused));
+        let fitting = tested("DD", &[("t::a", "-D")]);
+        let one = Tested {
+            target: "p".to_string(),
+            name: "t::a".to_string(),
+            detected: vec![1],
+        };
+        assert_eq!(tested_in("p", &ops, &fitting, &mut ids), Ok(vec![one]));
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_run_that_reads_each_test_names_the_idle_ones_and_keeps_its_results_if_asked() {
+        let root = crate::testdir::make("mutest-results-tests");
+        let results = Results::create(&root).unwrap().reading(true, true);
+        let flag = results.flag();
+        let directory = PathBuf::from(flag.strip_prefix("--metadata-out-root-dir=").unwrap());
+        let at = directory.join("fixture").join("lib");
+        std::fs::create_dir_all(&at).unwrap();
+        let ops = mutations(&["call_delete", "eq_op_invert"]);
+        std::fs::write(at.join("mutations.json"), ops).unwrap();
+        let rows = [("t::idle", "--"), ("t::kills", "D-")];
+        std::fs::write(at.join("evaluation.json"), tested("D-", &rows)).unwrap();
+        let plain = Results {
+            directory: directory.clone(),
+            tests: false,
+            keep: false,
+        };
+        assert_eq!(plain.survivors(1).unwrap().tests, Vec::new());
+        let idle = lead("t::idle", "detects no mutation in fixture/lib");
+        assert_eq!(results.survivors(1).unwrap().tests, [idle]);
+        results.accept().unwrap();
+        assert!(
+            directory.exists(),
+            "results kept for the project's flags were removed"
+        );
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
     #[test]
     fn a_results_directory_is_never_made_outside_a_project_root() {
         let refused = Results::create(Path::new("")).err().unwrap();
@@ -284,6 +499,7 @@ mod tests {
         let expected = Joined {
             survivors: vec![named("call_delete", 2)],
             timed_out: vec![named("bool_expr_negate", 3)],
+            tests: Vec::new(),
         };
         assert_eq!(found, expected);
         let twice = judged(

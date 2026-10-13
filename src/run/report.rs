@@ -3,6 +3,8 @@
 
 use std::fmt;
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::run::baseline::{Baseline, Series};
@@ -380,6 +382,8 @@ pub struct Settled {
     pub lowered: Vec<String>,
     /// Gates that measured less outside a commit; the pre-commit hook lowers their record.
     pub waiting: Vec<String>,
+    /// Each lowered or waiting record's total before and after, by the name it is said under.
+    pub moved: BTreeMap<String, (u64, u64)>,
 }
 
 impl Settled {
@@ -389,10 +393,16 @@ impl Settled {
             first: Vec::new(),
             lowered: Vec::new(),
             waiting: Vec::new(),
+            moved: BTreeMap::new(),
         }
     }
 
     fn take(&mut self, held: &Baseline, report: &GateReport, series: &Series, committing: bool) {
+        if held.has(&report.gate) {
+            let total = |series: &Series| series.0.values().sum::<u64>();
+            let now = (total(&held.gate(&report.gate)), total(series));
+            self.moved.insert(report.gate.clone(), now);
+        }
         // Work in progress can lose an item and get it back, so only a commit moves a record down.
         if held.has(&report.gate) && !committing {
             self.waiting.push(report.gate.clone());
@@ -442,12 +452,19 @@ impl Settled {
         let part = |what: &str, gates: &[String]| {
             (!gates.is_empty()).then(|| format!("{what} {}", gates.join(", ")))
         };
-        let waiting = part("measured less for", &self.waiting).map(|said| {
+        let by = |gates: &[String]| -> Vec<String> {
+            let moved = |gate: &String| match self.moved.get(gate) {
+                Some((was, now)) => format!("{gate} ({was} to {now})"),
+                None => gate.clone(),
+            };
+            gates.iter().map(moved).collect()
+        };
+        let waiting = part("measured less for", &by(&self.waiting)).map(|said| {
             format!("{said}, and the pre-commit hook lowers the record at the next commit")
         });
         [
             part("wrote the first record for", &self.first),
-            part("lowered the record for", &self.lowered),
+            part("lowered the record for", &by(&self.lowered)),
             waiting,
         ]
         .into_iter()
@@ -480,6 +497,9 @@ pub fn settle(
     committing: bool,
 ) {
     remember_or_say(root, reports, chock_version);
+    for said in crate::gates::coverage::crap::relaid(root, committing) {
+        eprintln!("chock: {said}");
+    }
     if let Some(settled) = forgets(root, held, locked_in(held, reports, committing), committing) {
         eprintln!(
             "chock: {}",
@@ -518,21 +538,34 @@ fn forgotten(
 ) -> Option<Settled> {
     let mut settled = settled.unwrap_or_else(|| Settled::new(held));
     let Settled {
-        record, lowered, ..
+        record,
+        lowered,
+        moved,
+        ..
     } = &mut settled;
     for (name, series) in &mut record.gates {
         let gate = name.split_once('@').map_or(name.as_str(), |(gate, _)| gate);
-        let before = series.0.len();
+        let (before, total) = (series.0.len(), series.0.values().sum::<u64>());
         if crate::gates::holds_each_file(gate) {
             series
                 .0
                 .retain(|key, _| !gone(crate::run::baseline::file_of(key)));
         }
+        if series.0.len() == before {
+            continue;
+        }
+        let now = series.0.values().sum::<u64>();
         let said = lowered
             .iter()
-            .any(|was| crate::run::baseline::kept_here(was) == *name);
-        if series.0.len() < before && !said {
-            lowered.push(name.clone());
+            .find(|was| crate::run::baseline::kept_here(was) == *name);
+        match said {
+            Some(was) => {
+                moved.entry(was.clone()).or_insert((total, now)).1 = now;
+            }
+            None => {
+                lowered.push(name.clone());
+                moved.insert(name.clone(), (total, now));
+            }
         }
     }
     (!settled.said().is_empty()).then_some(settled)
@@ -702,10 +735,18 @@ impl Run {
     /// `tripped`, so seven trips and one refusal exit 2.
     #[must_use]
     pub fn tally(&self) -> String {
-        let count = |want: Verdict| self.gates.iter().filter(|g| g.verdict == want).count();
-        let (tripped, refused, total) = (
-            count(Verdict::Tripped),
-            count(Verdict::CannotRun),
+        let named = |want: Verdict| {
+            let names: Vec<&str> = self
+                .gates
+                .iter()
+                .filter(|g| g.verdict == want)
+                .map(|g| g.gate.as_str())
+                .collect();
+            (names.len(), names.join(", "))
+        };
+        let ((tripped, trips), (refused, refusals), total) = (
+            named(Verdict::Tripped),
+            named(Verdict::CannotRun),
             self.gates.len(),
         );
         let gates = plural(total, "gate");
@@ -714,11 +755,11 @@ impl Run {
             (0, refused) if refused == total => {
                 "no gate could run, so nothing was measured.".to_string()
             }
-            (0, refused) => format!("{refused} of {gates} could not run."),
-            (tripped, 0) => format!("{tripped} of {gates} tripped."),
-            (tripped, refused) => {
-                format!("{tripped} of {gates} tripped and {refused} could not run.")
-            }
+            (0, refused) => format!("{refused} of {gates} could not run ({refusals})."),
+            (tripped, 0) => format!("{tripped} of {gates} tripped ({trips})."),
+            (tripped, refused) => format!(
+                "{tripped} of {gates} tripped ({trips}) and {refused} could not run ({refusals})."
+            ),
         }
     }
 
@@ -789,8 +830,19 @@ pub fn skipped(gate: &str, reason: &str) -> String {
 /// A gate's findings under a heading; a passing gate's findings are advisories.
 fn block(gate: &GateReport) -> String {
     let mut out = format!("\n{} — {}\n", gate.gate, headed(gate));
-    for line in gate.findings.iter().flat_map(Finding::lines) {
+    let (findings, candidates): (Vec<&Finding>, Vec<&Finding>) = gate
+        .findings
+        .iter()
+        .partition(|finding| finding.grade.is_finding());
+    for line in findings.into_iter().flat_map(Finding::lines) {
         out.push_str(&format!("  {line}\n"));
+    }
+    if !candidates.is_empty() {
+        let (count, name) = (plural(candidates.len(), "candidate"), &gate.gate);
+        out.push_str(&format!(
+            "  {count} not shown, since a candidate never trips a gate: `chock explain {name}` \
+             lists each one\n"
+        ));
     }
     if let Some(fix) = &gate.fix {
         out.push_str(&format!("  fix: {fix}\n"));
@@ -1066,6 +1118,29 @@ mod tests {
         );
     }
 
+    /// A candidate never trips a gate, so the run counts the candidates and `explain` lists them.
+    #[test]
+    fn a_run_counts_the_candidates_under_the_findings() {
+        let mut tripped = GateReport::new("mutest", Verdict::Tripped, "chock run mutest");
+        tripped.findings = vec![
+            Finding::at("src/a.rs", "survived").line(4),
+            Finding::at("src/b.rs", "timed out").candidate(),
+            Finding::at("src/c.rs", "timed out").candidate(),
+        ];
+        let mut passed = GateReport::new("lean", Verdict::Pass, "chock run lean");
+        passed.findings = vec![Finding::at("src/d.rs", "only one type").candidate()];
+        assert_eq!(
+            block(&tripped),
+            "\nmutest — chock run mutest\n  src/a.rs:4: survived\n  2 candidates not shown, since \
+             a candidate never trips a gate: `chock explain mutest` lists each one\n"
+        );
+        assert_eq!(
+            block(&passed),
+            "\nlean — advisory, and it passed — chock run lean\n  1 candidate not shown, since a \
+             candidate never trips a gate: `chock explain lean` lists each one\n"
+        );
+    }
+
     #[test]
     fn a_run_renders_a_line_per_gate_then_the_findings_beneath() {
         let mut tripped = GateReport::new("slop", Verdict::Tripped, "chock run slop");
@@ -1083,7 +1158,7 @@ mod tests {
              slop       TRIPPED\n\n\
              slop — chock run slop\n  \
              src/a.rs:4: block of 5 lines\n\n\
-             1 of 2 gates tripped.\n"
+             1 of 2 gates tripped (slop).\n"
         );
     }
 
@@ -1307,7 +1382,11 @@ mod tests {
         gates.extend((0..7).map(|i| of(&format!("bad{i}"), Verdict::Tripped)));
         gates.push(of("history", Verdict::CannotRun));
         let run = Run::new("0.1.0", gates);
-        assert_eq!(run.tally(), "7 of 29 gates tripped and 1 could not run.");
+        assert_eq!(
+            run.tally(),
+            "7 of 29 gates tripped (bad0, bad1, bad2, bad3, bad4, bad5, bad6) and 1 could not run \
+             (history)."
+        );
         assert_eq!(run.verdict(), Verdict::CannotRun);
     }
 
@@ -1326,7 +1405,7 @@ mod tests {
             "0.1.0",
             vec![of("a", Verdict::Pass), of("b", Verdict::CannotRun)],
         );
-        assert_eq!(some_refused.tally(), "1 of 2 gates could not run.");
+        assert_eq!(some_refused.tally(), "1 of 2 gates could not run (b).");
         assert!(!some_refused.tally().contains("nothing was measured"));
     }
 
@@ -1346,7 +1425,7 @@ mod tests {
             "0.1.0",
             vec![of("a", Verdict::Pass), of("b", Verdict::Tripped)],
         );
-        assert_eq!(run.tally(), "1 of 2 gates tripped.");
+        assert_eq!(run.tally(), "1 of 2 gates tripped (b).");
     }
 
     #[test]
@@ -1525,14 +1604,14 @@ mod tests {
         let working = locked_in(&held, &reports, false).unwrap();
         assert_eq!(
             working.said(),
-            "wrote the first record for typos, nesting; measured less for slop, and the pre-commit \
-             hook lowers the record at the next commit"
+            "wrote the first record for typos, nesting; measured less for slop (9 to 4), and the \
+             pre-commit hook lowers the record at the next commit"
         );
         assert_eq!(working.record.gate("slop").get("src/a.rs"), Some(9));
         let settled = locked_in(&held, &reports, true).unwrap();
         assert_eq!(
             settled.said(),
-            "wrote the first record for typos, nesting; lowered the record for slop"
+            "wrote the first record for typos, nesting; lowered the record for slop (9 to 4)"
         );
         assert_eq!(settled.record.unit("typos"), Some("typo(s)"));
         assert_eq!(settled.record.unit("nesting"), None);
@@ -1604,7 +1683,7 @@ mod tests {
         let settled = forgotten(&held, locked_in(&held, &[report], true), &gone).unwrap();
         assert_eq!(
             settled.said(),
-            "lowered the record for slop, mutest@windows"
+            "lowered the record for slop (5 to 1), mutest@windows (1 to 0)"
         );
         assert_eq!(settled.record.gate("slop"), series(&[("src/a.rs", 1)]));
         assert_eq!(settled.record.gate("dupdeps"), series(&[("serde", 2)]));

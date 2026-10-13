@@ -61,6 +61,12 @@ pub struct Ctx {
     pub no_cache: bool,
     /// The part of the Miri suite this run takes, from `--miri-partition`; `None` is all of it.
     pub miri_part: Option<crate::gates::tools::miri::Part>,
+    /// The command the suite runs under, from `test_wrapper`; empty runs it directly.
+    pub test_wrapper: Vec<String>,
+    /// Flags mutest takes after chock's own, from `mutest_args`.
+    pub mutest_args: Vec<String>,
+    /// Whether a whole-crate mutest run gives every test a verdict, from `mutest_exhaustive`.
+    pub exhaustive: bool,
 }
 
 impl Ctx {
@@ -95,6 +101,9 @@ impl Ctx {
             whole: false,
             no_cache: false,
             miri_part: None,
+            test_wrapper: Vec::new(),
+            mutest_args: Vec::new(),
+            exhaustive: false,
         }
     }
 
@@ -133,6 +142,13 @@ impl Ctx {
             clean_when_touched: config
                 .and_then(|set| set.clean_when_touched.clone())
                 .unwrap_or_default(),
+            test_wrapper: config
+                .and_then(|set| set.test_wrapper.clone())
+                .unwrap_or_default(),
+            mutest_args: config
+                .and_then(|set| set.mutest_args.clone())
+                .unwrap_or_default(),
+            exhaustive: config.and_then(|set| set.mutest_exhaustive) == Some(true),
             ..Self::for_root(PathBuf::new(), Baseline::default())
         }
     }
@@ -186,6 +202,18 @@ impl Ctx {
             .windows(2)
             .find(|pair| pair[0] == flag)
             .map(|pair| pair[1].as_str())
+    }
+
+    /// `program` and `args` under the project's `test_wrapper`, which then runs them.
+    #[must_use]
+    pub fn wrapped<'a>(&'a self, program: &'a str, args: &[&'a str]) -> (&'a str, Vec<&'a str>) {
+        let Some((first, rest)) = self.test_wrapper.split_first() else {
+            return (program, args.to_vec());
+        };
+        let mut argv: Vec<&str> = rest.iter().map(String::as_str).collect();
+        argv.push(program);
+        argv.extend(args);
+        (first.as_str(), argv)
     }
 
     /// Refused for a tool that cannot be told the configured target or profile: it would measure a
@@ -256,7 +284,7 @@ pub fn default_runner() -> Runner {
 pub fn runner_for(config: Option<&crate::project::config::Config>) -> Runner {
     if let Some(argv) = config.and_then(|set| set.runner.clone()) {
         return Runner {
-            argv,
+            argv: under_wrapper(config, argv),
             tools: config
                 .and_then(|set| set.runner_tools.clone())
                 .unwrap_or_default(),
@@ -277,7 +305,18 @@ pub fn runner_for(config: Option<&crate::project::config::Config>) -> Runner {
                 flag
             }
         }));
+    runner.argv = under_wrapper(config, runner.argv);
     runner
+}
+
+/// `argv` after the project's `test_wrapper`, which then runs it.
+fn under_wrapper(config: Option<&Config>, argv: Vec<String>) -> Vec<String> {
+    let wrapper = config.and_then(|set| set.test_wrapper.clone());
+    wrapper
+        .unwrap_or_default()
+        .into_iter()
+        .chain(argv)
+        .collect()
 }
 
 #[must_use]
@@ -287,7 +326,7 @@ pub fn coverage_for(config: Option<&crate::project::config::Config>) -> Coverage
             tools: config
                 .and_then(|set| set.coverage_tools.clone())
                 .unwrap_or_default(),
-            ..argv.into()
+            ..under_wrapper(config, argv).into()
         };
     }
     let mut coverage = default_coverage();
@@ -302,6 +341,7 @@ pub fn coverage_for(config: Option<&crate::project::config::Config>) -> Coverage
                 .to_string(),
         )));
     }
+    coverage.argv = under_wrapper(config, coverage.argv);
     coverage
 }
 
@@ -380,5 +420,67 @@ mod tests {
             default_coverage().tools,
             ["cargo", "cargo-llvm-cov", "cargo-nextest"]
         );
+    }
+
+    /// A wrapper goes before chock's own commands and before a project's own.
+    #[test]
+    fn a_test_wrapper_runs_the_suite_and_the_coverage_command() {
+        let wrapper = ["scripts/with-db".to_string(), "--".to_string()];
+        let wrapped = Config {
+            test_wrapper: Some(wrapper.to_vec()),
+            ..Config::of(["test"])
+        };
+        let after = |argv: Vec<String>| [wrapper.to_vec(), argv].concat();
+        assert_eq!(
+            runner_for(Some(&wrapped)).argv,
+            after(default_runner().argv)
+        );
+        assert_eq!(
+            coverage_for(Some(&wrapped)).argv,
+            after(default_coverage().argv)
+        );
+        let own = Config {
+            runner: Some(vec!["bin/test-rust".to_string()]),
+            coverage: Some(vec!["bin/coverage-rust".to_string(), LCOV.to_string()]),
+            ..wrapped.clone()
+        };
+        assert_eq!(
+            runner_for(Some(&own)).argv,
+            ["scripts/with-db", "--", "bin/test-rust"]
+        );
+        assert_eq!(
+            coverage_for(Some(&own)).argv,
+            ["scripts/with-db", "--", "bin/coverage-rust", LCOV]
+        );
+        let ctx = Ctx::from_config(Some(&wrapped));
+        assert_eq!(
+            ctx.wrapped("cargo", &["mutest", "run"]),
+            ("scripts/with-db", vec!["--", "cargo", "mutest", "run"])
+        );
+        let plain = Ctx::from_config(None);
+        assert_eq!(
+            plain.wrapped("cargo", &["mutest"]),
+            ("cargo", vec!["mutest"])
+        );
+    }
+
+    #[test]
+    fn mutest_reads_its_flags_and_its_exhaustive_run_from_the_config() {
+        let config = Config {
+            mutest_args: Some(vec!["--timings".to_string()]),
+            mutest_exhaustive: Some(true),
+            ..Config::of(["mutest"])
+        };
+        let ctx = Ctx::from_config(Some(&config));
+        assert_eq!(
+            (ctx.mutest_args, ctx.exhaustive),
+            (vec!["--timings".to_string()], true)
+        );
+        let off = Config {
+            mutest_exhaustive: Some(false),
+            ..config
+        };
+        assert!(!Ctx::from_config(Some(&off)).exhaustive);
+        assert!(!Ctx::from_config(None).exhaustive);
     }
 }

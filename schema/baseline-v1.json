@@ -10,7 +10,7 @@
     "$schema": { "type": "string" },
     "version": { "type": "integer", "const": 1 },
     "chock": {
-      "description": "The chock that recorded these numbers, so a reader can tell whether a change in them is a change in the tree or in the measure.",
+      "description": "The chock that last wrote these numbers: `chock baseline`, or the pre-commit hook when it lowers a record. A reader can tell whether a change in them is a change in the tree or in the measure.",
       "type": "string"
     },
     "gates": {

@@ -182,19 +182,7 @@ pub fn unpinned(enabled: &dyn Fn(&str) -> bool, pins: &[Pin]) -> Vec<Row> {
         .iter()
         .filter(|gate| enabled(gate.name))
     {
-        // Every tool a gate needs installed, from what it declares plus the list above.
-        let declared = gate.reads.map(|reads| reads.tools).unwrap_or_default();
-        let undeclared = UNDECLARED
-            .iter()
-            .filter(|(name, _)| *name == gate.name)
-            .map(|(_, tool)| *tool);
-        for tool in declared
-            .iter()
-            .copied()
-            .chain(undeclared)
-            .filter(|tool| !TOOLCHAIN.contains(tool))
-            .filter(|tool| !pinned(tool))
-        {
+        for tool in tools_of(gate).into_iter().filter(|tool| !pinned(tool)) {
             needed.entry(tool).or_default().push(gate.name);
         }
     }
@@ -207,6 +195,51 @@ pub fn unpinned(enabled: &dyn Fn(&str) -> bool, pins: &[Pin]) -> Vec<Row> {
                 gates.join(", "),
                 crate::project::PIN_FILE
             )),
+        })
+        .collect()
+}
+
+/// Every tool `gate` needs installed, from what it declares plus the list above, less the
+/// toolchain's own.
+fn tools_of(gate: &crate::run::Gate) -> Vec<&'static str> {
+    let declared = gate.reads.map(|reads| reads.tools).unwrap_or_default();
+    let undeclared = UNDECLARED
+        .iter()
+        .filter(|(name, _)| *name == gate.name)
+        .map(|(_, tool)| *tool);
+    declared
+        .iter()
+        .copied()
+        .chain(undeclared)
+        .filter(|tool| !TOOLCHAIN.contains(tool))
+        .collect()
+}
+
+/// Each failing pin row passes where only switched-off gates run its tool: nothing here needs it.
+fn idle(rows: Vec<Row>, pins: &[Pin], enabled: &dyn Fn(&str) -> bool) -> Vec<Row> {
+    let runs = |pin: &Pin, gate: &crate::run::Gate| {
+        let named = |tool: &&str| *tool == pin.command || *tool == pin.crate_name;
+        tools_of(gate).iter().any(named)
+    };
+    rows.into_iter()
+        .map(|row| {
+            let pin = pins.iter().find(|pin| pin.command == row.command);
+            let gates: Vec<&str> = crate::gates::registry()
+                .iter()
+                .filter(|gate| pin.is_some_and(|pin| runs(pin, gate)))
+                .map(|gate| gate.name)
+                .collect();
+            let off = !gates.is_empty() && !gates.iter().any(|gate| enabled(gate));
+            match row.is_failure() && off {
+                true => Row {
+                    status: Status::available(format!(
+                        "only switched-off gates run it: {}",
+                        gates.join(", ")
+                    )),
+                    ..row
+                },
+                false => row,
+            }
         })
         .collect()
 }
@@ -270,6 +303,9 @@ pub fn gathered(
     let rows = check(pins, &installed_on_this_machine());
     let mut rows = judged(rows, &|| crate::setup::mutest::standing(start, root).row());
     let config = document::read::<crate::project::config::Config>(root).map_err(|e| e.to_string());
+    if let Ok(Some(held)) = &config {
+        rows = idle(rows, pins, &|gate| held.is_on(gate));
+    }
     rows.extend(unpinned_in(&config, pins));
     rows.extend(undecided_in(&config));
     rows.extend(manual_in(&config));
@@ -1647,6 +1683,41 @@ mod tests {
             setup: None,
             systems: None,
         }
+    }
+
+    /// A tool that only switched-off gates run is no failure; one a switched-on gate runs still is.
+    #[test]
+    fn a_tool_only_switched_off_gates_run_is_not_a_failure() {
+        let pins = [
+            pin("cargo-sort", "1.0.0"),
+            pin("typos", "1.0.0"),
+            pin("no-such-tool", "1.0.0"),
+            pin("cargo-machete", "1.0.0"),
+        ];
+        let missing = |command: &str| Row {
+            command: command.to_string(),
+            status: Status::Missing {
+                want: "1.0.0".to_string(),
+            },
+        };
+        let held = Row {
+            command: "cargo-machete".to_string(),
+            status: Status::Matches("1.0.0".to_string()),
+        };
+        let rows = vec![
+            missing("cargo-sort"),
+            missing("typos"),
+            missing("no-such-tool"),
+            held.clone(),
+        ];
+        let off = Row {
+            status: Status::available("only switched-off gates run it: sort".to_string()),
+            ..missing("cargo-sort")
+        };
+        assert_eq!(
+            idle(rows, &pins, &|gate| gate == "typos"),
+            [off, missing("typos"), missing("no-such-tool"), held]
+        );
     }
 
     #[test]

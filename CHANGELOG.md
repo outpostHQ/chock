@@ -5,6 +5,32 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-13
+
+- **`test_wrapper` runs the suite under a command of yours.** Name a script that starts a service
+  the tests need, such as a database. chock puts it before the `runner` command, the `coverage`
+  command and `cargo mutest`.
+- **`mutest_exhaustive` names the tests that detect nothing.** With `true`, mutest runs every test
+  on each mutation. Each test that detects no mutation, or only mutations another test detects
+  too, is a candidate.
+- **`mutest_args` passes your own flags to mutest**, such as `--timings`, after chock's own. The
+  results directory under `target/test-scratch/` then stays for you to read.
+- **`chock doctor` passes a missing tool that only switched-off gates run.** The row says which
+  gates run it.
+- **The last line of a run names the gates**, such as `1 of 4 gates tripped (complexity).`
+- **A run counts the candidates and does not list them.** A candidate never trips a gate, and
+  `chock explain GATE` still lists each one.
+- **`crap` no longer notes the functions that are not in its record.** The note came with every
+  pass, and `chock baseline crap` keeps the higher score of each function.
+- **A record that goes down says by how much**, such as `lowered the record for slop (9 to 4)`.
+- **`duplicates` names where the other copies are**, from Outpost's duplicate groups.
+- **At a commit, the hook writes a `crap` record from an older chock again in the compact layout,**
+  one function to a line, with the same scores, and adds it to the commit.
+- **`lean` no longer lists a public function that only passes its parameters on.** Code in other
+  modules may call it, and `lean` cannot see those calls.
+- **`lean` lists two arms with the same body only where one arm is shorter.** It counts the lines
+  rustfmt gives one arm with both patterns, at rustfmt's default width of 100.
+
 ## [0.7.0] - 2026-10-13
 
 - **`chock baseline GATE... --keys KEY...` writes only the named keys.** After a file moves, it

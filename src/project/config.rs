@@ -72,6 +72,16 @@ pub struct Config {
     /// recall a verdict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage_tools: Option<Vec<String>>,
+    /// A command the suite runs under, such as a script that starts a service the tests need. The
+    /// suite, coverage and mutest commands follow it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_wrapper: Option<Vec<String>>,
+    /// Whether mutest runs every test on each mutation, so a test that detects none is named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutest_exhaustive: Option<bool>,
+    /// Flags mutest takes after chock's own, such as `--timings`; the results directory then stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutest_args: Option<Vec<String>>,
     /// Checks whose tool CI cannot install: the hooks still run them, `chock run --ci` does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_only: Option<Vec<String>>,
@@ -254,6 +264,9 @@ impl Config {
             stage: BTreeMap::new(),
             runner_tools: None,
             coverage_tools: None,
+            test_wrapper: None,
+            mutest_exhaustive: None,
+            mutest_args: None,
             local_only: None,
             strict: None,
             clean_when_touched: None,

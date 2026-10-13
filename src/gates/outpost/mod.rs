@@ -100,6 +100,15 @@ impl Finding {
         self.severity.as_deref() == Some("note")
     }
 
+    /// The key a series holds this finding under: its file and item, so it survives edits above.
+    #[must_use]
+    pub fn key(&self) -> String {
+        match &self.item {
+            Some(item) => format!("{}#{item}", self.file),
+            None => self.file.clone(),
+        }
+    }
+
     /// This finding as chock reports one under `measure`, with Outpost's file, line and message.
     #[must_use]
     pub fn site(&self, measure: &str) -> crate::run::report::Finding {
@@ -134,10 +143,7 @@ impl Check {
     pub fn series(&self, name: &str) -> Result<crate::run::baseline::Series, String> {
         let mut series = crate::run::baseline::Series::new();
         for found in &self.measure(name)?.findings {
-            let key = match &found.item {
-                Some(item) => format!("{}#{item}", found.file),
-                None => found.file.clone(),
-            };
+            let key = found.key();
             let worst = series
                 .get(&key)
                 .unwrap_or(0)

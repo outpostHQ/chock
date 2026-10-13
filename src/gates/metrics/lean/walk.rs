@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use syn::{
-    Attribute, Block, Expr, ExprMatch, FnArg, Ident, ImplItem, ImplItemFn, ItemFn, ItemImpl,
+    Arm, Attribute, Block, Expr, ExprMatch, FnArg, Ident, ImplItem, ImplItemFn, ItemFn, ItemImpl,
     ItemMod, ItemTrait, Pat, Signature, Stmt, Visibility,
 };
 
@@ -19,12 +19,60 @@ use crate::run::report::{Finding, Place};
 /// inline; a longer one has earned its name.
 const SHORT: u32 = 4;
 
+/// The widest line rustfmt writes unless a project sets `max_width`.
+const WIDTH: usize = 100;
+
 /// A function with a body, wherever it is written: its attributes, visibility, signature and body.
 struct Fun<'a>(&'a [Attribute], &'a Visibility, &'a Signature, &'a Block);
+
+/// An arm as the arm below sees it: its first line, its body, and the lines a join would take.
+struct Shape {
+    line: u32,
+    body: String,
+    /// The pattern's width where it takes one line, and its lines with one alternative to a line.
+    width: Option<usize>,
+    stacked: u32,
+    /// The arm's lines, its lines from the pattern's last line on, and its first line's width.
+    lines: u32,
+    tail: u32,
+    first: usize,
+}
+
+impl Shape {
+    /// `arm` with its body as tokens, in a file whose lines have the `widths` given.
+    fn new(arm: &Arm, body: String, widths: &[usize]) -> Self {
+        let pat = arm.pat.span();
+        let (start, end) = (pat.start().line, arm.body.span().end().line);
+        let width = pat.source_text().filter(|text| !text.contains('\n'));
+        let alternatives = match &arm.pat {
+            Pat::Or(or) => or.cases.len(),
+            _ => 1,
+        };
+        let first = start.checked_sub(1).and_then(|at| widths.get(at));
+        Self {
+            line: line_of(start),
+            body,
+            width: width.map(|text| text.chars().count()),
+            stacked: line_of(alternatives.max(pat.end().line.saturating_sub(start) + 1)),
+            lines: line_of(end.saturating_sub(start) + 1),
+            tail: line_of(end.saturating_sub(pat.end().line) + 1),
+            first: first.copied().unwrap_or(WIDTH),
+        }
+    }
+
+    /// The most lines rustfmt gives one arm that holds the patterns of `earlier` and this arm.
+    fn joined(&self, earlier: &Self) -> u32 {
+        match (earlier.width, self.width) {
+            (Some(width), Some(_)) if self.first + width + " | ".len() <= WIDTH => self.tail,
+            _ => earlier.stacked + self.stacked + self.tail,
+        }
+    }
+}
 
 /// Walks the items outside `#[cfg(test)]` and sorts what it meets into forwarders and candidates.
 pub(super) struct Lean<'a> {
     pub(super) shown: &'a str,
+    pub(super) widths: Vec<usize>,
     pub(super) uses: &'a Uses,
     pub(super) below: &'a dyn Fn(&str) -> bool,
     pub(super) read: Read,
@@ -81,7 +129,7 @@ impl Lean<'_> {
         visit::visit_impl_item_fn(self, method);
     }
 
-    fn function(&mut self, fun @ &Fun(_, _, sig, block): &Fun<'_>) {
+    fn function(&mut self, fun @ &Fun(_, vis, sig, block): &Fun<'_>) {
         let name = sig.ident.to_string();
         let line = line_of(sig.ident.span().start().line);
         let last = line_of(block.brace_token.span.close().end().line);
@@ -93,6 +141,10 @@ impl Lean<'_> {
             }
             return;
         };
+        // Code outside the module may call it, and this file shows none of those calls.
+        if is_public(vis) {
+            return;
+        }
         match self.unsettled(fun) {
             None => self.read.forwarders.push(Forwarder {
                 name,
@@ -110,9 +162,8 @@ impl Lean<'_> {
     }
 
     /// Why the source cannot settle a forwarder, or `None` where it can.
-    fn unsettled(&self, &Fun(attrs, vis, sig, _): &Fun<'_>) -> Option<&'static str> {
+    fn unsettled(&self, &Fun(attrs, _, sig, _): &Fun<'_>) -> Option<&'static str> {
         let reasons = [
-            (is_public(vis), "it is visible outside its module"),
             (!attrs.iter().all(is_doc), "it carries an attribute"),
             (!sig.generics.params.is_empty(), "it is generic"),
             (
@@ -143,10 +194,10 @@ impl Lean<'_> {
         !(self.below)(name) && count(&self.uses.words, name) == named
     }
 
-    /// Each arm whose body the arm just above repeats, where neither binds a name nor has a guard:
-    /// a `|` joins such arms whatever the types, and no arm between them can change what matches.
+    /// Each arm whose body the arm just above repeats, where neither binds a name nor has a guard
+    /// and one arm with both patterns takes fewer lines: a `|` joins them whatever the types.
     fn same_arms(&mut self, node: &ExprMatch) {
-        let mut above: Option<(u32, String)> = None;
+        let mut above: Option<Shape> = None;
         for arm in &node.arms {
             // A capitalised name is a variant or a constant, and binds nothing.
             let mut facts = Facts::default();
@@ -163,13 +214,17 @@ impl Lean<'_> {
                 .and_then(|text| text.parse::<proc_macro2::TokenStream>().ok());
             let this = body
                 .filter(|_| open)
-                .map(|body| (line_of(arm.pat.span().start().line), body.to_string()));
-            if let (Some((earlier, before)), Some((line, now))) = (&above, &this)
-                && before == now
+                .map(|body| Shape::new(arm, body.to_string(), &self.widths));
+            if let (Some(earlier), Some(now)) = (&above, &this)
+                && earlier.body == now.body
+                && now.joined(earlier) < earlier.lines + now.lines
             {
-                let message = format!("this arm's body is the same as the arm's at line {earlier}");
-                let mut finding = Finding::at(self.shown, &message).line(*line);
-                finding.places = vec![Place::at("same body", self.shown, *earlier)];
+                let message = format!(
+                    "this arm's body is the same as the arm's at line {}",
+                    earlier.line
+                );
+                let mut finding = Finding::at(self.shown, &message).line(now.line);
+                finding.places = vec![Place::at("same body", self.shown, earlier.line)];
                 let fix = "join the two patterns with `|` into one arm".to_string();
                 self.candidate(finding, fix);
             }
@@ -333,5 +388,62 @@ mod tests {
         ] {
             assert_eq!(forwards(src), None, "{src}");
         }
+    }
+
+    /// Each arm of the match `src` as the arm below sees it.
+    fn shapes(src: &str) -> Vec<String> {
+        let node: ExprMatch = syn::parse_str(src).unwrap();
+        let widths: Vec<usize> = src.lines().map(|line| line.chars().count()).collect();
+        let shown = |it: Shape| {
+            let Shape {
+                line,
+                width,
+                stacked,
+                lines,
+                tail,
+                first,
+                ..
+            } = it;
+            format!("{line} {width:?} {stacked} {lines} {tail} {first}")
+        };
+        let arms = node.arms.iter();
+        arms.map(|arm| shown(Shape::new(arm, String::new(), &widths)))
+            .collect()
+    }
+
+    #[test]
+    fn an_arm_knows_its_lines_its_alternatives_and_the_width_of_its_first_line() {
+        let src = "match x {\n    A | B => 1,\n    C\n    | D => {\n        2\n    }\n    S {\n        \
+                   a: 1,\n    } => 3,\n}";
+        assert_eq!(
+            shapes(src),
+            ["2 Some(5) 2 1 1 15", "3 None 2 4 3 5", "7 None 3 3 1 7"]
+        );
+    }
+
+    #[test]
+    fn one_arm_puts_both_patterns_on_one_line_only_where_the_line_fits() {
+        let shape = |width, first| Shape {
+            line: 1,
+            body: String::new(),
+            width,
+            stacked: 2,
+            lines: 3,
+            tail: 4,
+            first,
+        };
+        let earlier = Shape {
+            stacked: 3,
+            ..shape(Some(10), 0)
+        };
+        // 87 columns, the 10 of the pattern above, and ` | ` make the 100 rustfmt allows.
+        let joins = [
+            shape(Some(1), 20).joined(&earlier),
+            shape(Some(1), 87).joined(&earlier),
+            shape(Some(1), 88).joined(&earlier),
+            shape(None, 0).joined(&earlier),
+            shape(Some(1), 0).joined(&shape(None, 0)),
+        ];
+        assert_eq!(joins, [4, 4, 9, 9, 8]);
     }
 }
