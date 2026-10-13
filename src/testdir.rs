@@ -103,6 +103,23 @@ pub fn tree(name: &str, files: &[(&str, &str)]) -> Scratch {
     dir
 }
 
+/// A git repository with one commit that holds `files`.
+#[must_use]
+#[allow(
+    clippy::unwrap_used,
+    reason = "a repository that git did not make is the test failing"
+)]
+pub fn repo(name: &str, files: &[(&str, &str)]) -> Scratch {
+    let root = tree(name, files);
+    let identity = ["-c", "user.email=t@example.com", "-c", "user.name=t"];
+    let commit = [&identity[..], &["commit", "--quiet", "-m", "first"]].concat();
+    for args in [&["init", "--quiet"][..], &["add", "."], &commit] {
+        let out = crate::exec::run("git", args, &root).unwrap();
+        assert!(out.success(), "git {args:?}: {}", out.stderr);
+    }
+    root
+}
+
 #[allow(
     clippy::panic,
     clippy::unwrap_used,

@@ -1798,12 +1798,14 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_suite_that_leaves_a_file_behind_fails_its_second_run_and_a_clean_one_passes_both() {
         let dir = crate::testdir::make("tools-idempotent");
-        let with = |argv: &[&str]| {
+        let run = |gate: fn(&Ctx) -> Result<Outcome, String>, argv: &[&str]| {
             let baseline = crate::run::baseline::Baseline::empty("0.1.0");
             let mut ctx = Ctx::for_root(dir.to_path_buf(), baseline);
             ctx.runner.argv = argv.iter().map(|arg| (*arg).to_string()).collect();
-            idempotent(&ctx)
+            gate(&ctx)
         };
+        let with = |argv: &[&str]| run(idempotent, argv);
+        assert_eq!(run(test, &["true"]), Ok(Outcome::passed()));
         assert_eq!(with(&["true"]), Ok(Outcome::passed()));
         assert_eq!(
             with(&["false"]),

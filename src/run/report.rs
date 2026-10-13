@@ -1491,6 +1491,43 @@ mod tests {
         assert_eq!(settled.record.gate("nesting").get("src/a.rs"), Some(4));
     }
 
+    /// At a commit the record goes into the commit, unless the file held a change nobody staged.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_commit_stages_the_record_it_wrote_unless_the_file_held_an_unstaged_change() {
+        let file = crate::run::baseline::FILE;
+        let root = crate::testdir::repo("report-staged", &[(file, "{}\n")]);
+        let git = |args: &[&str]| crate::exec::run("git", args, &root).unwrap().stdout;
+        let held = crate::run::baseline::Baseline::empty("0.0.9");
+        let mut first = GateReport::new("typos", Verdict::Pass, "chock run typos");
+        let mut series = crate::run::baseline::Series::new();
+        series.set("src/a.rs", 2);
+        first.tightened = Some(series);
+        let written = |committing: bool| {
+            let settled = locked_in(&held, std::slice::from_ref(&first), committing).unwrap();
+            settled.written(&root, "0.1.0", committing)
+        };
+        let said = "wrote the first record for typos";
+        assert_eq!(written(true), format!("{said}; {file} is in this commit"));
+        assert_eq!(
+            git(&["diff", "--cached", "--name-only"]),
+            format!("{file}\n")
+        );
+        git(&["reset", "--quiet"]);
+        git(&["checkout", "--", file]);
+        assert_eq!(
+            written(false),
+            format!("{said}; commit {file} with this change")
+        );
+        assert_eq!(git(&["diff", "--cached", "--name-only"]), "");
+        // The file now holds the run's own write, which nobody staged.
+        assert_eq!(
+            written(true),
+            format!("{said}; commit {file} with this change")
+        );
+        assert_eq!(git(&["diff", "--cached", "--name-only"]), "");
+    }
+
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gain_waits_for_a_commit_and_a_first_record_with_nowhere_to_go_writes_nothing() {

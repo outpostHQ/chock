@@ -162,18 +162,7 @@ fn listed(title: &str, sign: char, counts: &TokenCounts) -> String {
 )]
 mod tests {
     use super::*;
-
-    /// A repository with one commit that holds `files`.
-    fn repo(name: &str, files: &[(&str, &str)]) -> crate::testdir::Scratch {
-        let root = crate::testdir::tree(name, files);
-        let identity = ["-c", "user.email=t@example.com", "-c", "user.name=t"];
-        let commit = [&identity[..], &["commit", "--quiet", "-m", "first"]].concat();
-        for args in [&["init", "--quiet"][..], &["add", "."], &commit] {
-            let out = crate::exec::run("git", args, &root).unwrap();
-            assert!(out.success(), "git {args:?}: {}", out.stderr);
-        }
-        root
-    }
+    use crate::testdir::repo;
 
     #[test]
     fn a_command_line_is_the_revision_then_the_paths() {
