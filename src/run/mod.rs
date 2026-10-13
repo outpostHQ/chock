@@ -915,7 +915,7 @@ fn compared(
     };
     let findings = regressions
         .iter()
-        .map(|change| finding_for(change, was, unit).detailed(details.get(change.key())))
+        .map(|change| finding_for(change, unit).detailed(details.get(change.key())))
         .chain(dropped.iter().map(|key| dropped_finding(key, was, unit)))
         .chain(added.iter().map(|key| added_finding(key, now, gate, unit)))
         .collect();
@@ -943,17 +943,16 @@ fn placed(key: &str, message: &str) -> Finding {
     }
 }
 
-fn finding_for(change: &crate::run::baseline::Change, was: &Series, unit: &str) -> Finding {
-    let key = change.key();
-    let message = match change {
+fn finding_for(change: &crate::run::baseline::Change, unit: &str) -> Finding {
+    let (message, held) = match change {
         crate::run::baseline::Change::Grew { was, now, .. } => {
-            format!("{now} {unit}, over the recorded {was}")
+            (format!("{now} {unit}, over the recorded {was}"), Some(*was))
         }
         crate::run::baseline::Change::New { now, .. } => {
-            format!("{now} {unit}, not in the baseline")
+            (format!("{now} {unit}, not in the baseline"), None)
         }
     };
-    placed(key, &message).numbers(change.now(), was.get(key))
+    placed(change.key(), &message).numbers(change.now(), held)
 }
 
 /// A key this run measured at zero and the baseline does not carry. It passes: zero is no worse
@@ -2597,14 +2596,12 @@ mod tests {
 
     #[test]
     fn a_key_naming_a_function_inside_a_file_splits_into_both() {
-        let mut was = Series::new();
-        was.set("src/a.rs#parse", 3);
         let change = crate::run::baseline::Change::Grew {
             key: "src/a.rs#parse".to_string(),
             was: 3,
             now: 9,
         };
-        let finding = finding_for(&change, &was, "cognitive");
+        let finding = finding_for(&change, "cognitive");
         assert_eq!(finding.file, "src/a.rs");
         assert_eq!(finding.item.as_deref(), Some("parse"));
         assert_eq!(finding.baseline, Some(3));
@@ -2618,7 +2615,7 @@ mod tests {
             was: 1,
             now: 4,
         };
-        let finding = finding_for(&change, &Series::new(), "findings");
+        let finding = finding_for(&change, "findings");
         assert_eq!(finding.file, "");
         assert_eq!(finding.item.as_deref(), Some("clippy::redundant_clone"));
     }
@@ -2631,7 +2628,7 @@ mod tests {
                 was: 1,
                 now: 2,
             };
-            let finding = finding_for(&change, &Series::new(), "line(s)");
+            let finding = finding_for(&change, "line(s)");
             assert_eq!(finding.file, key, "{key}");
             assert_eq!(finding.item, None, "{key}");
         }

@@ -119,7 +119,8 @@ mod tests {
         let pinned = "1.98.1 1.99.0-x86_64-unknown-linux-gnu nightly-2026-09-17 beta-2026-09-01 \
                       nightly-2026-09-17-aarch64-apple-darwin";
         // The leading space adds the empty channel.
-        let moving = " stable nightly 1.98 1 stable-x86_64-unknown-linux-gnu nightly-2026-9-17";
+        let moving = " stable nightly 1.98 1 stable-x86_64-unknown-linux-gnu nightly-2026-9-17 \
+                      nightly-2026-09 dev-2026-09-17";
         let channels = pinned.split(' ').chain(moving.split(' '));
         let exact_ones: Vec<&str> = channels.filter(|it| exact(it)).collect();
         assert_eq!(exact_ones, pinned.split(' ').collect::<Vec<_>>());
@@ -141,6 +142,8 @@ mod tests {
         assert!(said("stable\n").unwrap().starts_with("names `stable`"));
         let missing = said("[toolchain]\ncomponents = [\"rustfmt\"]\n").unwrap();
         assert!(missing.starts_with("names no channel"), "{missing}");
+        let header = said("[toolchain]\n").unwrap();
+        assert!(header.starts_with("names no channel"), "{header}");
     }
 
     #[test]

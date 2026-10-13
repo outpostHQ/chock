@@ -219,6 +219,7 @@ says which of them this machine has. These gates need more:
 |---|---|
 | `coverage`, `crap` | `rustup component add llvm-tools-preview` |
 | `unused-deep`, `miri` | the `nightly` toolchain, and for `miri` its `miri` and `rust-src` components; `chock init --global` installs all three |
+| `msrv` | the Rust release that `rust-version` in `Cargo.toml` names; `chock init --global` installs it in the crate it runs in |
 | `mutest` | Outpost's fork of [mutest-rs](https://github.com/outpostHQ/mutest-rs) and the nightly it names; `chock init --global` builds the newest commit of the fork's `main`, which needs `git` |
 | `proof` | `#[kani::proof]` functions; Linux or macOS |
 | `acl` | a `cackle.toml`, and bubblewrap; Linux only |

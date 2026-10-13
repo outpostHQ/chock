@@ -100,7 +100,44 @@ pub fn scores(ctx: &Ctx) -> Result<String, String> {
 
 fn as_record(report: &exec::Output, root: &Path) -> Result<String, String> {
     produced(report, "cargo crap")?;
-    Ok(crate::run::baseline::relativize(&report.stdout, root))
+    compacted(&crate::run::baseline::relativize(&report.stdout, root))
+}
+
+/// `compact` over a report that is still text.
+fn compacted(json: &str) -> Result<String, String> {
+    let parsed = serde_json::from_str(json)
+        .map_err(|e| format!("cargo-crap produced a report chock cannot read: {e}"))?;
+    Ok(compact(parsed))
+}
+
+/// A record as chock writes it: one function to a line, less the `diagnostics` that cargo-crap
+/// ignores in a baseline, so a record of 10,000 functions is about 10,000 lines.
+#[must_use]
+pub fn compact(mut report: serde_json::Value) -> String {
+    let fields = report.as_object_mut();
+    let entries = fields.and_then(|fields| {
+        fields.remove("diagnostics");
+        fields.remove("entries")
+    });
+    let entries = entries
+        .iter()
+        .filter_map(serde_json::Value::as_array)
+        .flatten();
+    let rows: Vec<String> = entries.map(|entry| format!("    {entry}")).collect();
+    let field = |(key, value): (&String, &serde_json::Value)| {
+        format!("  {}: {value},\n", serde_json::Value::from(key.as_str()))
+    };
+    let head: String = report
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(field)
+        .collect();
+    let list = match rows.is_empty() {
+        true => "[]".to_string(),
+        false => format!("[\n{}\n  ]", rows.join(",\n")),
+    };
+    format!("{{\n{head}  \"entries\": {list}\n}}\n")
 }
 
 /// Whether a captured run produced something to record. Split from the spawning because a test that
@@ -611,6 +648,35 @@ mod tests {
             as_record(&ran(Some(101), &report, false), &dir),
             Err("cargo crap failed; the baseline would measure nothing".to_string())
         );
+    }
+
+    /// scm's record held 10,736 functions on 122,000 lines; each now takes one line.
+    #[test]
+    fn a_record_holds_one_function_to_a_line_and_no_diagnostics() {
+        let report = serde_json::json!({
+            "$schema": "s",
+            "version": "1",
+            "diagnostics": {"analyzed_files": 2},
+            "entries": [
+                {"crap": 4.0, "file": "src/a.rs", "function": "f", "line": 1},
+                {"crap": 31.5, "file": "src/b.rs", "function": "g", "line": 9}
+            ]
+        });
+        let expected = "{\n  \"$schema\": \"s\",\n  \"version\": \"1\",\n  \"entries\": [\n    \
+                        {\"crap\":4.0,\"file\":\"src/a.rs\",\"function\":\"f\",\"line\":1},\n    \
+                        {\"crap\":31.5,\"file\":\"src/b.rs\",\"function\":\"g\",\"line\":9}\n  ]\n}\n";
+        assert_eq!(compact(report), expected);
+        let files: Vec<String> = read(expected)
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|it| it.file)
+            .collect();
+        assert_eq!(files, ["src/a.rs", "src/b.rs"]);
+        let none = compact(serde_json::json!({"entries": []}));
+        assert_eq!(none, "{\n  \"entries\": []\n}\n");
+        let garbled = as_record(&ran(Some(0), "not json", false), Path::new("."));
+        assert!(garbled.unwrap_err().contains("cannot read"));
     }
 
     #[test]

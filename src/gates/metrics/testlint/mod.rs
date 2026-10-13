@@ -107,8 +107,7 @@ fn early_returns(scans: &[FileScan]) -> Vec<Finding> {
             let Some(at) = quitting_return(lexed, t.body.clone(), &functions) else {
                 continue;
             };
-            let checked_first = has_an_assertion(lexed, t.body.start..at, &helpers);
-            if !checked_first && has_an_assertion(lexed, at..t.body.end, &helpers) {
+            if checked_only_after(lexed, t.body.clone(), at, &helpers) {
                 let detail = format!(
                     "`{}` returns on line {} before it asserts anything, so it passes without a \
                      check: fail instead, or mark it `#[ignore = \"why\"]`",
@@ -131,6 +130,20 @@ fn quitting_return(lexed: &Lexed, body: Range<usize>, functions: &[Range<usize>]
     let outside = |i: &usize| !nested.iter().any(|block| block.contains(i));
     let quits = |&i: &usize| lexed.ident(i) == "return" && (ends(i + 1) || ok(i + 1));
     body.into_iter().filter(outside).find(quits)
+}
+
+/// Whether the tokens of `body` before `at` check nothing, and those from `at` on check something.
+// mutest: the `return` at `at` checks nothing, so either range may hold it and decide the same; no
+// test can tell those two mutations from this code.
+#[cfg_attr(mutest, mutest::skip)]
+fn checked_only_after(
+    lexed: &Lexed,
+    body: Range<usize>,
+    at: usize,
+    helpers: &BTreeSet<&str>,
+) -> bool {
+    let checked_first = has_an_assertion(lexed, body.start..at, helpers);
+    !checked_first && has_an_assertion(lexed, at..body.end, helpers)
 }
 
 /// The token ranges in a test's body that a `return` leaves without leaving the test: a nested
@@ -330,22 +343,25 @@ mod tests {
 
     #[test]
     fn a_test_that_returns_before_its_check_passes_unchecked() {
-        let said = |line: u32| {
+        let said = |test: u32, line: u32| {
             format!(
-                "src/thing.rs:1: early-return: `reads_a_file` returns on line {line} before it \
+                "src/thing.rs:{test}: early-return: `reads_a_file` returns on line {line} before it \
                  asserts anything, so it passes without a check: fail instead, or mark it \
                  `#[ignore = \"why\"]`"
             )
         };
         let skips = "#[test]\nfn reads_a_file() {\n    if !ready() {\n        return;\n    }\n    \
                      assert!(read());\n}\n";
-        assert_eq!(early(skips), [said(4)]);
+        assert_eq!(early(skips), [said(1, 4)]);
+        // The rule reads on past a test that has no return.
+        let second = format!("#[test]\nfn plain() {{ assert!(r()); }}\n{skips}");
+        assert_eq!(early(&second), [said(3, 6)]);
         let quits = "#[test]\nfn reads_a_file() -> R {\n    let Some(x) = ready() else { return \
                      Ok(()) };\n    assert!(x);\n    Ok(())\n}\n";
-        assert_eq!(early(quits), [said(3)]);
+        assert_eq!(early(quits), [said(1, 3)]);
         let ends = "#[test]\nfn reads_a_file() {\n    let x = match ready() {\n        Some(x) => \
                     x,\n        None => return\n    };\n    assert!(x);\n}\n";
-        assert_eq!(early(ends), [said(5)]);
+        assert_eq!(early(ends), [said(1, 5)]);
     }
 
     #[test]
@@ -356,7 +372,8 @@ mod tests {
                    #[test] fn e() { if d() { return; } r(); }\n\
                    #[test] fn f() { if d() { return Err(e); } assert!(r()); }\n\
                    #[test] fn g() { // test-lint: allow(early-return) optional\n\
-                   if d() { return; } assert!(r()); }\n";
+                   if d() { return; } assert!(r()); }\n\
+                   #[test] fn h() { r().unwrap(); if d() { return; } assert!(r()); }\n";
         assert_eq!(early(src), [""; 0]);
     }
 

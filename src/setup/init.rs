@@ -169,7 +169,7 @@ pub fn run(args: &[&str]) -> ExitCode {
     };
     // A dropped link is common on a laptop, and the next try often gets through.
     let patient = super::network::patiently(&crate::exec::run_env, &std::thread::sleep);
-    if let Err(e) = install_global(&parsed, &*patient) {
+    if let Err(e) = install_global(&parsed, &*patient, root.as_deref()) {
         eprintln!("chock init: {e}");
         return ExitCode::from(1);
     }
@@ -731,7 +731,7 @@ fn crap_kept_higher(held: &str, measured: &str, root: &Path) -> Result<String, S
     // `floors` read `measured`, so it parses here too.
     let mut now: serde_json::Value = serde_json::from_str(measured).unwrap_or_default();
     raise_each(&mut now, &floors);
-    serde_json::to_string_pretty(&now).map_err(|e| format!("cannot write the crap baseline: {e}"))
+    Ok(crate::gates::coverage::crap::compact(now))
 }
 
 /// Each entry of the report that the record pairs with a score, held to that score.
@@ -820,7 +820,7 @@ fn run_setup(pin: &Pin, pause: &dyn Fn(u32)) -> bool {
     }
 }
 
-fn install_global(pins: &[Pin], start: Start) -> Result<(), Error> {
+fn install_global(pins: &[Pin], start: Start, root: Option<&Path>) -> Result<(), Error> {
     let installed = crate::setup::doctor::installed_on_this_machine();
     // Asked per pin: the pin file installs cargo-binstall first, and every tool after it uses it.
     let mut failed: Vec<String> = pins
@@ -831,6 +831,9 @@ fn install_global(pins: &[Pin], start: Start) -> Result<(), Error> {
     // Miri is no pin: it is a part of the `nightly` toolchain, so every machine gets it.
     let miri = crate::setup::miri::install(start, Path::new("."));
     failed.extend((!reported(&miri)).then(|| crate::setup::miri::NAME.to_string()));
+    // Nor is the oldest Rust the crate promises, which the `msrv` gate builds with.
+    let msrv = crate::setup::msrv::install(start, root);
+    failed.extend((!msrv.as_ref().is_none_or(reported)).then(|| crate::setup::msrv::NAME.into()));
     if failed.is_empty() {
         Ok(())
     } else {
@@ -1390,20 +1393,30 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
-    fn a_global_install_names_the_fork_and_miri_when_neither_was_installed() {
+    fn a_global_install_names_the_fork_miri_and_the_promised_rust_when_none_was_installed() {
         let fork = version_pinned(crate::setup::mutest::CRATE, pins::UNPUBLISHED);
         assert!(crate::setup::mutest::is_pin(&fork, std::env::consts::OS));
         let unanswered = no_answer(crate::exec::Stage::Wait);
         let failed = Error::NotInstalled(vec!["cargo-mutest".into(), "miri".into()]);
-        assert_eq!(install_global(&[fork], &unanswered), Err(failed));
+        assert_eq!(
+            install_global(std::slice::from_ref(&fork), &unanswered, None),
+            Err(failed)
+        );
+        let root = crate::testdir::tree("init-msrv", &[("Cargo.toml", PROMISES)]);
+        let all = Error::NotInstalled(vec!["cargo-mutest".into(), "miri".into(), "msrv".into()]);
+        assert_eq!(install_global(&[fork], &unanswered, Some(&*root)), Err(all));
     }
+
+    /// A crate that promises the oldest Rust it builds on.
+    const PROMISES: &str = "[package]\nname = \"a\"\nrust-version = \"1.68\"\n";
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_tool_built_from_its_checkout_and_a_machine_without_rustup_fail_no_install() {
         let local = version_pinned("outpost", pins::UNPUBLISHED);
         let no_rustup = no_answer(crate::exec::Stage::Spawn);
-        assert_eq!(install_global(&[local], &no_rustup), Ok(()));
+        let root = crate::testdir::tree("init-msrv-no-rustup", &[("Cargo.toml", PROMISES)]);
+        assert_eq!(install_global(&[local], &no_rustup, Some(&*root)), Ok(()));
     }
 
     fn pinned(setup: Option<&str>) -> Pin {

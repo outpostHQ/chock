@@ -131,7 +131,40 @@ impl Series {
                 None => {}
             }
         }
+        // An item that moved to another file takes its record to the new key.
+        out.0.extend(self.carried(held, keys));
         (out != *held).then_some(out)
+    }
+
+    /// The record each moved item takes to its new key: the lower of its number and the old key's.
+    fn carried(&self, held: &Self, keys: Keys) -> Vec<(String, u64)> {
+        let record = |(new, old): (String, String)| {
+            let now = self.get(&new)?.min(held.get(&old)?);
+            Some((new, now))
+        };
+        self.moved(held, keys)
+            .into_iter()
+            .filter_map(record)
+            .collect()
+    }
+
+    /// Each item key the record lacks, with the one record key of that item this run no longer
+    /// measures: a function that moved file. A name that two keys share pairs none.
+    #[must_use]
+    pub fn moved(&self, baseline: &Self, keys: Keys) -> BTreeMap<String, String> {
+        if !matches!(keys, Keys::Items) {
+            return BTreeMap::new();
+        }
+        let arrived = by_item(self.0.keys().filter(|key| !baseline.0.contains_key(*key)));
+        let left = by_item(baseline.0.keys().filter(|key| !self.0.contains_key(*key)));
+        let paired = |(item, new): (&str, Vec<&str>)| match (
+            new.as_slice(),
+            left.get(item).map(Vec::as_slice),
+        ) {
+            ([new], Some([old])) => Some((new.to_string(), old.to_string())),
+            _ => None,
+        };
+        arrived.into_iter().filter_map(paired).collect()
     }
 
     /// Every key this run measured, held at zero: the record a strict gate is compared against.
@@ -144,9 +177,11 @@ impl Series {
     /// zero. No kind of key lets a count the record lacks pass.
     #[must_use]
     pub fn regressions(&self, baseline: &Self, keys: Keys) -> Vec<Change> {
+        let moved = self.moved(baseline, keys);
+        let held = |key: &String| baseline.get(moved.get(key).unwrap_or(key));
         self.0
             .iter()
-            .filter_map(|(key, &now)| match baseline.get(key) {
+            .filter_map(|(key, &now)| match held(key) {
                 Some(was) if now > keys.allowed(was) => Some(Change::Grew {
                     key: key.clone(),
                     was,
@@ -185,6 +220,17 @@ impl Series {
             .cloned()
             .collect()
     }
+}
+
+/// The keys that name an item after `#`, grouped by that name.
+fn by_item<'a>(keys: impl Iterator<Item = &'a String>) -> BTreeMap<&'a str, Vec<&'a str>> {
+    let mut out: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for key in keys {
+        if let Some((_, item)) = key.split_once('#') {
+            out.entry(item).or_default().push(key);
+        }
+    }
+    out
 }
 
 /// A key that moved the wrong way.
@@ -576,6 +622,48 @@ mod tests {
         };
         assert_eq!(now.regressions(&was, Keys::Items), vec![grew.clone()]);
         assert_eq!(now.regressions(&was, Keys::Measures), vec![grew]);
+    }
+
+    /// seed split `serve_zones` out of `source.rs`: its record goes along, and may not grow.
+    #[test]
+    fn an_item_that_moved_file_keeps_its_record_and_may_not_grow() {
+        let was = series(&[("src/a.rs#serve", 52), ("src/a.rs#keep", 3)]);
+        let moved = series(&[("src/a/serve.rs#serve", 50), ("src/a.rs#keep", 3)]);
+        assert_eq!(moved.regressions(&was, Keys::Items), vec![]);
+        assert_eq!(moved.tightened(&was, Keys::Items), Some(moved.clone()));
+        let grew = series(&[("src/a/serve.rs#serve", 53), ("src/a.rs#keep", 3)]);
+        let over = Change::Grew {
+            key: "src/a/serve.rs#serve".to_string(),
+            was: 52,
+            now: 53,
+        };
+        assert_eq!(grew.regressions(&was, Keys::Items), vec![over]);
+        let new = |key: &str, now| Change::New {
+            key: key.to_string(),
+            now,
+        };
+        // While the old key is still measured, the same name elsewhere is a new function.
+        let copied = series(&[("src/b.rs#serve", 9), ("src/a.rs#serve", 52)]);
+        assert_eq!(
+            copied.regressions(&was, Keys::Items),
+            vec![new("src/b.rs#serve", 9)]
+        );
+        // Two keys of one name could have come from either place, so neither takes the record.
+        let split = series(&[("src/b.rs#serve", 9), ("src/c.rs#serve", 9)]);
+        assert_eq!(
+            split.regressions(&was, Keys::Items),
+            vec![new("src/b.rs#serve", 9), new("src/c.rs#serve", 9)]
+        );
+        let bare = series(&[("src/b.rs", 4)]);
+        let held = series(&[("src/a.rs", 4)]);
+        assert_eq!(
+            bare.regressions(&held, Keys::Items),
+            vec![new("src/b.rs", 4)]
+        );
+        assert_eq!(
+            moved.regressions(&was, Keys::Measures),
+            vec![new("src/a/serve.rs#serve", 50)]
+        );
     }
 
     #[test]

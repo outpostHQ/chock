@@ -22,6 +22,14 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   repository tracks, per file and check.
 - **A declared command can name its `outputs`.** The command's gate fails at each named file whose
   bytes the run changed, so a committed generated file cannot go stale.
+- **`chock init --global` installs the Rust that `rust-version` names.** Run in a crate, it
+  installs that release with rustup, so `msrv` runs in CI and does not stop at a missing toolchain.
+- **A record follows a function that moved to another file.** A ratchet that keys each function
+  by file and name read a moved function as new debt. Now a new key takes the record of the one key
+  of the same name that the run no longer measures, and may not grow past it. The commit moves it.
+- **The `crap` record holds one function to a line.** chock writes `.chock/crap-baseline.json`
+  without cargo-crap's `diagnostics` block, which a baseline does not use. A record of 10,000
+  functions is about 10,000 lines, not 120,000.
 - **`mutest` documents its skip.** `docs/gates.md` names `#[cfg_attr(mutest, mutest::skip)]` for a
   function that mutation testing should leave out.
 
