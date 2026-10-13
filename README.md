@@ -6,7 +6,7 @@
 
 **Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers.**
 
-chock runs 60 gates over a Rust project and gives one result and one exit code. The gates cover
+chock runs 61 gates over a Rust project and gives one result and one exit code. The gates cover
 your tests, clippy, rustfmt, coverage, mutation testing, the supply chain, complexity and
 duplication.
 
@@ -166,6 +166,7 @@ can work through it. chock measures and refuses. It does not rewrite your code.
 | `chock init` | sets up this project, then installs the tools it pins; `--global` and `--local` do one half each |
 | `chock baseline [GATE...]` | accepts today's numbers as the record, also where they got worse |
 | `chock baseline --lower GATE...` | records a gain on a gate that measures differently by machine |
+| `chock baseline GATE... --keys KEY...` | writes only the named keys, such as the keys of a moved file; none goes up |
 | `chock doctor` | says whether this machine has the tools this project pins |
 | `chock run [GATE...]` | runs the named gates; no name means every gate that is on |
 | `chock run --fast` | runs only the gates staged for a commit; they need no compiler |
@@ -220,7 +221,7 @@ with each field explained.
 
 ## The gates
 
-60 gates: 37 are on by default and 23 are opt-in. `chock gates` prints the list from the binary,
+61 gates: 37 are on by default and 24 are opt-in. `chock gates` prints the list from the binary,
 and [docs/gates.md](docs/gates.md) says when each one trips.
 
 | topic | on by default | opt-in |
@@ -228,7 +229,7 @@ and [docs/gates.md](docs/gates.md) says when each one trips.
 | Tests | `test`, `coverage`, `crap`, `assertions`, `testlint`, `admits` | `mutest`, `idempotent`, `miri`, `proof` |
 | Lints and format | `lint`, `codeslop`, `source`, `typos` | `fmt`, `shellcheck` |
 | Docs and comments | `doc`, `slop`, `citations`, `claims` | `phrases` |
-| Code shape | `complexity`, `nesting`, `bigfiles`, `splits`, `lean`, `duplication`, `unsafety`, `modcheck` | `duplicates`, `dead` |
+| Code shape | `complexity`, `nesting`, `bigfiles`, `splits`, `lean`, `duplication`, `unsafety`, `modcheck` | `duplicates`, `dead`, `lines` |
 | Dependencies | `deps`, `manifest`, `placement`, `features`, `sort`, `dupdeps`, `unused`, `supply` | `unused-deep`, `acl` |
 | Build and release | `msrv`, `profile`, `toolchain`, `binsize` | `bsize` |
 | Repository | `commits`, `hygiene`, `wiring` | `history` |

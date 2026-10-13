@@ -1,6 +1,6 @@
 # The gates
 
-`chock gates` prints this list from the binary: 60 gates, 37 on by default and 23 opt-in.
+`chock gates` prints this list from the binary: 61 gates, 37 on by default and 24 opt-in.
 `chock gates --json` gives the same list to a program.
 
 A gate is one of two kinds.
@@ -65,6 +65,7 @@ records the reason under `left_off` in the config.
 |---|:-:|---|
 | `mutest` | ✓ | a mutation changes a decision and no test notices, one more time per file and operator |
 | `duplicates` | ✓ | the same job is written twice in different shapes, once more |
+| `lines` | ✓ | the files the repository tracks hold more lines in total, blank lines included; the records under `.chock` do not count |
 | `commands` | ✓ | a check you declared fails, or counts more than it held |
 | `commands-build` | ✓ | the same, for your declared checks that need a compiler |
 | `phrases` | ✓ | source gains a phrase your config forbids |
@@ -229,6 +230,16 @@ says which of them this machine has. These gates need more:
 
 On a system a gate's tool does not run on (`acl` off Linux, `proof` on Windows), `chock run` leaves
 that gate out and says so; a Linux run enforces it.
+
+## Write only some keys
+
+`chock baseline GATE... --keys KEY...` writes only the named keys, for example after a file moved.
+Each named key takes the number that the gate measures now. A key that the gate no longer measures
+leaves the record. The other keys stay as they are.
+
+The command never raises a key. When a named key measures more than its record, it writes nothing
+and exits `1`. A key that no named gate measures or records gives exit `2`. `crap` keeps its own
+record file, so `--keys` does not write it.
 
 ## Records by machine and system
 

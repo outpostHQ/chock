@@ -8,6 +8,7 @@ pub mod complexity;
 pub mod dead;
 pub mod duplication;
 pub mod lean;
+pub mod lines;
 pub mod nesting;
 pub mod prodlines;
 pub mod splits;

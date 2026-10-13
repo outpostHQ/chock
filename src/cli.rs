@@ -1,6 +1,7 @@
 //! What each command does, kept out of `main` so every branch is reachable from a test.
 
 mod args;
+mod keys;
 mod tree;
 use args::split_json;
 pub use args::{Command, parse};
@@ -786,8 +787,10 @@ fn ago(ran_at: Option<u64>, now: std::time::SystemTime) -> Option<String> {
 
 /// Records without judging: a baseline from a failing tree is debt accepted in a readable commit.
 fn record_baseline(asked: &[&str]) -> ExitCode {
-    let lower = asked.contains(&"--lower");
-    let names: Vec<&str> = asked.iter().copied().filter(|a| *a != "--lower").collect();
+    let asked = match keys::recording(asked) {
+        Ok(asked) => asked,
+        Err(e) => return cannot_run(&e),
+    };
     let (ctx, config) = match context(false) {
         // A record holds the whole tree, never one change.
         Ok((ctx, config)) => (run::Ctx { whole: true, ..ctx }, config),
@@ -798,21 +801,27 @@ fn record_baseline(asked: &[&str]) -> ExitCode {
         Ok(held) => held,
         Err(e) => return cannot_run(&e),
     };
-    let chosen: Vec<&run::Gate> = if names.is_empty() {
+    let chosen: Vec<&run::Gate> = if asked.names.is_empty() {
         recordable(config.as_ref())
     } else {
-        match select(&names, config.as_ref()) {
+        match select(&asked.names, config.as_ref()) {
             Ok(gates) => gates,
             Err(e) => return cannot_run(&e),
         }
     };
     let mut recorded = ctx.baseline.clone();
-    let mut failed = Vec::new();
-    for gate in &chosen {
-        if !record_one(gate, &ctx, &mut recorded, lower) {
-            failed.push(gate.name);
-        }
-    }
+    let failed = match &asked.keys {
+        Some(keys) => keys::written(&chosen, &ctx, &mut recorded, keys),
+        None => Ok(chosen
+            .iter()
+            .filter(|gate| !record_one(gate, &ctx, &mut recorded, asked.lower))
+            .map(|gate| gate.name)
+            .collect()),
+    };
+    let failed = match failed {
+        Ok(failed) => failed,
+        Err(code) => return code,
+    };
     recorded.chock = VERSION.to_string();
     let dir = ctx.root.join(".chock");
     if let Err(e) = std::fs::create_dir_all(&dir) {

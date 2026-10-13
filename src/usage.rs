@@ -32,6 +32,7 @@ Choose the gates
   chock stage GATE... STAGE       when they run: commit, push, ci or manual (only `chock run`)
   chock survey                    what every gate measures here; it changes no config and no record
   chock baseline --lower GATE...  record a gain on a gate that measures differently by machine
+  chock baseline GATE --keys KEY  write only these keys, such as a moved file's; none goes up
 
 Called by the hooks
   chock message FILE              check one commit message

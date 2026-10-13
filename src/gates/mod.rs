@@ -66,6 +66,7 @@ static REGISTRY: &[Gate] = &[
     tools::codeslop::GATE,
     metrics::unsafety::GATE,
     metrics::admits::GATE,
+    metrics::lines::GATE,
     coverage::GATE,
     coverage::crap::GATE,
     tools::IDEMPOTENT,
@@ -98,7 +99,7 @@ pub fn runs_on(gate: &str, os: &str) -> bool {
 
 /// Ratchets whose count is the same on every machine and system, because they read source text or
 /// every target's metadata. Only these lower their own record: the rest wait for `--lower`.
-const SETTLES_ANYWHERE: [&str; 25] = [
+const SETTLES_ANYWHERE: [&str; 26] = [
     "admits",
     "assertions",
     "bigfiles",
@@ -109,6 +110,7 @@ const SETTLES_ANYWHERE: [&str; 25] = [
     "duplication",
     "features",
     "lean",
+    "lines",
     "manifest",
     "modcheck",
     "nesting",

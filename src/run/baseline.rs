@@ -326,6 +326,39 @@ impl Baseline {
         }
     }
 
+    /// What `chock baseline --keys` writes: only the `named` keys change, each to this measurement
+    /// or out where it is gone, and none goes up. `Err` names each one that would.
+    pub fn write_keys(
+        &mut self,
+        name: &str,
+        unit: &str,
+        series: &Series,
+        named: &[&str],
+    ) -> Result<(), Vec<String>> {
+        if let Some(held) = self.unit(name).filter(|held| *held != unit) {
+            return Err(vec![format!(
+                "the record counts {held} and the gate counts {unit} now, so record the whole gate"
+            )]);
+        }
+        let mut out = self.gate(name);
+        let mut raised = Vec::new();
+        for key in named {
+            match (series.get(key), out.get(key)) {
+                (Some(now), Some(was)) if now > was => raised.push(format!("{key}: {was} → {now}")),
+                (Some(now), _) => out.set(key, now),
+                (None, _) => {
+                    out.0.remove(*key);
+                }
+            }
+        }
+        if !raised.is_empty() {
+            return Err(raised);
+        }
+        self.set(name, out);
+        self.units.insert(name.to_string(), unit.to_string());
+        Ok(())
+    }
+
     /// What `chock baseline --lower` writes: each held key brought down to this measurement where it
     /// went down, and dropped where it is gone. It never raises a key and never adds one.
     pub fn lower(&mut self, name: &str, series: &Series) {
@@ -467,6 +500,58 @@ mod tests {
             None,
             "an item that is gone is a fix, not debt"
         );
+    }
+
+    /// A moved file's keys: the new one comes in as measured, the old one goes, the rest stay.
+    #[test]
+    fn writing_named_keys_changes_only_them_and_never_raises_one() {
+        let mut held = Baseline::empty("0.1.0");
+        let first = [
+            ("old.rs#f", 5),
+            ("low.rs#g", 4),
+            ("same.rs#h", 2),
+            ("other.rs#i", 9),
+        ];
+        held.record("probe", "line(s)", series(&first));
+        let now = [
+            ("new.rs#f", 5),
+            ("low.rs#g", 3),
+            ("same.rs#h", 2),
+            ("other.rs#i", 1),
+            ("unnamed.rs#j", 7),
+        ];
+        let named = [
+            "new.rs#f",
+            "old.rs#f",
+            "low.rs#g",
+            "same.rs#h",
+            "absent.rs#k",
+        ];
+        held.write_keys("probe", "line(s)", &series(&now), &named)
+            .unwrap();
+        let kept = [
+            ("low.rs#g", 3),
+            ("new.rs#f", 5),
+            ("other.rs#i", 9),
+            ("same.rs#h", 2),
+        ];
+        assert_eq!(held.gate("probe"), series(&kept));
+        let grew = series(&[("low.rs#g", 4), ("other.rs#i", 10), ("new.rs#f", 6)]);
+        let refused = held.write_keys("probe", "line(s)", &grew, &["low.rs#g", "new.rs#f"]);
+        assert_eq!(refused.unwrap_err(), ["low.rs#g: 3 → 4", "new.rs#f: 5 → 6"]);
+        assert_eq!(
+            held.gate("probe"),
+            series(&kept),
+            "a refusal writes nothing"
+        );
+        let other = held.write_keys("probe", "file(s)", &grew, &["other.rs#i"]);
+        assert!(other.unwrap_err()[0].contains("counts line(s) and the gate counts file(s)"));
+        let mut fresh = Baseline::empty("0.1.0");
+        fresh
+            .write_keys("probe", "file(s)", &grew, &["new.rs#f"])
+            .unwrap();
+        assert_eq!(fresh.gate("probe"), series(&[("new.rs#f", 6)]));
+        assert_eq!(fresh.unit("probe"), Some("file(s)"));
     }
 
     /// A gate that re-keys leaves old keys nothing measures again; recording drops them.

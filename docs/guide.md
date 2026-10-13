@@ -272,6 +272,7 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 | `chock init --local` | only this project: pins, config and hooks |
 | `chock baseline [GATE...]` | accepts today's numbers as the record, also where they got worse |
 | `chock baseline --lower GATE...` | records a gain on a gate that measures differently by machine |
+| `chock baseline GATE... --keys KEY...` | writes only the named keys, such as the keys of a moved file; none goes up |
 | `chock doctor` | says whether this machine has the tools this project pins |
 | `chock run [GATE...]` | runs the named gates; no name means every gate that is on |
 | `chock run --fast` | runs only the gates staged for a commit; they need no compiler |

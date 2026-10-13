@@ -713,6 +713,73 @@ fn baseline_still_records_a_gate_by_name() {
     assert!(!after.err.contains("record for slop"), "{}", after.err);
 }
 
+fn admits_record(dir: &Path) -> Vec<(String, u64)> {
+    let written = std::fs::read_to_string(dir.join(".chock/baseline.json")).unwrap();
+    let held = document::parse::<chock::run::baseline::Baseline>(&written, "baseline").unwrap();
+    held.gate("admits").0.into_iter().collect()
+}
+
+#[test]
+fn baseline_keys_writes_only_the_named_keys_and_never_raises_one() {
+    let dir = project(
+        "baseline-keys",
+        &[
+            ("Proofs/A.lean", "theorem a : P := sorry\n"),
+            ("Proofs/O.lean", "axiom o : False\n"),
+        ],
+    );
+    exits(&dir, &["baseline", "admits"], 0);
+    std::fs::rename(dir.join("Proofs/A.lean"), dir.join("Proofs/B.lean")).unwrap();
+    put(&dir, "Proofs/O.lean", "axiom o : False\naxiom p : False\n");
+    let moved = ["Proofs/B.lean#sorry", "Proofs/A.lean#sorry"];
+    let wrote = exits(
+        &dir,
+        &[&["baseline", "admits", "--keys"][..], &moved[..]].concat(),
+        0,
+    );
+    says(&wrote.out, "wrote     admits       2 keys");
+    let held = [
+        ("Proofs/B.lean#sorry".to_string(), 1),
+        ("Proofs/O.lean#axiom".to_string(), 1),
+    ];
+    assert_eq!(admits_record(&dir), held, "only the named keys moved");
+
+    put(
+        &dir,
+        "Proofs/B.lean",
+        "theorem a : P := sorry\ntheorem b : P := sorry\n",
+    );
+    let raised = exits(
+        &dir,
+        &["baseline", "admits", "--keys", "Proofs/B.lean#sorry"],
+        1,
+    );
+    says(&raised.err, "admits: Proofs/B.lean#sorry: 1 → 2");
+    let unknown = exits(
+        &dir,
+        &["baseline", "admits", "--keys", "Proofs/C.lean#sorry"],
+        2,
+    );
+    says(
+        &unknown.err,
+        "no gate named here measures or records Proofs/C.lean#sorry",
+    );
+    assert_eq!(admits_record(&dir), held, "a refused write writes nothing");
+}
+
+#[test]
+fn lines_counts_every_tracked_line_and_trips_when_the_total_goes_up() {
+    let dir = project("lines", &[("src/lib.rs", "fn a() {}\n")]);
+    turn_on(&dir, &["lines"]);
+    first_commit(&dir);
+    exits(&dir, &["baseline", "lines"], 0);
+    put(&dir, "untracked.rs", "1\n2\n");
+    exits(&dir, &["run", "lines"], 0);
+    put(&dir, "src/lib.rs", "fn a() {}\nfn b() {}\n");
+    let tripped = exits(&dir, &["run", "lines"], 1);
+    says(&tripped.out, "total");
+}
+
 #[test]
 fn cache_clear_removes_every_kept_verdict_and_cache_alone_is_refused() {
     let dir = project("cache-clear", &[]);

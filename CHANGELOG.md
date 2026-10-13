@@ -5,6 +5,15 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-13
+
+- **`chock baseline GATE... --keys KEY...` writes only the named keys.** After a file moves, it
+  writes the keys of the new path and drops the keys of the old one, and leaves every other key as
+  it is. It never raises a key: when a named key measures more than its record, it writes nothing.
+- **A new opt-in gate, `lines`, holds the total line count of the tracked files.** It counts as
+  `wc -l` does, blank lines included, and leaves out chock's own records under `.chock`. A move of
+  lines from one file to another is no change.
+
 ## [0.6.0] - 2026-10-13
 
 - **`test` fails when the suite changes a file the repository holds.** A test that writes the file
