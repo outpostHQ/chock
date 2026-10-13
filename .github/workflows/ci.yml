@@ -236,6 +236,15 @@ jobs:
             ~/.cargo/bin/mutest-driver*
           key: ${{ steps.built.outputs.cache-primary-key }}
 
+      # One test runs cargo-crap, so each job that runs the tests installs the pinned one.
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install cargo-crap
+        run: |
+          . ./tool-versions.env
+          cargo binstall -y --locked cargo-crap@"$CARGO_CRAP_VERSION"
+
       - name: Install chock from this checkout
         run: cargo install --locked --path .
 

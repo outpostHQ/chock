@@ -1323,6 +1323,15 @@ mod tests {
         assert!(!write_crap(&dir, "{}", "recorded"));
     }
 
+    /// A directory where the record goes cannot be written over, on any system.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_record_path_that_is_a_directory_records_nothing() {
+        let dir = crate::testdir::make("init-crap-is-a-directory");
+        fs::create_dir_all(dir.join(crate::gates::coverage::crap::baseline())).unwrap();
+        assert!(!write_crap(&dir, "{}", "recorded"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_baseline_that_cannot_be_written_records_nothing() {
@@ -1752,6 +1761,14 @@ mod tests {
             Some("  local     outpost — not on crates.io; build it from its checkout")
         );
         assert_eq!(not_fetched(sort, "windows"), None);
+    }
+
+    /// A tool that is not fetched counts as set up, so init goes on to the next one.
+    #[test]
+    fn a_tool_that_is_not_fetched_is_set_up() {
+        let parsed = pins::parse("OUTPOST_VERSION=0.0.0\n").unwrap();
+        let start: Start = &crate::exec::run_env;
+        assert!(installs(parsed.first().unwrap(), &|_| None, start));
     }
 
     #[test]

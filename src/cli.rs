@@ -1459,6 +1459,40 @@ mod tests {
         assert_eq!([kept_as(true), kept_as(false)], ["lowered", "recorded"]);
     }
 
+    /// A crap recording keeps each function's higher score, and `--lower` writes what cargo-crap
+    /// measures now. It runs the cargo-crap that tool-versions.env pins.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_crap_recording_keeps_the_higher_score_unless_it_lowers() {
+        let manifest = "[package]\nname = \"crapped\"\nversion = \"0.1.0\"\n\n[workspace]\n";
+        let code = "pub fn f(a: bool) -> u8 {\n    if a { 1 } else { 2 }\n}\n";
+        let files = [("Cargo.toml", manifest), ("src/lib.rs", code)];
+        let dir = crate::testdir::tree("cli-crap-lower", &files);
+        let record = dir.join(crate::gates::coverage::crap::baseline());
+        let score = |hits: u8, lower: bool| {
+            let lines: String = (1..=3).map(|n| format!("DA:{n},{hits}\n")).collect();
+            let report = format!("SF:src/lib.rs\n{lines}end_of_record\n");
+            std::fs::write(dir.join("measured.info"), report).unwrap();
+            std::fs::write(dir.join("coverage.sh"), "cp measured.info lcov.info").unwrap();
+            let mut ctx = Ctx::at(&dir);
+            ctx.coverage = vec!["sh".to_string(), "coverage.sh".to_string()].into();
+            let gate = &crate::gates::coverage::crap::GATE;
+            let kept = record_one(gate, &ctx, &mut Baseline::empty("0.1.0"), lower);
+            assert!(
+                kept,
+                "nothing recorded: `chock init --global` installs cargo-crap"
+            );
+            let text = std::fs::read_to_string(&record).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let crap = parsed.pointer("/entries/0/crap");
+            crap.and_then(serde_json::Value::as_f64).unwrap()
+        };
+        let untested = score(0, false);
+        // A test now runs every line, and only `--lower` lets the score go down.
+        assert_eq!(score(1, false).to_string(), untested.to_string());
+        assert!(score(1, true) < untested, "`--lower` kept {untested}");
+    }
+
     /// A gate that cannot measure, or that measures a path outside the project, records nothing.
     #[test]
     fn a_record_that_cannot_be_kept_is_not_written() {
