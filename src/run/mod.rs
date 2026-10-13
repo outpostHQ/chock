@@ -876,8 +876,8 @@ fn unrecorded(tighter: &Series, was: &Series, unit: &str) -> Vec<Finding> {
         .map(|(key, held)| {
             let now = tighter.get(key).unwrap_or_default();
             let said = format!(
-                "{now} {unit} where the record holds {held}: `chock run` lowers the record, and \
-                 the change has to commit it"
+                "{now} {unit} where the record holds {held}: a commit through the pre-commit hook \
+                 lowers the record, or `chock baseline --lower`, and the change has to commit it"
             );
             placed(key, &said).numbers(now, Some(*held))
         })
@@ -1453,7 +1453,7 @@ mod tests {
         lower.set("src/a.rs", 10);
         lower.set("src/b.rs", 5);
         assert_eq!(report.tightened, Some(lower.clone()));
-        let settled = locked_in(&ctx.baseline, &[report]).unwrap();
+        let settled = locked_in(&ctx.baseline, &[report], true).unwrap();
         assert_eq!(settled.record.gate("slop"), lower);
         assert_eq!(
             (settled.first.clone(), settled.lowered.clone()),
@@ -1481,7 +1481,7 @@ mod tests {
         assert_eq!(
             said,
             [
-                "src/a.rs: 10 lines where the record holds 12: `chock run` lowers the record, and the change has to commit it"
+                "src/a.rs: 10 lines where the record holds 12: a commit through the pre-commit hook lowers the record, or `chock baseline --lower`, and the change has to commit it"
             ]
         );
         let held = ctx_with("slop", &[("src/a.rs", 10), ("src/b.rs", 5)]);
@@ -1828,7 +1828,7 @@ mod tests {
         assert_eq!(report.findings, Vec::new());
         let counted = two_items(&ctx).unwrap();
         assert_eq!(report.tightened, Some(counted.clone()));
-        let settled = locked_in(&ctx.baseline, &[report]).unwrap();
+        let settled = locked_in(&ctx.baseline, &[report], false).unwrap();
         assert_eq!(settled.record.gate("probe"), counted);
         assert_eq!(settled.record.unit("probe"), Some("lines"));
         assert!(settled.record.has("another"), "the other records stay");

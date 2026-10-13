@@ -99,7 +99,7 @@ A gate is one of two kinds.
   secrets are of this kind.
 - A **ratchet** keeps a number for each file or function in `.chock/baseline.json`. Comment length,
   complexity and coverage are of this kind. New code must be clean, and a recorded number cannot
-  go up. When a number goes down, chock lowers the record, so the gain stays.
+  go up. When a number goes down, the next commit lowers the record, so the gain stays.
 
 ```
    your tree ──► measure every file and function ──► compare with .chock/baseline.json
@@ -107,8 +107,8 @@ A gate is one of two kinds.
    new code with any debt ..................... TRIPPED     exit 1
    a recorded count grew ...................... TRIPPED     exit 1
    a recorded count stayed the same ........... ok          exit 0
-   a recorded count went down ................. ok          exit 0, and the record is lowered;
-                                                            CI fails until the change commits it
+   a recorded count went down ................. ok          exit 0; the pre-commit hook lowers
+                                                            the record and adds it to the commit
    a tool was missing or its output unreadable  CANNOT RUN  exit 2, never counted as a pass
 ```
 
@@ -123,14 +123,17 @@ that, the record moves in one direction:
 
 ```
    adoption              you fix one function           the debt comes back
-   record 6    ───────►  run: 3 against 6     ───────►  run: 6 against 3
+   record 6    ───────►  commit: 3 against 6  ───────►  run: 6 against 3
                          the record becomes 3           TRIPPED, exit 1
 ```
 
 ```
 $ chock run nesting
   nesting    ok          3 against 6
-chock: lowered the record for nesting; commit .chock/baseline.json with this change
+chock: measured less for nesting, and the pre-commit hook lowers the record at the next commit
+$ git commit -m "Split the parser"
+  nesting    ok          3 against 6
+chock: lowered the record for nesting; .chock/baseline.json is in this commit
 ```
 
 Only `chock baseline GATE` raises a record. A person runs it, and a reviewer sees the number rise
@@ -207,8 +210,9 @@ Three rules:
   code.
 - **Never run `chock baseline` to make a gate pass.** It raises the record, which accepts the debt.
   That is a person's decision, made in a commit a reviewer sees.
-- **Commit a lowered record.** A run that measures less says `lowered the record for …` on stderr
-  and leaves `.chock/baseline.json` modified. Commit it with your change, or CI fails.
+- **Let a commit lower a record.** The pre-commit hook writes each lower number into
+  `.chock/baseline.json` and adds the file to the commit. Without the hook, run
+  `chock baseline --lower GATE` and commit the file, or CI fails.
 
 Read the list of gates from `chock gates --json`; never hard-code it. A run's report follows
 [`schema/run-v1.json`](schema/run-v1.json), and the [guide](docs/guide.md#8-json-output) shows one

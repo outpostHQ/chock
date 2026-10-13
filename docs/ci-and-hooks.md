@@ -109,8 +109,12 @@ Two environment variables change how a run uses the machine:
 then every other tool from its own prebuilt release, in minutes; a tool with no release for the
 platform is compiled. [`SECURITY.md`](../SECURITY.md) says what that trades.
 
-A run that measures less than the record lowers `.chock/baseline.json`. CI fails a change that does
-not commit the lower number, so the record in the repository is always the true one.
+A commit that measures less than the record lowers `.chock/baseline.json`: the pre-commit hook
+writes the lower number and adds the file to the commit. A `chock run` outside the hook moves no
+record, so work in progress that loses an item and gets it back trips nothing. When the file holds
+a change that nobody staged, the hook leaves it out of the commit; commit it yourself. CI fails a
+change that does not commit the lower number, so the record in the repository is always the true
+one.
 
 CI writes no record. A ratchet whose first record no change committed is `CANNOT RUN` there:
 run `chock run GATE` outside CI and commit `.chock/baseline.json`. A gate that keeps a record for

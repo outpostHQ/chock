@@ -7,8 +7,8 @@ A gate is one of two kinds.
 
 - A **pass/fail gate** trips on any problem.
 - A **ratchet** keeps a number for each file or function in `.chock/baseline.json`. It holds new
-  code to zero, trips when a recorded count grows, and lowers the record when a count shrinks. A
-  count that the record does not hold trips when it is above zero.
+  code to zero and trips when a recorded count grows. When a count shrinks, the next commit lowers
+  the record. A count that the record does not hold trips when it is above zero.
 
 [On by default](#on-by-default) · [Opt-in](#opt-in) · [Outpost gates](#outpost-gates) ·
 [What a gate needs](#what-a-gate-needs) · [Records by machine and system](#records-by-machine-and-system) ·

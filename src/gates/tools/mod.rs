@@ -9,6 +9,7 @@ pub mod dupdeps;
 pub mod machete;
 pub mod miri;
 pub mod proof;
+mod suite;
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -26,7 +27,7 @@ pub const TEST: Gate = Gate {
     builds: true,
     // A project's own runner must name its tools in `runner_tools`, or no verdict is recalled.
     reads: Some(Reads::tree_runner_and(&["cargo"]).versioned("features-v1")),
-    kind: Kind::Binary(test),
+    kind: Kind::Binary(suite::test),
 };
 
 pub const LINT: Gate = Gate {
@@ -285,114 +286,6 @@ fn from_both(
     found
 }
 
-fn test(ctx: &Ctx) -> Result<Outcome, String> {
-    let out = first_run(ctx)?;
-    Ok(read_suite(&out, &ctx.root))
-}
-
-/// The suite's outcome: the failing tests or worsened measures it names, else compiler spans.
-fn read_suite(out: &exec::Output, root: &Path) -> Outcome {
-    if out.success() {
-        return Outcome::passed();
-    }
-    let mut found: Vec<Finding> = failing_tests(out)
-        .iter()
-        .map(|test| Finding::at("", "this test failed").item(test))
-        .collect();
-    found.extend(worsened(out));
-    match found.is_empty() {
-        // Nothing named a test or a measure, so the build failed; rustc's spans say where.
-        true => verdict(out, root),
-        false => Outcome::failed(whole(found, out)),
-    }
-}
-
-/// Every measure `outpost check` says got worse, for a runner that calls outpost as a stage.
-fn worsened(out: &exec::Output) -> Vec<Finding> {
-    let mut lines: BTreeSet<String> = BTreeSet::new();
-    for text in [&out.stdout, &out.stderr] {
-        lines.extend(
-            text.lines()
-                .map(|line| exec::strip_colour(line).trim().to_string())
-                .filter(|line| line.starts_with("worse ")),
-        );
-    }
-    lines.iter().filter_map(|line| worse(line)).collect()
-}
-
-/// `worse <measure> <from> -> <to>`; a line without the `->` is prose and names nothing.
-fn worse(line: &str) -> Option<Finding> {
-    let rest = line.strip_prefix("worse ")?;
-    let (measure, moved) = rest.split_once(' ')?;
-    let (from, to) = moved.split_once(" -> ")?;
-    let message = format!("got worse: {} to {}", from.trim(), to.trim());
-    Some(Finding::at("", &message).item(measure))
-}
-
-/// Every test given a failing verdict, from both streams: nextest's lines, or libtest's own where
-/// nextest named none, as under a runner that calls `cargo test`.
-pub(super) fn failing_tests(out: &exec::Output) -> BTreeSet<String> {
-    // A set, since the same line can reach both streams.
-    let named = |verdict: fn(&str) -> Option<String>| -> BTreeSet<String> {
-        [&out.stdout, &out.stderr]
-            .into_iter()
-            .flat_map(|text| text.lines())
-            .filter_map(|line| verdict(&exec::strip_colour(line)))
-            .collect()
-    };
-    Some(named(failed_test))
-        .filter(|nextest| !nextest.is_empty())
-        .unwrap_or_else(|| named(libtest_failure))
-}
-
-/// `test <path> ... FAILED`, or the header over what a failed test printed, `---- <path> stdout
-/// ----`, which still names a test whose own output split the first.
-fn libtest_failure(line: &str) -> Option<String> {
-    let line = line.trim();
-    let between = |start: &str, end: &str| line.strip_prefix(start)?.strip_suffix(end);
-    between("test ", " ... FAILED")
-        .or_else(|| between("---- ", " stdout ----"))
-        .map(|named| named.trim().to_string())
-}
-
-/// `FAIL [   0.005s] <binary-id> <test path>`. `FLAKY` is not a failure: the test passed on retry.
-fn failed_test(line: &str) -> Option<String> {
-    marked(line, &["FAIL", "TIMEOUT", "ABORT", "SIGSEGV", "LEAK-FAIL"])
-}
-
-/// Every test nextest stopped at its time limit, from both streams.
-pub(super) fn timed_out_tests(out: &exec::Output) -> BTreeSet<String> {
-    [&out.stdout, &out.stderr]
-        .into_iter()
-        .flat_map(|text| text.lines())
-        .filter_map(|line| marked(&exec::strip_colour(line), &["TIMEOUT"]))
-        .collect()
-}
-
-/// The test a nextest verdict line names, when the line starts with one of `verdicts`.
-fn marked(line: &str, verdicts: &[&str]) -> Option<String> {
-    let trimmed = line.trim();
-    let rest = verdicts
-        .iter()
-        .find_map(|mark| trimmed.strip_prefix(mark))?;
-    let (_duration, named) = rest.trim_start().strip_prefix('[')?.split_once(']')?;
-    let named = uncounted(named.trim());
-    (!named.is_empty()).then(|| named.to_string())
-}
-
-/// The name after the progress count newer nextest prints first: `(  12/1783) chock tests::x`.
-fn uncounted(named: &str) -> &str {
-    let counted = named
-        .strip_prefix('(')
-        .and_then(|rest| rest.split_once(')'))
-        .filter(|(count, _)| {
-            count
-                .chars()
-                .all(|c| c.is_ascii_digit() || c == '/' || c == ' ')
-        });
-    counted.map_or(named, |(_count, after)| after.trim_start())
-}
-
 pub const IDEMPOTENT: Gate = Gate {
     name: "idempotent",
     about: "the suite passes a second time in the same tree, without cleaning between",
@@ -400,65 +293,8 @@ pub const IDEMPOTENT: Gate = Gate {
     builds: true,
     // Same inputs as `test`.
     reads: Some(Reads::tree_runner_and(&["cargo"]).versioned("features-v1")),
-    kind: Kind::Binary(idempotent),
+    kind: Kind::Binary(suite::idempotent),
 };
-
-/// Runs the suite again in the same tree. Failing only the second time means runs share state, such
-/// as a file left behind.
-fn idempotent(ctx: &Ctx) -> Result<Outcome, String> {
-    // Reuses the run `test` already took when both gates are on.
-    let first = first_run(ctx)?;
-    if !first.success() {
-        return Err("the suite fails on its first run, so a second says nothing".to_string());
-    }
-    let second = suite(ctx)?;
-    if second.success() {
-        return Ok(Outcome::passed());
-    }
-    Ok(Outcome::failed(failed_twice(&second, &ctx.root)))
-}
-
-/// What the second run says, most specific first: a compiler span, else the tests that failed, else
-/// that it failed at all.
-fn failed_twice(second: &exec::Output, root: &Path) -> Vec<Finding> {
-    let mut spanned = spans(&second.stderr, root);
-    spanned.extend(spans(&second.stdout, root));
-    if !spanned.is_empty() {
-        return spanned;
-    }
-    let named = failing_tests(second);
-    if !named.is_empty() {
-        return named
-            .iter()
-            .map(|test| {
-                Finding::at("", "passed on the first run and failed on the second").item(test)
-            })
-            .collect();
-    }
-    vec![
-        Finding::at(
-            "",
-            "the suite passed once and failed the second time in the same tree",
-        )
-        .item("idempotent"),
-    ]
-}
-
-/// The suite's first run in this invocation, shared by every gate that needs one.
-fn first_run(ctx: &Ctx) -> Result<exec::Output, String> {
-    ctx.suite.get_or_init(|| suite(ctx)).clone()
-}
-
-/// Runs whatever the project's `runner` setting names, since some suites need their own setup.
-fn suite(ctx: &Ctx) -> Result<exec::Output, String> {
-    let (program, args) = ctx
-        .runner
-        .argv
-        .split_first()
-        .ok_or("the configured `runner` names no command")?;
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    exec::tool(&ctx.root, program, &args)
-}
 
 const UNFORMATTED: &str = "formatting differs — run `cargo fmt --all`";
 
@@ -989,6 +825,7 @@ fn declared_version(line: &str) -> Option<String> {
     reason = "a failed unwrap in a test is the test failing"
 )]
 mod tests {
+    use super::suite::*;
     use super::*;
 
     fn root() -> &'static Path {
@@ -1221,7 +1058,9 @@ mod tests {
                            test spawns::a_child ... the child wrote this\nFAILED\n\n\
                            failures:\n\n\
                            ---- spawns::a_child stdout ----\n\
-                           thread 'spawns::a_child' panicked at src/lib.rs:9:5:\n\n\
+                           thread 'spawns::a_child' panicked at src/lib.rs:9:5:\n\
+                           the child exited with 3\n\
+                           note: run with `RUST_BACKTRACE=1` to display a backtrace\n\n\
                            test result: FAILED. 1 passed; 2 failed; 0 ignored\n";
 
     #[test]
@@ -1243,10 +1082,41 @@ mod tests {
         assert_eq!(
             said(&read_suite(&ran(LIBTEST, Some(101), false), root())),
             [
-                "spawns::a_child: this test failed",
+                "spawns::a_child: this test failed: panicked at src/lib.rs:9:5: the child exited \
+                 with 3",
                 "zz_probe::the_gate_can_fail: this test failed"
             ]
         );
+    }
+
+    /// seed's request: the reason a test failed, with no second run to read it.
+    #[test]
+    fn a_failed_test_is_named_with_what_its_panic_said() {
+        let out = "        FAIL [   0.005s] chock db::tests::opens\n\
+                   --- STDERR:              chock db::tests::opens ---\n\
+                   \x20   thread 'db::tests::opens' panicked at src/db.rs:12:9:\n\
+                   \x20   assertion `left == right` failed\n\
+                   \x20     left: 1\n\
+                   \x20    right: 2\n\
+                   note: run with `RUST_BACKTRACE=1` to display a backtrace\n\
+                   \x20       FAIL [   0.001s] chock old::style\n\
+                   thread 'old::style' panicked at 'gone', src/old.rs:3:5\n";
+        assert_eq!(
+            said(&read_suite(&ran(out, Some(100), false), root())),
+            [
+                "chock db::tests::opens: this test failed: panicked at src/db.rs:12:9: assertion \
+                 `left == right` failed left: 1 right: 2",
+                "chock old::style: this test failed: panicked at 'gone', src/old.rs:3:5",
+            ]
+        );
+        let long = format!(
+            "thread 'big' panicked at src/a.rs:1:1:\n{}\n",
+            "x".repeat(400)
+        );
+        let quoted = failure(&ran(&long, Some(101), false), "big", "this test failed");
+        let place = "panicked at src/a.rs:1:1: ";
+        let kept = "x".repeat(PANIC_CHARS - place.len());
+        assert_eq!(quoted, format!("this test failed: {place}{kept}…"));
     }
 
     /// nextest prints what a failed test wrote, and libtest's verdict line is in it.
@@ -1923,16 +1793,56 @@ mod tests {
         assert_eq!(named, [db, fs]);
     }
 
+    /// A suite that leaves a file behind passes once and fails the second time in the same tree.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_suite_that_leaves_a_file_behind_fails_its_second_run_and_a_clean_one_passes_both() {
+        let dir = crate::testdir::make("tools-idempotent");
+        let with = |argv: &[&str]| {
+            let baseline = crate::run::baseline::Baseline::empty("0.1.0");
+            let mut ctx = Ctx::for_root(dir.to_path_buf(), baseline);
+            ctx.runner.argv = argv.iter().map(|arg| (*arg).to_string()).collect();
+            idempotent(&ctx)
+        };
+        assert_eq!(with(&["true"]), Ok(Outcome::passed()));
+        assert_eq!(
+            with(&["false"]),
+            Err("the suite fails on its first run, so a second says nothing".to_string())
+        );
+        let leaves = with(&["sh", "-c", "test ! -e left && touch left"]).unwrap();
+        assert_eq!(
+            said(&leaves),
+            ["idempotent: the suite passed once and failed the second time in the same tree"]
+        );
+    }
+
+    /// A second run that stopped at the compiler is reported at the span, not as a failed suite.
+    #[test]
+    fn a_second_run_that_would_not_build_is_reported_at_the_span() {
+        let second = exec::Output::of(
+            Some(101),
+            "",
+            "error[E0432]: unresolved import\n --> /w/src/a.rs:3:5\n",
+        );
+        let rendered = Finding::rendered(&failed_twice(&second, Path::new("/w")));
+        assert_eq!(rendered, ["src/a.rs:3: E0432: unresolved import"]);
+    }
+
     /// `run` reads a failure with no finding as could-not-run, so the last resort reports one.
     #[test]
     fn a_second_run_that_named_no_test_still_reports_that_it_failed() {
-        let second = exec::Output::of(Some(101), "", "killed");
+        let second = exec::Output::of(Some(101), "==> unit\n\n==> e2e\n", "killed");
         let findings = failed_twice(&second, Path::new("/w"));
         let named: Vec<&str> = findings
             .iter()
             .filter_map(|finding| finding.item.as_deref())
             .collect();
         assert_eq!(named, vec!["idempotent"]);
+        assert_eq!(
+            findings[0].message,
+            "the suite passed once and failed the second time in the same tree; stdout ends: \
+             ==> unit | ==> e2e; stderr ends: killed"
+        );
     }
 
     #[test]

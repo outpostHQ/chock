@@ -215,11 +215,11 @@ fn stamp() -> u128 {
 
 /// The suite's verdict, naming each failed test: a failed assertion prints no span chock reads.
 fn judged(out: &exec::Output, root: &Path) -> Outcome {
-    let stopped = super::timed_out_tests(out);
+    let stopped = super::suite::timed_out_tests(out);
     let mut outcome = super::verdict(out, root);
     outcome
         .findings
-        .extend(super::failing_tests(out).iter().map(|test| {
+        .extend(super::suite::failing_tests(out).iter().map(|test| {
             let why = if stopped.contains(test) {
                 STOPPED
             } else {

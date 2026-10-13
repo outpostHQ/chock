@@ -5,6 +5,22 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-10-13
+
+- **A record goes down at a commit, not at every run.** A `chock run` on work in progress lowered
+  the record when an item went away, and the item could come back before the commit. Now only the
+  pre-commit hook lowers a record: it writes the lower number into `.chock/baseline.json` and adds
+  the file to the commit. A run outside the hook says `measured less for …` and moves nothing. The
+  hook leaves the file out of the commit when it holds a change that nobody staged. A first record
+  is written as before, and CI still fails a change that does not commit a gain.
+- **`test` quotes what each failed test said.** A finding names the panic place and up to three
+  lines of the panic message, from libtest or nextest output, so the reason needs no second run.
+- **`idempotent` shows how the second run ended.** When the suite fails the second time and names
+  no test, the finding gives the last three lines of stdout and of stderr.
+- **chock's own `crap` record holds every function.** 580 functions were not in the record, so a
+  rise in one passed until it was over CRAP 30. The record now holds each one at its score of
+  today, and no function it held before gets a higher score.
+
 ## [0.5.3] - 2026-10-12
 
 - **`coverage` and `crap` run beside the suite.** `coverage` builds instrumented code in a

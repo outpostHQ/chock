@@ -36,8 +36,10 @@ green while nothing is measured.
 anything. Raising a record is a deliberate commit, where a reviewer can see which debt was accepted
 and why.
 
-The record goes down by itself. A run that measures less says `lowered the record for …` on stderr
-and leaves `.chock/baseline.json` modified: commit it with your change, or CI fails it.
+The record goes down at a commit. The pre-commit hook writes each lower number into
+`.chock/baseline.json` and adds the file to the commit. A `chock run` on work in progress moves no
+record and says `measured less for …`. Without the hook, run `chock baseline --lower GATE` and
+commit the file, or CI fails.
 
 A gate with no record gets its first one from `chock run`, which says `wrote the first record for
 …`. No step needs `chock baseline` for that.

@@ -162,15 +162,18 @@ compiles ends, and a gate that does not pass adds its reasons there at once.
 In the example above the repair is to split `render`. `chock baseline complexity` accepts the debt
 instead: it raises the record in `.chock/baseline.json`, a file that reviewers see in the diff.
 
-The record goes down by itself. A run that measures less says `lowered the record for …` on stderr
-and leaves `.chock/baseline.json` modified. Commit it with your change, or CI fails.
+The record goes down at a commit. The pre-commit hook writes each lower number into
+`.chock/baseline.json` and adds the file to the commit. A `chock run` on work in progress moves no
+record and says `measured less for …`. Without the hook, run `chock baseline --lower GATE` and
+commit the file, or CI fails.
 
 **Example.** Your project has 400 comment blocks that are too long. You switch on `slop` and run
 `chock run slop`, which writes 400 as the first record for the files that hold them. From then on:
 
 - a new file with a long comment block trips the gate;
 - one more long block in a file that already has some trips the gate;
-- fix 10 of them and the record drops to 390, so the count can never climb back to 400.
+- fix 10 of them, and the next commit drops the record to 390, so the count can never climb
+  back to 400.
 
 ## 6. See all the debt
 
@@ -212,7 +215,7 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/run-v1.json",
   "version": 1,
-  "chock": "0.5.3",
+  "chock": "0.5.4",
   "gates": [
     {
       "gate": "complexity",

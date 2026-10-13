@@ -378,10 +378,17 @@ pub struct Settled {
     /// Gates that had no record before this run.
     pub first: Vec<String>,
     pub lowered: Vec<String>,
+    /// Gates that measured less outside a commit; the pre-commit hook lowers their record.
+    pub waiting: Vec<String>,
 }
 
 impl Settled {
-    fn take(&mut self, held: &Baseline, report: &GateReport, series: &Series) {
+    fn take(&mut self, held: &Baseline, report: &GateReport, series: &Series, committing: bool) {
+        // Work in progress can lose an item and get it back, so only a commit moves a record down.
+        if held.has(&report.gate) && !committing {
+            self.waiting.push(report.gate.clone());
+            return;
+        }
         self.record.set(&report.gate, series.clone());
         if held.has(&report.gate) {
             self.lowered.push(report.gate.clone());
@@ -394,8 +401,30 @@ impl Settled {
         self.first.push(report.gate.clone());
     }
 
-    fn is_empty(&self) -> bool {
-        self.first.is_empty() && self.lowered.is_empty()
+    fn writes(&self) -> bool {
+        !(self.first.is_empty() && self.lowered.is_empty())
+    }
+
+    /// Writes the record where this run changed it, and says what it did. At a commit the file
+    /// goes into the commit, unless it holds a change nobody staged.
+    fn written(mut self, root: &std::path::Path, chock_version: &str, committing: bool) -> String {
+        if !self.writes() {
+            return self.said();
+        }
+        // The file names the chock that wrote it, as `chock baseline` leaves it.
+        self.record.chock = chock_version.to_string();
+        let file = crate::run::baseline::FILE;
+        let git =
+            |args: &[&str]| crate::exec::run("git", args, root).is_ok_and(|out| out.success());
+        let stages = committing && git(&["diff", "--quiet", "--", file]);
+        let rendered = crate::project::document::render(&self.record);
+        match crate::project::document::write(&root.join(file), &rendered) {
+            Ok(()) if stages && git(&["add", "--", file]) => {
+                format!("{}; {file} is in this commit", self.said())
+            }
+            Ok(()) => format!("{}; commit {file} with this change", self.said()),
+            Err(error) => format!("could not write {file}, so this run recorded nothing: {error}"),
+        }
     }
 
     /// What was written, in the words the run prints: first records, then lowered ones.
@@ -404,9 +433,13 @@ impl Settled {
         let part = |what: &str, gates: &[String]| {
             (!gates.is_empty()).then(|| format!("{what} {}", gates.join(", ")))
         };
+        let waiting = part("measured less for", &self.waiting).map(|said| {
+            format!("{said}, and the pre-commit hook lowers the record at the next commit")
+        });
         [
             part("wrote the first record for", &self.first),
             part("lowered the record for", &self.lowered),
+            waiting,
         ]
         .into_iter()
         .flatten()
@@ -415,21 +448,22 @@ impl Settled {
     }
 }
 
-/// What this run writes into the record: each first record and each lower number it measured;
-/// `None` when it has neither.
+/// What this run writes into the record: each first record, and each lower number it measured
+/// when it gates a commit; `None` when it has nothing to write or to say.
 #[must_use]
-pub fn locked_in(held: &Baseline, reports: &[GateReport]) -> Option<Settled> {
+pub fn locked_in(held: &Baseline, reports: &[GateReport], committing: bool) -> Option<Settled> {
     let mut settled = Settled {
         record: held.clone(),
         first: Vec::new(),
         lowered: Vec::new(),
+        waiting: Vec::new(),
     };
     for report in reports {
         if let Some(series) = &report.tightened {
-            settled.take(held, report, series);
+            settled.take(held, report, series, committing);
         }
     }
-    (!settled.is_empty()).then_some(settled)
+    (!settled.said().is_empty()).then_some(settled)
 }
 
 /// What a finished run leaves behind: its record for `chock explain`, and each first record and
@@ -439,22 +473,15 @@ pub fn settle(
     held: &Baseline,
     reports: &[GateReport],
     chock_version: &str,
+    committing: bool,
 ) {
     remember_or_say(root, reports, chock_version);
-    let Some(mut settled) = locked_in(held, reports) else {
-        return;
-    };
-    // The file names the chock that wrote it, as `chock baseline` leaves it.
-    settled.record.chock = chock_version.to_string();
-    let file = crate::run::baseline::FILE;
-    let said = match crate::project::document::write(
-        &root.join(file),
-        &crate::project::document::render(&settled.record),
-    ) {
-        Ok(()) => format!("{}; commit {file} with this change", settled.said()),
-        Err(error) => format!("could not write {file}, so this run recorded nothing: {error}"),
-    };
-    eprintln!("chock: {said}");
+    if let Some(settled) = locked_in(held, reports, committing) {
+        eprintln!(
+            "chock: {}",
+            settled.written(root, chock_version, committing)
+        );
+    }
 }
 
 /// `remember`, saying so on stderr when the record could not be written: `chock explain` then
@@ -1419,7 +1446,7 @@ mod tests {
     #[test]
     fn nothing_lowered_writes_no_record() {
         let report = GateReport::new("slop", Verdict::Pass, "chock run slop");
-        assert_eq!(locked_in(&Baseline::empty("0.1.0"), &[report]), None);
+        assert_eq!(locked_in(&Baseline::empty("0.1.0"), &[report], true), None);
     }
 
     #[test]
@@ -1441,7 +1468,14 @@ mod tests {
             wrote("typos", Some("typo(s)")),
             wrote("nesting", None),
         ];
-        let settled = locked_in(&held, &reports).unwrap();
+        let working = locked_in(&held, &reports, false).unwrap();
+        assert_eq!(
+            working.said(),
+            "wrote the first record for typos, nesting; measured less for slop, and the pre-commit \
+             hook lowers the record at the next commit"
+        );
+        assert_eq!(working.record.gate("slop").get("src/a.rs"), Some(9));
+        let settled = locked_in(&held, &reports, true).unwrap();
         assert_eq!(
             settled.said(),
             "wrote the first record for typos, nesting; lowered the record for slop"
@@ -1459,7 +1493,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    fn a_gain_is_written_into_the_record_and_one_with_nowhere_to_go_writes_nothing() {
+    fn a_gain_waits_for_a_commit_and_a_first_record_with_nowhere_to_go_writes_nothing() {
         let dir = crate::testdir::make("report-settle");
         let mut held = crate::run::baseline::Baseline::empty("0.0.9");
         let mut was = crate::run::baseline::Series::new();
@@ -1473,20 +1507,23 @@ mod tests {
             let text = std::fs::read_to_string(dir.join(crate::run::baseline::FILE)).unwrap();
             crate::project::document::parse(&text, "baseline").unwrap()
         };
-        settle(&dir, &held, std::slice::from_ref(&gained), "0.1.0");
-        assert_eq!(written().gate("slop"), lower);
-        assert_eq!(written().chock, "0.1.0", "the chock that wrote the file");
+        settle(&dir, &held, std::slice::from_ref(&gained), "0.1.0", false);
+        assert!(
+            !dir.join(crate::run::baseline::FILE).exists(),
+            "a gain outside a commit waits for the pre-commit hook"
+        );
         // A first record goes in with its unit, beside what the run held for the other gates.
         let mut first = GateReport::new("typos", Verdict::Pass, "chock run typos");
         first.tightened = Some(lower.clone());
         first.unit = Some("typo(s)".to_string());
-        settle(&dir, &held, std::slice::from_ref(&first), "0.1.0");
+        settle(&dir, &held, &[first.clone(), gained], "0.1.0", false);
+        assert_eq!(written().chock, "0.1.0", "the chock that wrote the file");
         assert_eq!(written().gate("typos"), lower);
         assert_eq!(written().unit("typos"), Some("typo(s)"));
         assert_eq!(written().gate("slop"), was);
         let blocked = crate::testdir::make("report-settle-blocked");
         std::fs::write(blocked.join(".chock"), "not a directory").unwrap();
-        settle(&blocked, &held, &[gained], "0.1.0");
+        settle(&blocked, &held, &[first], "0.1.0", false);
         assert_eq!(
             std::fs::read_to_string(blocked.join(".chock")).unwrap(),
             "not a directory"

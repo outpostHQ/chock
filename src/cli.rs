@@ -74,6 +74,7 @@ pub fn dispatch(args: &[&str]) -> ExitCode {
                 json,
                 no_cache,
                 hook: false,
+                commits: false,
                 miri_part,
                 skip: &skip,
             };
@@ -300,6 +301,7 @@ pub(crate) fn project_named<'a>(
 fn hooked(tier: Tier, when: &str, fix: &str) -> ExitCode {
     let how = How {
         hook: true,
+        commits: tier == Tier::Committing,
         ..How::default()
     };
     gated(run_gates_code(&[], tier, how), when, fix)
@@ -322,6 +324,8 @@ struct How<'a> {
     json: bool,
     /// A git hook asked, for which no gate staged is not a refusal.
     hook: bool,
+    /// The pre-commit hook asked, so a lower number goes into the record and into the commit.
+    commits: bool,
     /// Every gate is judged again; no kept verdict answers.
     no_cache: bool,
     /// The part of the Miri suite this run takes; `None` is all of it.
@@ -358,7 +362,13 @@ fn run_gates_code(names: &[&str], tier: Tier, how: How<'_>) -> u8 {
         eprintln!("{}", done.progress())
     });
     emit_run(&result, how.json);
-    run::report::settle(&ctx.root, &ctx.baseline, &result.gates, VERSION);
+    run::report::settle(
+        &ctx.root,
+        &ctx.baseline,
+        &result.gates,
+        VERSION,
+        how.commits,
+    );
     let code = result.verdict().code();
     crate::run::evidence::record(&ctx.root, &invocation(names), code);
     code

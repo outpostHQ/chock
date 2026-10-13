@@ -58,7 +58,7 @@ pub fn render(owed: &[Debt]) -> String {
         return "The baseline holds no debt.\n".to_string();
     }
     let mut out =
-        "Debt on record. A run that measures less lowers the record and keeps it lower.\n"
+        "Debt on record. A commit that measures less lowers the record and keeps it lower.\n"
             .to_string();
     for debt in owed {
         out.push_str(&format!(
@@ -156,7 +156,7 @@ mod tests {
         assert_eq!(
             render(&owed),
             format!(
-                "Debt on record. A run that measures less lowers the record and keeps it lower.\n\nslop — 9 over-long comment block(s) in 2 place(s)\n  src/b.rs: 7\n  src/a.rs: 2\n  fix: {}\n",
+                "Debt on record. A commit that measures less lowers the record and keeps it lower.\n\nslop — 9 over-long comment block(s) in 2 place(s)\n  src/b.rs: 7\n  src/a.rs: 2\n  fix: {}\n",
                 crate::gates::fixes::fix("slop").unwrap()
             )
         );

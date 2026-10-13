@@ -782,10 +782,12 @@ fn slop_record(dir: &Path) -> Option<u64> {
 }
 
 #[test]
-fn a_fix_lowers_the_record_and_ci_refuses_a_change_that_did_not_commit_it() {
+fn a_fix_lowers_the_record_at_a_commit_and_ci_refuses_a_change_that_did_not_commit_it() {
     let two = format!("{OVER_LIMIT}{OVER_LIMIT}");
     let dir = project("baseline-locks-in", &[("src/legacy.rs", &two)]);
+    turn_on(&dir, &["slop"]);
     assert_eq!(chock(&dir, &["baseline", "slop"]).code, 0);
+    first_commit(&dir);
     put(&dir, "src/legacy.rs", OVER_LIMIT);
     let held = std::fs::read_to_string(dir.join(".chock/baseline.json")).unwrap();
 
@@ -799,9 +801,26 @@ fn a_fix_lowers_the_record_and_ci_refuses_a_change_that_did_not_commit_it() {
     let local = exits(&dir, &["run", "slop"], 0);
     says(
         &local.err,
-        "chock: lowered the record for slop; commit .chock/baseline.json",
+        "chock: measured less for slop, and the pre-commit hook lowers the record",
+    );
+    assert_eq!(
+        slop_record(&dir),
+        Some(2),
+        "work in progress moves no record"
+    );
+
+    assert!(git(&dir, &["add", "src/legacy.rs"]).status.success());
+    let hook = exits(&dir, &["hook", "pre-commit"], 0);
+    says(
+        &hook.err,
+        "chock: lowered the record for slop; .chock/baseline.json is in this commit",
     );
     assert_eq!(slop_record(&dir), Some(1));
+    let staged = git(&dir, &["diff", "--cached", "--name-only"]);
+    says(
+        &String::from_utf8_lossy(&staged.stdout),
+        ".chock/baseline.json",
+    );
     assert_eq!(
         chock(&dir, &["run", "slop", "--ci"]).code,
         0,
@@ -813,6 +832,14 @@ fn a_fix_lowers_the_record_and_ci_refuses_a_change_that_did_not_commit_it() {
     assert_eq!(lowered.code, 0, "{}", lowered.err);
     says(&lowered.out, "lowered   slop         1 item");
     assert_eq!(slop_record(&dir), Some(1));
+
+    // A record file with a change nobody staged stays out of the commit: it may hold a raise.
+    put(&dir, ".chock/baseline.json", &held);
+    let unstaged = exits(&dir, &["hook", "pre-commit"], 0);
+    says(
+        &unstaged.err,
+        "lowered the record for slop; commit .chock/baseline.json with this change",
+    );
 }
 
 #[test]
