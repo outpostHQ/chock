@@ -32,9 +32,20 @@ pub fn jobs(
 /// Available memory in MB from `MemAvailable`, not `MemFree`, which leaves out reclaimable cache.
 #[must_use]
 pub fn available_from_meminfo(meminfo: &str) -> Option<u64> {
+    meminfo_mb(meminfo, "MemAvailable:")
+}
+
+/// All of the machine's memory in MB, from `MemTotal`.
+#[must_use]
+pub fn total_from_meminfo(meminfo: &str) -> Option<u64> {
+    meminfo_mb(meminfo, "MemTotal:")
+}
+
+/// The kB on the `meminfo` line that starts with `key`, in MB.
+fn meminfo_mb(meminfo: &str, key: &str) -> Option<u64> {
     meminfo
         .lines()
-        .find_map(|line| line.strip_prefix("MemAvailable:"))
+        .find_map(|line| line.strip_prefix(key))
         .and_then(|rest| rest.split_whitespace().next())
         .and_then(|kb| kb.parse::<u64>().ok())
         .map(|kb| kb / 1024)
@@ -46,6 +57,46 @@ pub fn available_from_cgroup(limit: &str, current: &str) -> Option<u64> {
     let limit: u64 = limit.trim().parse().ok()?;
     let current: u64 = current.trim().parse().ok().unwrap_or(0);
     Some(limit.saturating_sub(current) / (1024 * 1024))
+}
+
+/// The cgroup v2 directories that hold this process, its own first and the root last, from what
+/// `/proc/self/cgroup` says. A limit on any of them binds, as on the scope a job runner makes.
+#[must_use]
+pub fn cgroup_dirs(own: &str) -> Vec<String> {
+    let own = own.lines().find_map(|line| line.strip_prefix("0::"));
+    let mut at = own.unwrap_or("/").trim().trim_end_matches('/');
+    let mut dirs = vec![format!("/sys/fs/cgroup{at}")];
+    while let Some((up, _)) = at.rsplit_once('/') {
+        at = up;
+        dirs.push(format!("/sys/fs/cgroup{at}"));
+    }
+    dirs
+}
+
+/// The least any cgroup in `dirs` allows, as `read` reads its limit and its charge from `file`.
+fn least(
+    dirs: &[String],
+    file: &dyn Fn(&str) -> Option<String>,
+    read: fn(&str, &str) -> Option<u64>,
+) -> Option<u64> {
+    let each = dirs.iter().filter_map(|dir| {
+        let limit = file(&format!("{dir}/memory.max"))?;
+        read(
+            &limit,
+            &file(&format!("{dir}/memory.current")).unwrap_or_default(),
+        )
+    });
+    each.min()
+}
+
+/// What `least` reads from the cgroups that hold this process.
+fn cgroups(read: fn(&str, &str) -> Option<u64>) -> Option<u64> {
+    let own = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+    least(
+        &cgroup_dirs(&own),
+        &|path| std::fs::read_to_string(path).ok(),
+        read,
+    )
 }
 
 /// Free memory in MB from macOS's `vm_stat`: the free and inactive pages, at the page size its
@@ -275,21 +326,69 @@ pub fn of_this_machine(per_job_mb: u64) -> usize {
     )
 }
 
-/// The memory free for new work in MB: the host's or the container's, whichever is less. Where no
-/// file holds the host's, `ASK` prints it.
-#[must_use]
-pub fn available_mb() -> Option<u64> {
+/// The environment variable that sets the MB one run may use. The lanes plan within it, and chock
+/// stops a tool whose processes hold more.
+pub const MEMORY: &str = "CHOCK_MEMORY";
+
+/// The MB that `MEMORY` sets, when it holds a number.
+fn asked_memory() -> Option<u64> {
+    std::env::var(MEMORY).ok()?.trim().parse().ok()
+}
+
+/// The memory free for new work in MB: the host's, or the tightest cgroup's that holds this
+/// process, whichever is less. Where no file holds the host's, `ASK` prints it.
+fn free_mb() -> Option<u64> {
     let host = std::fs::read_to_string("/proc/meminfo")
         .ok()
         .and_then(|text| available_from_meminfo(&text))
         .or_else(|| asked_mb(ASK));
-    let container = std::fs::read_to_string("/sys/fs/cgroup/memory.max")
+    tightest(host, cgroups(available_from_cgroup))
+}
+
+/// The memory a run may plan for in MB: what is free, held to `MEMORY` when it is set.
+#[must_use]
+pub fn available_mb() -> Option<u64> {
+    tightest(free_mb(), asked_memory())
+}
+
+/// All the memory this process may use in MB: the machine's, or a cgroup's limit when less.
+fn total_mb() -> Option<u64> {
+    let host = std::fs::read_to_string("/proc/meminfo")
         .ok()
-        .and_then(|limit| {
-            let current = std::fs::read_to_string("/sys/fs/cgroup/memory.current").ok()?;
-            available_from_cgroup(&limit, &current)
+        .and_then(|text| total_from_meminfo(&text));
+    tightest(host, cgroups(|limit, _| available_from_cgroup(limit, "")))
+}
+
+/// Why a tool whose processes hold `held` MB must stop now, or `None` while it may go on.
+#[must_use]
+pub fn over_limit(held: u64) -> Option<String> {
+    stopped(held, asked_memory(), total_mb, free_mb)
+}
+
+/// Why a tool that holds `held` MB stops: past `asked` MB when a limit is set; else past half of
+/// all memory while less than a tenth of it stays free, where a machine starts to stall.
+fn stopped(
+    held: u64,
+    asked: Option<u64>,
+    total: fn() -> Option<u64>,
+    free: fn() -> Option<u64>,
+) -> Option<String> {
+    if let Some(limit) = asked {
+        return (held > limit).then(|| {
+            format!("at the memory limit: its processes held {held} MB, past the {limit} MB `{MEMORY}` sets")
         });
-    tightest(host, container)
+    }
+    let total = total()?;
+    if held <= total / 2 {
+        return None;
+    }
+    let free = free()?;
+    (free < total / 10).then(|| {
+        format!(
+            "at the memory limit: its processes held {held} MB of {total} MB, and {free} MB stayed \
+             free; `{MEMORY}` sets a limit"
+        )
+    })
 }
 
 #[cfg(test)]
@@ -438,6 +537,61 @@ mod tests {
     #[test]
     fn a_cgroup_charged_past_its_limit_leaves_nothing_rather_than_wrapping() {
         assert_eq!(available_from_cgroup("1048576", "2097152"), Some(0));
+    }
+
+    #[test]
+    fn the_whole_memory_is_read_from_the_total_line() {
+        let meminfo = "MemTotal:       131072000 kB\nMemAvailable:   1048576 kB\n";
+        assert_eq!(total_from_meminfo(meminfo), Some(128_000));
+        assert_eq!(total_from_meminfo("MemAvailable: 1 kB\n"), None);
+    }
+
+    /// A job runner's scope sets its limit on the process's own cgroup, not on the root.
+    #[test]
+    fn every_cgroup_from_the_process_up_to_the_root_can_bind() {
+        let own = "0::/user.slice/run-a.scope\n";
+        let up = ["/user.slice/run-a.scope", "/user.slice", ""];
+        let dirs: Vec<String> = up.iter().map(|at| format!("/sys/fs/cgroup{at}")).collect();
+        assert_eq!(cgroup_dirs(own), dirs);
+        assert_eq!(
+            cgroup_dirs("0::/\n"),
+            ["/sys/fs/cgroup"],
+            "a container sees its own root"
+        );
+        assert_eq!(cgroup_dirs(""), ["/sys/fs/cgroup"]);
+        let files = |path: &str| match path {
+            "/a/memory.max" => Some("8388608".to_string()),
+            "/a/memory.current" => Some("1048576".to_string()),
+            "/b/memory.max" => Some("max".to_string()),
+            "/c/memory.max" => Some("4194304".to_string()),
+            _ => None,
+        };
+        let dirs = ["/a", "/b", "/c", "/d"].map(String::from);
+        assert_eq!(
+            least(&dirs, &files, available_from_cgroup),
+            Some(4),
+            "c, charged nothing"
+        );
+        assert_eq!(least(&dirs[..2], &files, available_from_cgroup), Some(7));
+        assert_eq!(least(&dirs[1..2], &files, available_from_cgroup), None);
+    }
+
+    #[test]
+    fn a_tool_stops_past_the_set_limit_or_past_half_while_a_tenth_is_not_free() {
+        let (total, free) = (|| Some(1000), || Some(99));
+        let roomy = || Some(100);
+        assert!(stopped(11, Some(10), total, free).is_some_and(|why| why.contains("10 MB")));
+        assert_eq!(stopped(10, Some(10), total, free), None);
+        assert_eq!(
+            stopped(600, Some(700), total, free),
+            None,
+            "a set limit decides alone"
+        );
+        assert!(stopped(501, None, total, free).is_some_and(|why| why.contains("99 MB")));
+        assert_eq!(stopped(500, None, total, free), None, "half may run");
+        assert_eq!(stopped(501, None, total, roomy), None, "a tenth still free");
+        assert_eq!(stopped(501, None, || None, free), None);
+        assert_eq!(stopped(501, None, total, || None), None);
     }
 
     #[test]

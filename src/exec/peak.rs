@@ -58,8 +58,10 @@ pub(super) struct Sampled<'a> {
     peak: Option<Arc<Peak>>,
     root: u32,
     read: fn(u32) -> u64,
+    stop: fn(u64) -> Option<String>,
     held: u64,
     read_at: Option<Instant>,
+    over: bool,
 }
 
 impl<'a> Sampled<'a> {
@@ -73,30 +75,46 @@ impl<'a> Sampled<'a> {
             peak: current(),
             root,
             read,
+            stop: super::budget::over_limit,
             held: 0,
             read_at: None,
+            over: false,
         }
     }
 
-    fn sample(&mut self) {
-        let Some(peak) = &self.peak else { return };
+    /// Reads the tree, and refuses once it holds more than `stop` allows.
+    fn sample(&mut self) -> Result<(), String> {
+        let Some(peak) = &self.peak else {
+            return Ok(());
+        };
         if self.read_at.is_some_and(|at| at.elapsed() < EVERY) {
-            return;
+            return Ok(());
         }
         self.read_at = Some(Instant::now());
         let now = (self.read)(self.root);
         peak.moved(self.held, now);
         self.held = now;
+        let Some(why) = (self.stop)(now) else {
+            return Ok(());
+        };
+        self.over = true;
+        Err(why)
     }
 }
 
 impl super::Watchdog for Sampled<'_> {
     fn poll(&mut self) -> Result<(), String> {
-        self.sample();
-        self.inner.poll()
+        self.sample().and_then(|()| self.inner.poll())
     }
     fn complete(&mut self) -> Result<(), String> {
         self.inner.complete()
+    }
+    fn stage(&self) -> super::Stage {
+        if self.over {
+            super::Stage::Memory
+        } else {
+            self.inner.stage()
+        }
     }
 }
 
@@ -232,6 +250,27 @@ mod tests {
         drop((first, second));
         Sampled::with(&mut quiet, 3, counted).poll().unwrap();
         assert_eq!(gate.most(), Some(10), "6 and 4 at once; 3 after both ended");
+    }
+
+    #[test]
+    fn a_tree_past_the_memory_limit_is_refused_as_a_memory_stop() {
+        let held = |root: u32| u64::from(root);
+        let past_five = |mb: u64| (mb > 5).then(|| format!("held {mb} MB"));
+        let _counted = enter(Some(Arc::new(Peak::default())));
+        let mut quiet = ();
+        let mut small = Sampled::with(&mut quiet, 5, held);
+        small.stop = past_five;
+        assert_eq!(small.poll(), Ok(()));
+        assert_eq!(
+            small.stage(),
+            crate::exec::Stage::Hung,
+            "the inner watchdog's stop"
+        );
+        drop(small);
+        let mut large = Sampled::with(&mut quiet, 6, held);
+        large.stop = past_five;
+        assert_eq!(large.poll(), Err("held 6 MB".to_string()));
+        assert_eq!(large.stage(), crate::exec::Stage::Memory);
     }
 
     #[cfg(target_os = "linux")]

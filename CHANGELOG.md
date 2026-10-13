@@ -24,6 +24,14 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   lines that no test ran, such as the arm that says why a test failed. The same module in its own
   `tests.rs` counted nothing. Now `coverage` leaves out the lines of each `#[cfg(test)]` module and
   each `tests.rs` or `*_tests.rs` file. A count can only go down, so no record trips at the upgrade.
+- **chock stops a tool at the memory limit.** A Kani harness drove cbmc to 67 GB, and the machine
+  stopped answering. Now chock reads each tool's processes once a second. It stops them past
+  `CHOCK_MEMORY` MB, or, with no limit set, past half of all memory while less than a tenth stays
+  free. The gate says `stopped … at the memory limit` with the size. A tool that a signal ended says
+  that SIGKILL most often means the memory limit.
+- **The lanes plan within the cgroup that holds the run.** chock read the limit of a container's
+  root cgroup only, so inside a job runner's scope it planned for the whole machine. Now the
+  tightest cgroup from the process up to the root counts, and `CHOCK_MEMORY` caps the plan.
 - **chock's own `binsize` record holds the size of 0.5.4.** The binary grew by 266 KB on Linux
   and 254 KB on Windows from 0.2.0 to 0.5.4, with the features of those releases. The record now
   holds the size CI measured for 0.5.4 on each system.

@@ -98,12 +98,18 @@ Install the pinned tools, then run every gate but the `local_only` ones:
 `chock run --fast --ci` runs only the gates of the commit set, with CI's rules. chock's own CI runs
 it as a quick first job on Linux.
 
-Two environment variables change how a run uses the machine:
+Three environment variables change how a run uses the machine:
 
 | Variable | Default | What it sets |
 |---|---|---|
 | `CHOCK_TIMEOUT` | 1800 (30 min) | The seconds one tool may run before chock stops it. |
 | `CHOCK_JOBS` | the cores, as memory allows | The build jobs at once. chock then does not read the memory. |
+| `CHOCK_MEMORY` | what is free | The MB one run may use. Gates run side by side only while their recorded peaks fit, and chock stops a tool whose processes hold more. |
+
+chock reads the free memory from `/proc/meminfo` and from each cgroup that holds the run, so the
+limit of a container or of a job runner's scope counts. With no `CHOCK_MEMORY`, chock stops a tool
+whose processes hold more than half of all memory while less than a tenth stays free. The gate then
+says `stopped … at the memory limit` with the size, and does not pass.
 
 `chock init --global` installs [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) first,
 then every other tool from its own prebuilt release, in minutes; a tool with no release for the

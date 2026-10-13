@@ -40,17 +40,27 @@ pub enum Stage {
     Hung,
     /// The child ran, and the network failed it on each try.
     Offline,
+    /// The child's processes held more memory than the run allows.
+    Memory,
+}
+
+impl Stage {
+    /// What happened to the tool at this step, said before the tool's name.
+    const fn says(self) -> &'static str {
+        match self {
+            Self::Spawn => "could not start",
+            Self::Capture => "could not read the output of",
+            Self::Wait => "could not collect the exit of",
+            Self::Hung => "gave up waiting for",
+            Self::Offline => "could not reach the network for",
+            Self::Memory => "stopped",
+        }
+    }
 }
 
 impl fmt::Display for Stage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Spawn => write!(f, "could not start"),
-            Self::Capture => write!(f, "could not read the output of"),
-            Self::Wait => write!(f, "could not collect the exit of"),
-            Self::Hung => write!(f, "gave up waiting for"),
-            Self::Offline => write!(f, "could not reach the network for"),
-        }
+        f.write_str(self.says())
     }
 }
 
@@ -116,6 +126,18 @@ impl Output {
             .unwrap_or("no reason given")
     }
 
+    /// What a signal that ended a process says: the kernel ends one with SIGKILL (exit 137) when
+    /// memory runs out, which the tool's own words do not say.
+    fn signal_note(&self) -> &'static str {
+        let signalled = self.code.is_none() || self.code == Some(137);
+        if signalled || self.stderr.contains("SIGKILL") {
+            "a signal ended a process, most often SIGKILL at the memory limit; `CHOCK_MEMORY` sets \
+             what a run plans for. "
+        } else {
+            ""
+        }
+    }
+
     /// The failure reason plus both streams' tails; a closing summary often omits what failed.
     #[must_use]
     pub fn failure_details(&self) -> String {
@@ -125,7 +147,8 @@ impl Output {
             ""
         };
         format!(
-            "{}{cut}{}{}",
+            "{}{}{cut}{}{}",
+            self.signal_note(),
             text_tail(self.why_it_failed(), 1024),
             diagnostic("stdout", &self.stdout),
             diagnostic("stderr", &self.stderr)
@@ -275,6 +298,10 @@ pub fn printed(
 pub(crate) trait Watchdog {
     fn poll(&mut self) -> Result<(), String>;
     fn complete(&mut self) -> Result<(), String>;
+    /// The step a refusal from `poll` stopped.
+    fn stage(&self) -> Stage {
+        Stage::Hung
+    }
 }
 
 impl Watchdog for () {
@@ -712,7 +739,9 @@ fn observed_exit(
     process: &mut Process,
     watchdog: &mut dyn Watchdog,
 ) -> Result<bool, (Stage, String)> {
-    watchdog.poll().map_err(|reason| (Stage::Hung, reason))?;
+    watchdog
+        .poll()
+        .map_err(|reason| (watchdog.stage(), reason))?;
     let exited = process
         .exited()
         .map_err(|error| (Stage::Wait, error.to_string()))?;
@@ -946,6 +975,18 @@ mod tests {
             Stage::Offline.to_string(),
             "could not reach the network for"
         );
+        assert_eq!(Stage::Memory.to_string(), "stopped");
+    }
+
+    #[test]
+    fn a_process_a_signal_ended_is_said_to_be_most_often_at_the_memory_limit() {
+        let details = |code, stderr| Output::of(code, "", stderr).failure_details();
+        let memory = "most often SIGKILL at the memory limit";
+        assert!(details(None, "").contains(memory));
+        assert!(details(Some(137), "").contains(memory));
+        let cargo = "error: test failed\n(signal: 9, SIGKILL: kill)\n";
+        assert!(details(Some(101), cargo).contains(memory));
+        assert!(!details(Some(1), "error: test failed\n").contains(memory));
     }
 
     fn said(stdout: &str, stderr: &str) -> Output {
@@ -1521,7 +1562,21 @@ mod tests {
                 Err("completed too early".into())
             }
         }
+        struct OverMemory;
+        impl Watchdog for OverMemory {
+            fn poll(&mut self) -> Result<(), String> {
+                Err("held 9 MB".into())
+            }
+            fn complete(&mut self) -> Result<(), String> {
+                Ok(())
+            }
+            fn stage(&self) -> Stage {
+                Stage::Memory
+            }
+        }
         let mut child = Process::spawn(Command::new("sleep").arg("60")).unwrap();
+        let stopped = observed_exit(&mut child, &mut OverMemory);
+        assert_eq!(stopped, Err((Stage::Memory, "held 9 MB".to_string())));
         let status = observed_exit(&mut child, &mut MustWait);
         let cleanup = child.finish();
         assert_eq!(status, Ok(false));
