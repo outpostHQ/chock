@@ -452,10 +452,12 @@ impl Settled {
         let part = |what: &str, gates: &[String]| {
             (!gates.is_empty()).then(|| format!("{what} {}", gates.join(", ")))
         };
+        // `take` and `forgotten` keep both totals of each gate they list.
         let by = |gates: &[String]| -> Vec<String> {
-            let moved = |gate: &String| match self.moved.get(gate) {
-                Some((was, now)) => format!("{gate} ({was} to {now})"),
-                None => gate.clone(),
+            let moved = |gate: &String| {
+                let totals = self.moved.get(gate);
+                let said = totals.map(|(was, now)| format!(" ({was} to {now})"));
+                format!("{gate}{}", said.unwrap_or_default())
             };
             gates.iter().map(moved).collect()
         };
@@ -1751,6 +1753,24 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(blocked.join(".chock")).unwrap(),
             "not a directory"
+        );
+    }
+
+    /// A commit's run writes an old `crap` record again in the compact layout.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_commit_writes_an_old_crap_record_again_in_the_compact_layout() {
+        let name = ".chock/crap-baseline.json";
+        let old = "{\n  \"version\": 1,\n  \"diagnostics\": [],\n  \"entries\": [\n    {\n      \
+                   \"crap\": 2.0\n    }\n  ]\n}\n";
+        let root = crate::testdir::repo("report-settle-relaid", &[(name, old)]);
+        let held = crate::run::baseline::Baseline::empty("0.0.9");
+        settle(&root, &held, &[], "0.1.0", false);
+        assert_eq!(std::fs::read_to_string(root.join(name)).unwrap(), old);
+        settle(&root, &held, &[], "0.1.0", true);
+        assert_eq!(
+            std::fs::read_to_string(root.join(name)).unwrap(),
+            "{\n  \"version\": 1,\n  \"entries\": [\n    {\"crap\":2.0}\n  ]\n}\n"
         );
     }
 
