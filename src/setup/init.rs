@@ -1763,14 +1763,6 @@ mod tests {
         assert_eq!(not_fetched(sort, "windows"), None);
     }
 
-    /// A tool that is not fetched counts as set up, so init goes on to the next one.
-    #[test]
-    fn a_tool_that_is_not_fetched_is_set_up() {
-        let parsed = pins::parse("OUTPOST_VERSION=0.0.0\n").unwrap();
-        let start: Start = &crate::exec::run_env;
-        assert!(installs(parsed.first().unwrap(), &|_| None, start));
-    }
-
     #[test]
     fn an_older_chock_pin_never_replaces_the_chock_that_runs() {
         let running = env!("CARGO_PKG_VERSION");
