@@ -1453,6 +1453,12 @@ mod tests {
         ))
     }
 
+    /// What `chock baseline` says it did to each record.
+    #[test]
+    fn a_recording_says_whether_it_lowered_or_recorded() {
+        assert_eq!([kept_as(true), kept_as(false)], ["lowered", "recorded"]);
+    }
+
     /// A gate that cannot measure, or that measures a path outside the project, records nothing.
     #[test]
     fn a_record_that_cannot_be_kept_is_not_written() {

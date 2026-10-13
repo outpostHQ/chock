@@ -1908,6 +1908,10 @@ mod tests {
         assert!(full.contains("--fast"), "{full}");
         let quick = about_to_measure(true, &dir);
         assert!(quick.contains("none of them build it"), "{quick}");
+        // The full run names the gates that `--fast` keeps, as many as the fast run measures.
+        let kept = quick.split_whitespace().nth(1).unwrap_or_default();
+        let spared = format!("only the {kept} that need no compiler");
+        assert!(full.contains(&spared), "wanted `{spared}` in: {full}");
         // The whole point of `--fast`: fewer checks, and none of the ones that compile.
         assert!(!quick.contains("--fast"), "{quick}");
     }
@@ -1980,6 +1984,27 @@ mod tests {
                 "{gate} was not chosen:\n{said}"
             );
         }
+        // In a repository, init also names the gates a commit holds clean in each file it touches.
+        assert!(config.clean_when_touched.is_some(), "{said}");
+    }
+
+    /// With the coverage report written, a crap report that cannot be made records nothing.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_crap_report_that_cannot_be_made_records_nothing() {
+        // A manifest cargo cannot read, so `cargo crap` fails whether it is installed or not.
+        let lcov = "printf 'SF:src/lib.rs\\nDA:1,1\\nend_of_record\\n' > lcov.info";
+        let files = [("Cargo.toml", ""), ("coverage.sh", lcov)];
+        let dir = crate::testdir::tree("init-crap-unmade", &files);
+        let mut ctx = crate::run::Ctx::at(&dir);
+        ctx.coverage = vec!["sh".to_string(), "coverage.sh".to_string()].into();
+        assert!(!record_crap(&ctx, false, "recorded"));
+        assert!(
+            dir.join("lcov.info").is_file(),
+            "the coverage step did not run"
+        );
+        let record = dir.join(crate::gates::coverage::crap::baseline());
+        assert!(!record.exists(), "a record was written");
     }
 
     #[cfg(unix)]
