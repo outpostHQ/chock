@@ -383,6 +383,15 @@ pub struct Settled {
 }
 
 impl Settled {
+    fn new(held: &Baseline) -> Self {
+        Self {
+            record: held.clone(),
+            first: Vec::new(),
+            lowered: Vec::new(),
+            waiting: Vec::new(),
+        }
+    }
+
     fn take(&mut self, held: &Baseline, report: &GateReport, series: &Series, committing: bool) {
         // Work in progress can lose an item and get it back, so only a commit moves a record down.
         if held.has(&report.gate) && !committing {
@@ -452,12 +461,7 @@ impl Settled {
 /// when it gates a commit; `None` when it has nothing to write or to say.
 #[must_use]
 pub fn locked_in(held: &Baseline, reports: &[GateReport], committing: bool) -> Option<Settled> {
-    let mut settled = Settled {
-        record: held.clone(),
-        first: Vec::new(),
-        lowered: Vec::new(),
-        waiting: Vec::new(),
-    };
+    let mut settled = Settled::new(held);
     for report in reports {
         if let Some(series) = &report.tightened {
             settled.take(held, report, series, committing);
@@ -476,12 +480,62 @@ pub fn settle(
     committing: bool,
 ) {
     remember_or_say(root, reports, chock_version);
-    if let Some(settled) = locked_in(held, reports, committing) {
+    if let Some(settled) = forgets(root, held, locked_in(held, reports, committing), committing) {
         eprintln!(
             "chock: {}",
             settled.written(root, chock_version, committing)
         );
     }
+}
+
+/// `settled`, and at a commit, less each record of a file that neither the disk nor the repository
+/// holds any more: a file that comes back at the same path starts again from no record.
+fn forgets(
+    root: &std::path::Path,
+    held: &Baseline,
+    settled: Option<Settled>,
+    committing: bool,
+) -> Option<Settled> {
+    if !committing {
+        return settled;
+    }
+    let holder = crate::project::vcs::live_holder(root);
+    let Ok(tracked) = crate::project::vcs::tracked(root, holder) else {
+        return settled;
+    };
+    let tracked: std::collections::HashSet<String> = tracked.into_iter().collect();
+    forgotten(held, settled, &|file| {
+        !tracked.contains(file) && !root.join(file).exists()
+    })
+}
+
+/// `settled`, less each key of a `gone` file in every gate that keeps a number for each file, on
+/// every system; `None` when it has nothing to write or to say.
+fn forgotten(
+    held: &Baseline,
+    settled: Option<Settled>,
+    gone: &dyn Fn(&str) -> bool,
+) -> Option<Settled> {
+    let mut settled = settled.unwrap_or_else(|| Settled::new(held));
+    let Settled {
+        record, lowered, ..
+    } = &mut settled;
+    for (name, series) in &mut record.gates {
+        let gate = name.split_once('@').map_or(name.as_str(), |(gate, _)| gate);
+        let before = series.0.len();
+        if crate::gates::holds_each_file(gate) {
+            series
+                .0
+                .retain(|key, _| !gone(crate::run::baseline::file_of(key)));
+        }
+        let said = lowered
+            .iter()
+            .any(|was| crate::run::baseline::kept_here(was) == *name);
+        if series.0.len() < before && !said {
+            lowered.push(name.clone());
+        }
+    }
+    (!settled.said().is_empty()).then_some(settled)
 }
 
 /// `remember`, saying so on stderr when the record could not be written: `chock explain` then
@@ -1526,6 +1580,60 @@ mod tests {
             format!("{said}; commit {file} with this change")
         );
         assert_eq!(git(&["diff", "--cached", "--name-only"]), "");
+    }
+
+    /// A key of a gone file goes in each gate that keys by file, on each system; a crate stays.
+    #[test]
+    fn a_commit_forgets_the_records_of_a_file_that_is_gone() {
+        let series = |pairs: &[(&str, u64)]| {
+            let mut series = Series::new();
+            for (key, count) in pairs {
+                series.set(key, *count);
+            }
+            series
+        };
+        let mut held = Baseline::empty("0.1.0");
+        held.set("slop", series(&[("src/a.rs", 3), ("src/gone.rs", 2)]));
+        held.set("dupdeps", series(&[("serde", 2)]));
+        let windows = series(&[("src/gone.rs#negate", 1)]);
+        held.gates.insert("mutest@windows".to_string(), windows);
+        assert_eq!(forgotten(&held, None, &|_| false), None, "nothing gone");
+        let gone = |file: &str| ["src/gone.rs", "serde"].contains(&file);
+        let mut report = GateReport::new("slop", Verdict::Pass, "chock run slop");
+        report.tightened = Some(series(&[("src/a.rs", 1), ("src/gone.rs", 2)]));
+        let settled = forgotten(&held, locked_in(&held, &[report], true), &gone).unwrap();
+        assert_eq!(
+            settled.said(),
+            "lowered the record for slop, mutest@windows"
+        );
+        assert_eq!(settled.record.gate("slop"), series(&[("src/a.rs", 1)]));
+        assert_eq!(settled.record.gate("dupdeps"), series(&[("serde", 2)]));
+        assert_eq!(
+            settled.record.gates.get("mutest@windows"),
+            Some(&Series::new())
+        );
+    }
+
+    /// Only a commit forgets, and only a file that neither the disk nor the index holds.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_file_on_disk_or_in_the_index_keeps_its_record() {
+        let files = [("src/a.rs", ""), ("src/deleted.rs", "")];
+        let root = crate::testdir::repo("report-forgets", &files);
+        std::fs::remove_file(root.join("src/deleted.rs")).unwrap();
+        std::fs::write(root.join("src/new.rs"), "").unwrap();
+        let mut was = Series::new();
+        for file in ["src/a.rs", "src/deleted.rs", "src/new.rs", "src/gone.rs"] {
+            was.set(file, 1);
+        }
+        let mut held = Baseline::empty("0.1.0");
+        held.set("slop", was.clone());
+        assert_eq!(forgets(&root, &held, None, false), None, "outside a commit");
+        let settled = forgets(&root, &held, None, true).unwrap();
+        was.0.remove("src/gone.rs");
+        assert_eq!(settled.record.gate("slop"), was);
+        let bare = crate::testdir::make("report-forgets-bare");
+        assert_eq!(forgets(&bare, &held, None, true), None, "no repository");
     }
 
     #[test]

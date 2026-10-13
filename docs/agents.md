@@ -40,6 +40,8 @@ The record goes down at a commit. The pre-commit hook writes each lower number i
 `.chock/baseline.json` and adds the file to the commit. A `chock run` on work in progress moves no
 record and says `measured less for …`. Without the hook, run `chock baseline --lower GATE` and
 commit the file, or CI fails.
+The hook also drops each record of a file that neither the disk nor the repository holds any
+more, in each gate that counts per file. A file that comes back at that path starts with no record.
 
 A gate with no record gets its first one from `chock run`, which says `wrote the first record for
 …`. No step needs `chock baseline` for that.

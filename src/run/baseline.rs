@@ -27,6 +27,12 @@ fn kept_as(gate: &str, system: &str) -> String {
     }
 }
 
+/// The file a key names: the part before `#`, or the whole key.
+#[must_use]
+pub fn file_of(key: &str) -> &str {
+    key.split_once('#').map_or(key, |(file, _)| file)
+}
+
 /// The name this system keeps the gate's record under.
 #[must_use]
 pub fn kept_here(gate: &str) -> String {

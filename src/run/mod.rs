@@ -816,7 +816,7 @@ fn touched(
         .iter()
         .filter(|(key, count)| **count > 0 && **count <= was.get(key).unwrap_or_default())
         .filter(|(key, _)| {
-            let file = key.split_once('#').map_or(key.as_str(), |(path, _)| path);
+            let file = crate::run::baseline::file_of(key);
             changed.iter().any(|path| path == file)
         })
         .map(|(key, count)| {

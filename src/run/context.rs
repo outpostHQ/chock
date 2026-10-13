@@ -148,7 +148,7 @@ impl Ctx {
         if self.clean_when_touched.iter().any(|name| name == gate) {
             let touched = self.changed().unwrap_or_default();
             held.0.retain(|key, _| {
-                let file = key.split_once('#').map_or(key.as_str(), |(path, _)| path);
+                let file = crate::run::baseline::file_of(key);
                 !touched.iter().any(|path| path == file)
             });
         }

@@ -13,6 +13,10 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the file to the commit. A run outside the hook says `measured less for …` and moves nothing. The
   hook leaves the file out of the commit when it holds a change that nobody staged. A first record
   is written as before, and CI still fails a change that does not commit a gain.
+- **A commit forgets the records of a deleted file.** A record kept the number of a deleted file,
+  so a file that came back at that path could grow up to that number unseen. Now the pre-commit
+  hook drops each key of a file that neither the disk nor the repository holds, in each gate that
+  counts per file, and says `lowered the record for …`. CI does not fail on such a key.
 - **`test` quotes what each failed test said.** A finding names the panic place and up to three
   lines of the panic message, from libtest or nextest output, so the reason needs no second run.
 - **`idempotent` shows how the second run ended.** When the suite fails the second time and names
