@@ -30,6 +30,12 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The `crap` record holds one function to a line.** chock writes `.chock/crap-baseline.json`
   without cargo-crap's `diagnostics` block, which a baseline does not use. A record of 10,000
   functions is about 10,000 lines, not 120,000.
+- **New gate `admits`, on in a tree with Lean proofs.** It ratchets each `sorry`, `admit`,
+  `native_decide` and `axiom` per Lean file and word, outside comments and strings. Each one lets a
+  theorem stand on a step that Lean's kernel never checked. It reads text, so it needs no Lean.
+- **`not_mutated` leaves a file out of `mutest`.** Each entry names a Rust file and the `why`, such
+  as generated code. chock gives mutest every other source by name, and fails a run on an entry
+  with no reason or on a path that is no source mutest mutates.
 - **`mutest` documents its skip.** `docs/gates.md` names `#[cfg_attr(mutest, mutest::skip)]` for a
   function that mutation testing should leave out.
 

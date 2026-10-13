@@ -1,6 +1,6 @@
 # The gates
 
-`chock gates` prints this list from the binary: 59 gates, 36 on by default and 23 opt-in.
+`chock gates` prints this list from the binary: 60 gates, 37 on by default and 23 opt-in.
 `chock gates --json` gives the same list to a program.
 
 A gate is one of two kinds.
@@ -50,6 +50,7 @@ A gate is one of two kinds.
 | `coverage` | ✓ | a file gains lines no test executes; the run names every line of that file no test ran |
 | `binsize` | ✓ | a release binary grows by more than 1% or 256 KiB, whichever is larger |
 | `unsafety` | ✓ | a file gains an `unsafe` block, function, trait, impl or `extern` |
+| `admits` | ✓ | a Lean file gains a `sorry`, `admit`, `native_decide` or `axiom` outside its comments and strings; Lake's `.lake` and `lakefile.lean` do not count |
 | `citations` | ✓ | a doc comment names one more path the repository does not have |
 | `assertions` | ✓ | a test gains an assertion about *how many* instead of *what* |
 | `testlint` | ✓ | a file gains a test that asserts nothing, cannot fail, returns before it checks, is skipped with no reason or has a name that states no claim |
@@ -288,6 +289,7 @@ A gate leaves these out on purpose. Each one has a place that shows it.
 | `placement` | a path dependency outside the tree, where the tree is in no repository | the `path` in `Cargo.toml` |
 | `mutest` | on your machine, the files that the change did not touch. Where more than 2% of the mutations in the touched files time out and mutest did not confirm them by a re-run alone, the run mutates the whole crate | the run says which it did; CI mutates the whole crate |
 | `mutest` | a function marked `#[cfg_attr(mutest, mutest::skip)]`, with a comment beside it that says why | the attribute in the source |
+| `mutest` | a file that `not_mutated` in the config names, with its `why`, such as generated code | the config entry, with its reason |
 | `mutest` | a mutation that times out counts as detected, for up to 2% of the mutations, or for any number once mutest re-ran each alone (`timeouts confirmed:`) | each timed-out mutation is a `candidate` finding at its file and line |
 | `lean` | a file that a tool wrote: a part of its path is `generated`, or one of its first 5 lines says `@generated`, `do not edit`, `automatically generated` or `auto-generated` | the path or the header of the file |
 | `lean` | copies that differ in a string that a macro reads, except format strings with the same placeholders, and copies where code after them reads more than 3 names that they bind; a production function that only tests call; copies of the fields of one struct that a `derive` would write | `duplication`, which compares whole function bodies |

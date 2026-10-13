@@ -42,6 +42,7 @@ Without the parent, the gate cannot run.
 | `miri` | which packages Miri runs over, and its flags |
 | `commands` | your own checks: a `name` and a `run` command; one that `counts` is ratcheted per item |
 | `forbidden` | phrases source must not contain, each with the reason its finding gives |
+| `not_mutated` | Rust files `mutest` does not mutate, each a `path` from the root with the `why`; a path that is no source mutest mutates fails the run |
 | `history` | `accepted`: credentials published on purpose, such as a test key, each named by `commit`, `path` and `rule` with the `reason` it is safe; `history` no longer reports them |
 | `vcs` | `git` or `outpost`, for a tree both hold, when you want to name the one chock reads |
 | `target`, `profile` | the target triple and cargo profile you ship, where the host and `release` are not; a tool that cannot be told refuses |

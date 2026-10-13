@@ -1,6 +1,7 @@
 //! Counts over production code, parsed rather than matched: size, complexity, nesting, copies,
 //! `unsafe`, functions nothing calls, and how tests assert. `prodlines` says what production is.
 
+pub mod admits;
 pub mod assertions;
 pub mod bigfiles;
 pub mod complexity;

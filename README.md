@@ -6,7 +6,7 @@
 
 **Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers.**
 
-chock runs 59 gates over a Rust project and gives one result and one exit code. The gates cover
+chock runs 60 gates over a Rust project and gives one result and one exit code. The gates cover
 your tests, clippy, rustfmt, coverage, mutation testing, the supply chain, complexity and
 duplication.
 
@@ -220,12 +220,12 @@ with each field explained.
 
 ## The gates
 
-59 gates: 36 are on by default and 23 are opt-in. `chock gates` prints the list from the binary,
+60 gates: 37 are on by default and 23 are opt-in. `chock gates` prints the list from the binary,
 and [docs/gates.md](docs/gates.md) says when each one trips.
 
 | topic | on by default | opt-in |
 |---|---|---|
-| Tests | `test`, `coverage`, `crap`, `assertions`, `testlint` | `mutest`, `idempotent`, `miri`, `proof` |
+| Tests | `test`, `coverage`, `crap`, `assertions`, `testlint`, `admits` | `mutest`, `idempotent`, `miri`, `proof` |
 | Lints and format | `lint`, `codeslop`, `source`, `typos` | `fmt`, `shellcheck` |
 | Docs and comments | `doc`, `slop`, `citations`, `claims` | `phrases` |
 | Code shape | `complexity`, `nesting`, `bigfiles`, `splits`, `lean`, `duplication`, `unsafety`, `modcheck` | `duplicates`, `dead` |

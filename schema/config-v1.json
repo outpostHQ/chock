@@ -276,6 +276,30 @@
         }
       }
     },
+    "not_mutated": {
+      "description": "Rust files `mutest` does not mutate, such as generated code. chock names every other source to mutest, since mutest's filters only name what to mutate.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "why"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "The file from the project root, such as `src/generated.rs`. A path that is no Rust source mutest mutates fails the run.",
+            "type": "string",
+            "minLength": 1
+          },
+          "why": {
+            "description": "Why no test need judge the file's mutations.",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
     "history": {
       "description": "Settings of the `history` gate.",
       "type": "object",

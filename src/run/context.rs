@@ -43,6 +43,8 @@ pub struct Ctx {
     pub commands: Vec<crate::project::config::Command>,
     /// Phrases the project refuses in its source.
     pub forbidden: Vec<crate::project::config::Forbidden>,
+    /// Rust files `mutest` leaves alone, each with its reason.
+    pub not_mutated: Vec<crate::project::config::Unmutated>,
     /// Leaks the project reviewed and accepted, which `history` does not report.
     pub accepted: Vec<crate::project::config::Accepted>,
     /// Ratchets held to zero rather than to their record.
@@ -84,6 +86,7 @@ impl Ctx {
             build: Vec::new(),
             commands: Vec::new(),
             forbidden: Vec::new(),
+            not_mutated: Vec::new(),
             accepted: Vec::new(),
             strict: Vec::new(),
             clean_when_touched: Vec::new(),
@@ -116,6 +119,9 @@ impl Ctx {
                 .unwrap_or_default(),
             forbidden: config
                 .and_then(|set| set.forbidden.clone())
+                .unwrap_or_default(),
+            not_mutated: config
+                .and_then(|set| set.not_mutated.clone())
                 .unwrap_or_default(),
             accepted: config
                 .and_then(|set| set.history.clone())

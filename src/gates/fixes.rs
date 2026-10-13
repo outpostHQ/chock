@@ -75,7 +75,7 @@ fn installing(tool: &str) -> &'static str {
     found.map_or(PINNED, |(_, repair)| repair)
 }
 
-const FIXES: [(&str, &str); 59] = [
+const FIXES: [(&str, &str); 60] = [
     (
         "test",
         "run the rerun command, read each failing test's output, and fix the code or the test; a crate with no tests needs one",
@@ -265,6 +265,10 @@ const FIXES: [(&str, &str); 59] = [
     (
         "unsafety",
         "replace the `unsafe` with a safe API, or move it into one audited module",
+    ),
+    (
+        "admits",
+        "prove the step, or make the assumption a hypothesis of the theorem that needs it",
     ),
     (
         "coverage",

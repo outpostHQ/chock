@@ -87,6 +87,9 @@ pub struct Config {
     /// Phrases this project refuses anywhere in its source, each with what a writer is told instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forbidden: Option<Vec<Forbidden>>,
+    /// Rust files `mutest` leaves alone, each with the reason no test need judge its mutations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_mutated: Option<Vec<Unmutated>>,
     /// Settings of the `history` gate: the leaks it no longer reports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<History>,
@@ -121,6 +124,14 @@ pub struct Forbidden {
     /// Paths from the project root where the phrase is allowed; `*` is one segment, `**` any number.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub except: Vec<String>,
+}
+
+/// A file `mutest` does not mutate, such as generated code, and why.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Unmutated {
+    pub path: String,
+    pub why: String,
 }
 
 /// What the `history` gate accepts as it reads every commit.
@@ -248,6 +259,7 @@ impl Config {
             clean_when_touched: None,
             commands: None,
             forbidden: None,
+            not_mutated: None,
             history: None,
         }
     }

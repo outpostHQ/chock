@@ -37,7 +37,7 @@ fn measured(ctx: &Ctx, usable: fn(&Path) -> Result<(), String>) -> Result<Measur
     let named = ctx.named_against(crate::gates::tools::MUTEST.name);
     match scope::of(ctx) {
         Some(files) if files.is_empty() => Ok(scope::unchanged(was)),
-        None => usable(&ctx.root).and_then(|()| mutated(ctx, None, &named, read)),
+        None => usable(&ctx.root).and_then(|()| whole(ctx, &named)),
         Some(files) => usable(&ctx.root).and_then(|()| scoped(ctx, &files, &was, &named)),
     }
 }
@@ -51,7 +51,13 @@ fn scoped(
     named: &Series,
 ) -> Result<Measurement, String> {
     mutated(ctx, Some(&scope::filter(files)), named, read_within)
-        .and_then(|only| scope::widened(only, was, files, || mutated(ctx, None, named, read)))
+        .and_then(|only| scope::widened(only, was, files, || whole(ctx, named)))
+}
+
+/// The whole crate, less the files the project leaves unmutated.
+fn whole(ctx: &Ctx, named: &Series) -> Result<Measurement, String> {
+    let filter = scope::whole(ctx)?;
+    mutated(ctx, filter.as_deref(), named, read)
 }
 
 /// How a finished run's output and results are read.

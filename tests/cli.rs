@@ -2010,6 +2010,23 @@ fn feature_debt_can_be_adopted_but_a_new_feature_issue_cannot_hide_in_it() {
     says(&grew.out, "missing");
 }
 
+/// No CI project holds Lean, so this runs `admits` through the binary on each system instead.
+#[test]
+fn admits_records_a_lean_sorry_and_trips_on_one_more_unchecked_step() {
+    let proof = "theorem a : True := sorry\n";
+    let dir = project("admits", &[("Proofs/A.lean", proof)]);
+    turn_on(&dir, &["admits"]);
+    exits(&dir, &["run", "admits", "--json"], 0);
+    put(
+        &dir,
+        "Proofs/A.lean",
+        &format!("{proof}-- sorry\naxiom b : False\n"),
+    );
+    let grew = exits(&dir, &["run", "admits", "--json"], 1);
+    says(&grew.out, "Proofs/A.lean");
+    says(&grew.out, "axiom");
+}
+
 #[test]
 fn an_explicit_gate_filtered_out_never_becomes_an_empty_or_partial_success() {
     let dir = project("filtered-explicit", &[("src/lib.rs", "pub fn f() {}\n")]);

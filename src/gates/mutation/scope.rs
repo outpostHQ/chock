@@ -1,6 +1,7 @@
 //! Which files a local `mutest` run mutates. A change to Rust source alone mutates only those
 //! files and keeps the record for the rest; CI and a recorded baseline mutate the whole crate.
 
+use crate::project::config::Unmutated;
 use crate::run::baseline::Series;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Measurement};
@@ -11,7 +12,64 @@ pub(super) fn of(ctx: &Ctx) -> Option<Vec<String>> {
     if ctx.ci || ctx.whole || !ctx.baseline.has(crate::gates::tools::MUTEST.name) {
         return None;
     }
-    narrowed(ctx.changed().ok()?)
+    let files = narrowed(ctx.changed().ok()?);
+    files.map(|files| {
+        let kept = files.into_iter();
+        kept.filter(|file| !left_out(&ctx.not_mutated, file))
+            .collect()
+    })
+}
+
+/// The flag for a run of the whole crate: none, or where the project leaves files unmutated, each
+/// other Rust source by name, since mutest's filters only name what to mutate.
+pub(super) fn whole(ctx: &Ctx) -> Result<Option<String>, String> {
+    if ctx.not_mutated.is_empty() {
+        return Ok(None);
+    }
+    let sources = sources(ctx)?;
+    for named in &ctx.not_mutated {
+        let path = &named.path;
+        if named.why.trim().is_empty() {
+            return Err(format!("`not_mutated` leaves out {path} with no `why`"));
+        }
+        if !sources.contains(path) {
+            return Err(format!(
+                "`not_mutated` leaves out {path}, which is no Rust source mutest mutates here"
+            ));
+        }
+    }
+    let files: Vec<String> = sources
+        .into_iter()
+        .filter(|file| !left_out(&ctx.not_mutated, file))
+        .collect();
+    if let Some(file) = files.iter().find(|file| file.contains([':', ','])) {
+        return Err(format!(
+            "mutest's filter cannot name {file}, so chock cannot leave out the files in \
+             `not_mutated`"
+        ));
+    }
+    Ok((!files.is_empty()).then(|| filter(&files)))
+}
+
+fn left_out(named: &[Unmutated], file: &str) -> bool {
+    named.iter().any(|it| it.path == file)
+}
+
+/// Every Rust source mutest can mutate, from the root.
+fn sources(ctx: &Ctx) -> Result<Vec<String>, String> {
+    let entered = |dir: &str| !crate::project::SKIPPED.contains(&dir);
+    let named = |name: &str, _: &std::path::Path| name.ends_with(".rs");
+    let files = crate::project::walked(&ctx.listing, &ctx.root, &entered, &named)?;
+    let shown = files
+        .iter()
+        .map(|path| crate::project::relative(&ctx.root, path));
+    Ok(shown.filter(|shown| mutable(shown)).collect())
+}
+
+/// A `.rs` file under a `src` directory and in no `tests` one.
+fn mutable(path: &str) -> bool {
+    let parts: Vec<&str> = path.split('/').collect();
+    path.ends_with(".rs") && parts.contains(&"src") && !parts.contains(&"tests")
 }
 
 /// The changed `.rs` files under `src`, or `None` for a change that can move a survivor anywhere: a
@@ -20,7 +78,7 @@ fn narrowed(changed: &[String]) -> Option<Vec<String>> {
     let mut files = Vec::new();
     for path in changed {
         let parts: Vec<&str> = path.split('/').collect();
-        if path.ends_with(".rs") && parts.contains(&"src") && !parts.contains(&"tests") {
+        if mutable(path) {
             files.push(path.clone());
         } else if !reaches_no_mutation(path, &parts) {
             return None;
@@ -187,6 +245,54 @@ mod tests {
                 "{ci} {whole} {recorded}"
             );
         }
+    }
+
+    fn unmutated(path: &str, why: &str) -> Unmutated {
+        Unmutated {
+            path: path.into(),
+            why: why.into(),
+        }
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_file_left_unmutated_is_named_out_of_the_whole_crate_and_out_of_a_change() {
+        let root = crate::testdir::tree(
+            "mutest-not-mutated",
+            &[
+                ("src/lib.rs", ""),
+                ("src/generated.rs", ""),
+                ("src/a,b.rs", ""),
+                ("crates/b/src/c.rs", ""),
+                ("tests/cli.rs", ""),
+                ("README.md", ""),
+            ],
+        );
+        let mut baseline = crate::run::baseline::Baseline::empty("0.1.0");
+        baseline.set(crate::gates::tools::MUTEST.name, series(&[]));
+        let changed = paths(&["src/generated.rs", "src/lib.rs"]);
+        let mut ctx = Ctx {
+            changed: std::sync::Arc::new(std::sync::OnceLock::from(Ok(changed))),
+            ..Ctx::for_root(root.to_path_buf(), baseline)
+        };
+        assert_eq!(whole(&ctx), Ok(None));
+        assert_eq!(of(&ctx), Some(paths(&["src/generated.rs", "src/lib.rs"])));
+        ctx.not_mutated = vec![unmutated("src/generated.rs", "written by build.rs")];
+        let comma = "mutest's filter cannot name src/a,b.rs, so chock cannot leave out the files \
+                     in `not_mutated`";
+        assert_eq!(whole(&ctx), Err(comma.to_string()));
+        assert_eq!(of(&ctx), Some(paths(&["src/lib.rs"])));
+        ctx.not_mutated
+            .push(unmutated("src/a,b.rs", "a name the filter cannot spell"));
+        let named = "--filter-mutations=file:crates/b/src/c.rs,file:src/lib.rs";
+        assert_eq!(whole(&ctx), Ok(Some(named.to_string())));
+        ctx.not_mutated = vec![unmutated("src/generated.rs", " ")];
+        let bare = "`not_mutated` leaves out src/generated.rs with no `why`";
+        assert_eq!(whole(&ctx), Err(bare.to_string()));
+        ctx.not_mutated = vec![unmutated("tests/cli.rs", "a test")];
+        let absent = "`not_mutated` leaves out tests/cli.rs, which is no Rust source mutest \
+                      mutates here";
+        assert_eq!(whole(&ctx), Err(absent.to_string()));
     }
 
     #[test]
