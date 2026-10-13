@@ -71,9 +71,9 @@ fn mutated<T>(
     was: &Series,
     judge: Judge<T>,
 ) -> Result<T, String> {
-    let results = Results::create(&ctx.root)?.reading(exhaustive, !ctx.mutest_args.is_empty());
+    let results = Results::create(&ctx.root)?.reading(exhaustive, &ctx.mutest_args);
     let flag = results.flag();
-    let argv = invocation(&ctx.features, &flag, filter, &added(ctx, exhaustive));
+    let argv = invocation(&ctx.features, &flag, filter, &added(ctx, &results));
     let measured = ran(ctx, ctx.wrapped("cargo", &argv), &|output| {
         judge(output, &|expected| results.survivors(expected), was)
             .and_then(|measured| accounted(ctx, output, &results).map(|()| measured))
@@ -144,10 +144,10 @@ fn invocation<'a>(
     argv
 }
 
-/// What chock adds after its own flags: `--exhaustive` where the project asks for each test's
-/// verdict, then the project's own `mutest_args`.
-fn added(ctx: &Ctx, exhaustive: bool) -> Vec<&str> {
-    let exhaustive = exhaustive.then_some("--exhaustive");
+/// What chock adds after its own flags: `--exhaustive` where `results` reads each test's verdict,
+/// then the project's own `mutest_args`.
+fn added<'a>(ctx: &'a Ctx, results: &Results) -> Vec<&'a str> {
+    let exhaustive = results.reads_each_test().then_some("--exhaustive");
     let own = ctx.mutest_args.iter().map(String::as_str);
     exhaustive.into_iter().chain(own).collect()
 }
@@ -824,12 +824,50 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn mutest_takes_exhaustive_and_the_projects_flags_after_chocks_own() {
-        let mut ctx = Ctx::at(Path::new(""));
-        assert_eq!(added(&ctx, false), Vec::<&str>::new());
+        let root = crate::testdir::make("mutest-added");
+        let mut ctx = Ctx::at(&root);
+        let plain = Results::create(&root).unwrap();
+        assert_eq!(added(&ctx, &plain), Vec::<&str>::new());
+        let results = |tests| Results::create(&root).unwrap().reading(tests, &[]);
         ctx.mutest_args = vec!["--timings".to_string()];
-        assert_eq!(added(&ctx, true), ["--exhaustive", "--timings"]);
-        assert_eq!(added(&ctx, false), ["--timings"]);
+        assert_eq!(added(&ctx, &results(true)), ["--exhaustive", "--timings"]);
+        assert_eq!(added(&ctx, &results(false)), ["--timings"]);
+    }
+
+    /// Only a run of the whole crate asks for each test's verdict. The `test_wrapper` writes down
+    /// what mutest was asked and stops.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn only_a_run_of_the_whole_crate_is_exhaustive_and_every_run_takes_the_projects_flags() {
+        let dir = crate::testdir::tree(
+            "mutest-asked",
+            &[("asked.sh", "printf '%s\\n' \"$@\" > argv.txt\n")],
+        );
+        let ctx = || Ctx {
+            test_wrapper: vec!["sh".to_string(), "asked.sh".to_string()],
+            mutest_args: vec!["--timings".to_string()],
+            ..Ctx::for_root(
+                dir.to_path_buf(),
+                crate::run::baseline::Baseline::empty("0.1.0"),
+            )
+        };
+        let exhaustive = || Ctx {
+            exhaustive: true,
+            ..ctx()
+        };
+        let (named, files) = (Series::new(), ["src/a.rs".to_string()]);
+        let asked = |ran: Result<Measurement, String>| {
+            assert!(ran.is_err(), "{ran:?}");
+            let argv = std::fs::read_to_string(dir.join("argv.txt")).unwrap();
+            std::fs::remove_file(dir.join("argv.txt")).unwrap();
+            assert!(argv.lines().any(|arg| arg == "--timings"), "{argv}");
+            argv.lines().any(|arg| arg == "--exhaustive")
+        };
+        assert!(!asked(whole(&ctx(), &named)));
+        assert!(asked(whole(&exhaustive(), &named)));
+        assert!(!asked(scoped(&exhaustive(), &files, &named, &named)));
     }
 
     /// Each test the results name as a lead is a note of the run, after its survivors.

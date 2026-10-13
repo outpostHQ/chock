@@ -43,13 +43,19 @@ impl Results {
         format!("--metadata-out-root-dir={}", self.directory.display())
     }
 
-    /// These results, reading each test's detections where `tests`, and kept where `keep`.
-    pub(super) fn reading(self, tests: bool, keep: bool) -> Self {
+    /// These results, reading each test's detections where `tests`, and kept where the project
+    /// passes `own` flags to mutest, since those may write there.
+    pub(super) fn reading(self, tests: bool, own: &[String]) -> Self {
         Self {
             tests,
-            keep,
+            keep: !own.is_empty(),
             ..self
         }
+    }
+
+    /// Whether each test's detections are read, so mutest must give every test a verdict.
+    pub(super) fn reads_each_test(&self) -> bool {
+        self.tests
     }
 
     /// Every evaluated target's verdicts, joined per mutation. The undetected ones must number the
@@ -438,7 +444,8 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_run_that_reads_each_test_names_the_idle_ones_and_keeps_its_results_if_asked() {
         let root = crate::testdir::make("mutest-results-tests");
-        let results = Results::create(&root).unwrap().reading(true, true);
+        let own = ["--timings".to_string()];
+        let results = Results::create(&root).unwrap().reading(true, &own);
         let flag = results.flag();
         let directory = PathBuf::from(flag.strip_prefix("--metadata-out-root-dir=").unwrap());
         let at = directory.join("fixture").join("lib");

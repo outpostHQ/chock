@@ -140,11 +140,11 @@ mod tests {
               {"measure": "duplicate_lines_production", "verdict": "passed", "findings": [
                 {"file": "src/a.rs", "line": 4, "item": "walked", "measured": 5}]},
               {"measure": "duplicate_groups_production", "verdict": "passed", "findings": [
+                {"file": "src/f.rs", "line": 1, "item": "plain", "message": "no list here"},
                 {"file": "src/a.rs", "line": 4, "item": "walked", "message":
                  "`walked` is repeated in 3 places, also src/b.rs:9, src/c.rs:12; fold the copies into one"},
                 {"file": "src/d.rs", "line": 2, "item": "bad", "message":
-                 "`bad` is repeated in 2 places, also src/e.rs; fold the copies into one"},
-                {"file": "src/f.rs", "line": 1, "item": "plain", "message": "no list here"}]}]}"#,
+                 "`bad` is repeated in 2 places, also src/e.rs; fold the copies into one"}]}]}"#,
         );
         let measured = measured(&check).unwrap();
         let walked = Detail {
