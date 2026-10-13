@@ -6,6 +6,7 @@ pub mod crap;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::gates::metrics::prodlines;
 use crate::project;
 use crate::run::baseline::{Keys, Series};
 use crate::run::report::Finding;
@@ -143,6 +144,23 @@ impl Uncovered {
             .collect();
         Measurement::of(self.series, findings)
     }
+
+    /// Keeps one file's record, without the code only tests compile, as the walk leaves it out: a
+    /// `tests.rs` goes, and the lines of a `#[cfg(test)]` module count as run.
+    fn keep(&mut self, root: &Path, name: String, ran: &mut BTreeMap<u32, bool>, read: (u64, u64)) {
+        let base = Path::new(&name).file_name().and_then(|base| base.to_str());
+        if base.is_some_and(prodlines::is_test_file) {
+            return;
+        }
+        let src = std::fs::read_to_string(root.join(&name)).unwrap_or_default();
+        let spans = prodlines::test_spans(&src).unwrap_or_default();
+        for (at, covered) in ran.iter_mut() {
+            let at = usize::try_from(*at).unwrap_or(usize::MAX);
+            *covered |= spans.iter().any(|(from, to)| (*from..=*to).contains(&at));
+        }
+        self.series.set(&name, missed(ran, read.0, read.1));
+        self.lines.insert(name, never(ran));
+    }
 }
 
 /// Line numbers as runs: 3, 4, 5 and 9 read `line(s) 3-5, 9`.
@@ -187,8 +205,7 @@ fn uncovered(lcov: &str, root: &Path) -> Result<Uncovered, String> {
             let Some(name) = file.take() else {
                 return Err("a record ended before any SF: named its file".to_string());
             };
-            read.series.set(&name, missed(&ran, found, hit));
-            read.lines.insert(name, never(&ran));
+            read.keep(root, name, &mut ran, (found, hit));
             records = records.saturating_add(1);
             found = 0;
             hit = 0;
@@ -381,6 +398,37 @@ mod tests {
         assert_eq!(executed("7,2,f0b3a1"), Some((7, 2)));
         assert_eq!(executed("7,0"), Some((7, 0)));
         assert_eq!(executed("nonsense"), None);
+    }
+
+    /// A test module counts the same in its parent file and in its own `tests.rs`: not at all.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn the_code_only_tests_compile_is_left_out_as_the_walk_leaves_it_out() {
+        let parent = "fn a() {}\nfn b() {}\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n";
+        let files = [
+            ("src/a.rs", parent),
+            ("src/tests.rs", "fn t() {}\n"),
+            ("src/only.rs", "#![cfg(test)]\nfn t() {}\n"),
+        ];
+        let root = crate::testdir::tree("coverage-test-code", &files);
+        let record = |file: &str, lines: &str| {
+            format!("SF:{}\n{lines}end_of_record\n", root.join(file).display())
+        };
+        let lcov = [
+            record("src/a.rs", "DA:1,0\nDA:2,1\nDA:4,1\nDA:5,0\nDA:6,0\n"),
+            record("src/tests.rs", "DA:1,0\n"),
+            record("src/only.rs", "DA:2,0\n"),
+        ]
+        .concat();
+        let read = uncovered(&lcov, &root).unwrap();
+        let counts: Vec<(&str, u64)> = read
+            .series
+            .0
+            .iter()
+            .map(|(k, v)| (k.as_str(), *v))
+            .collect();
+        assert_eq!(counts, [("src/a.rs", 1), ("src/only.rs", 0)]);
+        assert_eq!(read.lines.get("src/a.rs"), Some(&vec![1]));
     }
 
     #[test]

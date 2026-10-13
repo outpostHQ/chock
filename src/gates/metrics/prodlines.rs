@@ -88,6 +88,18 @@ pub fn split(src: &str) -> Result<(String, String), String> {
     Ok((production, tests))
 }
 
+/// The line spans only tests compile: each `#[cfg(test)]` module, or the whole file when the file
+/// itself is gated.
+pub(crate) fn test_spans(src: &str) -> Result<Vec<(usize, usize)>, String> {
+    let file = parse_rust(src)?;
+    if file.attrs.iter().any(is_test_gate) {
+        return Ok(vec![(1, src.split('\n').count())]);
+    }
+    let mut mods = Mods::default();
+    mods.visit_file(&file);
+    Ok(mods.found.iter().map(|m| (m.from, m.to)).collect())
+}
+
 /// The production line count and the test modules, from one parse. Lines are `split('\n')`, so a
 /// trailing newline adds one.
 fn scan(src: &str) -> Result<(usize, Vec<TestMod>), String> {

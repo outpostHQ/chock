@@ -236,6 +236,10 @@ system. macOS and Windows keep their own records, as `coverage@macos` and `cover
 keeps `coverage`. `crap` keeps its own file the same way, as `.chock/crap-baseline@macos.json`
 beside `.chock/crap-baseline.json`.
 
+`coverage` leaves out the code that only tests compile: a `tests.rs` or `*_tests.rs` file, and the
+lines of each `#[cfg(test)]` module. A test module counts the same in its parent file and in its
+own `tests.rs`.
+
 ## How `crap` counts
 
 `crap` counts the functions that score over 30. Its findings are each function whose score went up
