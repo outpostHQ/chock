@@ -1260,6 +1260,9 @@ mod tests {
         assert_eq!(ci.apply(&mut config, binsize), "already runs at ci");
         assert_eq!(Change::On.apply(&mut config, binsize), "already on");
         assert_eq!(Change::Off(None).apply(&mut config, binsize), "off");
+        let push = Change::Stage(Stage::Push);
+        let mut fresh = Config::of(["binsize"]);
+        assert_eq!(push.apply(&mut fresh, binsize), "already runs at push");
         assert_eq!(
             Change::On.advice(&["binsize", "crap"]),
             "`chock run binsize crap` shows the findings now.\n"
@@ -1442,5 +1445,32 @@ mod tests {
     fn a_hook_chock_does_not_run_is_named_back_and_an_empty_one_asks_for_a_name() {
         assert_eq!(asked(&["post-merge"]), Asked::Unknown("post-merge"));
         assert_eq!(asked(&[]), Asked::Unnamed);
+    }
+
+    fn outside(_: &Ctx) -> Result<run::baseline::Series, String> {
+        Ok(run::baseline::Series(
+            [("/home/a.rs".to_string(), 1)].into(),
+        ))
+    }
+
+    /// A gate that cannot measure, or that measures a path outside the project, records nothing.
+    #[test]
+    fn a_record_that_cannot_be_kept_is_not_written() {
+        let mut ctx = Ctx::for_root(PathBuf::new(), Baseline::empty("0.1.0"));
+        let none = std::sync::OnceLock::from(Err("no coverage report".to_string()));
+        ctx.coverage.report = std::sync::Arc::new(none);
+        let mut held = Baseline::empty("0.1.0");
+        let crap = &gates::coverage::crap::GATE;
+        assert!(!record_one(crap, &ctx, &mut held, false));
+        let gate = run::Gate {
+            kind: run::Kind::Ratchet {
+                measure: outside,
+                keys: run::baseline::Keys::Items,
+                unit: "item(s)",
+            },
+            ..gates::metrics::admits::GATE
+        };
+        assert!(!record_one(&gate, &ctx, &mut held, false));
+        assert_eq!(held.recorded(gate.name), None);
     }
 }
