@@ -23,13 +23,13 @@
     },
     "bigfiles": {},
     "binsize": {
-      "chock": 3491520
+      "chock": 3757848
     },
     "binsize@macos": {
       "chock": 3021136
     },
     "binsize@windows": {
-      "chock": 3983872
+      "chock": 4237824
     },
     "boundaries": {
       "mixed_directory_foreign_files_production": 35,

@@ -20,6 +20,9 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **chock's own `crap` record holds every function.** 580 functions were not in the record, so a
   rise in one passed until it was over CRAP 30. The record now holds each one at its score of
   today, and no function it held before gets a higher score.
+- **chock's own `binsize` record holds the size of 0.5.4.** The binary grew by 266 KB on Linux
+  and 254 KB on Windows from 0.2.0 to 0.5.4, with the features of those releases. The record now
+  holds the size CI measured for 0.5.4 on each system.
 
 ## [0.5.3] - 2026-10-12
 
