@@ -3,6 +3,7 @@
 use std::process::ExitCode;
 
 use super::{cannot_run, emit, unit_of};
+use crate::project::config::Config;
 use crate::run::{self, baseline::Baseline};
 
 /// What `chock baseline` was asked: the gates, `--lower`, and the keys after `--keys`.
@@ -35,9 +36,39 @@ pub(super) fn recording<'a>(asked: &[&'a str]) -> Result<Recording<'a>, String> 
     Err(refused.to_string())
 }
 
+/// The request and the gates it records: the gates it names, else every gate that keeps a record.
+pub(super) fn chosen<'a>(
+    asked: &[&'a str],
+    config: Option<&Config>,
+) -> Result<(Recording<'a>, Vec<&'static run::Gate>), String> {
+    let asked = recording(asked)?;
+    let gates = match asked.names.is_empty() {
+        true => super::recordable(config),
+        false => super::select(&asked.names, config)?,
+    };
+    Ok((asked, gates))
+}
+
+/// Without `--keys`, each gate's whole record, and the gates that could not measure. With it, see
+/// [`keys_written`].
+pub(super) fn written(
+    asked: &Recording,
+    chosen: &[&run::Gate],
+    ctx: &run::Ctx,
+    into: &mut Baseline,
+) -> Result<Vec<&'static str>, ExitCode> {
+    let Some(keys) = &asked.keys else {
+        let failed = chosen
+            .iter()
+            .filter(|gate| !super::record_one(gate, ctx, into, asked.lower));
+        return Ok(failed.map(|gate| gate.name).collect());
+    };
+    keys_written(chosen, ctx, into, keys)
+}
+
 /// `--keys` writes each key into every named gate that measures or records it, or writes nothing:
 /// a key no gate knows, a gate that cannot measure, or a key that would go up stops it.
-pub(super) fn written(
+fn keys_written(
     chosen: &[&run::Gate],
     ctx: &run::Ctx,
     into: &mut Baseline,
@@ -135,17 +166,59 @@ mod tests {
         let mut was = Series::new();
         was.set("A.lean#sorry", 1);
         held.record(gate.name, unit_of(gate), was);
-        let wrote = written(&[gate], &ctx, &mut held, &["B.lean#sorry", "A.lean#sorry"]);
+        let wrote = keys_written(&[gate], &ctx, &mut held, &["B.lean#sorry", "A.lean#sorry"]);
         assert_eq!(wrote, Ok(Vec::new()));
         let now = [("B.lean#sorry".to_string(), 1)];
         assert_eq!(held.gate(gate.name).0.into_iter().collect::<Vec<_>>(), now);
-        let unknown = written(&[gate], &ctx, &mut held, &["C.lean#sorry"]);
+        let unknown = keys_written(&[gate], &ctx, &mut held, &["C.lean#sorry"]);
         assert_eq!(unknown, Err(ExitCode::from(2)));
         let mut lower = Series::new();
         lower.set("B.lean#sorry", 0);
         held.set(gate.name, lower.clone());
-        let raised = written(&[gate], &ctx, &mut held, &["B.lean#sorry"]);
+        let raised = keys_written(&[gate], &ctx, &mut held, &["B.lean#sorry"]);
         assert_eq!(raised, Err(ExitCode::from(1)));
         assert_eq!(held.gate(gate.name), lower);
+    }
+
+    #[test]
+    fn the_request_names_its_gates_or_takes_every_gate_that_keeps_a_record() {
+        let (asked, gates) = chosen(&["admits", "--keys", "A.lean#sorry"], None).unwrap();
+        assert_eq!(asked.keys, Some(vec!["A.lean#sorry"]));
+        let names: Vec<&str> = gates.iter().map(|gate| gate.name).collect();
+        assert_eq!(names, ["admits"]);
+        let (_, every) = chosen(&[], None).unwrap();
+        let named = |gates: Vec<&run::Gate>| gates.iter().map(|gate| gate.name).collect::<Vec<_>>();
+        assert_eq!(named(every), named(super::super::recordable(None)));
+        assert!(chosen(&["no-such-gate"], None).is_err());
+        assert!(chosen(&["admits", "--keys"], None).is_err());
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_whole_record_is_written_and_a_gate_that_cannot_measure_writes_no_key() {
+        let gate = &crate::gates::metrics::admits::GATE;
+        let proofs = crate::testdir::Held::tree("cli-whole", &[("B.lean", "def b := sorry\n")]);
+        let mut held = Baseline::empty("0.1.0");
+        let whole = Recording {
+            names: vec![gate.name],
+            lower: false,
+            keys: None,
+        };
+        assert_eq!(written(&whole, &[gate], &proofs, &mut held), Ok(Vec::new()));
+        assert_eq!(held.gate(gate.name).get("B.lean#sorry"), Some(1));
+        let none = crate::testdir::Held::tree("cli-no-proof", &[("README.md", "no proof\n")]);
+        assert_eq!(
+            written(&whole, &[gate], &none, &mut held),
+            Ok(vec![gate.name])
+        );
+        let keyed = Recording {
+            keys: Some(vec!["B.lean#sorry"]),
+            ..whole
+        };
+        assert_eq!(
+            written(&keyed, &[gate], &none, &mut held),
+            Err(ExitCode::from(2))
+        );
+        assert_eq!(held.gate(gate.name).get("B.lean#sorry"), Some(1));
     }
 }

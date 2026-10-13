@@ -787,10 +787,6 @@ fn ago(ran_at: Option<u64>, now: std::time::SystemTime) -> Option<String> {
 
 /// Records without judging: a baseline from a failing tree is debt accepted in a readable commit.
 fn record_baseline(asked: &[&str]) -> ExitCode {
-    let asked = match keys::recording(asked) {
-        Ok(asked) => asked,
-        Err(e) => return cannot_run(&e),
-    };
     let (ctx, config) = match context(false) {
         // A record holds the whole tree, never one change.
         Ok((ctx, config)) => (run::Ctx { whole: true, ..ctx }, config),
@@ -801,24 +797,12 @@ fn record_baseline(asked: &[&str]) -> ExitCode {
         Ok(held) => held,
         Err(e) => return cannot_run(&e),
     };
-    let chosen: Vec<&run::Gate> = if asked.names.is_empty() {
-        recordable(config.as_ref())
-    } else {
-        match select(&asked.names, config.as_ref()) {
-            Ok(gates) => gates,
-            Err(e) => return cannot_run(&e),
-        }
+    let (asked, chosen) = match keys::chosen(asked, config.as_ref()) {
+        Ok(chosen) => chosen,
+        Err(e) => return cannot_run(&e),
     };
     let mut recorded = ctx.baseline.clone();
-    let failed = match &asked.keys {
-        Some(keys) => keys::written(&chosen, &ctx, &mut recorded, keys),
-        None => Ok(chosen
-            .iter()
-            .filter(|gate| !record_one(gate, &ctx, &mut recorded, asked.lower))
-            .map(|gate| gate.name)
-            .collect()),
-    };
-    let failed = match failed {
+    let failed = match keys::written(&asked, &chosen, &ctx, &mut recorded) {
         Ok(failed) => failed,
         Err(code) => return code,
     };
