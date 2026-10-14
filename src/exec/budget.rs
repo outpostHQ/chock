@@ -374,10 +374,12 @@ fn free_mb() -> Option<u64> {
     tightest(host, cgroups(available_from_cgroup))
 }
 
-/// The memory a run may plan for in MB: what is free, held to `MEMORY` when it is set.
+/// The memory a run may plan for in MB: what is free, held to `MEMORY` when it is set. The first
+/// plan reads it, and every later plan uses that reading: on Windows each read starts PowerShell.
 #[must_use]
 pub fn available_mb() -> Option<u64> {
-    tightest(free_mb(), asked_memory())
+    static PLANNED: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *PLANNED.get_or_init(|| tightest(free_mb(), asked_memory()))
 }
 
 /// All the memory this process may use in MB: the machine's, or a cgroup's limit when less.

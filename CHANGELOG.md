@@ -34,6 +34,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **A test counts 512 MB of memory, not the 2 GB of a build job.** `test` and `mutest` ran one test
   at a time on a Mac with 7 GB, so `mutest` on macOS took three times as long. Now a Mac runs a test
   on each of its 3 cores.
+- **A run reads the free memory once.** On Windows each read starts PowerShell, and a run read it
+  two or three times, so each `chock` command took longer there.
 - **No walk enters a directory that holds its own `.git`**, such as a nested repository.
 - **`commits` and `chock message` judge the width of each body line**, 72 by default, and
   `message.width` sets another. A line with no space, such as a URL, is never judged.
