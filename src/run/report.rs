@@ -1775,6 +1775,12 @@ mod tests {
         gained.tightened = Some(lower.clone());
         let settled =
             |held: &Baseline| settles(&root, held, std::slice::from_ref(&gained), "0.1.0", true);
+        // Outside a commit a gain waits, and the tree leaves nothing out.
+        let outside = settles(&root, &held, std::slice::from_ref(&gained), "0.1.0", false);
+        assert!(
+            !outside.is_empty() && !outside.contains(&LEFT_OUT.to_string()),
+            "{outside:?}"
+        );
         std::fs::write(root.join("src/a.rs"), "fn b() {}\n").unwrap();
         assert!(settled(&held).contains(&LEFT_OUT.to_string()));
         assert_eq!(std::fs::read_to_string(root.join(file)).unwrap(), "{}\n");
@@ -1795,7 +1801,12 @@ mod tests {
         let level = GateReport::new("slop", Verdict::Pass, "chock run slop");
         let notice =
             format!("{file} holds a record that this commit leaves out; stage it to commit it");
-        assert_eq!(settles(&root, &held, &[level], "0.1.0", true), vec![notice]);
+        let levels = std::slice::from_ref(&level);
+        assert_eq!(
+            settles(&root, &held, levels, "0.1.0", false),
+            Vec::<String>::new()
+        );
+        assert_eq!(settles(&root, &held, levels, "0.1.0", true), vec![notice]);
     }
 
     /// A key of a gone file goes in each gate that keys by file, on each system; a crate stays.
