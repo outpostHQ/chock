@@ -37,6 +37,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`crap` does not judge a function that has no coverage**, in a file the coverage run did not
   build, such as a Kani proof or code for another target. A coverage report that names no file
   cargo-crap scored stops the gate, so nothing passes unjudged.
+- **`crap` judges a function the record does not hold in its file as new.** cargo-crap paired a
+  function with a removed function of that name in another file, and reported a rise.
 - **`chock run mutest --mutate=FILE,...` mutates only the named files** and keeps the record for
   every other file.
 - **`just setup` sets up a machine to work on chock.** `chock init --local` leaves chock's own pin

@@ -338,6 +338,12 @@ impl Scored {
         self.status = status.to_string();
     }
 
+    /// A function the record does not hold in its file.
+    fn unrecorded(&mut self) {
+        self.baseline_crap = None;
+        self.status = "new".to_string();
+    }
+
     /// `None` for a report that names no complexity.
     fn inputs(&self) -> Option<Inputs> {
         let (complexity, coverage) = (self.cyclomatic?, self.coverage);
@@ -432,15 +438,24 @@ pub fn floors(measured: &str, record: &str, root: &Path) -> Result<BTreeMap<usiz
     Ok(held_to(&read(measured)?.entries, &record, root))
 }
 
-/// Holds each function to the record by file, name and file order. Where the record has another
-/// number of that name, cargo-crap's own match stands, then a new one takes a removed one.
-fn paired(mut delta: Delta, record: &[Scored], root: &Path) -> Delta {
-    let floors = held_to(&delta.entries, record, root);
-    for (at, entry) in delta.entries.iter_mut().enumerate() {
+/// Holds each function to the record by file, name and file order. A function the record does not
+/// hold in its file is new, though cargo-crap pairs it with one of its name in another file.
+fn hold(entries: &mut [Scored], record: &[Scored], root: &Path) {
+    let floors = held_to(entries, record, root);
+    let held = by_name(record, root);
+    for (at, entry) in entries.iter_mut().enumerate() {
         if let Some(was) = floors.get(&at) {
             entry.against(*was);
+        } else if !held.contains_key(&named(root, &entry.file, &entry.function)) {
+            entry.unrecorded();
         }
     }
+}
+
+/// `hold`, then where the record has another number of that name, cargo-crap's own match stands,
+/// and a new one takes a removed one.
+fn paired(mut delta: Delta, record: &[Scored], root: &Path) -> Delta {
+    hold(&mut delta.entries, record, root);
     let mut scores = unmatched(&delta.removed, root);
     // Worst against worst, since nothing tells two functions of one name apart.
     delta.entries.sort_by(|a, b| b.crap.total_cmp(&a.crap));
@@ -824,7 +839,7 @@ mod tests {
     #[test]
     fn a_failure_the_report_does_not_explain_is_a_gate_that_could_not_run() {
         assert_eq!(
-            judged(QUIET, false, Path::new("/w"), &[]),
+            judged(QUIET, false, Path::new("/w"), &held(HELD)),
             Err("cargo-crap failed but named no regression, so nothing was measured".to_string())
         );
         assert!(
@@ -1115,6 +1130,43 @@ mod tests {
         assert_eq!(
             Finding::rendered(&outcome.findings),
             ["src/w.rs:115: Watch::poll: CRAP 40.0, not in the baseline"]
+        );
+    }
+
+    #[test]
+    fn where_the_record_has_another_number_of_a_name_cargo_crap_s_own_match_stands() {
+        let record = held(
+            r#"{"entries":[{"file":"src/w.rs","function":"Watch::poll","line":100,"crap":50.0}]}"#,
+        );
+        let report = r#"{"entries":[
+          {"file":"/w/src/w.rs","function":"Watch::poll","line":115,"coverage":50.0,"crap":60.0,
+           "status":"regressed","baseline_crap":50.0},
+          {"file":"/w/src/w.rs","function":"Watch::poll","line":203,"coverage":50.0,"crap":10.0,
+           "status":"new","baseline_crap":null}]}"#;
+        let outcome = judged(report, false, Path::new("/w"), &record).unwrap();
+        assert_eq!(
+            Finding::rendered(&outcome.findings),
+            ["src/w.rs:115: Watch::poll: CRAP 60.0, was 50.0"]
+        );
+    }
+
+    /// cargo-crap paired `stale` with a removed function of that name in another file.
+    #[test]
+    fn a_function_the_record_lacks_in_its_file_is_new_though_cargo_crap_pairs_it_by_name() {
+        let record = held(
+            r#"{"entries":[
+          {"file":"src/run/lock.rs","function":"stale","line":98,"crap":2.0},
+          {"file":"src/run/lock.rs","function":"wait","line":40,"crap":50.0}]}"#,
+        );
+        let report = r#"{"entries":[
+          {"file":"/w/src/gates/text/claims.rs","function":"stale","line":284,"coverage":100.0,
+           "crap":5.0,"cyclomatic":5.0,"status":"regressed","baseline_crap":2.0},
+          {"file":"/w/src/b.rs","function":"wait","line":3,"coverage":0.0,"crap":40.0,
+           "status":"improved","baseline_crap":50.0}]}"#;
+        let outcome = judged(report, false, Path::new("/w"), &record).unwrap();
+        assert_eq!(
+            Finding::rendered(&outcome.findings),
+            ["src/b.rs:3: wait: CRAP 40.0, not in the baseline"]
         );
     }
 
