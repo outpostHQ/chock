@@ -525,16 +525,53 @@ pub fn settle(
     committing: bool,
 ) {
     remember_or_say(root, reports, chock_version);
-    for said in crate::gates::coverage::crap::relaid(root, committing) {
+    for said in settles(root, held, reports, chock_version, committing) {
         eprintln!("chock: {said}");
     }
-    if let Some(settled) = forgets(root, held, locked_in(held, reports, committing), committing) {
-        eprintln!(
-            "chock: {}",
-            settled.written(root, chock_version, committing)
-        );
-    }
 }
+
+/// Writes each first record and each gain into the records, and returns what it says of them.
+fn settles(
+    root: &std::path::Path,
+    held: &Baseline,
+    reports: &[GateReport],
+    chock_version: &str,
+    at_commit: bool,
+) -> Vec<String> {
+    // The run measured the work tree. A record that held a change the commit leaves out would be
+    // wrong for the commit, so the record then moves as it does outside a commit.
+    let left_out = at_commit && leaves_out(root);
+    let committing = at_commit && !left_out;
+    let mut said = crate::gates::coverage::crap::relaid(root, committing);
+    let file = crate::run::baseline::FILE;
+    if let Some(settled) = forgets(root, held, locked_in(held, reports, committing), committing) {
+        if left_out && !settled.waiting.is_empty() {
+            said.push(LEFT_OUT.to_string());
+        }
+        said.push(settled.written(root, chock_version, committing));
+    } else if at_commit && crate::project::vcs::unstaged(root, file) {
+        // A commit its message refused leaves the record it wrote unstaged; a retry writes none.
+        said.push(format!(
+            "{file} holds a record that this commit leaves out; stage it to commit it"
+        ));
+    }
+    said
+}
+
+/// Whether the commit in progress leaves out a change or a file in the tree the run measured. The
+/// files that chock writes, its records among them, do not count.
+fn leaves_out(root: &std::path::Path) -> bool {
+    let crap = crate::gates::coverage::crap::baseline();
+    let own: Vec<&str> = crate::setup::init::IGNORES
+        .into_iter()
+        .chain([crate::run::baseline::FILE, crap.as_str()])
+        .collect();
+    crate::project::vcs::leaves_out(root, &own)
+}
+
+/// Why a commit lowered no record: the tree it measured is not the tree it commits.
+const LEFT_OUT: &str = "this commit leaves out changes or files in the work tree, so no record \
+                        moved down; stage them, or stash them with `git stash -k -u`";
 
 /// `settled`, and at a commit, less each record of a file that neither the disk nor the repository
 /// holds any more: a file that comes back at the same path starts again from no record.
@@ -1717,6 +1754,48 @@ mod tests {
             format!("{said}; commit {file} with this change")
         );
         assert_eq!(git(&["diff", "--cached", "--name-only"]), "");
+    }
+
+    /// The run measured the work tree, so a commit that leaves out a change or a file there lowers no
+    /// record. What chock writes itself, such as the last run, is no such file.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_commit_that_leaves_out_a_change_in_the_work_tree_lowers_no_record() {
+        let file = crate::run::baseline::FILE;
+        let files = [(file, "{}\n"), ("src/a.rs", "fn a() {}\n")];
+        let root = crate::testdir::repo("report-left-out", &files);
+        let git = |args: &[&str]| crate::exec::run("git", args, &root).unwrap().stdout;
+        let mut held = crate::run::baseline::Baseline::empty("0.0.9");
+        let mut was = crate::run::baseline::Series::new();
+        was.set("src/a.rs", 4);
+        held.set("slop", was);
+        let mut gained = GateReport::new("slop", Verdict::Pass, "chock run slop");
+        let mut lower = crate::run::baseline::Series::new();
+        lower.set("src/a.rs", 2);
+        gained.tightened = Some(lower.clone());
+        let settled =
+            |held: &Baseline| settles(&root, held, std::slice::from_ref(&gained), "0.1.0", true);
+        std::fs::write(root.join("src/a.rs"), "fn b() {}\n").unwrap();
+        assert!(settled(&held).contains(&LEFT_OUT.to_string()));
+        assert_eq!(std::fs::read_to_string(root.join(file)).unwrap(), "{}\n");
+        assert_eq!(git(&["diff", "--cached", "--name-only"]), "");
+        git(&["add", "src/a.rs"]);
+        std::fs::write(root.join("src/b.rs"), "fn b() {}\n").unwrap();
+        assert!(settled(&held).contains(&LEFT_OUT.to_string()));
+        assert_eq!(git(&["diff", "--cached", "--name-only"]), "src/a.rs\n");
+        std::fs::remove_file(root.join("src/b.rs")).unwrap();
+        assert!(!settled(&held).contains(&LEFT_OUT.to_string()));
+        assert_eq!(
+            git(&["diff", "--cached", "--name-only"]),
+            format!("{file}\nsrc/a.rs\n")
+        );
+        // The commit message is refused, git drops the index, and the retry measures the record.
+        git(&["reset", "--quiet", "--", file]);
+        held.set("slop", lower);
+        let level = GateReport::new("slop", Verdict::Pass, "chock run slop");
+        let notice =
+            format!("{file} holds a record that this commit leaves out; stage it to commit it");
+        assert_eq!(settles(&root, &held, &[level], "0.1.0", true), vec![notice]);
     }
 
     /// A key of a gone file goes in each gate that keys by file, on each system; a crate stays.

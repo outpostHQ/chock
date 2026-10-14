@@ -5,6 +5,22 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-14
+
+- **A commit that leaves out a change in the work tree lowers no record.** The pre-commit hook
+  measures the work tree. When a tracked file held a change that nobody staged, or a new file was
+  not added, the hook lowered a record to that tree and put the record into the commit. CI then
+  measured the commit, which did not hold that change, and could trip. Now the record waits, as it
+  does outside a commit, and the hook says why. Stage the change, or stash it with
+  `git stash -k -u`, to lower the record. The files that chock writes itself do not count.
+- **The hook says when `.chock/baseline.json` holds a record that the commit leaves out.** When
+  the commit-msg hook refused a commit, git dropped the record that the pre-commit hook had staged.
+  The record stayed in the work tree, so the next try wrote nothing, staged nothing, and said
+  nothing.
+- **`chock init` ignores the numbered copies it writes.** When `tool-versions.env.chock` was
+  taken, `init` wrote `tool-versions.env.chock.1`, and `.gitignore` did not hide that file. `init`
+  now adds `?*.chock.[0-9]*` to `.gitignore`.
+
 ## [0.9.0] - 2026-10-14
 
 - **Declared rules: `seams`, `owners` and `calls`.** Three opt-in gates hold rules of your design.

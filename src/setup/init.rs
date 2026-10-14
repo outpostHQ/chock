@@ -26,7 +26,7 @@ const DENY: &str = include_str!("../../deny.toml");
 
 /// The baselines are deliberately absent: they are the shared reference the gates measure against,
 /// so they belong in git. `last-run.json` is this machine's cache of the last run and does not.
-const IGNORES: [&str; 9] = [
+pub(crate) const IGNORES: [&str; 10] = [
     "/target",
     "lcov.info",
     // What `proof` leaves behind.
@@ -42,6 +42,7 @@ const IGNORES: [&str; 9] = [
     // What `install_file` writes beside a file it will not overwrite. Not `*.chock`: `*` matches
     // the empty string, so that pattern would hide all of `.chock/`.
     "?*.chock",
+    "?*.chock.[0-9]*",
 ];
 
 /// What went wrong, as a value, so a test asserts the case and not the wording.
@@ -1947,7 +1948,7 @@ mod tests {
                  \x20 created   tool-versions.env\n\
                  \x20 created   deny.toml\n\
                  \x20 created   .chock/config.json\n\
-                 \x20 gitignore 9 lines added\n\
+                 \x20 gitignore 10 lines added\n\
                  \x20 editor    .claude/settings.json runs chock on every edit\n\
                  \x20 note      an editor session already open may not fire it until it reloads\n\
                  \x20 created   .chock/agents.md\n\
@@ -2089,7 +2090,7 @@ mod tests {
             let written = fs::read_to_string(dir.join(file)).unwrap();
             assert!(written.contains("lcov.info"), "{file}: {written}");
         }
-        assert!(said.contains("outpostignore 9 lines added"), "{said}");
+        assert!(said.contains("outpostignore 10 lines added"), "{said}");
     }
 
     /// `*` matches the empty string in a gitignore, so `*.chock` spells `.chock` and hides the whole
@@ -2113,13 +2114,13 @@ mod tests {
     fn a_gitignore_gains_only_the_entries_it_lacks_and_is_rewritten_only_when_it_gains_one() {
         let all = "/target\nlcov.info\nkani-list.json\n.chock/last-run.json\n\
                    .chock/run.lock\n.chock/verdicts.json\n.chock/last-edit\nrustc-ice-*.txt\n\
-                   ?*.chock\n";
+                   ?*.chock\n?*.chock.[0-9]*\n";
         let already = "target/\n/lcov.info\nkani-list.json\n.chock/last-run.json\n\
                        .chock/run.lock\n.chock/verdicts.json\n.chock/last-edit\n\
-                       rustc-ice-*.txt\n?*.chock";
+                       rustc-ice-*.txt\n?*.chock\n?*.chock.[0-9]*";
         for (name, before, added, want) in [
-            ("init-ignores-new", None, 9, all),
-            ("init-ignores-bare-last-line", Some("/target"), 8, all),
+            ("init-ignores-new", None, 10, all),
+            ("init-ignores-bare-last-line", Some("/target"), 9, all),
             ("init-ignores-covered", Some(already), 0, already),
         ] {
             let dir = crate::testdir::make(name);

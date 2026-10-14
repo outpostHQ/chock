@@ -520,6 +520,78 @@ pub fn git_on(root: &Path, index: Option<&Path>, args: &[&str]) -> bool {
     exec::run_env("git", args, root, &env).is_ok_and(|out| out.success())
 }
 
+/// Whether the work tree under the root, which a commit's hook measures, holds a change or a file
+/// that the commit in progress leaves out. `own` names, as `.gitignore` does, what chock writes.
+#[must_use]
+pub fn leaves_out(root: &Path, own: &[&str]) -> bool {
+    let excluded = excludes(root, own);
+    let ours = |kind: &[&str]| {
+        let mut args = vec!["ls-files", "-z"];
+        args.extend(kind);
+        args.extend(excluded.iter().map(String::as_str));
+        args.extend(["--", "."]);
+        listed(root, &args)
+    };
+    // A tracked file that chock writes, such as a record or its run lock, measures nothing.
+    let mine = if excluded.is_empty() {
+        Vec::new()
+    } else {
+        ours(&["--cached", "--ignored"])
+    };
+    let changed = listed(
+        root,
+        &["diff", "--relative", "--name-only", "-z", "--", "."],
+    );
+    changed.iter().any(|path| !mine.contains(path))
+        || !ours(&["--others", "--exclude-standard"]).is_empty()
+}
+
+/// `own` for git's command line, which reads a pattern with a slash from the top of the repository.
+fn excludes(root: &Path, own: &[&str]) -> Vec<String> {
+    let prefix = exec::run("git", &["rev-parse", "--show-prefix"], root)
+        .map(|out| out.stdout.trim().to_string())
+        .unwrap_or_default();
+    own.iter()
+        .map(|glob| {
+            let bare = glob.strip_prefix('/').unwrap_or(glob);
+            if glob.starts_with('/') || bare.trim_end_matches('/').contains('/') {
+                format!("--exclude=/{prefix}{bare}")
+            } else {
+                format!("--exclude={glob}")
+            }
+        })
+        .collect()
+}
+
+/// The paths a git command prints with `-z` on the index of the commit in progress.
+fn listed(root: &Path, args: &[&str]) -> Vec<String> {
+    on_commit_index(root, args)
+        .filter(exec::Output::success)
+        .map(|out| {
+            let paths = out.stdout.split('\0').filter(|path| !path.is_empty());
+            paths.map(str::to_string).collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether a file git tracks at or below `path` differs between the work tree and the index of
+/// the commit in progress.
+#[must_use]
+pub fn unstaged(root: &Path, path: &str) -> bool {
+    // `--quiet` exits 1 for a difference; a tree git does not hold answers otherwise.
+    on_commit_index(root, &["diff", "--quiet", "--", path]).is_some_and(|out| out.code == Some(1))
+}
+
+/// git's answer on the index of the commit in progress, or on `.git/index` outside a commit.
+fn on_commit_index(root: &Path, args: &[&str]) -> Option<exec::Output> {
+    let named = commit_index(root).map(|index| index.to_string_lossy().into_owned());
+    let env: Vec<(&str, &str)> = named
+        .iter()
+        .map(|path| ("GIT_INDEX_FILE", path.as_str()))
+        .collect();
+    exec::run_env("git", args, root, &env).ok()
+}
+
 /// Commits not yet on the remote, as (id, message): only those can still be rewritten.
 pub fn unpushed(root: &Path, held: Option<Kind>) -> Result<Vec<(String, String)>, String> {
     match held {
@@ -1223,6 +1295,40 @@ mod tests {
             ..exec::Output::of(Some(128), "", lacks)
         };
         assert_eq!(read_text_at(&cut_lack), Ok(None));
+    }
+
+    /// A commit leaves out a change nobody staged and a file nobody added, but not what chock writes.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_commit_leaves_out_an_unstaged_change_and_a_file_nobody_added() {
+        let root = repo("vcs-leaves-out");
+        assert!(!leaves_out(&root, &[]));
+        std::fs::write(root.join("a.rs"), "fn f() -> u8 { 3 }\n").unwrap();
+        assert!(unstaged(&root, "a.rs") && leaves_out(&root, &[]));
+        git(&root, &["add", "a.rs"]);
+        assert!(!unstaged(&root, "a.rs") && !leaves_out(&root, &[]));
+        std::fs::write(root.join("own.json"), "{}\n").unwrap();
+        assert!(leaves_out(&root, &[]));
+        assert!(!leaves_out(&root, &["own.json"]));
+    }
+
+    /// A change to a tracked file that chock writes is not left out, at the top or below it.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_tracked_file_chock_writes_is_no_change_the_commit_leaves_out() {
+        let root = repo("vcs-leaves-out-own");
+        let below = root.join("sub");
+        for dir in [&*root, below.as_path()] {
+            std::fs::create_dir_all(dir.join(".chock")).unwrap();
+            std::fs::write(dir.join(".chock/run.lock"), "1\n").unwrap();
+        }
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "--quiet", "-m", "locks"]);
+        let own = [".chock/run.lock"];
+        std::fs::write(root.join(".chock/run.lock"), "2\n").unwrap();
+        assert!(leaves_out(&root, &[]) && !leaves_out(&root, &own));
+        std::fs::write(below.join(".chock/run.lock"), "2\n").unwrap();
+        assert!(leaves_out(&below, &[]) && !leaves_out(&below, &own));
     }
 
     fn repo(name: &str) -> crate::testdir::Scratch {
