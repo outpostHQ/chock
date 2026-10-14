@@ -9,6 +9,10 @@ pub const PER_JOB_MB: u64 = 2048;
 /// The environment variable that sets the job count outright.
 pub const ASKED: &str = "CHOCK_JOBS";
 
+/// What one test may need at its peak, as a thread of a test binary or as a nextest process: far
+/// less than a build job. At 2 GB each, a 7 GB Mac ran its tests one at a time.
+pub const PER_TEST_MB: u64 = 512;
+
 /// What one Miri interpreter may need at its peak. Chock's own suite, its groups at once on 32
 /// cores, peaked at 5968 MB in all.
 pub const PER_INTERPRETER_MB: u64 = 512;
@@ -246,7 +250,12 @@ pub fn prime(jobs: usize) {
 /// The job cap for this run, shared equally by the lanes of compiling gates that run at once.
 #[must_use]
 pub fn cap() -> usize {
-    (machine() / RUNNING.load(Ordering::Relaxed).max(1)).max(1)
+    shared(machine())
+}
+
+/// The lane's share of `jobs`, which the lanes of compiling gates that run at once share equally.
+fn shared(jobs: usize) -> usize {
+    (jobs / RUNNING.load(Ordering::Relaxed).max(1)).max(1)
 }
 
 /// The job cap of the whole machine, before the lanes share it.
@@ -259,7 +268,17 @@ pub fn machine() -> usize {
 /// one interpreter needs, not a build job. At 2 GB each, a 7 GB Mac cannot use its 3 cores.
 #[must_use]
 pub fn interpreters() -> usize {
-    (of_this_machine(PER_INTERPRETER_MB) / RUNNING.load(Ordering::Relaxed).max(1)).max(1)
+    shared(of_this_machine(PER_INTERPRETER_MB))
+}
+
+/// The test cap of the whole machine, read once.
+static TESTS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// Tests to run at once: the lane's share of the cores, with memory counted at what one test
+/// needs, not a build job.
+#[must_use]
+pub fn tests() -> usize {
+    shared(*TESTS.get_or_init(|| of_this_machine(PER_TEST_MB)))
 }
 
 /// The jobs one lane needs to be worth running beside another.
@@ -295,9 +314,9 @@ impl Drop for Lane {
 /// The cap variables to set on a spawn: the lane's share, never above a value already set.
 #[must_use]
 pub fn caps() -> Vec<(&'static str, String)> {
-    [CARGO_JOBS, NEXTEST_THREADS]
+    [(CARGO_JOBS, cap()), (NEXTEST_THREADS, tests())]
         .into_iter()
-        .map(|key| (key, within(cap(), std::env::var(key).ok().as_deref())))
+        .map(|(key, jobs)| (key, within(jobs, std::env::var(key).ok().as_deref())))
         .map(|(key, jobs)| (key, jobs.to_string()))
         .collect()
 }
@@ -306,7 +325,7 @@ pub fn caps() -> Vec<(&'static str, String)> {
 #[must_use]
 pub fn test_threads() -> (&'static str, String) {
     let set = std::env::var(TEST_THREADS).ok();
-    (TEST_THREADS, within(cap(), set.as_deref()).to_string())
+    (TEST_THREADS, within(tests(), set.as_deref()).to_string())
 }
 
 /// `jobs`, or a smaller number someone `set`; a value that is no number leaves `jobs`.
@@ -425,6 +444,13 @@ mod tests {
         assert_eq!(jobs(3, PER_JOB_MB, || 3 * 1024, None), 1);
         assert_eq!(jobs(3, PER_INTERPRETER_MB, || 3 * 1024, None), 3);
         assert!(interpreters() >= 1);
+    }
+
+    #[test]
+    fn a_test_counts_its_own_memory_and_not_a_build_jobs() {
+        assert_eq!(jobs(3, PER_JOB_MB, || 3 * 1024, None), 1);
+        assert_eq!(jobs(3, PER_TEST_MB, || 3 * 1024, None), 3);
+        assert!(tests() >= 1);
     }
 
     #[test]
@@ -615,10 +641,7 @@ mod tests {
         let (key, threads) = test_threads();
         assert_eq!(key, "RUST_TEST_THREADS");
         let share = threads.parse::<usize>();
-        assert!(
-            share.is_ok_and(|n| (1..=machine()).contains(&n)),
-            "{threads}"
-        );
+        assert!(share.is_ok_and(|n| (1..=tests()).contains(&n)), "{threads}");
     }
 
     #[test]

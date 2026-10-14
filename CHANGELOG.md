@@ -31,6 +31,9 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`codeslop` gives the file and line** of each finding.
 - **`mutest` checks that the tree is the one it mutated**, reads its totals from mutest's results,
   and caps the test threads of each mutation run.
+- **A test counts 512 MB of memory, not the 2 GB of a build job.** `test` and `mutest` ran one test
+  at a time on a Mac with 7 GB, so `mutest` on macOS took three times as long. Now a Mac runs a test
+  on each of its 3 cores.
 - **No walk enters a directory that holds its own `.git`**, such as a nested repository.
 - **`commits` and `chock message` judge the width of each body line**, 72 by default, and
   `message.width` sets another. A line with no space, such as a URL, is never judged.
