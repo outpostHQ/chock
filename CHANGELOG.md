@@ -46,7 +46,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`admits` passes in a tree with no `.lean` file**, so a Rust project keeps the gate on. Before,
   it could not run there.
 - **A commit keeps the `lines` record.** The pre-commit hook read its key, `total`, as a deleted
-  file and dropped it.
+  file and dropped it. A record that 0.8.0 left as `"lines": {}` is still a record: a person runs
+  `chock baseline lines` once to write it again.
 - **`lines` counts no line in a binary file.** A file with a NUL byte in its first 8000 bytes is
   binary, as git reads it. Before, an image counted each of its newline bytes as a line.
 - **`mutest` takes a progress journal whose pid another process holds now.** The process that
