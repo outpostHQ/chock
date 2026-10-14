@@ -167,15 +167,18 @@ can work through it. chock measures and refuses. It does not rewrite your code.
 
 | command | what it does |
 |---|---|
-| `chock init` | sets up this project, then installs the tools it pins; `--global` and `--local` do one half each |
+| `chock init` | sets up this project, then installs the tools it pins; `--global` and `--local` do one half each; a tool already at its pin is not installed again |
 | `chock baseline [GATE...]` | accepts today's numbers as the record, also where they got worse |
 | `chock baseline --lower GATE...` | records a gain on a gate that measures differently by machine |
 | `chock baseline GATE... --keys KEY...` | writes only the named keys, such as the keys of a moved file; none goes up |
+| `chock baseline --moved OLD=NEW` | gives a renamed file the keys of its old path, on every system's record; none goes up |
 | `chock doctor` | says whether this machine has the tools this project pins |
 | `chock run [GATE...]` | runs the named gates; no name means every gate that is on |
 | `chock run --fast` | runs only the gates staged for a commit; they need no compiler |
 | `chock run --ci` | runs the gates a CI job runs; `--fast --ci` runs only the commit set |
 | `chock run --skip=GATE` | runs every gate that is on but the named ones |
+| `chock run test --package=NAME --filter=TEXT` | runs part of the suite: one package, or the tests whose name holds `TEXT` |
+| `chock run mutest --mutate=FILE,...` | mutates only the named files, and keeps the record of every other file |
 | `chock run --miri-partition=K/N miri` | runs part K of N of the Miri suite, for a CI job each |
 | `chock run --no-cache` | judges every gate again; no kept verdict answers |
 | `chock cache clear` | removes every kept verdict, so the next run judges every gate |
@@ -256,8 +259,9 @@ and [docs/gates.md](docs/gates.md) says when each one trips.
 - **Rust only.** chock reads `.rs` files and `Cargo.toml`.
 - **The baseline is trusted.** Anyone can raise a record with `chock baseline`; chock makes that
   visible in the diff, and reviewers have to look.
-- **A record is keyed by name.** Renaming a file or function drops its old record and holds the new
-  name to zero, so moving debt counts as writing it again.
+- **A record is keyed by name.** Renaming a function, or splitting a file, drops the old record and
+  holds the new name to zero, so moving debt counts as writing it again. A renamed file keeps its
+  record with `chock baseline --moved OLD=NEW`.
 
 `chock run --ci` runs every gate that is on but the `local_only` ones, on Linux, macOS and Windows.
 chock's own CI also runs the commit set first, on Linux only. Where a gate's tool does not run on a

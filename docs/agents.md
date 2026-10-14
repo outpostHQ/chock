@@ -4,6 +4,8 @@
 chock run --json            every gate this project has on
 chock run --fast --json     only the gates that need no compiler; seconds
 chock run GATE... --json    only the gates you name
+chock run test --filter=TEXT --json
+                            only the tests whose name holds TEXT; the verdict is for them alone
 chock gates --json          what exists; read this, never hard-code a list
 chock explain GATE          the last run's findings, without a new run
 chock edited PATH...        what the commit would refuse in these files; no build

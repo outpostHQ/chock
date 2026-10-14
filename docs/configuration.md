@@ -33,7 +33,7 @@ Without the parent, the gate cannot run.
 | `enabled` | required; the gates the project has switched on, by the names `chock gates` prints. An unknown name fails the run |
 | `runner` | the command that runs your tests, if not `cargo nextest run --workspace --no-tests=fail --no-fail-fast`; your command must also run every test after a failure, or the run lists only the first |
 | `coverage` | the command that writes your coverage report; `{lcov}` marks where chock reads it |
-| `message` | the widest commit subject, the longest body and the widest body line allowed |
+| `message` | `subject`, `body` and `width`: the widest commit subject (72), the most non-blank body lines (12) and the widest body line (72) allowed |
 | `stage` | gates that run at another step than their default; `chock stage` writes it |
 | `local_only` | gates CI cannot run; `chock run --ci` leaves them out |
 | `runner_tools` | tools your `runner` calls; with them named, `test` keeps its verdict until one of them changes |

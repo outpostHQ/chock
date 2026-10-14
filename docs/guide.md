@@ -21,7 +21,8 @@ cargo binstall chock           # prebuilt for Linux, macOS and Windows; `cargo i
 chock init --global            # the tools chock runs, prebuilt, at pinned versions
 ```
 
-`chock doctor` says which of the pinned tools this machine has.
+`chock doctor` says which of the pinned tools this machine has. A second `chock init --global`
+installs nothing: a tool already at its pin stays, and only its setup step runs again.
 
 ## 2. Set up a project
 
@@ -217,7 +218,7 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/run-v1.json",
   "version": 1,
-  "chock": "0.5.4",
+  "chock": "0.9.0",
   "gates": [
     {
       "gate": "complexity",
@@ -273,6 +274,7 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 | `chock baseline [GATE...]` | accepts today's numbers as the record, also where they got worse |
 | `chock baseline --lower GATE...` | records a gain on a gate that measures differently by machine |
 | `chock baseline GATE... --keys KEY...` | writes only the named keys, such as the keys of a moved file; none goes up |
+| `chock baseline --moved OLD=NEW` | gives a renamed file the keys of its old path, on every system's record; none goes up |
 | `chock doctor` | says whether this machine has the tools this project pins |
 | `chock run [GATE...]` | runs the named gates; no name means every gate that is on |
 | `chock run --fast` | runs only the gates staged for a commit; they need no compiler |
@@ -280,6 +282,9 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 | `chock run --no-cache` | judges every gate again; no kept verdict answers |
 | `chock run --miri-partition=K/N` | runs only part K of N of the Miri suite |
 | `chock run --skip=GATE,...` | runs every gate but the ones named; CI runs those in other jobs |
+| `chock run test --package=NAME` | runs the suite of one package only |
+| `chock run test --filter=TEXT` | runs only the tests whose name holds `TEXT` |
+| `chock run mutest --mutate=FILE,...` | mutates only the named files, and keeps the record of every other file |
 | `chock cache clear` | removes every kept verdict, so the next run judges every gate |
 | `chock explain GATE` | shows the findings of the last run, without a new run |
 | `chock explain` | lists all the debt in the record, largest first, with the fix for each kind |
@@ -470,8 +475,9 @@ lost, `1` when one was, and `2` when it could not read the revision.
 - **Rust only.** chock reads `.rs` files and `Cargo.toml`.
 - **The baseline is trusted.** Anyone can raise a record with `chock baseline`; chock makes that
   visible in the diff, and reviewers have to look.
-- **A record is keyed by name.** Renaming a file or function drops its old record and holds the new
-  name to zero, so moving debt counts as writing it again.
+- **A record is keyed by name.** Renaming a function, or splitting a file, drops the old record and
+  holds the new name to zero, so moving debt counts as writing it again. A renamed file keeps its
+  record with `chock baseline --moved OLD=NEW`.
 - **Fuzzing, property tests and benchmarks are yours to write.** chock runs property tests as
   tests, and has no benchmark gate, because one timing on a shared machine is noisier than the
   regression it would look for.

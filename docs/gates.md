@@ -63,7 +63,7 @@ records the reason under `left_off` in the config.
 
 | gate | ratchet | trips when |
 |---|:-:|---|
-| `mutest` | ✓ | a mutation changes a decision and no test notices, one more time per file and operator |
+| `mutest` | ✓ | a mutation changes a decision and no test notices, one more time per file and operator; a run whose tests leave a file of the repository changed gives no verdict |
 | `duplicates` | ✓ | the same job is written twice in different shapes, once more |
 | `lines` | ✓ | the files the repository tracks hold more lines in total, blank lines included; the records under `.chock` do not count |
 | `commands` | ✓ | a check you declared fails, or counts more than it held |
@@ -108,6 +108,13 @@ whole tree.
   lints. `unused` and `unused-deep` each find dependencies the other misses. `unreferenced` counts
   only what Outpost is certain nothing reaches; `measures` holds `dead_items_production`, a wider
   analysis, so a new public function with no caller trips `measures` and not `unreferenced`.
+- **`test` reads the failures of a runner's own stage.** A `runner` can check cases that are no
+  Rust test, such as a ledger of scenarios. Where no test failed, each line `FAIL <case> <why>` in
+  its output is a finding at that case. A nextest line `FAIL [ 0.005s] ...` is a test, not a case.
+- **How `commits` and `chock message` judge a message.** A subject is at most 72 characters wide, a
+  body has at most 12 lines that are not blank, and a body line is at most 72 characters wide. The
+  `message` keys `subject`, `body` and `width` set other limits. A line with no space, such as a
+  URL, is never too wide.
 - **When `bigfiles` and `boundaries` disagree.** Splitting a file for `bigfiles` can leave the new
   file calling helpers that stayed behind, and `boundaries` counts that edge. Split along a concern,
   and move what both halves need to where both can reach it.
@@ -338,6 +345,8 @@ A gate leaves these out on purpose. Each one has a place that shows it.
 | `lean` | a file that a tool wrote: a part of its path is `generated`, or one of its first 5 lines says `@generated`, `do not edit`, `automatically generated` or `auto-generated` | the path or the header of the file |
 | `lean` | copies that differ in a string that a macro reads, except format strings with the same placeholders, and copies where code after them reads more than 3 names that they bind; a production function that only tests call; copies of the fields of one struct that a `derive` would write | `duplication`, which compares whole function bodies |
 | `test` | a change to a `Cargo.lock`, to a file under `.chock`, or to a file a declared command names in `outputs`; with no repository, every change | `git status` |
+| `crap` | a function with no coverage in a file that the coverage run did not build, such as a Kani proof or code for another target; a report that names no file cargo-crap scored stops the gate | the coverage report, which names no line of that file |
+| every gate that walks the tree | a directory that holds its own `.git`, such as a nested repository | the `.git` in that directory |
 | `shellcheck` | a file that neither ends in `.sh` or `.bash` nor starts with a `sh`, `bash`, `dash`, `ksh` or `busybox` shebang | the first line of the file |
 | `testlint` | a rule that a test waives with `// test-lint: allow(<rule>) — <reason>`; a test that asserts only through a production function is a finding | the comment in the test, with its reason |
 | `claims` | a fenced block; a citation with no `/` in its path; a file name that two files of the tree have; a name that only test code defines | the document |

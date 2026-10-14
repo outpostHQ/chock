@@ -54,6 +54,9 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The pins move to the newest releases:** cargo-binstall 1.25.3, cargo-nextest 0.9.148,
   cargo-crap 0.7.0 and typos-cli 1.51.1. cargo-crap 0.7.0 also scores the default methods of a
   trait, so `crap` can find a function over 30 that it could not see before.
+- **The README and the docs name every 0.9.0 command and option**, and the agent contract shows
+  how to run part of the suite. SECURITY.md says that `chock init --global` builds `cargo-mutest`
+  from the newest commit of the fork's `main`.
 
 ## [0.8.0] - 2026-10-13
 

@@ -9,6 +9,7 @@ agents read is [`docs/agents.md`](docs/agents.md).
 chock run --json            # every check this project has on
 chock run <name>... --json  # only the ones named
 chock run --fast --json     # only the checks that need no compiler
+chock run test --filter=<text> --json  # only the tests whose name holds the text
 chock gates --json          # what exists; read it, never hard-code a list
 chock explain <name>        # the last run's findings, without running again
 chock enable <name>...      # switch checks on; chock disable switches them off

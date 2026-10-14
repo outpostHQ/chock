@@ -39,8 +39,10 @@ is none. A release asset can be replaced after it is published, where a crates.i
 `cargo binstall chock` fetches chock the same way, from this repository's own releases.
 
 Two tools are not on crates.io — `cargo-mutest` and `outpost`. They are pinned at `0.0.0` in
-`tool-versions.env`, which means *build it from its checkout*: `chock init --global` does not try
-to fetch them, and `chock doctor` reports the version it found without comparing it to anything.
+`tool-versions.env`, and `chock doctor` reports the version it found without comparing it to
+anything. `chock init --global` builds `cargo-mutest` from the newest commit of `main` at
+https://github.com/outpostHQ/mutest-rs, so that build follows the branch, not one commit. It does
+not fetch `outpost`: build it from its checkout.
 Every gate that needs one of them is opt-in and says so when it is absent. Judge those two the way
 you would judge any binary you build yourself.
 
