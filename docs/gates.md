@@ -50,7 +50,7 @@ A gate is one of two kinds.
 | `coverage` | ✓ | a file gains lines no test executes; the run names every line of that file no test ran |
 | `binsize` | ✓ | a release binary grows by more than 1% or 256 KiB, whichever is larger |
 | `unsafety` | ✓ | a file gains an `unsafe` block, function, trait, impl or `extern` |
-| `admits` | ✓ | a Lean file gains a `sorry`, `admit`, `native_decide` or `axiom` outside its comments and strings; Lake's `.lake` and `lakefile.lean` do not count |
+| `admits` | ✓ | a Lean file gains a `sorry`, `admit`, `native_decide` or `axiom` outside its comments and strings; Lake's `.lake` and `lakefile.lean` do not count, and a tree with no Lean file passes |
 | `citations` | ✓ | a doc comment names one more path the repository does not have |
 | `assertions` | ✓ | a test gains an assertion about *how many* instead of *what* |
 | `testlint` | ✓ | a file gains a test that asserts nothing, cannot fail, returns before it checks, is skipped with no reason or has a name that states no claim |

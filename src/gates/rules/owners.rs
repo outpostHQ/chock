@@ -194,7 +194,7 @@ mod tests {
     fn a_read_names_a_literal_or_a_constant_through_the_file_s_aliases() {
         let src = "use std::env;\nuse std::env::var as get;\nconst HOME: &str = \"HOME\";\n\
                    fn f(name: &str) {\n    env::var(\"PATH\");\n    get(&(HOME));\n\
-                   std::env::var(name);\n    env::var(config::KEY_2);\n    env::var(Key);\n\
+                   std::env::var(name);\n    env::var(config::KEY_2);\n    env::var(Key); env::var(<T as K>::KEY_3);\n\
                    cfg.lookup(\"PATH\");\n    std::env::var_os(\"PATH\");\n    env::var(x_Y); env::var(1);\n}\n\
                    #[cfg(test)]\nmod tests { fn t() { std::env::var(\"PATH\"); } }\n\
                    #[test]\nfn t() { std::env::var(\"PATH\"); }\n";
@@ -220,7 +220,7 @@ mod tests {
         let files = [
             read(
                 "src/a.rs",
-                vec![(0, path(), 3), (0, path(), 9), (1, path(), 4)],
+                vec![(0, path(), 3), (1, path(), 4), (0, path(), 9)],
             ),
             read("src/b.rs", vec![(0, path(), 1), (0, "HOME".into(), 2)]),
             read("src/c.rs", vec![(0, path(), 7)]),

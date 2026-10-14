@@ -9,6 +9,8 @@ use crate::setup::init::{Error, held_or_empty, install_file, unwritable};
 
 /// Adds chock's hook to `.claude/settings.json`, merged into any settings already there.
 pub fn install_editor_hook(root: &Path) -> Result<String, Error> {
+    let heartbeat = root.join(crate::edited::HEARTBEAT);
+    crate::edited::note_wiring(root).map_err(|e| unwritable(&heartbeat, &e))?;
     let dir = root.join(".claude");
     let path = dir.join("settings.json");
     let merged = match planned(&path) {
@@ -229,6 +231,8 @@ mod tests {
         install_editor_hook(&dir).unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(written.contains(ON_EDIT), "{written}");
+        let heard = std::fs::read(dir.join(crate::edited::HEARTBEAT)).unwrap();
+        assert!(heard.is_empty(), "wired, and no edit answered yet");
     }
 
     #[test]

@@ -311,13 +311,56 @@ fn firing_at(now: std::time::SystemTime) -> String {
     format!("{since}\n")
 }
 
-/// How long since the hook last answered, or `None` if it never has.
+/// How long since the hook last answered, or `None` if it never has. An empty heartbeat is the
+/// mark `note_wiring` left, not a firing.
 #[must_use]
 pub fn since_firing(root: &std::path::Path) -> Option<std::time::Duration> {
-    let at = std::fs::metadata(root.join(HEARTBEAT))
-        .and_then(|about| about.modified())
-        .ok()?;
-    at.elapsed().ok()
+    let about = std::fs::metadata(root.join(HEARTBEAT)).ok()?;
+    if about.len() == 0 {
+        return None;
+    }
+    about.modified().ok()?.elapsed().ok()
+}
+
+/// Marks the hook as wired with an empty heartbeat, unless one is there. Its time is when
+/// `chock init --local` wired the hook.
+pub fn note_wiring(root: &std::path::Path) -> std::io::Result<()> {
+    let path = root.join(HEARTBEAT);
+    std::fs::create_dir_all(path.parent().unwrap_or(root))?;
+    std::fs::File::options()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map(drop)
+        .or_else(|e| {
+            (e.kind() == std::io::ErrorKind::AlreadyExists)
+                .then_some(())
+                .ok_or(e)
+        })
+}
+
+/// Whether the hook is wired, has never answered, and no tracked file it reads changed after the
+/// wiring. A new clone is such a tree, and its silence is no fault yet.
+#[must_use]
+pub fn awaiting_edit(root: &std::path::Path) -> bool {
+    let Some(wired) = std::fs::metadata(root.join(HEARTBEAT))
+        .ok()
+        .filter(|about| about.len() == 0)
+        .and_then(|about| about.modified().ok())
+    else {
+        return false;
+    };
+    let holder = crate::project::vcs::live_holder(root);
+    crate::project::vcs::tracked(root, holder).is_ok_and(|tracked| {
+        !tracked
+            .iter()
+            .filter(|file| crate::slop::markers_for(file).is_some())
+            .any(|file| {
+                std::fs::metadata(root.join(file))
+                    .and_then(|about| about.modified())
+                    .is_ok_and(|at| at > wired)
+            })
+    })
 }
 
 /// The file an editor hook says was written, from the tool's JSON or a bare path. `None` for a file
@@ -842,6 +885,33 @@ mod tests {
                 found
             )
         );
+    }
+
+    /// A file changed at the very time of the wiring is no edit after it; one changed later is.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_hook_init_wired_waits_for_the_first_edit_before_it_is_silent() {
+        let root = crate::testdir::repo("edited-wired", &[("src/a.rs", "fn a() {}\n")]);
+        assert!(!awaiting_edit(&root), "nothing wired");
+        note_wiring(&root).unwrap();
+        assert_eq!(since_firing(&root), None);
+        let wired = std::fs::metadata(root.join(HEARTBEAT))
+            .unwrap()
+            .modified()
+            .unwrap();
+        let set = |at: std::time::SystemTime| {
+            let file = std::fs::File::options()
+                .write(true)
+                .open(root.join("src/a.rs"));
+            file.unwrap().set_modified(at).unwrap();
+        };
+        set(wired);
+        assert!(awaiting_edit(&root));
+        set(wired + std::time::Duration::from_secs(60));
+        assert!(!awaiting_edit(&root), "an edit came after the wiring");
+        note_firing(&root);
+        note_wiring(&root).unwrap();
+        assert!(since_firing(&root).is_some(), "a firing stays");
     }
 
     #[test]

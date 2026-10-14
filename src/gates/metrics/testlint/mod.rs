@@ -110,7 +110,7 @@ fn early_returns(scans: &[FileScan]) -> Vec<Finding> {
             if checked_only_after(lexed, t.body.clone(), at, &helpers) {
                 let detail = format!(
                     "`{}` returns on line {} before it asserts anything, so it passes without a \
-                     check: fail instead, or mark it `#[ignore = \"why\"]`",
+                     check: fail instead, or drop the return and mark the test `#[ignore = \"why\"]`",
                     t.name, lexed.line[at]
                 );
                 found.push(finding(&s.file, t.line, EARLY_RETURN, &detail));
@@ -346,8 +346,8 @@ mod tests {
         let said = |test: u32, line: u32| {
             format!(
                 "src/thing.rs:{test}: early-return: `reads_a_file` returns on line {line} before it \
-                 asserts anything, so it passes without a check: fail instead, or mark it \
-                 `#[ignore = \"why\"]`"
+                 asserts anything, so it passes without a check: fail instead, or drop the return and \
+                 mark the test `#[ignore = \"why\"]`"
             )
         };
         let skips = "#[test]\nfn reads_a_file() {\n    if !ready() {\n        return;\n    }\n    \

@@ -33,15 +33,13 @@ const LONGEST_CHARACTER: usize = 12;
 const FETCHED: [&str; 2] = [".lake", "lake-packages"];
 
 /// Keyed by file and word, never by line, so an edit above a `sorry` does not read as a new one.
+/// A tree with no `.lean` file holds no step to count, so the gate stays on in a Rust project.
 fn measure(ctx: &Ctx) -> Result<Series, String> {
     let entered = |dir: &str| !project::SKIPPED.contains(&dir) && !FETCHED.contains(&dir);
     let named = |name: &str, _: &Path| {
         Path::new(name).extension().is_some_and(|it| it == "lean") && name != "lakefile.lean"
     };
     let files = project::walked(&ctx.listing, &ctx.root, &entered, &named)?;
-    if files.is_empty() {
-        return Err("no `.lean` file here, so there is no proof to count".into());
-    }
     let mut read = Vec::new();
     for path in files {
         let shown = project::relative(&ctx.root, &path);
@@ -190,6 +188,6 @@ mod tests {
             [("Proofs/A.lean#axiom", 1), ("Proofs/A.lean#sorry", 1)]
         );
         let none = crate::testdir::Held::tree("gate-admits-none", &[("src/lib.rs", "")]);
-        assert!(measure(&none).unwrap_err().starts_with("no `.lean` file"));
+        assert_eq!(measure(&none).unwrap(), Series::new());
     }
 }

@@ -3,6 +3,7 @@
   "version": 1,
   "chock": "0.9.0",
   "gates": {
+    "admits": {},
     "assertions": {
       "src/cli.rs#a_project_that_has_not_run_init_gets_the_enforced_set": 1,
       "src/gates/cargo/manifest.rs#a_git_dependency_with_no_query_at_all_is_reported": 1,
@@ -23,13 +24,13 @@
     },
     "bigfiles": {},
     "binsize": {
-      "chock": 3757848
+      "chock": 4100576
     },
     "binsize@macos": {
       "chock": 3021136
     },
     "binsize@windows": {
-      "chock": 4237824
+      "chock": 4644864
     },
     "boundaries": {
       "mixed_directory_foreign_files_production": 35,
@@ -608,6 +609,7 @@
     "unused": {}
   },
   "units": {
+    "admits": "unchecked proof step(s)",
     "assertions": "length assertion(s)",
     "binsize": "byte(s)",
     "boundaries": "file(s) off one concern, tree-wide",

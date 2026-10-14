@@ -143,11 +143,12 @@ pub fn settles_anywhere(gate: &str) -> bool {
 }
 
 /// Gates that count items but key each one by a name, not by the file it is in.
-const KEYED_BY_NAME: [&str; 6] = [
+const KEYED_BY_NAME: [&str; 7] = [
     "boundaries",
     "commands",
     "commands-build",
     "dupdeps",
+    "lines",
     "sort",
     "supply",
 ];

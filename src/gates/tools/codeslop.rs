@@ -224,6 +224,7 @@ mod tests {
             file: None,
             line: None,
         });
+        found.push(at("clippy::d", "src/d.rs", 7));
         let details = placed(&found);
         let lines: Vec<u32> = details["clippy::a"].places.iter().map(|p| p.line).collect();
         assert_eq!(lines, (1..=20).collect::<Vec<_>>());
@@ -232,6 +233,10 @@ mod tests {
             [Place::at("hit", "src/b.rs", 4)]
         );
         assert!(!details.contains_key("clippy::c"));
+        assert_eq!(
+            details["clippy::d"].places,
+            [Place::at("hit", "src/d.rs", 7)]
+        );
         let measured = from_run(&ran(0, &real_run(), "", false)).unwrap();
         assert_eq!(measured.details, placed(&hits(&real_run())));
         let lints: Vec<&str> = measured.details.keys().map(String::as_str).collect();

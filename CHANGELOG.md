@@ -41,6 +41,14 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   every other file.
 - **`just setup` sets up a machine to work on chock.** `chock init --local` leaves chock's own pin
   file as it is, and writes no copy beside it.
+- **`admits` passes in a tree with no `.lean` file**, so a Rust project keeps the gate on. Before,
+  it could not run there.
+- **A commit keeps the `lines` record.** The pre-commit hook read its key, `total`, as a deleted
+  file and dropped it.
+- **`chock doctor` calls the editor hook silent only after an edit.** `chock init --local` marks
+  when it wired the hook, so `just setup` on a new clone passes.
+- **The early-return finding of `testlint` says to drop the return** when you mark the test
+  `#[ignore = "why"]`.
 
 ## [0.8.0] - 2026-10-13
 

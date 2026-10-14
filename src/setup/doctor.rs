@@ -102,14 +102,19 @@ pub fn outpost_hooks(standing: Option<&str>, file: &str) -> Vec<Row> {
 }
 
 /// The row for the hook chock wired into an editor, or `None` where it wired none: a project
-/// that never asked for a hook does not have a broken one.
+/// that never asked for a hook does not have a broken one. `waiting` is a hook no edit reached.
 #[must_use]
-pub fn editor_hook(configured: bool, since: Option<std::time::Duration>) -> Option<Row> {
+pub fn editor_hook(
+    configured: bool,
+    since: Option<std::time::Duration>,
+    waiting: bool,
+) -> Option<Row> {
     if !configured {
         return None;
     }
     let status = match since {
         Some(ago) => Status::Firing(format!("last answered {}", how_long(ago))),
+        None if waiting => Status::Firing("no edit since `chock init --local` wired it".into()),
         None => Status::Silent,
     };
     Some(Row {
@@ -316,7 +321,12 @@ pub fn gathered(
     // Doctor does not report on an editor hook that chock did not wire into the settings it writes.
     let wired = std::fs::read_to_string(root.join(".claude/settings.json"))
         .is_ok_and(|held| held.contains(crate::setup::agents::ON_EDIT));
-    rows.extend(editor_hook(wired, crate::edited::since_firing(root)));
+    let since = crate::edited::since_firing(root);
+    rows.extend(editor_hook(
+        wired,
+        since,
+        crate::edited::awaiting_edit(root),
+    ));
     rows.extend(git_hooks(&crate::setup::hooks::installed_hooks(root)));
     // Only where Outpost holds this tree: elsewhere Outpost answers for an ancestor repository.
     let outpost_holds = vcs::holders(root).contains(&vcs::Kind::Outpost);
@@ -1549,7 +1559,11 @@ mod tests {
             ],
             &|p| (p.command == "cargo-sort").then(|| "1.58.0".to_string()),
         );
-        rows.extend(editor_hook(true, Some(std::time::Duration::from_secs(60))));
+        rows.extend(editor_hook(
+            true,
+            Some(std::time::Duration::from_secs(60)),
+            false,
+        ));
         assert_eq!(verdict(&rows), Verdict::Pass);
         let text = render(&rows);
         assert!(
@@ -1575,15 +1589,17 @@ mod tests {
 
     #[test]
     fn a_hook_wired_and_never_seen_to_answer_is_a_failure() {
-        let row = editor_hook(true, None).unwrap();
+        let row = editor_hook(true, None, false).unwrap();
         assert_eq!(row.command, EDITOR_HOOK);
         assert_eq!(row.status, Status::Silent);
         assert!(row.is_failure());
+        let waiting = editor_hook(true, None, true).unwrap();
+        assert!(!waiting.is_failure(), "no edit has reached it yet");
     }
 
     #[test]
     fn a_hook_that_has_answered_is_not_a_failure_and_says_when() {
-        let row = editor_hook(true, Some(std::time::Duration::from_secs(90))).unwrap();
+        let row = editor_hook(true, Some(std::time::Duration::from_secs(90)), true).unwrap();
         assert_eq!(
             row.status,
             Status::Firing("last answered 1 minute ago".to_string())
@@ -1593,9 +1609,9 @@ mod tests {
 
     #[test]
     fn a_project_with_no_editor_hook_is_not_asked_about_one() {
-        assert_eq!(editor_hook(false, None), None);
+        assert_eq!(editor_hook(false, None, true), None);
         assert_eq!(
-            editor_hook(false, Some(std::time::Duration::from_secs(1))),
+            editor_hook(false, Some(std::time::Duration::from_secs(1)), false),
             None
         );
     }
@@ -1611,7 +1627,7 @@ mod tests {
 
     #[test]
     fn a_silent_hook_makes_the_whole_report_fail() {
-        let rows = vec![editor_hook(true, None).unwrap()];
+        let rows = vec![editor_hook(true, None, false).unwrap()];
         assert_eq!(verdict(&rows), Verdict::Tripped);
     }
 

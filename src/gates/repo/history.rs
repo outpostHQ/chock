@@ -295,6 +295,16 @@ mod tests {
         ))
     }
 
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_tree_outpost_does_not_hold_has_no_history_to_walk() {
+        let root = crate::testdir::make("history-no-outpost");
+        assert_eq!(
+            check(&Ctx::at(&root)).err().as_deref(),
+            Some("no .outpost repository here, so there is no history this scanner can walk")
+        );
+    }
+
     /// A scanner that died partway still prints an envelope.
     #[test]
     fn a_scan_that_failed_is_not_a_history_with_no_secrets_in_it() {

@@ -1765,10 +1765,14 @@ mod tests {
         }
         let mut held = Baseline::empty("0.1.0");
         held.set("slop", was.clone());
+        let mut lines = Series::new();
+        lines.set("total", 5);
+        held.set("lines", lines.clone());
         assert_eq!(forgets(&root, &held, None, false), None, "outside a commit");
         let settled = forgets(&root, &held, None, true).unwrap();
         was.0.remove("src/gone.rs");
         assert_eq!(settled.record.gate("slop"), was);
+        assert_eq!(settled.record.gate("lines"), lines, "a total names no file");
         let bare = crate::testdir::make("report-forgets-bare");
         assert_eq!(forgets(&bare, &held, None, true), None, "no repository");
     }

@@ -301,14 +301,15 @@ mod tests {
             assert_eq!(moved(&moves, &tree, None, &mut held), Err(why.to_string()));
             assert_eq!(held, was);
         }
+        let unknown = moved(
+            &(vec!["no-such-gate"], vec![("a.rs", "b.rs")]),
+            &tree,
+            None,
+            &mut held,
+        );
         assert!(
-            moved(
-                &(vec!["no-such-gate"], vec![("a.rs", "b.rs")]),
-                &tree,
-                None,
-                &mut held
-            )
-            .is_err()
+            matches!(&unknown, Err(why) if why.starts_with("no gate named `no-such-gate`")),
+            "{unknown:?}"
         );
         assert_eq!(
             moved(&asked(vec![("a.rs", "b.rs")]), &tree, None, &mut held),
@@ -330,9 +331,12 @@ mod tests {
         };
         assert_eq!(written(&whole, &[gate], &proofs, &mut held), Ok(Vec::new()));
         assert_eq!(held.gate(gate.name).get("B.lean#sorry"), Some(1));
-        let none = crate::testdir::Held::tree("cli-no-proof", &[("README.md", "no proof\n")]);
+        let dir = crate::testdir::tree("cli-unread-proof", &[]);
+        std::fs::write(dir.join("C.lean"), b"def c := \xff\n").unwrap();
+        let ctx = run::Ctx::for_root(dir.to_path_buf(), Baseline::empty("0.1.0"));
+        let unread = crate::testdir::Held::new(dir, ctx);
         assert_eq!(
-            written(&whole, &[gate], &none, &mut held),
+            written(&whole, &[gate], &unread, &mut held),
             Ok(vec![gate.name])
         );
         let keyed = Recording {
@@ -340,7 +344,7 @@ mod tests {
             ..whole
         };
         assert_eq!(
-            written(&keyed, &[gate], &none, &mut held),
+            written(&keyed, &[gate], &unread, &mut held),
             Err(ExitCode::from(2))
         );
         assert_eq!(held.gate(gate.name).get("B.lean#sorry"), Some(1));

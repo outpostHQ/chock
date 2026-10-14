@@ -539,6 +539,10 @@ mod tests {
         );
         assert_eq!(held, was);
         assert_eq!(held.moved_file(&[], "src/none.rs", "src/d.rs"), Ok(0));
+        held.set("typos", series(&[("src/a.rs", 1), ("src/c.rs", 4)]));
+        assert_eq!(held.moved_file(&["typos"], "src/c.rs", "src/e.rs"), Ok(1));
+        let typos = series(&[("src/a.rs", 1), ("src/e.rs", 4)]);
+        assert_eq!(held.gate("typos"), typos);
     }
 
     #[test]

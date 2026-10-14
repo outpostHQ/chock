@@ -314,6 +314,30 @@ mod tests {
             .collect()
     }
 
+    /// A dependency the graph does not hold is passed over, as is one back to the start.
+    #[test]
+    fn a_route_passes_over_a_package_the_graph_does_not_hold() {
+        let package = |name: &str, normal: &[&str]| {
+            let normal = normal.iter().map(|it| (*it).to_string()).collect();
+            let manifest = String::new();
+            let name = name.to_string();
+            (
+                name.clone(),
+                Package {
+                    name,
+                    manifest,
+                    normal,
+                },
+            )
+        };
+        let graph = BTreeMap::from([
+            package("a", &["gone", "b"]),
+            package("b", &["a", "s3"]),
+            package("s3", &[]),
+        ]);
+        assert_eq!(route("a", "s3", &graph), Some("a → b → s3".to_string()));
+    }
+
     #[test]
     fn a_use_of_a_seam_outside_its_place_is_found_on_each_line_through_aliases() {
         let src = "use iroh::Endpoint;\nuse std::process::{self as proc};\n\
