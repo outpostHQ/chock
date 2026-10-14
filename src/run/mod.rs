@@ -1586,6 +1586,12 @@ mod tests {
         ctx.scope.package = Some("chock".to_string());
         let both = "k:package=chock:filter=rules::";
         assert_eq!(with_scope(&ctx, "k".to_string()), both);
+        ctx.scope = Scope {
+            mutate: vec!["src/a.rs".to_string(), "src/b.rs".to_string()],
+            ..Scope::default()
+        };
+        let files = "k:mutate=src/a.rs,src/b.rs";
+        assert_eq!(with_scope(&ctx, "k".to_string()), files);
     }
 
     #[test]

@@ -6,18 +6,28 @@ use crate::run::baseline::Series;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Measurement};
 
-/// The `.rs` files this local run mutates, or `None` for the whole crate. Without a record there
-/// is no count to keep for the files left out.
-pub(super) fn of(ctx: &Ctx) -> Option<Vec<String>> {
-    if ctx.ci || ctx.whole || !ctx.baseline.has(crate::gates::tools::MUTEST.name) {
-        return None;
+/// The `.rs` files `--mutate` names, each a Rust source mutest mutates, or on a local run with a
+/// record those a change to Rust source alone touched; `None` mutates the whole crate.
+pub(super) fn of(ctx: &Ctx) -> Result<Option<Vec<String>>, String> {
+    let named = &ctx.scope.mutate;
+    let source = |file: &&String| mutable(file) && ctx.root.join(file.as_str()).is_file();
+    if let Some(file) = named.iter().find(|file| !source(file)) {
+        return Err(format!(
+            "`--mutate` names {file}, which is no Rust source mutest mutates here"
+        ));
     }
-    let files = narrowed(ctx.changed().ok()?);
-    files.map(|files| {
+    let files = if !named.is_empty() {
+        Some(named.clone())
+    } else if ctx.ci || ctx.whole || !ctx.baseline.has(crate::gates::tools::MUTEST.name) {
+        return Ok(None);
+    } else {
+        ctx.changed().ok().and_then(narrowed)
+    };
+    Ok(files.map(|files| {
         let kept = files.into_iter();
         kept.filter(|file| !left_out(&ctx.not_mutated, file))
             .collect()
-    })
+    }))
 }
 
 /// The flag for a run of the whole crate: none, or where the project leaves files unmutated, each
@@ -147,13 +157,14 @@ pub(super) fn widened(
 
 fn note(files: usize) -> Finding {
     local(&format!(
-        "mutated only the {files} Rust file(s) this change touched; CI mutates the whole crate"
+        "mutated only {files} Rust file(s), from this change or `--mutate`; CI mutates the whole \
+         crate"
     ))
 }
 
 fn widening(files: usize) -> Finding {
     local(&format!(
-        "mutated the whole crate, as CI does: the {files} Rust file(s) this change touched alone \
+        "mutated the whole crate, as CI does: the {files} Rust file(s) alone \
          gave more timeouts than the limit allows"
     ))
 }
@@ -233,7 +244,7 @@ mod tests {
                 ..Ctx::for_root(std::path::PathBuf::from("."), baseline)
             }
         };
-        assert_eq!(of(&ctx(false, false, true)), Some(paths(&["src/a.rs"])));
+        assert_eq!(of(&ctx(false, false, true)), Ok(Some(paths(&["src/a.rs"]))));
         for (ci, whole, recorded) in [
             (true, false, true),
             (false, true, true),
@@ -241,7 +252,7 @@ mod tests {
         ] {
             assert_eq!(
                 of(&ctx(ci, whole, recorded)),
-                None,
+                Ok(None),
                 "{ci} {whole} {recorded}"
             );
         }
@@ -276,12 +287,23 @@ mod tests {
             ..Ctx::for_root(root.to_path_buf(), baseline)
         };
         assert_eq!(whole(&ctx), Ok(None));
-        assert_eq!(of(&ctx), Some(paths(&["src/generated.rs", "src/lib.rs"])));
+        assert_eq!(
+            of(&ctx),
+            Ok(Some(paths(&["src/generated.rs", "src/lib.rs"])))
+        );
         ctx.not_mutated = vec![unmutated("src/generated.rs", "written by build.rs")];
         let comma = "mutest's filter cannot name src/a,b.rs, so chock cannot leave out the files \
                      in `not_mutated`";
         assert_eq!(whole(&ctx), Err(comma.to_string()));
-        assert_eq!(of(&ctx), Some(paths(&["src/lib.rs"])));
+        assert_eq!(of(&ctx), Ok(Some(paths(&["src/lib.rs"]))));
+        ctx.scope.mutate = paths(&["crates/b/src/c.rs", "src/generated.rs"]);
+        assert_eq!(of(&ctx), Ok(Some(paths(&["crates/b/src/c.rs"]))));
+        ctx.scope.mutate = paths(&["src/gone.rs"]);
+        let gone = "`--mutate` names src/gone.rs, which is no Rust source mutest mutates here";
+        assert_eq!(of(&ctx), Err(gone.to_string()));
+        ctx.scope.mutate = paths(&["tests/cli.rs"]);
+        assert!(of(&ctx).is_err());
+        ctx.scope.mutate = Vec::new();
         ctx.not_mutated
             .push(unmutated("src/a,b.rs", "a name the filter cannot spell"));
         let named = "--filter-mutations=file:crates/b/src/c.rs,file:src/lib.rs";
@@ -339,8 +361,8 @@ mod tests {
         assert_eq!(
             said,
             [
-                "local run: mutated the whole crate, as CI does: the 2 Rust file(s) this change \
-                 touched alone gave more timeouts than the limit allows"
+                "local run: mutated the whole crate, as CI does: the 2 Rust file(s) alone gave \
+                 more timeouts than the limit allows"
             ]
         );
         let refused = widened(None, &was, &files, || Err("mutest gave up".to_string()));

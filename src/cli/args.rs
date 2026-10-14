@@ -21,7 +21,8 @@ pub enum Command<'a> {
         miri_part: Option<Part>,
         /// Gates left out, from `--skip=NAME,...`: CI runs the slow ones in jobs of their own.
         skip: Vec<&'a str>,
-        /// The part of the suite the `test` gate runs, from `--package=NAME` and `--filter=TEXT`.
+        /// The part of the suite the `test` gate runs, from `--package=NAME` and `--filter=TEXT`,
+        /// and the files the `mutest` gate mutates, from `--mutate=FILE,...`.
         scope: Scope,
     },
     /// `cache clear`: removes every kept verdict.
@@ -100,11 +101,13 @@ const PACKAGE: &str = "--package=";
 
 const FILTER: &str = "--filter=";
 
+const MUTATE: &str = "--mutate=";
+
 /// A flag of `run`: `--fast`, `--ci`, `--no-cache`, `--miri-partition=K/N`, `--skip=NAME,...`,
-/// `--package=NAME` or `--filter=TEXT`.
+/// `--package=NAME`, `--filter=TEXT` or `--mutate=FILE,...`.
 fn known(flag: &str) -> bool {
     matches!(flag, "--fast" | "--ci" | "--no-cache")
-        || [PARTITION, SKIP, PACKAGE, FILTER]
+        || [PARTITION, SKIP, PACKAGE, FILTER, MUTATE]
             .iter()
             .any(|at| flag.starts_with(at))
 }
@@ -120,26 +123,45 @@ fn valued(names: &[&str], flag: &str) -> Result<Option<String>, String> {
     }
 }
 
-/// `--package` and `--filter` narrow the `test` gate alone, so a run that gives one names `test`
-/// and no other gate.
+/// `--package` and `--filter` narrow the `test` gate alone, and `--mutate` the `mutest` gate
+/// alone, so a run that gives one names that gate and no other.
 fn scope(names: &[&str]) -> Result<Scope, String> {
+    let list = valued(names, MUTATE)?.unwrap_or_default();
+    let mutate: Vec<String> = list
+        .split(',')
+        .filter(|file| !file.is_empty())
+        .map(str::to_string)
+        .collect();
+    if !list.is_empty() && mutate.is_empty() {
+        return Err("`--mutate` names nothing".to_string());
+    }
     let scope = Scope {
         package: valued(names, PACKAGE)?,
         filter: valued(names, FILTER)?,
+        mutate,
     };
     let gates: Vec<&str> = names
         .iter()
         .copied()
         .filter(|n| !n.starts_with('-'))
         .collect();
-    if scope != Scope::default() && gates != ["test"] {
-        return Err(
-            "`--package` and `--filter` narrow the `test` gate alone, so name `test` and \
-                    no other gate"
-                .to_string(),
-        );
+    let narrowed = [
+        (
+            scope.package.is_some() || scope.filter.is_some(),
+            "`--package` and `--filter` narrow",
+            "test",
+        ),
+        (!scope.mutate.is_empty(), "`--mutate` narrows", "mutest"),
+    ];
+    match narrowed
+        .into_iter()
+        .find(|(given, _, gate)| *given && gates != [*gate])
+    {
+        Some((_, flags, gate)) => Err(format!(
+            "{flags} the `{gate}` gate alone, so name `{gate}` and no other gate"
+        )),
+        None => Ok(scope),
     }
-    Ok(scope)
 }
 
 /// The gates each `--skip=A,B` names.
@@ -483,6 +505,7 @@ mod tests {
             scope: Scope {
                 package: Some("chock".to_string()),
                 filter: Some("rules::".to_string()),
+                mutate: Vec::new(),
             },
         };
         assert_eq!(narrowed, expected);
@@ -499,6 +522,33 @@ mod tests {
         assert_eq!(empty, usage("`--package` names nothing"));
         let unknown = parse(&["run", "test", "--package", "a"]);
         assert_eq!(unknown, usage("unknown option `--package`"));
+    }
+
+    #[test]
+    fn a_list_of_files_narrows_the_mutest_gate_alone() {
+        let narrowed = parse(&["run", "mutest", "--mutate=src/a.rs,,src/b.rs"]);
+        let expected = Command::Run {
+            names: vec!["mutest"],
+            json: false,
+            fast: false,
+            ci: false,
+            no_cache: false,
+            miri_part: None,
+            skip: Vec::new(),
+            scope: Scope {
+                mutate: vec!["src/a.rs".to_string(), "src/b.rs".to_string()],
+                ..Scope::default()
+            },
+        };
+        assert_eq!(narrowed, expected);
+        let usage = |said: &str| Command::Usage(said.to_string());
+        let alone =
+            usage("`--mutate` narrows the `mutest` gate alone, so name `mutest` and no other gate");
+        assert_eq!(parse(&["run", "--mutate=src/a.rs"]), alone);
+        assert_eq!(parse(&["run", "test", "--mutate=src/a.rs"]), alone);
+        let none = usage("`--mutate` names nothing");
+        assert_eq!(parse(&["run", "mutest", "--mutate=,"]), none);
+        assert_eq!(parse(&["run", "mutest", "--mutate="]), none);
     }
 
     #[test]

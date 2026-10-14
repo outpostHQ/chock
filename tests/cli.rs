@@ -2023,7 +2023,8 @@ fn a_local_run_with_no_crap_record_writes_the_first_one_from_the_scores_of_today
     let dir = coverage_project("crap-first-record");
     let record = dir.join(chock::gates::coverage::crap::baseline());
     std::fs::remove_file(&record).unwrap();
-    let measured = r#"{"entries":[{"file":"src/lib.rs","function":"f","line":1,"crap":6.0}]}"#;
+    let measured =
+        r#"{"entries":[{"file":"src/lib.rs","function":"f","line":1,"coverage":0.0,"crap":6.0}]}"#;
     let env = [("FIXTURE_HITS", "0"), ("FIXTURE_CRAP", measured)];
     let first = with_tools(&dir, &["run", "coverage", "crap"], &env);
     assert_eq!(first.code, 0, "{}{}", first.out, first.err);

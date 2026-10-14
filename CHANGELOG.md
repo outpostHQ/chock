@@ -32,6 +32,15 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`mutest` checks that the tree is the one it mutated**, reads its totals from mutest's results,
   and caps the test threads of each mutation run.
 - **No walk enters a directory that holds its own `.git`**, such as a nested repository.
+- **`commits` and `chock message` judge the width of each body line**, 72 by default, and
+  `message.width` sets another. A line with no space, such as a URL, is never judged.
+- **`crap` does not judge a function that has no coverage**, in a file the coverage run did not
+  build, such as a Kani proof or code for another target. A coverage report that names no file
+  cargo-crap scored stops the gate, so nothing passes unjudged.
+- **`chock run mutest --mutate=FILE,...` mutates only the named files** and keeps the record for
+  every other file.
+- **`just setup` sets up a machine to work on chock.** `chock init --local` leaves chock's own pin
+  file as it is, and writes no copy beside it.
 
 ## [0.8.0] - 2026-10-13
 

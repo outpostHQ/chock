@@ -24,7 +24,7 @@ A gate is one of two kinds.
 | `deps` | | `cargo deny` finds an advisory, a disallowed licence or an unapproved source |
 | `msrv` | | the crate stops building on the oldest Rust it declares |
 | `crap` | | a function's complexity-times-uncoverage score goes up, or a new function scores over 30 |
-| `commits` | | an unpushed commit's subject is too wide, its body repeats the diff, or a tool is credited as author |
+| `commits` | | an unpushed commit's subject or a body line is too wide, its body repeats the diff, or a tool is credited as author |
 | `profile` | | the release profile skips a free win or silences a compiler check |
 | `toolchain` | | a `rust-toolchain` file names a channel that moves, such as `stable` or `nightly`, not a release or a dated nightly |
 | `hygiene` | | the repository tracks a secret, a credential or build output |
@@ -165,7 +165,8 @@ whole tree.
   does with the path, and it does not read what a helper calls.
 
   A comment between the first attribute of a test and its closing brace leaves one rule out for
-  that test: `// test-lint: allow(<rule>) — <reason>`.
+  that test: `// test-lint: allow(<rule>) — <reason>`. A comment above the first attribute is
+  outside the test and waives nothing.
 
   `ambiguous-test-name` compares the failure line of each test of the tree, across crates: the
   modules below `src`, or below the file of a test target, and then the name. Two tests in two
@@ -257,6 +258,9 @@ every gate. `crap` keeps its own record file, so `--moved` does not write it.
 `chock run test --package=NAME` runs the suite of one package, and `--filter=TEXT` only the tests
 whose name holds TEXT. The verdict of such a run answers for that part alone. Both work when the
 `runner` is `cargo test` or `cargo nextest run`.
+
+`chock run mutest --mutate=FILE,...` mutates only the named Rust files, and keeps the record for
+every other file. Its verdict answers for those files alone.
 
 ## Output a finding points to
 

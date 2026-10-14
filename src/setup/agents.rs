@@ -167,6 +167,16 @@ mod tests {
         }
     }
 
+    /// This repository keeps the contract `chock init --local` writes, so a clone of it stays clean.
+    #[test]
+    fn this_repository_holds_the_contract_this_chock_writes() {
+        assert_eq!(
+            include_str!("../../.chock/agents.md"),
+            AGENT_CONTRACT,
+            "copy docs/agents.md to .chock/agents.md"
+        );
+    }
+
     #[test]
     fn the_editor_hook_is_added_to_settings_that_were_not_there() {
         let written = merged("");

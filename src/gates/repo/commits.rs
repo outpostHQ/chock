@@ -1,5 +1,5 @@
 //! The shape of each unpushed commit message, never its prose: subject width and ending, body
-//! length, and a trailer crediting a tool.
+//! length and line width, and a trailer crediting a tool.
 
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
@@ -19,11 +19,15 @@ pub const SUBJECT: usize = 72;
 /// The most non-blank body lines; past this a message is usually recounting the diff.
 pub const BODY: usize = 12;
 
+/// The widest body line that does not wrap where `git log` indents it.
+pub const WIDTH: usize = 72;
+
 /// The message limits a project allows; chock's numbers are only the default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     pub subject: usize,
     pub body: usize,
+    pub width: usize,
 }
 
 impl Default for Limits {
@@ -31,6 +35,7 @@ impl Default for Limits {
         Self {
             subject: SUBJECT,
             body: BODY,
+            width: WIDTH,
         }
     }
 }
@@ -45,6 +50,7 @@ impl Limits {
         Self {
             subject: said.subject.unwrap_or(SUBJECT),
             body: said.body.unwrap_or(BODY),
+            width: said.width.unwrap_or(WIDTH),
         }
     }
 }
@@ -111,6 +117,19 @@ pub fn faults(commit: &str, message: &str, limits: Limits) -> Vec<Finding> {
             limits.body
         )));
     }
+    // A body line with no space, such as a URL or a path, has no place to wrap.
+    let wide = rest
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.chars().count() > limits.width && line.trim().contains(' '));
+    found.extend(wide.map(|(line, text)| {
+        at(&format!(
+            "line {} is {} characters; past {} it wraps where it is read",
+            line + 2,
+            text.chars().count(),
+            limits.width
+        ))
+    }));
     let lowered = message.to_lowercase();
     if TOOL_TRAILERS.iter().any(|mark| lowered.contains(mark)) {
         found.push(at(
@@ -133,8 +152,14 @@ mod tests {
         let theirs = Limits::of(Some(crate::project::config::Message {
             subject: Some(100),
             body: Some(60),
+            width: Some(100),
         }));
-        let long = format!("{}\n\n{}", "x".repeat(90), "a line\n".repeat(40));
+        let long = format!(
+            "{}\n\n{}{}",
+            "x".repeat(90),
+            "a line\n".repeat(39),
+            "a word ".repeat(13)
+        );
         assert_eq!(faults("abcdef1234", &long, theirs), Vec::<Finding>::new());
         let refused: Vec<String> = faults("abcdef1234", &long, Limits::default())
             .iter()
@@ -149,6 +174,9 @@ mod tests {
                 format!(
                     "abcdef12: the body is 40 lines; past {BODY} it is recounting the diff, which the diff says"
                 ),
+                format!(
+                    "abcdef12: line 42 is 91 characters; past {WIDTH} it wraps where it is read"
+                ),
             ]
         );
     }
@@ -158,9 +186,11 @@ mod tests {
         let wider = Limits::of(Some(crate::project::config::Message {
             subject: Some(100),
             body: None,
+            width: None,
         }));
         assert_eq!(wider.subject, 100);
         assert_eq!(wider.body, BODY);
+        assert_eq!(wider.width, WIDTH);
     }
 
     #[test]
@@ -168,6 +198,7 @@ mod tests {
         assert_eq!(Limits::of(None), Limits::default());
         assert_eq!(Limits::default().subject, SUBJECT);
         assert_eq!(Limits::default().body, BODY);
+        assert_eq!(Limits::default().width, WIDTH);
     }
 
     fn rendered(message: &str) -> Vec<String> {
@@ -238,6 +269,21 @@ mod tests {
             [
                 "abcdef12: the body is 13 lines; past 12 it is recounting the diff, which the diff says"
             ]
+        );
+    }
+
+    #[test]
+    fn a_body_line_past_the_width_is_reported_by_its_line_and_a_url_is_not() {
+        let at_width = format!("a {}", "x".repeat(WIDTH - 2));
+        let past = format!("a {}", "x".repeat(WIDTH - 1));
+        let url = format!("https://example.com/{}", "x".repeat(WIDTH));
+        let message = format!("Fix the walk\n\n{at_width}\n{past}\n  {url}\n");
+        assert_eq!(
+            rendered(&message),
+            [format!(
+                "abcdef12: line 4 is {} characters; past {WIDTH} it wraps where it is read",
+                WIDTH + 1
+            )]
         );
     }
 

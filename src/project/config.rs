@@ -247,6 +247,8 @@ pub struct Message {
     pub subject: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<usize>,
 }
 
 fn schema_url() -> String {

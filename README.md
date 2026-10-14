@@ -58,6 +58,10 @@ chock run                      # judges the tree and writes each gate's first re
 Commit the files that chock wrote. After that, chock runs at each commit and each push. The
 [guide](docs/guide.md) explains each step and each file.
 
+To work on chock itself, you need rustup and [just](https://github.com/casey/just). From the root
+of a clone, `just setup` installs the pinned Rust, builds this chock, installs every tool a gate
+runs at its pinned version, and wires the hooks.
+
 ## Use it
 
 ```

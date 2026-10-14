@@ -316,11 +316,14 @@ impl Scored {
         self.crap > OVER
     }
 
-    /// A score above the record's, or a function the record lacks that is over the threshold.
+    /// A score above the record's, or a function the record lacks that is over the threshold. A
+    /// function in a file the coverage run did not build, such as a Kani proof or code for another
+    /// target, has no coverage, so its score is never judged.
     fn worse(&self) -> bool {
+        let judged = self.coverage.is_some();
         match self.status.as_str() {
-            "regressed" => true,
-            "new" => self.over(),
+            "regressed" => judged,
+            "new" => judged && self.over(),
             _ => false,
         }
     }
@@ -512,10 +515,22 @@ pub fn debt(root: &Path) -> Result<Option<Debt>, String> {
     }))
 }
 
+/// Whether no function cargo-crap scored has coverage, as when the coverage report's paths are
+/// not the tree's. Every score would then go unjudged.
+fn unread(report: &Delta) -> bool {
+    !report.entries.is_empty() && report.entries.iter().all(|entry| entry.coverage.is_none())
+}
+
 /// The verdict from cargo-crap's report, with how many functions are over the threshold now and
 /// on record. cargo-crap exits zero over a new function at any score, so the report decides.
 fn judged(json: &str, succeeded: bool, root: &Path, record: &[Scored]) -> Result<Outcome, String> {
     let report = read(json)?;
+    if unread(&report) {
+        return Err(
+            "the coverage report names no file cargo-crap scored, so nothing was measured"
+                .to_string(),
+        );
+    }
     // cargo-crap exits non-zero over a regression it names, which the record's order may clear.
     let explained = succeeded
         || report
@@ -775,7 +790,7 @@ mod tests {
     #[test]
     fn a_new_function_over_the_threshold_trips_though_cargo_crap_exited_zero() {
         let only_new = r#"{"entries":[{"file":"/w/src/d.rs","function":"added","line":5,
-          "crap":110.0,"status":"new","baseline_crap":null}]}"#;
+          "coverage":0.0,"crap":110.0,"status":"new","baseline_crap":null}]}"#;
         let outcome = judged(only_new, true, Path::new("/w"), &[]).unwrap();
         assert!(!outcome.passed);
         assert_eq!(
@@ -787,16 +802,16 @@ mod tests {
     #[test]
     fn a_pass_still_counts_the_functions_over_the_threshold() {
         let steady = r#"{"entries":[
-          {"file":"/w/src/e.rs","function":"old","line":9,"crap":56.0,"status":"unchanged",
+          {"file":"/w/src/e.rs","function":"old","line":9,"coverage":0.0,"crap":56.0,"status":"unchanged",
            "baseline_crap":56.0},
-          {"file":"/w/src/b.rs","function":"fresh","line":3,"crap":30.0,"status":"new",
+          {"file":"/w/src/b.rs","function":"fresh","line":3,"coverage":0.0,"crap":30.0,"status":"new",
            "baseline_crap":null}]}"#;
         let outcome = judged(steady, true, Path::new("/w"), &held(HELD)).unwrap();
         assert_eq!(outcome, Outcome::passed().counting(1, 2, UNIT));
     }
 
     const QUIET: &str = r#"{"entries":[{"file":"/w/src/e.rs","function":"old","line":9,
-      "crap":56.0,"status":"unchanged","baseline_crap":56.0}]}"#;
+      "coverage":0.0,"crap":56.0,"status":"unchanged","baseline_crap":56.0}]}"#;
 
     #[test]
     fn a_pass_with_every_function_on_record_says_nothing_more() {
@@ -827,6 +842,25 @@ mod tests {
         )
     }
 
+    /// A function the coverage report names, beside one it does not.
+    const COVERED: &str = r#"{"file":"/w/src/c.rs","function":"steady","line":7,"cyclomatic":2.0,
+      "coverage":100.0,"crap":2.0,"status":"unchanged","baseline_crap":2.0}"#;
+
+    #[test]
+    fn a_coverage_report_that_names_no_scored_file_stops_the_gate() {
+        let rest = r#","status":"new","baseline_crap":null"#;
+        let report = entries(&[scored(930.0, 30.0, "null", rest)]);
+        assert_eq!(
+            judged(&report, true, Path::new("/w"), &[]),
+            Err(
+                "the coverage report names no file cargo-crap scored, so nothing was measured"
+                    .to_string()
+            )
+        );
+        let none = judged(&entries(&[]), true, Path::new("/w"), &[]);
+        assert_eq!(none, Ok(Outcome::passed().counting(0, 0, UNIT)));
+    }
+
     fn entries(listed: &[String]) -> String {
         format!(r#"{{"entries":[{}]}}"#, listed.join(","))
     }
@@ -834,7 +868,7 @@ mod tests {
     /// What the gate says of `parse`, each side given as score, complexity and coverage.
     fn explained(now: (f64, f64, &str), was: (f64, f64, &str)) -> String {
         let rest = format!(r#","status":"regressed","baseline_crap":{}"#, was.0);
-        let report = entries(&[scored(now.0, now.1, now.2, &rest)]);
+        let report = entries(&[scored(now.0, now.1, now.2, &rest), COVERED.to_string()]);
         let record = held(&entries(&[scored(was.0, was.1, was.2, "")]));
         let outcome = judged(&report, false, Path::new("/w"), &record).unwrap();
         Finding::rendered(&outcome.findings).join("\n")
@@ -896,11 +930,8 @@ mod tests {
             explained((42.0, 12.0, "78"), (34.0, 12.0, "78")),
             said("complexity 12 → 12, coverage 78.0% → 78.0%")
         );
-        // A file the coverage report stopped naming has no percent to compare.
-        assert_eq!(
-            explained((42.0, 12.0, "null"), (34.0, 12.0, "78")),
-            said("complexity 12 → 12, coverage 78.0% → unknown")
-        );
+        // The coverage run no longer builds a file the coverage report stopped naming.
+        assert_eq!(explained((42.0, 12.0, "null"), (34.0, 12.0, "78")), "");
         assert_eq!(
             explained((42.0, 12.0, "60"), (34.0, 12.0, "null")),
             said("complexity 12 → 12, coverage unknown → 60.0%")
@@ -948,7 +979,10 @@ mod tests {
     fn a_function_with_no_record_is_told_whether_tests_alone_can_bring_it_under() {
         let new = |crap: f64, cyclomatic: f64, coverage: &str| {
             let rest = r#","status":"new","baseline_crap":null"#;
-            let report = entries(&[scored(crap, cyclomatic, coverage, rest)]);
+            let report = entries(&[
+                scored(crap, cyclomatic, coverage, rest),
+                COVERED.to_string(),
+            ]);
             Finding::rendered(
                 &judged(&report, true, Path::new("/w"), &[])
                     .unwrap()
@@ -964,13 +998,7 @@ mod tests {
                  split the function"
             )
         );
-        assert_eq!(
-            new(930.0, 30.0, "null"),
-            said(
-                "930.0, not in the baseline: complexity 30, coverage unknown. Test more of it, \
-                 or split the function"
-            )
-        );
+        assert_eq!(new(930.0, 30.0, "null"), "", "a file no test build holds");
         assert_eq!(
             new(31.5, 31.0, "92.5"),
             said(
@@ -1023,7 +1051,7 @@ mod tests {
     fn twins(first: f64, second: f64, recorded: &str) -> String {
         let entry = |line: u32, crap: f64| {
             format!(
-                r#"{{"file":"/w/src/w.rs","function":"Watch::poll","line":{line},"crap":{crap},
+                r#"{{"file":"/w/src/w.rs","function":"Watch::poll","line":{line},"coverage":50.0,"crap":{crap},
                    "status":"new","baseline_crap":null}}"#
             )
         };
@@ -1064,9 +1092,9 @@ mod tests {
     #[test]
     fn a_rise_cargo_crap_names_and_the_file_order_clears_is_a_pass() {
         let moved = r#"{"entries":[
-          {"file":"/w/src/w.rs","function":"Watch::poll","line":190,"crap":380.0,
+          {"file":"/w/src/w.rs","function":"Watch::poll","line":190,"coverage":50.0,"crap":380.0,
            "status":"regressed","baseline_crap":2.0},
-          {"file":"/w/src/w.rs","function":"Watch::poll","line":280,"crap":2.0,
+          {"file":"/w/src/w.rs","function":"Watch::poll","line":280,"coverage":50.0,"crap":2.0,
            "status":"improved","baseline_crap":380.0}]}"#;
         assert_eq!(
             judged(moved, false, Path::new("/w"), &held(PAIR)),

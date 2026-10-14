@@ -524,6 +524,7 @@ mod tests {
         let scope = |package: Option<&str>, filter: Option<&str>| Scope {
             package: package.map(str::to_string),
             filter: filter.map(str::to_string),
+            mutate: Vec::new(),
         };
         let nextest = argv("cargo nextest run --workspace --no-fail-fast");
         let whole = Scope::default();

@@ -40,6 +40,8 @@ The record goes down at a commit. The pre-commit hook writes each lower number i
 `.chock/baseline.json` and adds the file to the commit. A `chock run` on work in progress moves no
 record and says `measured less for …`. Without the hook, run `chock baseline --lower GATE` and
 commit the file, or CI fails.
+The hook also drops each record of a file that neither the disk nor the repository holds any
+more, in each gate that counts per file. A file that comes back at that path starts with no record.
 
 A gate with no record gets its first one from `chock run`, which says `wrote the first record for
 …`. No step needs `chock baseline` for that.
@@ -60,7 +62,8 @@ number now and the number on record. It can add `places`, the other places the f
 with `role`, `file` and `line`, and `fix`, the change that clears that one finding.
 
 A finding with `grade` set to `candidate` is a lead: the gate cannot settle it from the source, and
-it never trips the gate. Judge each one before you change the code.
+it never trips the gate. Judge each one before you change the code. The text report only counts the
+candidates under the findings; `chock explain GATE` lists each one.
 
 The findings are what got worse than the record, not all the debt. `measured` and `baseline` on the
 gate count that debt, and `chock explain --json` lists every record, largest first.

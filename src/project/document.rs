@@ -464,6 +464,7 @@ mod tests {
             message: Some(crate::project::config::Message {
                 subject: Some(72),
                 body: Some(12),
+                width: Some(72),
             }),
             runner: Some(vec!["make".to_string(), "test".to_string()]),
             stage: [("binsize".to_string(), crate::project::config::Stage::Ci)].into(),

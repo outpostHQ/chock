@@ -36,7 +36,7 @@ fn measured(ctx: &Ctx, usable: fn(&Path) -> Result<(), String>) -> Result<Measur
     ctx.default_build("cargo mutest")?;
     let was = ctx.record(crate::gates::tools::MUTEST.name);
     let named = ctx.named_against(crate::gates::tools::MUTEST.name);
-    match scope::of(ctx) {
+    match scope::of(ctx)? {
         Some(files) if files.is_empty() => Ok(scope::unchanged(was)),
         None => usable(&ctx.root).and_then(|()| whole(ctx, &named)),
         Some(files) => usable(&ctx.root).and_then(|()| scoped(ctx, &files, &was, &named)),

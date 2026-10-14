@@ -35,11 +35,14 @@ impl fmt::Display for Pinned {
     }
 }
 
-/// The pin file. One naming a chock no newer than this one takes this chock's pins and keeps the
-/// project's own; one naming no chock, or a link, is written like any other file.
+/// The pin file: one naming no newer chock takes our pins and keeps its own, chock's own copy
+/// (`ours` less `CHOCK_VERSION`) stays, and any other, or a link, is written like any file.
 pub(super) fn install_pins(root: &Path, ours: &str) -> Result<Pinned, Error> {
     let path = root.join(project::PIN_FILE);
     let held = held_or_empty(&path)?;
+    if !held.is_empty() && ours.starts_with(held.as_str()) {
+        return Ok(Pinned::File(Written::Unchanged(project::PIN_FILE.into())));
+    }
     let Some(moved) = pins::repinned(&held, ours).filter(|_| !path.is_symlink()) else {
         return install_file(root, project::PIN_FILE, ours).map(Pinned::File);
     };
@@ -66,6 +69,22 @@ mod tests {
 
     use super::*;
     use crate::setup::init::local_pin_file;
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn chocks_own_pin_file_is_left_as_it_is_with_no_copy_beside_it() {
+        let dir = crate::testdir::make("init-repin-own");
+        let ours = local_pin_file(env!("CARGO_PKG_VERSION"));
+        let own = include_str!("../../tool-versions.env");
+        fs::write(dir.join(project::PIN_FILE), own).unwrap();
+        let unchanged = Pinned::File(Written::Unchanged(project::PIN_FILE.into()));
+        assert_eq!(install_pins(&dir, &ours).unwrap(), unchanged);
+        let names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [project::PIN_FILE]);
+    }
 
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]

@@ -73,7 +73,7 @@
       "type": "boolean"
     },
     "message": {
-      "description": "How wide a commit subject may be and how many lines its body may hold, for the `commits` gate. A convention is the project's to set: a project that puts its reasoning and its numbers in the message needs a wider body than chock's own. An absent field keeps chock's answer for that one limit.",
+      "description": "How wide a commit subject may be, how many lines its body may hold and how wide each body line may be, for the `commits` gate. A convention is the project's to set: a project that puts its reasoning and its numbers in the message needs a wider body than chock's own. An absent field keeps chock's answer for that one limit.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -84,6 +84,11 @@
         },
         "body": {
           "description": "The most non-blank body lines a message may hold. chock's own answer is 12.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "width": {
+          "description": "The longest a body line may be, in characters. A line with no space, such as a URL, is never judged. chock's own answer is 72.",
           "type": "integer",
           "minimum": 1
         }

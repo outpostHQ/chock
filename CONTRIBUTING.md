@@ -2,14 +2,13 @@
 
 ## What you need
 
-- Rust 1.99.0, which `rust-toolchain.toml` selects if you use rustup.
-- git and a C linker (`build-essential` on Debian or Ubuntu).
-- `rustup component add llvm-tools-preview` for the coverage checks, and a nightly toolchain for
-  `unused-deep`.
+- rustup, git, a C linker (`build-essential` on Debian or Ubuntu) and
+  [just](https://github.com/casey/just).
 
-`chock init --global` installs the tools that are on crates.io, at the versions in
-`tool-versions.env`. The [Requirements](README.md#requirements) table says what each check needs
-beyond that; `mutest` needs mutest-rs built from its checkout.
+`just setup`, from the root of a clone, does the rest: the Rust 1.99.0 that `rust-toolchain.toml`
+pins with `llvm-tools-preview` for the coverage checks, a nightly for `unused-deep`, this chock,
+every tool a gate runs at its version in `tool-versions.env`, and the hooks. The table
+[What a gate needs](docs/gates.md#what-a-gate-needs) says what each gate needs.
 
 ## Before you open a pull request
 
