@@ -153,9 +153,9 @@ pub(super) fn moved(
     config: Option<&Config>,
     into: &mut Baseline,
 ) -> Result<(), String> {
-    if !names.is_empty() {
-        super::select(names, config)?;
-    }
+    (!names.is_empty())
+        .then(|| super::select(names, config))
+        .transpose()?;
     let mut record = into.clone();
     for (old, new) in pairs {
         if ctx.root.join(old).exists() {

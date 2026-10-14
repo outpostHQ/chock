@@ -768,6 +768,31 @@ fn baseline_keys_writes_only_the_named_keys_and_never_raises_one() {
 }
 
 #[test]
+fn baseline_moved_carries_a_moved_file_s_keys_to_its_new_path() {
+    let dir = project(
+        "baseline-moved",
+        &[("Proofs/A.lean", "theorem a : P := sorry\n")],
+    );
+    exits(&dir, &["baseline", "admits"], 0);
+    std::fs::rename(dir.join("Proofs/A.lean"), dir.join("Proofs/B.lean")).unwrap();
+    let pair = "Proofs/A.lean=Proofs/B.lean";
+    let moved = exits(&dir, &["baseline", "admits", "--moved", pair], 0);
+    says(
+        &moved.out,
+        "moved     Proofs/A.lean to Proofs/B.lean: 1 key",
+    );
+    let held = [("Proofs/B.lean#sorry".to_string(), 1)];
+    assert_eq!(admits_record(&dir), held);
+    let pair = "Proofs/B.lean=Proofs/A.lean";
+    let refused = exits(&dir, &["baseline", "admits", "--moved", pair], 2);
+    says(
+        &refused.err,
+        "Proofs/B.lean is still in the tree, so it did not move",
+    );
+    assert_eq!(admits_record(&dir), held, "a refused move writes nothing");
+}
+
+#[test]
 fn lines_counts_every_tracked_line_and_trips_when_the_total_goes_up() {
     let dir = project("lines", &[("src/lib.rs", "fn a() {}\n")]);
     turn_on(&dir, &["lines"]);

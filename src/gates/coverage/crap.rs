@@ -133,10 +133,10 @@ fn relay(root: &Path, name: &str, index: Option<&Path>) -> Option<String> {
         let said = "again in the compact layout, with the same scores; it is in this commit";
         return Some(format!("wrote {name} {said}"));
     }
-    let kept = match crate::project::document::write(&root.join(name), &held) {
-        Ok(()) => "it keeps the old layout",
-        Err(_) => "commit it with the next change",
-    };
+    let kept = crate::project::document::write(&root.join(name), &held).map_or(
+        "commit it with the next change",
+        |()| "it keeps the old layout",
+    );
     Some(format!("could not add {name} to this commit, so {kept}"))
 }
 

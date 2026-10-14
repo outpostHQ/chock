@@ -43,16 +43,29 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
             "no {REPOSITORY} repository here, so there is no history this scanner can walk"
         ));
     }
+    // Read before the expensive walk, so that a tree git does not hold stops first.
+    let declared = declared_leaks(ctx)?;
+    // Counted before the expensive walk, whose coverage is judged against this count.
+    let held = vcs::commits(&ctx.root, ctx.vcs)?;
+    let walk = ["scan", "secrets", "--history", "--json"];
+    let mut found = leaks(&outpost::spawn(&ctx.root, &walk)?, held, &ctx.accepted)?;
+    found.extend(declared);
+    if found.is_empty() {
+        return Ok(Outcome::passed());
+    }
+    Ok(Outcome::failed(found))
+}
+
+/// Each line a commit added holding a credential of a shape the project declares under
+/// `secrets`, as git's pickaxe finds it; none when the project declares none.
+fn declared_leaks(ctx: &Ctx) -> Result<Vec<Finding>, String> {
     let shapes = hygiene::declared(&ctx.secrets)?;
     if !shapes.is_empty() && !vcs::holders(&ctx.root).contains(&vcs::Kind::Git) {
         return Err(
             "the declared secrets need git's history, and git does not hold this tree".into(),
         );
     }
-    // Counted before the expensive walk, whose coverage is judged against this count.
-    let held = vcs::commits(&ctx.root, ctx.vcs)?;
-    let walk = ["scan", "secrets", "--history", "--json"];
-    let mut found = leaks(&outpost::spawn(&ctx.root, &walk)?, held, &ctx.accepted)?;
+    let mut found = Vec::new();
     for shape in &shapes {
         let args = pickaxe(shape);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -60,10 +73,7 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
         let still = |path: &str| still_holds(&ctx.root, path, shape);
         found.extend(unaccepted(&added(&walked, shape, &still)?, &ctx.accepted)?);
     }
-    if found.is_empty() {
-        return Ok(Outcome::passed());
-    }
-    Ok(Outcome::failed(found))
+    Ok(found)
 }
 
 /// `outpost scan secrets` output; only `mode` says whether it read history or the working tree.
@@ -578,5 +588,39 @@ mod tests {
         let held = crate::testdir::Held::tree("history-still", &[("conf.toml", text.as_str())]);
         assert!(still_holds(&held.root, "conf.toml", &shapes[0]));
         assert!(!still_holds(&held.root, "gone.toml", &shapes[0]));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_declared_secret_in_a_commit_is_a_leak_and_needs_git_s_history() {
+        let root = crate::testdir::make("history-declared");
+        let git = |args: &[&str]| {
+            let out = exec::run("git", args, &root).unwrap();
+            assert!(out.success(), "git {args:?}: {}", out.stderr);
+        };
+        let ctx = Ctx {
+            secrets: acme(),
+            ..Ctx::at(&root)
+        };
+        assert!(declared_leaks(&Ctx::at(&root)).unwrap().is_empty());
+        let refused = declared_leaks(&ctx).unwrap_err();
+        assert!(refused.contains("git does not hold this tree"), "{refused}");
+        git(&["init", "--quiet"]);
+        let text = format!("key = acme_{}\n", "ABCDEFGHIJKL");
+        std::fs::write(root.join("conf.toml"), text).unwrap();
+        git(&["add", "conf.toml"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "key",
+        ]);
+        let found = declared_leaks(&ctx).unwrap();
+        let places: Vec<(&str, Option<u32>)> =
+            found.iter().map(|f| (f.file.as_str(), f.line)).collect();
+        assert_eq!(places, [("conf.toml", Some(1))]);
     }
 }

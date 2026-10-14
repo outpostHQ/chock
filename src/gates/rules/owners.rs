@@ -110,7 +110,6 @@ fn value(expr: &syn::Expr) -> Option<String> {
     match expr {
         syn::Expr::Reference(inner) => value(&inner.expr),
         syn::Expr::Paren(inner) => value(&inner.expr),
-        syn::Expr::Group(inner) => value(&inner.expr),
         syn::Expr::Lit(syn::ExprLit {
             lit: syn::Lit::Str(text),
             ..
@@ -196,7 +195,7 @@ mod tests {
         let src = "use std::env;\nuse std::env::var as get;\nconst HOME: &str = \"HOME\";\n\
                    fn f(name: &str) {\n    env::var(\"PATH\");\n    get(&(HOME));\n\
                    std::env::var(name);\n    env::var(config::KEY_2);\n    env::var(Key);\n\
-                   cfg.lookup(\"PATH\");\n    std::env::var_os(\"PATH\");\n    env::var(x_Y);\n}\n\
+                   cfg.lookup(\"PATH\");\n    std::env::var_os(\"PATH\");\n    env::var(x_Y); env::var(1);\n}\n\
                    #[cfg(test)]\nmod tests { fn t() { std::env::var(\"PATH\"); } }\n\
                    #[test]\nfn t() { std::env::var(\"PATH\"); }\n";
         let quoted = |text: &str| format!("{text:?}");

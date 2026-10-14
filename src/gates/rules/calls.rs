@@ -79,12 +79,14 @@ fn rules(calls: &[Paired]) -> Result<Vec<Rule>, String> {
 
 fn finding(shown: &str, entry: &Paired, function: &str, line: u32) -> Finding {
     let call = &entry.call;
-    let needs = match (&entry.after, &entry.with) {
-        (Some(after), Some(with)) => format!("after `{after}` and with `{with}`"),
-        (Some(after), None) => format!("after `{after}`"),
-        (None, Some(with)) => format!("with `{with}`"),
-        (None, None) => String::new(),
-    };
+    let needs = [
+        entry.after.as_ref().map(|after| format!("after `{after}`")),
+        entry.with.as_ref().map(|with| format!("with `{with}`")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" and ");
     let told = format!(
         "`{function}` calls `{call}`, which must come {needs}: {}",
         entry.why
@@ -146,6 +148,9 @@ mod tests { fn t() { delete(1); } }
 fn t() { store::delete(1); }
 impl Tr for &Names { fn f(&self) { names::reserve_name(1) } }
 static S: X = reserve_name(2);
+impl Names { #[test] fn checked(&self) { self.reserve_name("t"); } }
+#[cfg(test)]
+trait Faked { fn grab(&self) { self.reserve_name("t") } }
 "#;
 
     #[test]

@@ -229,13 +229,12 @@ fn kept_for(root: &Path, gate: &str, out: &exec::Output, found: &mut [Finding]) 
         "--- stdout ---\n{}\n--- stderr ---\n{}",
         out.stdout, out.stderr
     );
-    let written = std::fs::create_dir_all(root.join(KEPT))
-        .and_then(|()| crate::project::document::write(&root.join(&path), &text));
-    if written.is_err() {
-        return;
-    }
+    let said = std::fs::create_dir_all(root.join(KEPT))
+        .and_then(|()| crate::project::document::write(&root.join(&path), &text))
+        .map(|()| format!(" (the whole output: {path})"))
+        .unwrap_or_default();
     for finding in found.iter_mut().filter(|finding| finding.file.is_empty()) {
-        finding.message = format!("{} (the whole output: {path})", finding.message);
+        finding.message.push_str(&said);
     }
 }
 

@@ -33,12 +33,12 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let path = ensure(ctx)?;
     let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {FILE}: {e}"))?;
     let read = uncovered(&text, &ctx.root)?;
-    let listed = listed(&ctx.root, &read.lines);
+    let said = listed(&ctx.root, &read.lines)
+        .map(|listed| format!(" (every file's lines: {listed})"))
+        .unwrap_or_default();
     let mut measured = read.held_to(&ctx.named_against(GATE.name));
-    if let Some(listed) = listed {
-        for finding in &mut measured.findings {
-            finding.message = format!("{} (every file's lines: {listed})", finding.message);
-        }
+    for finding in &mut measured.findings {
+        finding.message.push_str(&said);
     }
     Ok(measured)
 }

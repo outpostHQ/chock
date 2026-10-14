@@ -459,6 +459,11 @@ mod tests {
             depending("{}", &[&cloud(&[])]).unwrap_err(),
             "cargo metadata printed no resolved dependency graph"
         );
+        let nameless = r#"{"workspace_root": "/w", "resolve": {"nodes": []}, "packages": [{}]}"#;
+        assert_eq!(
+            depending(nameless, &[&cloud(&[])]).unwrap_err(),
+            "cargo metadata printed no resolved dependency graph"
+        );
         assert!(
             depending("not json", &[])
                 .unwrap_err()
@@ -486,5 +491,28 @@ mod tests {
         );
         held.seams = Vec::new();
         assert!(inspect(&held).is_err());
+    }
+
+    /// The tree is its own workspace, so cargo does not read it as a part of the one around it.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_crate_seam_is_read_against_the_workspace_cargo_resolves() {
+        let mut held = crate::testdir::Held::tree(
+            "seams-crate",
+            &[
+                (
+                    "Cargo.toml",
+                    "[package]\nname = \"x\"\nedition = \"2024\"\n[workspace]\n",
+                ),
+                ("src/lib.rs", "use iroh::Endpoint;\n"),
+            ],
+        );
+        held.seams = vec![cloud(&["x"])];
+        assert!(inspect(&held).unwrap().debt.is_empty());
+        held.seams = vec![cloud(&["y"])];
+        assert_eq!(
+            inspect(&held).err().unwrap(),
+            "the seam `s3` allows `y`, which is no package in this workspace"
+        );
     }
 }
