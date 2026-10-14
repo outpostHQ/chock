@@ -50,10 +50,7 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
     let walk = ["scan", "secrets", "--history", "--json"];
     let mut found = leaks(&outpost::spawn(&ctx.root, &walk)?, held, &ctx.accepted)?;
     found.extend(declared);
-    if found.is_empty() {
-        return Ok(Outcome::passed());
-    }
-    Ok(Outcome::failed(found))
+    Ok(Outcome::of(found))
 }
 
 /// Each line a commit added holding a credential of a shape the project declares under

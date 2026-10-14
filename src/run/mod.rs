@@ -65,6 +65,15 @@ impl Outcome {
         }
     }
 
+    /// A pass when nothing was found, and otherwise a failure that holds what was.
+    #[must_use]
+    pub fn of(findings: Vec<Finding>) -> Self {
+        match findings.is_empty() {
+            true => Self::passed(),
+            false => Self::failed(findings),
+        }
+    }
+
     #[must_use]
     pub fn failed(findings: Vec<Finding>) -> Self {
         Self {
@@ -1005,6 +1014,13 @@ mod tests {
         }
         baseline.set(gate, series);
         Ctx::for_root(PathBuf::from("/w"), baseline)
+    }
+
+    #[test]
+    fn nothing_found_passes_and_a_finding_fails() {
+        assert_eq!(Outcome::of(Vec::new()), Outcome::passed());
+        let found = vec![Finding::at("src/a.rs", "a leak")];
+        assert_eq!(Outcome::of(found.clone()), Outcome::failed(found));
     }
 
     #[test]
