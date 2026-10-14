@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 
-use crate::exec::strip_colour;
 use crate::run::baseline::Series;
 use crate::run::report::Finding;
 
@@ -71,79 +70,13 @@ pub(super) struct Totals {
 }
 
 impl Totals {
-    fn add(self, next: Self) -> Option<Self> {
+    pub(super) fn add(self, next: Self) -> Option<Self> {
         Some(Self {
             undetected: self.undetected.checked_add(next.undetected)?,
             timed_out: self.timed_out.checked_add(next.timed_out)?,
             total: self.total.checked_add(next.total)?,
         })
     }
-}
-
-/// Sums mutest's `mutations:` rows; the `safe`/`unsafe` rows repeat them. `None` when there are
-/// no totals, an error when they are malformed.
-pub(super) fn totals(output: &str) -> Result<Option<Totals>, String> {
-    let mut found: Option<Totals> = None;
-    for line in output.lines().map(strip_colour) {
-        let Some(rest) = line.trim().strip_prefix("mutations:") else {
-            continue;
-        };
-        let next = summary(rest.trim()).ok_or_else(|| {
-            "mutest reported unreadable or inconsistent mutation totals".to_string()
-        })?;
-        found = Some(
-            found
-                .unwrap_or_default()
-                .add(next)
-                .ok_or("mutest mutation totals overflowed")?,
-        );
-    }
-    Ok(found)
-}
-
-fn summary(line: &str) -> Option<Totals> {
-    let (score, rest) = line.split_once(". ")?;
-    let (detected, rest) = rest.split_once(" detected")?;
-    let detected = number(detected)?;
-    let (timed_out, crashed, rest) = unresolved(rest)?;
-    let rest = rest.strip_prefix("; ")?;
-    let (undetected, total) = rest.split_once(" undetected; ")?;
-    let undetected = number(undetected)?;
-    let total = number(total.strip_suffix(" total")?)?;
-    let resolved = detected.checked_add(undetected)?;
-    let counted = resolved.checked_add(timed_out)?.checked_add(crashed)?;
-    (counted == total && valid_score(score, resolved)).then_some(Totals {
-        undetected,
-        timed_out,
-        total,
-    })
-}
-
-fn unresolved(rest: &str) -> Option<(u64, u64, &str)> {
-    let Some(notes) = rest.strip_prefix(" (") else {
-        return Some((0, 0, rest));
-    };
-    let (timed_out, notes) = notes.split_once(" timed out; ")?;
-    let (crashed, rest) = notes.split_once(" crashed)")?;
-    Some((number(timed_out)?, number(crashed)?, rest))
-}
-
-fn number(text: &str) -> Option<u64> {
-    (!text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
-        .then(|| text.parse().ok())
-        .flatten()
-}
-
-fn valid_score(score: &str, resolved: u64) -> bool {
-    if score == "none" {
-        return resolved == 0;
-    }
-    let Some(number) = score.strip_suffix('%') else {
-        return false;
-    };
-    number
-        .parse::<f64>()
-        .is_ok_and(|n| n.is_finite() && (0.0..=100.0).contains(&n))
 }
 
 /// Telling survivors, counted per file and operator. Quiet ones get no key, so a new one never
@@ -183,114 +116,6 @@ pub fn sites_over(survivors: &[Survivor], was: &Series) -> Vec<Finding> {
 )]
 mod tests {
     use super::*;
-
-    #[test]
-    fn mutation_counts_accept_digits_only_without_signs() {
-        assert_eq!(number("0"), Some(0));
-        assert_eq!(number("42"), Some(42));
-        for invalid in ["", "+1", "-1", " 1", "1 ", "1a"] {
-            assert_eq!(number(invalid), None, "{invalid}");
-        }
-    }
-
-    const SUMMARY: &str = "mutations: 90.77%. 2243 detected (19 timed out; 0 crashed); 228 undetected; 2490 total\n\
-                           safe: 90.77%. 2243 detected (19 timed out; 0 crashed); 228 undetected; 2490 total\n\
-                         unsafe: none. 0 detected (0 timed out; 0 crashed); 0 undetected; 0 total\n";
-
-    #[test]
-    fn timeouts_and_crashes_are_exclusive_of_detected_mutations() {
-        assert_eq!(
-            totals(SUMMARY).unwrap(),
-            Some(Totals {
-                undetected: 228,
-                timed_out: 19,
-                total: 2490
-            })
-        );
-        let crashed =
-            "mutations: 80.00%. 4 detected (0 timed out; 1 crashed); 1 undetected; 6 total";
-        assert_eq!(
-            totals(crashed).unwrap(),
-            Some(Totals {
-                undetected: 1,
-                timed_out: 0,
-                total: 6
-            })
-        );
-    }
-
-    #[test]
-    fn only_overall_rows_are_summed_across_targets() {
-        assert_eq!(
-            totals(&format!("{SUMMARY}{SUMMARY}")).unwrap(),
-            Some(Totals {
-                undetected: 456,
-                timed_out: 38,
-                total: 4980
-            })
-        );
-    }
-
-    #[test]
-    fn an_explicit_zero_is_distinct_from_no_totals() {
-        assert_eq!(
-            totals("mutations: none. 0 detected (0 timed out; 0 crashed); 0 undetected; 0 total")
-                .unwrap(),
-            Some(Totals::default())
-        );
-        assert_eq!(totals("ran 2 out of 10 tests\n").unwrap(), None);
-        assert_eq!(
-            totals("mutations: 100%. 10 detected; 0 undetected; 10 total").unwrap(),
-            Some(Totals {
-                undetected: 0,
-                timed_out: 0,
-                total: 10
-            })
-        );
-    }
-
-    #[test]
-    fn malformed_or_inconsistent_totals_are_not_a_clean_measurement() {
-        for row in [
-            "mutations:",
-            "mutations: counts unavailable",
-            "mutations: 100%. 10 detected; 1 undetected; 10 total",
-            "mutations: 100%. 10 detected (1 timed out; 0 crashed); 0 undetected; 10 total",
-            "mutations: 100%. 0 detected; x undetected; 0 total",
-            "mutations: 100%. 0 detected; 0 undetected; 0 total trailing",
-            "mutations: 100%. -1 detected; 0 undetected; 0 total",
-            "mutations: none. 1 detected; 0 undetected; 1 total",
-            "mutations: NaN%. 0 detected; 0 undetected; 0 total",
-            "mutations: 100. 0 detected; 0 undetected; 0 total",
-            "mutations: 101%. 0 detected; 0 undetected; 0 total",
-            "mutations: 100%. 18446744073709551615 detected; 1 undetected; 0 total",
-        ] {
-            assert!(totals(row).is_err(), "{row}");
-        }
-    }
-
-    #[test]
-    fn an_overflow_across_complete_target_totals_is_refused() {
-        let row = "mutations: 100%. 18446744073709551615 detected; 0 undetected; 18446744073709551615 total\n";
-        assert_eq!(
-            totals(&format!("{row}{row}")),
-            Err("mutest mutation totals overflowed".to_string())
-        );
-    }
-
-    #[test]
-    fn colour_is_ignored_without_ignoring_a_malformed_second_summary() {
-        let row = "\u{1b}[32mmutations:\u{1b}[0m 100%. 10 detected; 0 undetected; 10 total";
-        assert_eq!(
-            totals(row).unwrap(),
-            Some(Totals {
-                undetected: 0,
-                timed_out: 0,
-                total: 10
-            })
-        );
-        assert!(totals(&format!("{row}\nmutations: missing counts")).is_err());
-    }
 
     fn survivor(operator: &str, line: u32) -> Survivor {
         Survivor {

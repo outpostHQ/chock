@@ -44,7 +44,12 @@ Without the parent, the gate cannot run.
 | `not_shipped` | members nobody receives (fuzz harnesses, benchmarks), held to test-code rules |
 | `miri` | which packages Miri runs over, and its flags |
 | `commands` | your own checks: a `name` and a `run` command; one that `counts` is ratcheted per item |
-| `forbidden` | phrases source must not contain, each with the reason its finding gives |
+| `forbidden` | phrases source must not contain, each with the reason its finding gives; `in` limits a phrase to some paths |
+| `seams` | Rust paths and crates only some files or packages may use; the `seams` gate holds them |
+| `owners` | calls, such as `std::env::var`, whose value one file alone may read; the `owners` gate holds them |
+| `calls` | calls that need another call in the same function, `after` it or `with` it; the `calls` gate holds them |
+| `secrets` | the project's own credential shapes, by `name`, `prefix` and `tail`; `hygiene` and `history` find them |
+| `proof_jobs` | the most Kani harnesses `proof` verifies at once; a lower number uses less memory |
 | `not_mutated` | Rust files `mutest` does not mutate, each a `path` from the root with the `why`; a path that is no source mutest mutates fails the run |
 | `history` | `accepted`: credentials published on purpose, such as a test key, each named by `commit`, `path` and `rule` with the `reason` it is safe; `history` no longer reports them |
 | `vcs` | `git` or `outpost`, for a tree both hold, when you want to name the one chock reads |
@@ -86,6 +91,46 @@ allowed:
   { "text": "dbg!", "why": "Remove debug output.", "except": ["examples/**"] }
 ]
 ```
+
+A phrase with `in` is refused only in those paths, such as a call that only one layer must not make:
+
+```json
+"forbidden": [
+  { "text": "Command::new", "why": "Run tools through exec::run.", "in": ["src/gates/**"] }
+]
+```
+
+## Declared rules
+
+Four keys state a rule of your design, and a gate holds the rule at each commit. Each finding gives
+your `why`.
+
+```json
+"seams": [
+  { "path": "std::process::Command", "only": ["src/exec/**"], "why": "Start processes in exec." },
+  { "crate": "aws-sdk-s3", "only": ["storage"], "why": "Only the storage crate talks to S3." }
+],
+"owners": [
+  { "call": "std::env::var", "why": "Read each variable in one place, and pass the value on." }
+],
+"calls": [
+  { "call": ".commit", "after": ".lock", "why": "Take the lock before the commit." }
+],
+"secrets": [
+  { "name": "service token", "prefix": "svc_", "tail": 24 }
+]
+```
+
+- `seams` reports a use of `path`, or of a path under it, outside the files in `only`. It reads
+  each file's `use` aliases. A `crate` entry reports each package outside `only` whose normal
+  dependency tree holds that crate. `chock edited` checks the path seams of each edited file.
+- `owners` reports each read of a value, such as an environment variable name, that two or more
+  files read.
+- `calls` reports each function that makes `call` without the `after` call before it, or without
+  the `with` call in it.
+- `secrets` adds your credential shapes to `hygiene` and `history`.
+
+`chock enable seams owners calls` switches the three gates on.
 
 ## Your own checks
 

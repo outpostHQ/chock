@@ -14,7 +14,7 @@ mod lanes;
 mod measurement;
 pub(crate) mod workers;
 pub use context::{
-    Coverage, Ctx, LCOV, Runner, coverage_for, default_coverage, default_runner, runner_for,
+    Coverage, Ctx, LCOV, Runner, Scope, coverage_for, default_coverage, default_runner, runner_for,
 };
 
 use std::hash::{Hash, Hasher};
@@ -305,6 +305,7 @@ fn keyed(gate: &Gate, ctx: &Ctx) -> Option<String> {
     let key = crate::run::verdicts::key(reads, gate.name, &held);
     key.map(|key| key_format(gate, reads.reader, ctx.ci, &key))
         .map(|key| with_part(gate, ctx, key))
+        .map(|key| with_scope(ctx, key))
         .and_then(|key| with_change_set(gate, ctx, key))
 }
 
@@ -315,6 +316,14 @@ fn with_part(gate: &Gate, ctx: &Ctx, key: String) -> String {
         .filter(|_| gate.name == crate::gates::tools::miri::GATE.name)
     {
         Some(part) => format!("{key}:part-{}-of-{}", part.index, part.of),
+        None => key,
+    }
+}
+
+/// A verdict over part of the suite answers for that part alone.
+fn with_scope(ctx: &Ctx, key: String) -> String {
+    match ctx.scope.named() {
+        Some(part) => format!("{key}:{part}"),
         None => key,
     }
 }
@@ -1566,6 +1575,17 @@ mod tests {
         assert_eq!(with_part(&miri, &ctx, "k".to_string()), "k:part-2-of-12");
         let other = gates::tools::binsize::GATE;
         assert_eq!(with_part(&other, &ctx, "k".to_string()), "k");
+    }
+
+    #[test]
+    fn a_part_of_the_suite_keeps_its_verdict_under_a_key_of_its_own() {
+        let mut ctx = Ctx::for_root(PathBuf::from("/w"), Baseline::empty("0.1.0"));
+        assert_eq!(with_scope(&ctx, "k".to_string()), "k");
+        ctx.scope.filter = Some("rules::".to_string());
+        assert_eq!(with_scope(&ctx, "k".to_string()), "k:filter=rules::");
+        ctx.scope.package = Some("chock".to_string());
+        let both = "k:package=chock:filter=rules::";
+        assert_eq!(with_scope(&ctx, "k".to_string()), both);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 use super::Change;
 use crate::gates::tools::miri::Part;
 use crate::project::config::Stage;
+use crate::run::Scope;
 use crate::usage::{USAGE, VERSION_LINE};
 
 /// The parsed command line, kept apart from dispatch so a test can check it without a process.
@@ -20,6 +21,8 @@ pub enum Command<'a> {
         miri_part: Option<Part>,
         /// Gates left out, from `--skip=NAME,...`: CI runs the slow ones in jobs of their own.
         skip: Vec<&'a str>,
+        /// The part of the suite the `test` gate runs, from `--package=NAME` and `--filter=TEXT`.
+        scope: Scope,
     },
     /// `cache clear`: removes every kept verdict.
     CacheClear,
@@ -93,10 +96,50 @@ const PARTITION: &str = "--miri-partition";
 
 const SKIP: &str = "--skip=";
 
-/// A flag of `run`: `--fast`, `--ci`, `--no-cache`, `--miri-partition=K/N` or `--skip=NAME,...`.
+const PACKAGE: &str = "--package=";
+
+const FILTER: &str = "--filter=";
+
+/// A flag of `run`: `--fast`, `--ci`, `--no-cache`, `--miri-partition=K/N`, `--skip=NAME,...`,
+/// `--package=NAME` or `--filter=TEXT`.
 fn known(flag: &str) -> bool {
     matches!(flag, "--fast" | "--ci" | "--no-cache")
-        || [PARTITION, SKIP].iter().any(|at| flag.starts_with(at))
+        || [PARTITION, SKIP, PACKAGE, FILTER]
+            .iter()
+            .any(|at| flag.starts_with(at))
+}
+
+/// What `flag` names, given once; an empty value or the flag given twice is refused.
+fn valued(names: &[&str], flag: &str) -> Result<Option<String>, String> {
+    let shown = flag.trim_end_matches('=');
+    let mut given = names.iter().filter_map(|name| name.strip_prefix(flag));
+    match (given.next(), given.next()) {
+        (_, Some(_)) => Err(format!("`{shown}` is given twice")),
+        (Some(""), None) => Err(format!("`{shown}` names nothing")),
+        (first, None) => Ok(first.map(str::to_string)),
+    }
+}
+
+/// `--package` and `--filter` narrow the `test` gate alone, so a run that gives one names `test`
+/// and no other gate.
+fn scope(names: &[&str]) -> Result<Scope, String> {
+    let scope = Scope {
+        package: valued(names, PACKAGE)?,
+        filter: valued(names, FILTER)?,
+    };
+    let gates: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|n| !n.starts_with('-'))
+        .collect();
+    if scope != Scope::default() && gates != ["test"] {
+        return Err(
+            "`--package` and `--filter` narrow the `test` gate alone, so name `test` and \
+                    no other gate"
+                .to_string(),
+        );
+    }
+    Ok(scope)
 }
 
 /// The gates each `--skip=A,B` names.
@@ -116,15 +159,19 @@ fn to_run<'a>(rest: &[&'a str]) -> Command<'a> {
     match names.iter().find(|n| n.starts_with('-') && !known(n)) {
         Some(flag) => Command::Usage(format!("unknown option `{flag}`")),
         // A malformed `--miri-partition` is a usage error too.
-        None => miri_part(&names).map_or_else(Command::Usage, |part| Command::Run {
-            fast: names.contains(&"--fast"),
-            ci: names.contains(&"--ci"),
-            no_cache: names.contains(&"--no-cache"),
-            skip: skipped(&names),
-            names: names.into_iter().filter(|n| !known(n)).collect(),
-            json,
-            miri_part: part,
-        }),
+        None => match (miri_part(&names), scope(&names)) {
+            (Err(why), _) | (_, Err(why)) => Command::Usage(why),
+            (Ok(part), Ok(scope)) => Command::Run {
+                fast: names.contains(&"--fast"),
+                ci: names.contains(&"--ci"),
+                no_cache: names.contains(&"--no-cache"),
+                skip: skipped(&names),
+                names: names.into_iter().filter(|n| !known(n)).collect(),
+                json,
+                miri_part: part,
+                scope,
+            },
+        },
     }
 }
 
@@ -274,7 +321,8 @@ mod tests {
                 ci: false,
                 no_cache: false,
                 miri_part: None,
-                skip: Vec::new()
+                skip: Vec::new(),
+                scope: Scope::default()
             }
         );
     }
@@ -291,7 +339,8 @@ mod tests {
                 ci: false,
                 no_cache: false,
                 miri_part: None,
-                skip: Vec::new()
+                skip: Vec::new(),
+                scope: Scope::default()
             }
         );
         assert_eq!(
@@ -303,7 +352,8 @@ mod tests {
                 ci: false,
                 no_cache: false,
                 miri_part: None,
-                skip: Vec::new()
+                skip: Vec::new(),
+                scope: Scope::default()
             }
         );
     }
@@ -319,7 +369,8 @@ mod tests {
                 ci: false,
                 no_cache: false,
                 miri_part: None,
-                skip: Vec::new()
+                skip: Vec::new(),
+                scope: Scope::default()
             }
         );
     }
@@ -334,6 +385,7 @@ mod tests {
             no_cache: false,
             miri_part: None,
             skip: Vec::new(),
+            scope: Scope::default(),
         };
         assert_eq!(parse(&["run", "--json", "lint"]), expected);
         assert_eq!(parse(&["run", "lint", "--json"]), expected);
@@ -349,6 +401,7 @@ mod tests {
             no_cache: true,
             miri_part: None,
             skip: Vec::new(),
+            scope: Scope::default(),
         };
         assert_eq!(parse(&["run", "--no-cache", "--ci", "lint"]), expected);
         assert_eq!(parse(&["run", "lint", "--ci", "--no-cache"]), expected);
@@ -364,6 +417,7 @@ mod tests {
             no_cache: false,
             miri_part: Some(Part { index: 2, of: 12 }),
             skip: Vec::new(),
+            scope: Scope::default(),
         };
         assert_eq!(
             parse(&["run", "--miri-partition=2/12", "--ci", "miri"]),
@@ -383,6 +437,7 @@ mod tests {
                 no_cache: false,
                 miri_part: Some(Part { index, of }),
                 skip: Vec::new(),
+                scope: Scope::default(),
             };
             assert_eq!(parse(&["run", &flag]), whole, "{flag}");
         }
@@ -398,6 +453,7 @@ mod tests {
             no_cache: false,
             miri_part: None,
             skip: vec!["miri", "mutest", "bsize"],
+            scope: Scope::default(),
         };
         let asked = ["run", "--skip=miri,mutest,", "--ci", "lint", "--skip=bsize"];
         assert_eq!(parse(&asked), expected);
@@ -405,6 +461,44 @@ mod tests {
             parse(&["run", "--skip", "miri"]),
             Command::Usage("unknown option `--skip`".to_string())
         );
+    }
+
+    #[test]
+    fn a_package_and_a_filter_narrow_the_test_gate_alone() {
+        let narrowed = parse(&[
+            "run",
+            "--filter=rules::",
+            "test",
+            "--package=chock",
+            "--json",
+        ]);
+        let expected = Command::Run {
+            names: vec!["test"],
+            json: true,
+            fast: false,
+            ci: false,
+            no_cache: false,
+            miri_part: None,
+            skip: Vec::new(),
+            scope: Scope {
+                package: Some("chock".to_string()),
+                filter: Some("rules::".to_string()),
+            },
+        };
+        assert_eq!(narrowed, expected);
+        let usage = |said: &str| Command::Usage(said.to_string());
+        let alone = usage(
+            "`--package` and `--filter` narrow the `test` gate alone, so name `test` and no \
+             other gate",
+        );
+        assert_eq!(parse(&["run", "--filter=a"]), alone);
+        assert_eq!(parse(&["run", "test", "lint", "--package=a"]), alone);
+        let twice = parse(&["run", "test", "--filter=a", "--filter=b"]);
+        assert_eq!(twice, usage("`--filter` is given twice"));
+        let empty = parse(&["run", "test", "--package="]);
+        assert_eq!(empty, usage("`--package` names nothing"));
+        let unknown = parse(&["run", "test", "--package", "a"]);
+        assert_eq!(unknown, usage("unknown option `--package`"));
     }
 
     #[test]

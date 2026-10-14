@@ -5,6 +5,34 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-14
+
+- **Declared rules: `seams`, `owners` and `calls`.** Three opt-in gates hold rules of your design.
+  `seams` keeps a Rust path or a crate to the files or packages you name. `owners` reports a value,
+  such as an environment variable, that more than one file reads. `calls` reports a function that
+  makes a call without the call it must come after or with. Each finding gives your reason.
+- **`forbidden` takes `in`.** A phrase with `in` is refused only in those paths.
+- **`secrets` adds your own credential shapes** to `hygiene` and `history`, by name, prefix and the
+  fewest characters after it.
+- **`chock edited` checks the path seams** of each edited file.
+- **`chock run test --package=NAME --filter=TEXT` runs part of the suite.** The verdict answers for
+  that part alone.
+- **`chock baseline --moved OLD=NEW` moves a record to a renamed file**, on every system's record.
+  It refuses a file that the record already holds, so no total goes up.
+- **`proof_jobs` caps the Kani harnesses `proof` verifies at once**, so the proof run uses less
+  memory.
+- **A failed suite leaves its whole output** in `target/test-scratch/chock/test.txt`, and each
+  finding names the file. `idempotent` does the same.
+- **`coverage` lists the lines no test ran, file by file,** in `target/test-scratch/chock/coverage.txt`.
+  Compare the list of a CI job with the list of your machine when the counts differ.
+- **`test` reads `FAIL <case> <why>` lines** of a runner's own stage, where no test is named.
+- **A run names the keys the next commit lowers or drops**, ten at most.
+- **The hooks of `git commit -a` read the index git commits.** Before, they read the default index.
+- **`codeslop` gives the file and line** of each finding.
+- **`mutest` checks that the tree is the one it mutated**, reads its totals from mutest's results,
+  and caps the test threads of each mutation run.
+- **No walk enters a directory that holds its own `.git`**, such as a nested repository.
+
 ## [0.8.0] - 2026-10-13
 
 - **`test_wrapper` runs the suite under a command of yours.** Name a script that starts a service

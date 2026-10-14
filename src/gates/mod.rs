@@ -9,6 +9,7 @@ pub mod metrics;
 pub mod mutation;
 pub mod outpost;
 pub mod repo;
+pub mod rules;
 pub mod source;
 pub mod text;
 pub mod tools;
@@ -78,6 +79,9 @@ static REGISTRY: &[Gate] = &[
     declared::GATE,
     declared::BUILDS,
     text::phrases::GATE,
+    rules::seams::GATE,
+    rules::owners::GATE,
+    rules::calls::GATE,
     wiring::GATE,
 ];
 
@@ -99,10 +103,11 @@ pub fn runs_on(gate: &str, os: &str) -> bool {
 
 /// Ratchets whose count is the same on every machine and system, because they read source text or
 /// every target's metadata. Only these lower their own record: the rest wait for `--lower`.
-const SETTLES_ANYWHERE: [&str; 26] = [
+const SETTLES_ANYWHERE: [&str; 29] = [
     "admits",
     "assertions",
     "bigfiles",
+    "calls",
     "citations",
     "claims",
     "complexity",
@@ -114,8 +119,10 @@ const SETTLES_ANYWHERE: [&str; 26] = [
     "manifest",
     "modcheck",
     "nesting",
+    "owners",
     "phrases",
     "placement",
+    "seams",
     "shellcheck",
     "slop",
     "sort",

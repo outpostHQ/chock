@@ -75,7 +75,7 @@ fn installing(tool: &str) -> &'static str {
     found.map_or(PINNED, |(_, repair)| repair)
 }
 
-const FIXES: [(&str, &str); 61] = [
+const FIXES: [(&str, &str); 64] = [
     (
         "test",
         "run the rerun command, read each failing test's output, and fix the code or the test; a crate with no tests needs one",
@@ -317,6 +317,18 @@ const FIXES: [(&str, &str); 61] = [
         "replace the phrase; the finding carries the reason your config gives for refusing it",
     ),
     ("wiring", "switch the gate on with `chock enable GATE`"),
+    (
+        "seams",
+        "move the use into a file or package the entry allows, or call the code that owns it",
+    ),
+    (
+        "owners",
+        "read the value in one file, and pass it on to the code that needs it",
+    ),
+    (
+        "calls",
+        "make the call the rule names in the same function; the finding carries your reason",
+    ),
 ];
 
 #[cfg(test)]

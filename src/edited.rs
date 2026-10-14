@@ -22,6 +22,8 @@ pub fn faults(path: &str, src: &str, rules: &Rules) -> Vec<Finding> {
         Ok(suppressions) => found.extend(rules.past("source", &|_| rules.uncompiled, suppressions)),
         Err(why) => return vec![Finding::at(path, &format!("does not parse: {why}"))],
     }
+    let seams = crate::gates::rules::seams::found(path, src, &rules.seams);
+    found.extend(rules.past("seams", &not_production, seams));
     // Counted as the `bigfiles` gate counts: the lines outside the file's test modules.
     let lines = prodlines::split(src).map_or(0, |(kept, _)| kept.matches('\n').count());
     let held = usize::try_from(rules.held("bigfiles", &rules.shown)).unwrap_or(usize::MAX);
@@ -38,6 +40,8 @@ pub fn faults(path: &str, src: &str, rules: &Rules) -> Vec<Finding> {
 #[derive(Debug, Default)]
 pub struct Rules {
     pub forbidden: Vec<crate::project::config::Forbidden>,
+    /// The path seams whose `only` does not name this file.
+    pub seams: Vec<crate::project::config::Seam>,
     shown: String,
     config: Option<crate::project::config::Config>,
     baseline: Option<crate::run::baseline::Baseline>,
@@ -160,8 +164,13 @@ pub fn rules_for(root: Option<&std::path::Path>, path: &str) -> Rules {
         .as_ref()
         .and_then(|set| set.not_shipped.clone())
         .unwrap_or_default();
+    let seams = config
+        .as_ref()
+        .and_then(|set| set.seams.clone())
+        .unwrap_or_default();
     Rules {
         forbidden: crate::gates::text::phrases::applying(&listed, &shown),
+        seams: crate::gates::rules::seams::applying(&seams, &shown),
         baseline: crate::project::document::read::<crate::run::baseline::Baseline>(root)
             .ok()
             .flatten(),
@@ -725,6 +734,33 @@ mod tests {
         });
         assert_eq!(phrases(Some(&dir), &named("src/lib.rs")), listed);
         assert_eq!(phrases(Some(&dir), &named("plans/083.md")), Vec::new());
+    }
+
+    /// A seam whose `only` names the file does not apply there; one that does not is reported.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_path_used_past_its_seam_is_reported_as_the_file_is_written() {
+        let dir = crate::testdir::make("edited-seams");
+        let named = |path: &str| dir.join(path).to_string_lossy().into_owned();
+        let seam = crate::project::config::Seam {
+            path: Some("iroh".to_string()),
+            only: vec!["src/net/**".to_string()],
+            why: "one module talks to the network".to_string(),
+            ..crate::project::config::Seam::default()
+        };
+        configured(&dir, &["seams"], |config| {
+            config.seams = Some(vec![seam.clone()])
+        });
+        let src = "use iroh::Endpoint;\n";
+        let faults_in = |path: &str| {
+            let found = faults(&named(path), src, &rules_for(Some(&dir), &named(path)));
+            found.iter().map(|found| found.line).collect::<Vec<_>>()
+        };
+        assert_eq!(faults_in("src/lib.rs"), [Some(1)]);
+        assert!(faults_in("src/net/api.rs").is_empty());
+        assert!(faults_in("tests/end.rs").is_empty());
+        configured(&dir, &[], |config| config.seams = Some(vec![seam.clone()]));
+        assert!(faults_in("src/lib.rs").is_empty(), "the gate is off");
     }
 
     fn configured(

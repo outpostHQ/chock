@@ -7,7 +7,8 @@ use serde::Deserialize;
 
 use crate::exec;
 use crate::run::baseline::{Keys, Series};
-use crate::run::{Ctx, Gate, Group, Kind};
+use crate::run::report::{Detail, Place};
+use crate::run::{Ctx, Details, Gate, Group, Kind, Measurement};
 
 pub const GATE: Gate = Gate {
     name: "codeslop",
@@ -16,7 +17,7 @@ pub const GATE: Gate = Gate {
     group: Group::Quality,
     builds: true,
     reads: None,
-    kind: Kind::Ratchet {
+    kind: Kind::AnnotatedRatchet {
         measure,
         // Keys are lint names, and a lint with no hit has no key: one the baseline lacks is a
         // first hit, which fails as any count the record lacks does.
@@ -132,8 +133,26 @@ pub fn counts(hits: &[Hit]) -> Series {
     series
 }
 
+/// Most hits of one lint its finding names; clippy's own output holds the rest.
+const PLACES: usize = 20;
+
+/// Each lint's first hits as places, so a count past its record names the lines behind it.
+fn placed(hits: &[Hit]) -> Details {
+    let mut details = Details::new();
+    for hit in hits {
+        let (Some(file), Some(line)) = (&hit.file, hit.line) else {
+            continue;
+        };
+        let detail: &mut Detail = details.entry(hit.lint.clone()).or_default();
+        if detail.places.len() < PLACES {
+            detail.places.push(Place::at("hit", file, line));
+        }
+    }
+    details
+}
+
 /// What one clippy run measured, or why it measured nothing.
-pub fn from_run(out: &exec::Output) -> Result<Series, String> {
+pub fn from_run(out: &exec::Output) -> Result<Measurement, String> {
     if !out.success() {
         return Err(did_not_finish(&out.stderr));
     }
@@ -143,7 +162,10 @@ pub fn from_run(out: &exec::Output) -> Result<Series, String> {
             exec::MAX_CAPTURE
         ));
     }
-    Ok(counts(&hits(&out.stdout)))
+    let found = hits(&out.stdout);
+    let mut measured = Measurement::of(counts(&found), Vec::new());
+    measured.details = placed(&found);
+    Ok(measured)
 }
 
 /// Why clippy did not finish, from cargo's last error lines; a failed build never counts as zero.
@@ -164,7 +186,7 @@ fn did_not_finish(stderr: &str) -> String {
     }
 }
 
-fn measure(ctx: &Ctx) -> Result<Series, String> {
+fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let asked = [ctx.features.as_slice(), ctx.build.as_slice()].concat();
     from_run(&exec::run("cargo", &invocation(&asked), &ctx.root).map_err(|e| e.to_string())?)
 }
@@ -188,6 +210,33 @@ mod tests {
     const REAL_ARTIFACT: &str = r#"{"reason":"compiler-artifact","package_id":"path+file:///tmp/f#0.1.0","manifest_path":"/tmp/f/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"f","src_path":"/tmp/f/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/tmp/f/target/debug/deps/libf-b540e639842940d5.rmeta"],"executable":null,"fresh":false}"#;
 
     const REAL_FINISHED: &str = r#"{"reason":"build-finished","success":true}"#;
+
+    /// Each lint names its first twenty hits, in file and line order; a hit with no place counts
+    /// and is named nowhere.
+    #[test]
+    fn a_lint_names_the_places_of_its_first_hits() {
+        let mut found: Vec<Hit> = (1..=22)
+            .map(|line| at("clippy::a", "src/a.rs", line))
+            .collect();
+        found.push(at("clippy::b", "src/b.rs", 4));
+        found.push(Hit {
+            lint: "clippy::c".to_string(),
+            file: None,
+            line: None,
+        });
+        let details = placed(&found);
+        let lines: Vec<u32> = details["clippy::a"].places.iter().map(|p| p.line).collect();
+        assert_eq!(lines, (1..=20).collect::<Vec<_>>());
+        assert_eq!(
+            details["clippy::b"].places,
+            [Place::at("hit", "src/b.rs", 4)]
+        );
+        assert!(!details.contains_key("clippy::c"));
+        let measured = from_run(&ran(0, &real_run(), "", false)).unwrap();
+        assert_eq!(measured.details, placed(&hits(&real_run())));
+        let lints: Vec<&str> = measured.details.keys().map(String::as_str).collect();
+        assert_eq!(lints, ["clippy::let_and_return", "clippy::redundant_clone"]);
+    }
 
     #[test]
     fn a_hit_is_placed_at_the_primary_span_and_not_the_first_one() {
@@ -436,7 +485,7 @@ mod tests {
 
     #[test]
     fn a_run_that_finished_is_one_count_per_lint_that_fired() {
-        let series = from_run(&ran(0, &real_run(), "", false)).unwrap();
+        let series = from_run(&ran(0, &real_run(), "", false)).unwrap().series;
         assert_eq!(series.get("clippy::let_and_return"), Some(1));
         assert_eq!(series.get("clippy::redundant_clone"), Some(1));
         assert_eq!(

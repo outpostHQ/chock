@@ -1,4 +1,5 @@
-//! `chock baseline GATE... --keys KEY...`: the words it takes, and the keys it writes.
+//! `chock baseline GATE... --keys KEY...` and `chock baseline [GATE...] --moved OLD=NEW...`: the
+//! words each takes, and the keys each writes.
 
 use std::process::ExitCode;
 
@@ -117,6 +118,62 @@ fn keys_written(
     Err(ExitCode::from(1))
 }
 
+/// What `chock baseline [GATE...] --moved OLD=NEW...` was asked: the gates, and each moved file.
+pub(super) type Moves<'a> = (Vec<&'a str>, Vec<(&'a str, &'a str)>);
+
+/// The request of `--moved`, or `None` where the words hold none. Every word after it is a pair.
+pub(super) fn moves<'a>(asked: &[&'a str]) -> Option<Result<Moves<'a>, String>> {
+    let at = asked.iter().position(|word| *word == "--moved")?;
+    let (names, rest) = asked.split_at(at);
+    let refused = |why: &str| Some(Err(why.to_string()));
+    if names.iter().any(|name| name.starts_with("--")) {
+        return refused(
+            "`--moved` takes no other flag: `chock baseline [GATE...] --moved OLD=NEW...`",
+        );
+    }
+    if names.contains(&crate::gates::coverage::crap::GATE.name) {
+        return refused("`crap` keeps its own record file, which `--moved` does not write");
+    }
+    let pair = |word: &&'a str| {
+        let (old, new) = word.split_once('=')?;
+        (!old.is_empty() && !new.is_empty() && old != new).then_some((old, new))
+    };
+    let pairs: Option<Vec<(&str, &str)>> = rest.iter().skip(1).map(pair).collect();
+    match pairs {
+        Some(pairs) if !pairs.is_empty() => Some(Ok((names.to_vec(), pairs))),
+        _ => refused("`--moved` takes each moved file as OLD=NEW, two different paths"),
+    }
+}
+
+/// Renames the keys of each moved file in `into`, or writes nothing: the old path must be gone
+/// from the tree, the new one a file in it, and some record named here must hold the old one.
+pub(super) fn moved(
+    (names, pairs): &Moves,
+    ctx: &run::Ctx,
+    config: Option<&Config>,
+    into: &mut Baseline,
+) -> Result<(), String> {
+    if !names.is_empty() {
+        super::select(names, config)?;
+    }
+    let mut record = into.clone();
+    for (old, new) in pairs {
+        if ctx.root.join(old).exists() {
+            return Err(format!("{old} is still in the tree, so it did not move"));
+        }
+        if !ctx.root.join(new).is_file() {
+            return Err(format!("{new} is not a file in the tree"));
+        }
+        let keys = match record.moved_file(names, old, new)? {
+            0 => return Err(format!("no record named here holds a key of {old}")),
+            keys => run::report::plural(keys, "key"),
+        };
+        emit(&format!("  {:<9} {old} to {new}: {keys}\n", "moved"));
+    }
+    *into = record;
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -191,6 +248,73 @@ mod tests {
         assert_eq!(named(every), named(super::super::recordable(None)));
         assert!(chosen(&["no-such-gate"], None).is_err());
         assert!(chosen(&["admits", "--keys"], None).is_err());
+    }
+
+    #[test]
+    fn every_word_after_moved_is_a_moved_file_and_a_request_that_cannot_hold_is_refused() {
+        let asked = moves(&["slop", "--moved", "a.rs=b.rs", "c.rs=d/c.rs"]);
+        let pairs = vec![("a.rs", "b.rs"), ("c.rs", "d/c.rs")];
+        assert_eq!(asked, Some(Ok((vec!["slop"], pairs))));
+        assert_eq!(moves(&["slop", "--keys", "a.rs"]), None);
+        let refused = [
+            &["--lower", "--moved", "a.rs=b.rs"][..],
+            &["crap", "--moved", "a.rs=b.rs"],
+            &["--moved"],
+            &["--moved", "a.rs"],
+            &["--moved", "a.rs=a.rs"],
+            &["--moved", "=b.rs"],
+            &["--moved", "a.rs=b.rs", "--keys"],
+        ];
+        for words in refused {
+            assert!(matches!(moves(words), Some(Err(_))), "{words:?}");
+        }
+    }
+
+    /// A moved file takes its keys only once the old path is gone and the new one is there.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_moved_file_takes_its_keys_once_the_tree_shows_the_move() {
+        let tree = crate::testdir::Held::tree("cli-moved", &[("b.rs", ""), ("c.rs", "")]);
+        let mut held = Baseline::empty("0.1.0");
+        held.set("slop", Series([("a.rs".to_string(), 3)].into()));
+        let was = held.clone();
+        let asked = |pairs: Vec<(&'static str, &'static str)>| (vec!["slop"], pairs);
+        let refusals = [
+            (
+                asked(vec![("b.rs", "c.rs")]),
+                "b.rs is still in the tree, so it did not move",
+            ),
+            (
+                asked(vec![("a.rs", "d.rs")]),
+                "d.rs is not a file in the tree",
+            ),
+            (
+                asked(vec![("x.rs", "b.rs")]),
+                "no record named here holds a key of x.rs",
+            ),
+            (
+                asked(vec![("a.rs", "b.rs"), ("x.rs", "c.rs")]),
+                "no record named here holds a key of x.rs",
+            ),
+        ];
+        for (moves, why) in refusals {
+            assert_eq!(moved(&moves, &tree, None, &mut held), Err(why.to_string()));
+            assert_eq!(held, was);
+        }
+        assert!(
+            moved(
+                &(vec!["no-such-gate"], vec![("a.rs", "b.rs")]),
+                &tree,
+                None,
+                &mut held
+            )
+            .is_err()
+        );
+        assert_eq!(
+            moved(&asked(vec![("a.rs", "b.rs")]), &tree, None, &mut held),
+            Ok(())
+        );
+        assert_eq!(held.gate("slop"), Series([("b.rs".to_string(), 3)].into()));
     }
 
     #[test]

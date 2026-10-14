@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::survivors::Survivor;
+use super::survivors::{Survivor, Totals};
 use crate::run::report::{Finding, plural};
 
 /// Where one run writes its results: a directory made for that run, so no earlier run's are read.
@@ -58,14 +58,14 @@ impl Results {
         self.tests
     }
 
-    /// Every evaluated target's verdicts, joined per mutation. The undetected ones must number the
-    /// `expected` from the text totals, or a target that wrote no results would read as clean.
-    pub(super) fn survivors(&self, expected: u64) -> Result<Joined, String> {
+    /// Every evaluated target's verdicts, joined per mutation, and their totals: the text mutest
+    /// prints interleaves its parallel targets, so a count there can be torn.
+    pub(super) fn survivors(&self) -> Result<Joined, String> {
         let read = |path: &Path| {
             std::fs::read_to_string(path)
                 .map_err(|error| format!("cannot read {}: {error}", path.display()))
         };
-        let mut judged = Vec::new();
+        let (mut judged, mut totals) = (Vec::new(), None);
         let (mut tested, mut ids) = (Vec::new(), Ids::new());
         // A target no test reaches is analysed but never evaluated, so it has no evaluation.json.
         for evaluation in crate::project::walk(&self.directory, &|_| true, &|name, _| {
@@ -73,23 +73,17 @@ impl Results {
         })? {
             let mutations = read(&evaluation.with_file_name("mutations.json"))?;
             let evaluated = read(&evaluation)?;
-            judged.extend(verdicts(&mutations, &evaluated)?);
+            let target = verdicts(&mutations, &evaluated)?;
+            totals = Some(counted(totals.unwrap_or_default(), &target)?);
+            judged.extend(target);
             if self.tests {
                 let target = self.label(&evaluation).unwrap_or_default();
                 tested.extend(tested_in(&target, &mutations, &evaluated, &mut ids)?);
             }
         }
-        let undetected = judged
-            .iter()
-            .filter(|(_, verdict)| *verdict == Verdict::Undetected)
-            .count();
-        if u64::try_from(undetected) != Ok(expected) {
-            return Err(format!(
-                "mutest reported {expected} undetected mutations but its results name {undetected}; the result is incomplete"
-            ));
-        }
         let mut found = joined(judged);
         found.tests = idle(tested);
+        found.totals = totals;
         Ok(found)
     }
 
@@ -129,6 +123,28 @@ pub(super) struct Joined {
     pub timed_out: Vec<Survivor>,
     /// Each test that detects no mutation, or only ones another test detects too, as a lead.
     pub tests: Vec<Finding>,
+    /// Each target's verdicts summed, as mutest's text totals sum them; `None` where no target
+    /// was evaluated.
+    pub totals: Option<Totals>,
+}
+
+/// `totals` with one target's verdicts added. A mutation no test ran is in no total.
+fn counted(totals: Totals, target: &[(Mutation, Verdict)]) -> Result<Totals, String> {
+    let count = |wanted: fn(Verdict) -> bool| {
+        let n = target
+            .iter()
+            .filter(|(_, verdict)| wanted(*verdict))
+            .count();
+        u64::try_from(n).map_err(|_| "mutest wrote more verdicts than chock counts".to_string())
+    };
+    let next = Totals {
+        undetected: count(|verdict| verdict == Verdict::Undetected)?,
+        timed_out: count(|verdict| verdict == Verdict::TimedOut)?,
+        total: count(|verdict| verdict != Verdict::NotRun)?,
+    };
+    totals
+        .add(next)
+        .ok_or_else(|| "mutest mutation totals overflowed".to_string())
 }
 
 #[derive(Deserialize)]
@@ -459,9 +475,9 @@ mod tests {
             tests: false,
             keep: false,
         };
-        assert_eq!(plain.survivors(1).unwrap().tests, Vec::new());
+        assert_eq!(plain.survivors().unwrap().tests, Vec::new());
         let idle = lead("t::idle", "detects no mutation in fixture/lib");
-        assert_eq!(results.survivors(1).unwrap().tests, [idle]);
+        assert_eq!(results.survivors().unwrap().tests, [idle]);
         results.accept().unwrap();
         assert!(
             directory.exists(),
@@ -507,6 +523,7 @@ mod tests {
             survivors: vec![named("call_delete", 2)],
             timed_out: vec![named("bool_expr_negate", 3)],
             tests: Vec::new(),
+            totals: None,
         };
         assert_eq!(found, expected);
         let twice = judged(
@@ -588,6 +605,25 @@ mod tests {
     }
 
     #[test]
+    fn totals_count_each_verdict_but_that_of_a_mutation_no_test_ran() {
+        let ops = ["a", "b", "c", "d", "e"];
+        let judged = verdicts(&mutations(&ops), &evaluation(".-TCD")).unwrap();
+        let once = counted(Totals::default(), &judged).unwrap();
+        let expected = Totals {
+            undetected: 1,
+            timed_out: 1,
+            total: 4,
+        };
+        assert_eq!(once, expected);
+        assert_eq!(counted(once, &judged).unwrap().total, 8);
+        let full = Totals {
+            undetected: u64::MAX,
+            ..once
+        };
+        assert!(counted(full, &judged).unwrap_err().contains("overflowed"));
+    }
+
+    #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn every_evaluated_target_is_read_and_the_directory_goes_with_the_run() {
         let root = crate::testdir::make("mutest-results");
@@ -607,21 +643,22 @@ mod tests {
         target("bin", &["unary_op_delete"], None);
         // The totals count each target's verdict, and the joined results name each mutation once.
         target("tests/more", &["eq_op_invert"], Some("-"));
-        let mut operators: Vec<String> = results
-            .survivors(3)
-            .unwrap()
+        let found = results.survivors().unwrap();
+        let mut operators: Vec<String> = found
             .survivors
             .into_iter()
             .map(|survivor| survivor.operator)
             .collect();
         operators.sort();
         assert_eq!(operators, ["bool_expr_negate", "eq_op_invert"]);
-        for expected in [2, 4] {
-            let why = results.survivors(expected).unwrap_err();
-            assert!(why.contains("its results name 3"), "{why}");
-        }
+        let totals = Totals {
+            undetected: 3,
+            timed_out: 0,
+            total: 4,
+        };
+        assert_eq!(found.totals, Some(totals));
         std::fs::remove_file(directory.join("fixture/lib/mutations.json")).unwrap();
-        assert!(results.survivors(3).unwrap_err().contains("cannot read"));
+        assert!(results.survivors().unwrap_err().contains("cannot read"));
         assert!(
             results
                 .retained()

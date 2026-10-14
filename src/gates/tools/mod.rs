@@ -10,7 +10,7 @@ pub mod machete;
 pub mod miri;
 pub mod proof;
 pub mod shellcheck;
-mod suite;
+pub(in crate::gates) mod suite;
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -1815,7 +1815,10 @@ mod tests {
         let leaves = with(&["sh", "-c", "test ! -e left && touch left"]).unwrap();
         assert_eq!(
             said(&leaves),
-            ["idempotent: the suite passed once and failed the second time in the same tree"]
+            [
+                "idempotent: the suite passed once and failed the second time in the same tree \
+              (the whole output: target/test-scratch/chock/idempotent.txt)"
+            ]
         );
     }
 

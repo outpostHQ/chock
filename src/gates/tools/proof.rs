@@ -32,8 +32,7 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
     let listed = exec::run("cargo", &invocation(&ctx.features, &LIST), &ctx.root)
         .map_err(|e| e.to_string())?;
     let harnesses = read_harnesses(&listed, || read_listing(&ctx.root))?;
-    // Each harness is one solver on one core, eight at most, within this lane's share of the cap.
-    let jobs = crate::exec::budget::cap().clamp(1, 8).to_string();
+    let jobs = jobs(crate::exec::budget::cap(), ctx.proof_jobs).to_string();
     let out = exec::run(
         "cargo",
         &invocation(&ctx.features, &verify(&jobs)),
@@ -44,6 +43,15 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
 }
 
 const LIST: [&str; 3] = ["list", "--format", "json"];
+
+/// Each harness is one solver on one core: eight at most, within this lane's share of the cores,
+/// and never more than `proof_jobs`.
+fn jobs(share: usize, asked: Option<u32>) -> usize {
+    let asked = asked.map_or(usize::MAX, |asked| {
+        usize::try_from(asked).unwrap_or(usize::MAX)
+    });
+    share.clamp(1, 8).min(asked).max(1)
+}
 
 /// Kani verifies harnesses side by side only with terse output.
 fn verify(jobs: &str) -> [&str; 4] {
@@ -429,6 +437,16 @@ fn listed_name(item: &serde_json::Value, names: &mut BTreeSet<String>) -> Result
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_harnesses_verified_at_once_stay_within_the_share_and_the_setting() {
+        assert_eq!(jobs(32, None), 8);
+        assert_eq!(jobs(3, None), 3);
+        assert_eq!(jobs(0, None), 1);
+        assert_eq!(jobs(32, Some(2)), 2);
+        assert_eq!(jobs(3, Some(6)), 3);
+        assert_eq!(jobs(8, Some(0)), 1);
+    }
 
     #[test]
     fn a_zero_check_summary_is_empty_not_a_vacuous_failure() {

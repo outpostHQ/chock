@@ -204,6 +204,13 @@ pub fn is_build_cache(dir: &Path) -> bool {
     dir.join(CACHE_MARKER).is_file()
 }
 
+/// Whether this directory is a repository of its own: a clone, a submodule or a worktree, whose
+/// `.git` is a directory or a file. Its own gates judge it, so the walk leaves it alone.
+#[must_use]
+pub fn is_other_repository(dir: &Path) -> bool {
+    dir.join(".git").exists()
+}
+
 /// The directories a project's own `.gitignore` names, which `SKIPPED` cannot know.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Ignored {
@@ -358,7 +365,8 @@ pub fn walk(
                 .into_owned();
             if descends_into(&path) {
                 let shown = relative(root, &path);
-                if enter(&name) && !is_build_cache(&path) && !ignored.holds(&shown, &name) {
+                let other = is_build_cache(&path) || is_other_repository(&path);
+                if enter(&name) && !other && !ignored.holds(&shown, &name) {
                     stack.push(path);
                 }
             } else if keep(&name, &path) {
@@ -628,6 +636,23 @@ mod tests {
         let files = [("target-coverage/f.rs", ""), ("kept/f.rs", ""), tag];
         let dir = crate::testdir::tree("project-build-cache", &files);
         assert_eq!(reached(&dir), ["kept/f.rs"]);
+    }
+
+    /// A clone, a submodule or a worktree inside the project is a repository of its own.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_directory_with_a_git_of_its_own_is_not_walked() {
+        let files = [
+            (".git/HEAD", "ref: refs/heads/main\n"),
+            ("clone/.git/HEAD", "ref: refs/heads/main\n"),
+            ("clone/f.rs", ""),
+            ("submodule/.git", "gitdir: ../.git/modules/submodule\n"),
+            ("submodule/f.rs", ""),
+            ("kept/f.rs", ""),
+            ("f.rs", ""),
+        ];
+        let dir = crate::testdir::tree("project-other-repository", &files);
+        assert_eq!(reached(&dir), ["f.rs", "kept/f.rs"]);
     }
 
     /// A target directory made before cargo runs has no marker, but the `.gitignore` names it.

@@ -1,6 +1,6 @@
 # The gates
 
-`chock gates` prints this list from the binary: 61 gates, 37 on by default and 24 opt-in.
+`chock gates` prints this list from the binary: 64 gates, 37 on by default and 27 opt-in.
 `chock gates --json` gives the same list to a program.
 
 A gate is one of two kinds.
@@ -69,6 +69,9 @@ records the reason under `left_off` in the config.
 | `commands` | ✓ | a check you declared fails, or counts more than it held |
 | `commands-build` | ✓ | the same, for your declared checks that need a compiler |
 | `phrases` | ✓ | source gains a phrase your config forbids |
+| `seams` | ✓ | a file or package uses a path or crate that your `seams` entry keeps to other places |
+| `owners` | ✓ | a value that a call listed under `owners` reads, such as an environment variable, is read in one more file |
+| `calls` | ✓ | a function makes a call listed under `calls` without the call it must come after or with |
 | `dead` | | a private function nothing in the crate names |
 | `acl` | | a dependency reaches an API its `cackle.toml` entry does not grant |
 | `idempotent` | | the suite passes once and fails the second time |
@@ -244,6 +247,26 @@ The command never raises a key. When a named key measures more than its record, 
 and exits `1`. A key that no named gate measures or records gives exit `2`. `crap` keeps its own
 record file, so `--keys` does not write it.
 
+`chock baseline [GATE...] --moved OLD=NEW...` gives a renamed file the keys of its old path, on
+every system's record. OLD must be gone from the tree and NEW must be a file. The command refuses
+a NEW that the record already holds, so no total goes up. With no gate named, it moves the keys of
+every gate. `crap` keeps its own record file, so `--moved` does not write it.
+
+## Part of the suite
+
+`chock run test --package=NAME` runs the suite of one package, and `--filter=TEXT` only the tests
+whose name holds TEXT. The verdict of such a run answers for that part alone. Both work when the
+`runner` is `cargo test` or `cargo nextest run`.
+
+## Output a finding points to
+
+A finding quotes only a part of a long output, so some gates keep the whole of it under
+`target/test-scratch/chock/`:
+
+- `test.txt` and `idempotent.txt` hold the whole output of a failed suite run.
+- `coverage.txt` lists the lines no test ran, file by file. Keep it from a CI job and compare it
+  with the list of your machine when the two counts differ.
+
 ## Records by machine and system
 
 Coverage, mutation testing, binary size, clippy's shape lints and the Outpost gates measure
@@ -254,6 +277,9 @@ Coverage, mutation testing, binary size, `bsize` and `crap` also measure differe
 system. macOS and Windows keep their own records, as `coverage@macos` and `coverage@windows`; Linux
 keeps `coverage`. `crap` keeps its own file the same way, as `.chock/crap-baseline@macos.json`
 beside `.chock/crap-baseline.json`.
+
+A count can differ between two machines when code runs only where a tool is present. Compare the
+two `coverage.txt` lists, and change the code or the tests so that the same lines run on both.
 
 `coverage` leaves out the code that only tests compile: a `tests.rs` or `*_tests.rs` file, and the
 lines of each `#[cfg(test)]` module. A test module counts the same in its parent file and in its

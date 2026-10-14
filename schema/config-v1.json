@@ -182,6 +182,11 @@
       "description": "Whether `mutest` runs every test on each mutation, rather than stopping at the first test that detects it. The run is slower, and `mutest` then names each test that detects no mutation, or only mutations another test detects too, as a candidate.",
       "type": "boolean"
     },
+    "proof_jobs": {
+      "description": "The most Kani harnesses `proof` verifies at once. Each harness runs one solver, which can hold several GB, so a lower number uses less memory. The default is this machine's share of the cores, eight at most; a larger number here does not raise it.",
+      "type": "integer",
+      "minimum": 1
+    },
     "mutest_args": {
       "description": "Flags `cargo mutest run` takes after chock's own, such as `--timings`. The results directory under `target/test-scratch/` stays after such a run; delete it when you are done. Use `mutest_exhaustive`, not `--exhaustive` here.",
       "type": "array",
@@ -293,6 +298,15 @@
               "minLength": 1
             },
             "uniqueItems": true
+          },
+          "in": {
+            "description": "Paths from the project root where the phrase is refused, in the same pattern language as `except`. With none the phrase is refused everywhere; `except` still allows a path inside an `in` scope.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
           }
         }
       }
@@ -360,6 +374,132 @@
                 "minLength": 1
               }
             }
+          }
+        }
+      }
+    },
+    "seams": {
+      "description": "Rust paths and crates only some of the project may use, held by the `seams` gate. Each entry names a `path` or a `crate`, the places allowed under `only`, and the reason a finding gives.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "only",
+          "why"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "A Rust path such as `iroh` or `std::process::Command`. A use of it or of any path under it counts, read through the file's `use` aliases; a glob import and a macro body are not read.",
+            "type": "string",
+            "minLength": 1
+          },
+          "crate": {
+            "description": "A crate name, such as `aws-sdk-s3`. A package outside `only` that holds it anywhere in its normal dependency tree is a finding at its manifest.",
+            "type": "string",
+            "minLength": 1
+          },
+          "only": {
+            "description": "For a `path`, the files from the project root that may use it, with `*` within a segment and `**` any number of segments. For a `crate`, the package names that may depend on it.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          },
+          "why": {
+            "description": "What the finding tells whoever wrote the use.",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "owners": {
+      "description": "Calls whose first argument names a value, such as an environment variable, that one file reads. The `owners` gate reports each read of a value that two or more files read.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "call",
+          "why"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "call": {
+            "description": "The full path of the function, such as `std::env::var`, matched through the file's `use` aliases. The value is a string literal, or a constant named in capitals.",
+            "type": "string",
+            "minLength": 1
+          },
+          "why": {
+            "description": "What the finding tells whoever wrote the read.",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "calls": {
+      "description": "Calls that need another call in the same function, held by the `calls` gate. `.name` matches a method call; a path matches a call path on its last segments; one plain name matches both.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "call",
+          "why"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "call": {
+            "description": "The call the rule is about.",
+            "type": "string",
+            "minLength": 1
+          },
+          "after": {
+            "description": "A call that must come earlier in each function that makes `call`.",
+            "type": "string",
+            "minLength": 1
+          },
+          "with": {
+            "description": "A call that each function that makes `call` must also make.",
+            "type": "string",
+            "minLength": 1
+          },
+          "why": {
+            "description": "What the finding tells whoever wrote the function.",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "secrets": {
+      "description": "The project's own credential shapes. `hygiene` finds them in every tracked file, and `history` in every commit git holds.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "prefix",
+          "tail"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "The name a finding gives, such as `service token`.",
+            "type": "string",
+            "minLength": 1
+          },
+          "prefix": {
+            "description": "The fixed start of the credential, at least 3 characters, such as `svc_`.",
+            "type": "string",
+            "minLength": 3
+          },
+          "tail": {
+            "description": "The fewest letters, digits, `_` or `-` after the prefix, at least 8.",
+            "type": "integer",
+            "minimum": 8
           }
         }
       }

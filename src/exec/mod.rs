@@ -472,8 +472,8 @@ pub fn deadline() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
-/// What git exports into a hook. Cleared from each spawn, so a tool's git calls do not act on the
-/// commit being made.
+/// What git exports into a hook. Cleared from each spawn unless the caller names it, so a tool's
+/// git calls do not act on the commit being made.
 pub const GIT_STATE: [&str; 6] = [
     "GIT_INDEX_FILE",
     "GIT_DIR",
@@ -804,11 +804,11 @@ fn run_full(
     let mut command = Command::new(spawn);
     command
         .args(&argv)
+        .env_remove_each(&GIT_STATE)
         .envs(crash_report(std::env::var_os("RUSTC_ICE").as_deref()))
         .envs(env.iter().copied())
         .env(DEPTH, (depth() + 1).to_string())
         .envs(crate::exec::budget::caps())
-        .env_remove_each(&GIT_STATE)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

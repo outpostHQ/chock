@@ -230,6 +230,9 @@ pub fn politely(program: &str) -> &'static [&'static str] {
 /// own process needs `unsafe`.
 pub const CARGO_JOBS: &str = "CARGO_BUILD_JOBS";
 pub const NEXTEST_THREADS: &str = "NEXTEST_TEST_THREADS";
+/// What libtest and mutest's runtime read for how many tests or mutants run at once. Only a tool
+/// that runs many at once on its own carries it, so a test binary keeps its own default.
+pub const TEST_THREADS: &str = "RUST_TEST_THREADS";
 
 /// The job cap every spawn carries, computed on first use if `prime` was not called.
 static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -297,6 +300,13 @@ pub fn caps() -> Vec<(&'static str, String)> {
         .map(|key| (key, within(cap(), std::env::var(key).ok().as_deref())))
         .map(|(key, jobs)| (key, jobs.to_string()))
         .collect()
+}
+
+/// The test-thread cap for a tool such as mutest that runs tests at once: the lane's share.
+#[must_use]
+pub fn test_threads() -> (&'static str, String) {
+    let set = std::env::var(TEST_THREADS).ok();
+    (TEST_THREADS, within(cap(), set.as_deref()).to_string())
 }
 
 /// `jobs`, or a smaller number someone `set`; a value that is no number leaves `jobs`.
@@ -598,6 +608,17 @@ mod tests {
     fn every_spawn_carries_a_cap_for_cargo_and_for_the_test_runner() {
         let carried: Vec<&str> = caps().into_iter().map(|(key, _)| key).collect();
         assert_eq!(carried, [CARGO_JOBS, NEXTEST_THREADS]);
+    }
+
+    #[test]
+    fn a_tool_that_runs_tests_at_once_carries_the_lane_s_share_as_its_thread_cap() {
+        let (key, threads) = test_threads();
+        assert_eq!(key, "RUST_TEST_THREADS");
+        let share = threads.parse::<usize>();
+        assert!(
+            share.is_ok_and(|n| (1..=machine()).contains(&n)),
+            "{threads}"
+        );
     }
 
     #[test]

@@ -388,6 +388,37 @@ impl Baseline {
     pub fn set(&mut self, name: &str, series: Series) {
         self.gates.insert(kept_here(name), series);
     }
+
+    /// Each key of file `old` renamed to `new`, in the record of each gate `names` lists (all when
+    /// empty), on every system: how many moved. A key `new` already holds stops it, unchanged.
+    pub fn moved_file(&mut self, names: &[&str], old: &str, new: &str) -> Result<usize, String> {
+        let named = |kept: &str| {
+            let gate = kept.split_once('@').map_or(kept, |(gate, _)| gate);
+            names.is_empty() || names.contains(&gate)
+        };
+        let renamed = |key: &str| match key.strip_prefix(old) {
+            Some("") => Some(new.to_string()),
+            Some(rest) if rest.starts_with('#') => Some(format!("{new}{rest}")),
+            _ => None,
+        };
+        let mut gates = self.gates.clone();
+        let mut moved = 0;
+        for (kept, series) in gates.iter_mut().filter(|(kept, _)| named(kept)) {
+            let mut was = std::mem::take(&mut series.0);
+            for (key, value) in was.clone() {
+                let Some(to) = renamed(&key) else { continue };
+                if was.contains_key(&to) {
+                    return Err(format!("the record of {kept} already holds {to}"));
+                }
+                was.remove(&key);
+                was.insert(to, value);
+                moved += 1;
+            }
+            series.0 = was;
+        }
+        self.gates = gates;
+        Ok(moved)
+    }
 }
 
 /// A JSON report with every path under `root` relative to it, `/` between its parts. cargo-crap
@@ -481,6 +512,35 @@ mod tests {
     }
 
     /// A lower number measured on one machine would fail a run on another that measures higher.
+    #[test]
+    fn a_moved_file_takes_its_keys_on_every_system_and_never_one_the_record_holds() {
+        let mut held = Baseline::empty("0.1.0");
+        let series = |pairs: &[(&str, u64)]| {
+            Series(pairs.iter().map(|(key, n)| (key.to_string(), *n)).collect())
+        };
+        held.set("slop", series(&[("src/a.rs", 9), ("src/ab.rs", 2)]));
+        held.gates
+            .insert("nesting@windows".to_string(), series(&[("src/a.rs#f", 3)]));
+        held.set("typos", series(&[("src/a.rs", 1)]));
+        assert_eq!(
+            held.moved_file(&["slop", "nesting"], "src/a.rs", "src/b.rs"),
+            Ok(2)
+        );
+        let slop = series(&[("src/ab.rs", 2), ("src/b.rs", 9)]);
+        assert_eq!(held.gate("slop"), slop);
+        assert_eq!(held.gates["nesting@windows"], series(&[("src/b.rs#f", 3)]));
+        assert_eq!(held.gate("typos"), series(&[("src/a.rs", 1)]));
+        held.set("typos", series(&[("src/b.rs", 1), ("src/c.rs", 4)]));
+        let was = held.clone();
+        let refused = held.moved_file(&[], "src/b.rs", "src/c.rs");
+        assert_eq!(
+            refused,
+            Err("the record of typos already holds src/c.rs".to_string())
+        );
+        assert_eq!(held, was);
+        assert_eq!(held.moved_file(&[], "src/none.rs", "src/d.rs"), Ok(0));
+    }
+
     #[test]
     fn recording_raises_and_adds_a_key_and_never_lowers_one() {
         let held = series(&[("kept/high.rs", 20), ("gone.rs", 5)]);

@@ -13,6 +13,7 @@ use super::results::{Joined, Results};
 use super::scope;
 use super::survivors::{self, Survivor};
 use super::tool;
+use crate::gates::tools::suite;
 
 const CALL_GRAPH_DEPTH: &str = "3";
 const TIMEOUT_LIMIT: u64 = 2;
@@ -74,13 +75,44 @@ fn mutated<T>(
     let results = Results::create(&ctx.root)?.reading(exhaustive, &ctx.mutest_args);
     let flag = results.flag();
     let argv = invocation(&ctx.features, &flag, filter, &added(ctx, &results));
+    let before = suite::changes_and_new(ctx);
     let measured = ran(ctx, ctx.wrapped("cargo", &argv), &|output| {
-        judge(output, &|expected| results.survivors(expected), was)
+        judge(output, &|| results.survivors(), was)
             .and_then(|measured| accounted(ctx, output, &results).map(|()| measured))
     })
     .map_err(|error| format!("{error}{}", results.retained()))?;
     results.accept()?;
+    left_alone(before, suite::changes_and_new(ctx))?;
     Ok(measured)
+}
+
+/// Most changed files a refusal names.
+const LEFT_NAMED: usize = 10;
+
+/// Refuses a run that left the tree changed: a test, mutated or not, wrote a file the repository
+/// holds or added one it does not ignore, so the next run starts from another tree.
+fn left_alone<V: PartialEq>(
+    before: Option<std::collections::BTreeMap<String, V>>,
+    after: Option<std::collections::BTreeMap<String, V>>,
+) -> Result<(), String> {
+    let (Some(before), Some(after)) = (before, after) else {
+        return Ok(());
+    };
+    let changed = crate::project::differing(&before, &after);
+    if changed.is_empty() {
+        return Ok(());
+    }
+    let named: Vec<&str> = changed
+        .iter()
+        .take(LEFT_NAMED)
+        .map(String::as_str)
+        .collect();
+    Err(format!(
+        "the mutest run changed {} file(s) in the tree, so its result is not taken: {}; a test \
+         must write under `target/`, and the tree must be restored before the next run",
+        changed.len(),
+        named.join(", ")
+    ))
 }
 
 /// How a finished run's output is judged.
@@ -93,9 +125,11 @@ fn ran<T>(ctx: &Ctx, (program, args): (&str, Vec<&str>), check: Check<'_, T>) ->
     let values = watch
         .environment()?
         .map(|(name, value)| (name.to_string(), value.to_string()));
+    let (threads, share) = exec::budget::test_threads();
     let env: Vec<_> = values
         .iter()
         .map(|(name, value)| (name.as_str(), value.as_str()))
+        .chain([(threads, share.as_str())])
         .collect();
     let output = exec::run_watched(program, &args, &ctx.root, &env, &mut watch, moving)
         .map_err(|error| format!("{error}{}", watch.retained()))?;
@@ -107,7 +141,9 @@ fn ran<T>(ctx: &Ctx, (program, args): (&str, Vec<&str>), check: Check<'_, T>) ->
 /// Runs a command in the project under the deadline, and judges its output with `check`.
 #[cfg(not(target_os = "linux"))]
 fn ran<T>(ctx: &Ctx, (program, args): (&str, Vec<&str>), check: Check<'_, T>) -> Result<T, String> {
-    let output = exec::run_paced(program, &args, &ctx.root, &[], (moving, exec::deadline()))
+    let (threads, share) = exec::budget::test_threads();
+    let env = [(threads, share.as_str())];
+    let output = exec::run_paced(program, &args, &ctx.root, &env, (moving, exec::deadline()))
         .map_err(|error| error.to_string())?;
     check(&output)
 }
@@ -152,11 +188,11 @@ fn added<'a>(ctx: &'a Ctx, results: &Results) -> Vec<&'a str> {
     exhaustive.into_iter().chain(own).collect()
 }
 
-/// What a run's results name once joined, given how many undetected verdicts its totals counted.
-type Survivors<'a> = &'a dyn Fn(u64) -> Result<Joined, String>;
+/// What a run's results name once joined, with their totals.
+type Survivors<'a> = &'a dyn Fn() -> Result<Joined, String>;
 
-/// What one run measured: totals and exit from its output, survivors from what `results` read, and
-/// where each telling survivor past the record `was` is.
+/// What one run measured: its exit from its output, totals and survivors from what `results` read,
+/// and where each telling survivor past the record `was` is.
 pub(super) fn read(
     out: &exec::Output,
     results: Survivors,
@@ -180,19 +216,18 @@ fn read_survivors(out: &exec::Output, results: Survivors) -> Result<Joined, Stri
     if let Some(reason) = failed_target(out) {
         return Err(reason);
     }
-    let totals = survivors::totals(&out.stdout)?.ok_or_else(|| unmeasured(out))?;
+    let found = results();
+    if found.as_ref().is_ok_and(|found| found.totals.is_none()) {
+        return Err(unmeasured(out));
+    }
     completed(out)?;
-    survivor_counts(out, totals, results)
+    survivor_counts(out, found?)
 }
 
-/// Every mutation the results name once joined. A finished run is still refused if its results are
-/// unreadable or more than `TIMEOUT_LIMIT` percent of its mutations timed out.
-fn survivor_counts(
-    out: &exec::Output,
-    totals: survivors::Totals,
-    results: Survivors,
-) -> Result<Joined, String> {
-    let found = results(totals.undetected)?;
+/// Every mutation the results name once joined. A finished run is still refused if more than
+/// `TIMEOUT_LIMIT` percent of its mutations timed out.
+fn survivor_counts(out: &exec::Output, found: Joined) -> Result<Joined, String> {
+    let totals = found.totals.unwrap_or_default();
     if out.code == Some(2) && totals.undetected == 0 {
         return Err(
             "mutest's exit says it missed mutations but its totals count none; the result is incomplete"
@@ -239,7 +274,7 @@ fn read_within(
     results: Survivors,
     was: &Series,
 ) -> Result<Option<Measurement>, String> {
-    let totals = survivors::totals(&out.stdout).ok().flatten();
+    let totals = results().ok().and_then(|found| found.totals);
     match totals.is_some_and(|totals| untrusted(out, &totals)) {
         true => Ok(None),
         false => read(out, results, was).map(Some),
@@ -362,6 +397,34 @@ fn skipped(line: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_run_that_left_the_tree_changed_is_refused_and_names_the_files() {
+        let tree = |files: &[(&str, Option<u64>)]| {
+            let map: std::collections::BTreeMap<String, Option<u64>> = files
+                .iter()
+                .map(|(path, hash)| ((*path).to_string(), *hash))
+                .collect();
+            Some(map)
+        };
+        let before = tree(&[("src/a.rs", Some(1))]);
+        assert_eq!(left_alone(before.clone(), before.clone()), Ok(()));
+        assert_eq!(left_alone(None, tree(&[("src/b.rs", None)])), Ok(()));
+        assert_eq!(left_alone(before.clone(), None), Ok(()));
+        let said = left_alone(before, tree(&[("src/a.rs", Some(2)), ("new.txt", Some(3))]));
+        assert_eq!(
+            said.unwrap_err(),
+            "the mutest run changed 2 file(s) in the tree, so its result is not taken: new.txt, \
+             src/a.rs; a test must write under `target/`, and the tree must be restored before \
+             the next run"
+        );
+        let many: Vec<(String, Option<u64>)> =
+            (0..12).map(|n| (format!("f{n:02}"), None)).collect();
+        let named: Vec<(&str, Option<u64>)> = many.iter().map(|(p, h)| (p.as_str(), *h)).collect();
+        let said = left_alone(tree(&[]), tree(&named)).unwrap_err();
+        assert!(said.contains("changed 12 file(s)"), "{said}");
+        assert!(said.contains("f09;") && !said.contains("f10"), "{said}");
+    }
+
     const TOTALS: &str =
         "mutations: 90%. 9 detected (0 timed out; 0 crashed); 1 undetected; 10 total\n";
     const SKIPPED: &str = "warning: integration test `commands` links no mutant crate, so no mutation can reach its tests\n  = note: its tests are skipped\n";
@@ -385,16 +448,43 @@ mod tests {
         }
     }
 
-    /// What the results of a run matching `TOTALS` name: its one survivor.
-    fn one(_expected: u64) -> Result<Joined, String> {
+    /// Totals as mutest's results count them.
+    fn counts(undetected: u64, timed_out: u64, total: u64) -> Option<survivors::Totals> {
+        Some(survivors::Totals {
+            undetected,
+            timed_out,
+            total,
+        })
+    }
+
+    /// The results of a run that missed one mutation of ten: its one survivor.
+    fn one() -> Result<Joined, String> {
         Ok(Joined {
             survivors: vec![survivor("eq_op_invert")],
+            totals: counts(1, 0, 10),
             ..Joined::default()
         })
     }
 
-    fn none(_expected: u64) -> Result<Joined, String> {
+    /// The results of a run that detected all ten mutations.
+    fn none() -> Result<Joined, String> {
+        Ok(Joined {
+            totals: counts(0, 0, 10),
+            ..Joined::default()
+        })
+    }
+
+    /// The results of a run in which mutest evaluated no target.
+    fn unevaluated() -> Result<Joined, String> {
         Ok(Joined::default())
+    }
+
+    /// `results` with other totals.
+    fn totalled(
+        results: Survivors<'_>,
+        totals: Option<survivors::Totals>,
+    ) -> impl Fn() -> Result<Joined, String> + '_ {
+        move || results().map(|found| Joined { totals, ..found })
     }
 
     fn counted(out: &exec::Output, results: Survivors) -> Result<Series, String> {
@@ -504,7 +594,8 @@ mod tests {
     fn a_run_that_left_too_much_unresolved_is_refused_rather_than_scored() {
         let totals =
             "mutations: 90%. 5 detected (4 timed out; 0 crashed); 1 undetected; 10 total\n";
-        let err = counted(&ran(totals, Some(3), false), &one).unwrap_err();
+        let gave_up = totalled(&one, counts(1, 4, 10));
+        let err = counted(&ran(totals, Some(3), false), &gave_up).unwrap_err();
         assert_eq!(
             err,
             "mutest gave up on 4 of 10 mutations, so the score is not trustworthy; re-run on an idle machine"
@@ -516,22 +607,24 @@ mod tests {
 
     #[test]
     fn timeouts_mutest_confirmed_alone_are_hangs_and_the_run_is_scored() {
-        let series = counted(&ran(CONFIRMED_PAST, Some(3), false), &one).unwrap();
+        let past = totalled(&one, counts(1, 4, 10));
+        let series = counted(&ran(CONFIRMED_PAST, Some(3), false), &past).unwrap();
         assert_eq!(series.get("src/a.rs#eq_op_invert"), Some(1));
         let within = read_within(
             &ran(CONFIRMED_PAST, Some(3), false),
-            &one,
+            &past,
             &Series::default(),
         );
         assert!(
             within.unwrap().is_some(),
             "confirmed hangs need no whole-crate run"
         );
-        let timed = |_: u64| {
+        let timed = || {
             Ok(Joined {
                 survivors: vec![survivor("eq_op_invert")],
                 timed_out: vec![survivor("call_delete")],
                 tests: Vec::new(),
+                totals: counts(1, 4, 10),
             })
         };
         let was = Series([("src/a.rs#eq_op_invert".to_string(), 1)].into());
@@ -546,20 +639,26 @@ mod tests {
         );
     }
 
-    /// Past the limit the files' own results go unread; at the limit they are read as any run's.
+    /// Past the limit the files' results give no verdict; at the limit they are read as any run's.
     #[test]
     fn files_whose_mutations_alone_pass_the_limit_leave_the_verdict_to_the_whole_crate() {
-        let unread = |_: u64| Err("the results were read".to_string());
-        let past = "mutations: 90%. 5 detected (4 timed out; 0 crashed); 1 undetected; 10 total\n";
-        let left = read_within(&ran(past, Some(3), false), &unread, &Series::default());
-        assert_eq!(left.map(|read| read.map(|read| read.series)), Ok(None));
-        let at = "mutations: 98%. 48 detected (1 timed out; 0 crashed); 1 undetected; 50 total\n";
-        let read = read_within(&ran(at, Some(3), false), &one, &Series::default());
-        let series = read.unwrap().map(|read| read.series).unwrap();
-        assert_eq!(series.get("src/a.rs#eq_op_invert"), Some(1));
-        let nothing = read_within(&ran("", Some(1), false), &none, &Series::default());
+        let out = ran("", Some(3), false);
+        let series = |read: Result<Option<Measurement>, String>| {
+            read.map(|read| read.map(|read| read.series))
+        };
+        let past = totalled(&one, counts(1, 4, 10));
+        let left = read_within(&out, &past, &Series::default());
+        assert_eq!(series(left), Ok(None));
+        let unread = || Err("the results were read".to_string());
+        let refused = read_within(&out, &unread, &Series::default());
+        assert_eq!(series(refused), Err("the results were read".to_string()));
+        let at = totalled(&one, counts(1, 1, 50));
+        let read = series(read_within(&out, &at, &Series::default()));
+        let at_limit = read.unwrap().unwrap();
+        assert_eq!(at_limit.get("src/a.rs#eq_op_invert"), Some(1));
+        let nothing = read_within(&ran("", Some(1), false), &unevaluated, &Series::default());
         assert_eq!(
-            nothing.map(|read| read.map(|read| read.series)),
+            series(nothing),
             Err(
                 "mutest reported no mutation totals, so nothing was measured: it broke".to_string()
             )
@@ -570,7 +669,8 @@ mod tests {
     fn a_run_at_the_limit_itself_is_still_scored() {
         let totals =
             "mutations: 98%. 48 detected (1 timed out; 0 crashed); 1 undetected; 50 total\n";
-        let series = counted(&ran(totals, Some(3), false), &one).unwrap();
+        let at = totalled(&one, counts(1, 1, 50));
+        let series = counted(&ran(totals, Some(3), false), &at).unwrap();
         assert_eq!(series.get("src/a.rs#eq_op_invert"), Some(1));
     }
 
@@ -579,11 +679,12 @@ mod tests {
         let totals =
             "mutations: 98%. 48 detected (1 timed out; 0 crashed); 1 undetected; 50 total\n";
         let was = Series([("src/a.rs#eq_op_invert".to_string(), 1)].into());
-        let timed = |_: u64| {
+        let timed = || {
             Ok(Joined {
                 survivors: vec![survivor("eq_op_invert")],
                 timed_out: vec![survivor("call_delete")],
                 tests: Vec::new(),
+                totals: counts(1, 1, 50),
             })
         };
         let some = read(&ran(totals, Some(3), false), &timed, &was).unwrap();
@@ -604,14 +705,15 @@ mod tests {
     fn a_run_that_resolved_nearly_everything_is_scored() {
         let totals =
             "mutations: 99%. 98 detected (1 timed out; 0 crashed); 1 undetected; 100 total\n";
-        let series = counted(&ran(totals, Some(0), false), &one).unwrap();
+        let nearly = totalled(&one, counts(1, 1, 100));
+        let series = counted(&ran(totals, Some(0), false), &nearly).unwrap();
         assert_eq!(series.get("src/a.rs#eq_op_invert"), Some(1));
     }
 
     #[test]
     fn a_failed_run_naming_no_survivor_measured_nothing() {
         assert_eq!(
-            counted(&ran("", Some(1), false), &none).unwrap_err(),
+            counted(&ran("", Some(1), false), &unevaluated).unwrap_err(),
             "mutest reported no mutation totals, so nothing was measured: it broke"
         );
     }
@@ -620,7 +722,7 @@ mod tests {
     fn a_run_whose_harness_would_not_compile_measured_nothing_though_it_exited_zero() {
         let mut out = ran("", Some(0), false);
         out.stderr = "error: extern location for mutest_runtime does not exist: /tool/target/release/libmutest_runtime.rlib\n".to_string();
-        let err = counted(&out, &none).unwrap_err();
+        let err = counted(&out, &unevaluated).unwrap_err();
         assert!(err.contains("reported no mutation totals"), "{err}");
         assert!(err.contains("libmutest_runtime.rlib"), "{err}");
     }
@@ -630,7 +732,11 @@ mod tests {
         let nothing =
             "mutations: 100%. 0 detected (0 timed out; 0 crashed); 0 undetected; 0 total\n";
         assert_eq!(
-            counted(&ran(nothing, Some(0), false), &none).unwrap(),
+            counted(
+                &ran(nothing, Some(0), false),
+                &totalled(&none, counts(0, 0, 0))
+            )
+            .unwrap(),
             Series::new()
         );
     }
@@ -675,13 +781,14 @@ mod tests {
     /// survivor, and the run measures clean.
     #[test]
     fn a_missed_mutation_exit_whose_misses_another_target_settles_measures_clean() {
-        let measured = unrecorded(&ran(TOTALS, Some(2), false), &none).unwrap();
+        let settled = totalled(&none, counts(1, 0, 10));
+        let measured = unrecorded(&ran(TOTALS, Some(2), false), &settled).unwrap();
         assert_eq!(measured.series, Series::new());
     }
 
     #[test]
     fn results_that_cannot_be_read_are_no_measurement() {
-        let unreadable = |_| Err("cannot read mutations.json".to_string());
+        let unreadable = || Err("cannot read mutations.json".to_string());
         let why = unrecorded(&ran(TOTALS, Some(2), false), &unreadable).unwrap_err();
         assert_eq!(why, "cannot read mutations.json");
     }
@@ -876,8 +983,8 @@ mod tests {
         let lead = Finding::at("", "detects no mutation in chock/lib")
             .item("tests::idle")
             .candidate();
-        let tested = |expected: u64| {
-            one(expected).map(|joined| Joined {
+        let tested = || {
+            one().map(|joined| Joined {
                 tests: vec![lead.clone()],
                 ..joined
             })
@@ -886,29 +993,24 @@ mod tests {
         assert_eq!(measured.findings.last(), Some(&lead));
     }
 
+    /// mutest's text interleaves its parallel targets, so the totals come from its results alone.
     #[test]
-    fn the_results_are_held_to_the_count_the_totals_gave() {
-        let asked = std::cell::Cell::new(None);
-        let results = |expected| {
-            asked.set(Some(expected));
-            one(expected)
-        };
-        unrecorded(&ran(TOTALS, Some(0), false), &results).unwrap();
-        assert_eq!(asked.get(), Some(1));
-        assert!(
-            unrecorded(
-                &ran(&format!("{TOTALS}mutations: incomplete\n"), Some(0), false),
-                &one
-            )
-            .is_err()
-        );
+    fn the_totals_are_those_of_the_results_and_not_of_the_text() {
+        let out = ran(TOTALS, Some(2), false);
+        let gave_up = unrecorded(&out, &totalled(&one, counts(1, 4, 10))).unwrap_err();
+        assert!(gave_up.contains("gave up on 4 of 10"), "{gave_up}");
+        let missed = unrecorded(&out, &totalled(&one, counts(0, 0, 10))).unwrap_err();
+        assert!(missed.contains("its totals count none"), "{missed}");
+        let unread = unrecorded(&out, &unevaluated).unwrap_err();
+        assert!(unread.contains("no mutation totals"), "{unread}");
     }
 
     #[test]
     fn quiet_survivors_are_accounted_for_before_operator_filtering() {
-        let quiet = |_| {
+        let quiet = || {
             Ok(Joined {
                 survivors: vec![survivor("call_delete")],
+                totals: counts(1, 0, 10),
                 ..Joined::default()
             })
         };
@@ -932,7 +1034,7 @@ mod tests {
 
     #[test]
     fn a_run_containing_only_ineligible_targets_is_not_a_zero_survivor_measurement() {
-        let why = unrecorded(&ran(SKIPPED, Some(0), false), &none).unwrap_err();
+        let why = unrecorded(&ran(SKIPPED, Some(0), false), &unevaluated).unwrap_err();
         assert!(
             why.contains("not applicable to linked-crate mutation"),
             "{why}"

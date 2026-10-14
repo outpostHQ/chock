@@ -3,6 +3,8 @@
 
 use std::path::Path;
 
+use crate::project::config::Secret;
+
 #[cfg(test)]
 use crate::exec;
 use crate::run::report::Finding;
@@ -24,12 +26,14 @@ const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const BUILD_DIR: &str = "target";
 
 fn check(ctx: &Ctx) -> Result<Outcome, String> {
+    let declared = declared(&ctx.secrets)?;
     let paths = crate::project::vcs::tracked(&ctx.root, ctx.vcs)?;
     let findings = faults_of(
         &paths,
         &|path| read_text(&ctx.root, path),
         &|path| ctx.root.join(path).exists(),
         ctx.vcs,
+        &declared,
     );
     if findings.is_empty() {
         Ok(Outcome::passed())
@@ -41,17 +45,24 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
 /// Every rule over a list of tracked paths, with file reading injected so tests need no repository.
 #[must_use]
 pub fn faults(paths: &[String], read: &dyn Fn(&str) -> Option<String>) -> Vec<Finding> {
-    faults_of(paths, read, &|_| true, Some(crate::project::vcs::Kind::Git))
+    faults_of(
+        paths,
+        read,
+        &|_| true,
+        Some(crate::project::vcs::Kind::Git),
+        &[],
+    )
 }
 
 /// `faults`, also told which paths are still on disk (a missing one is being removed) and which
 /// system holds the tree (so a fix names its command).
 #[must_use]
-pub fn faults_of(
+pub(crate) fn faults_of(
     paths: &[String],
     read: &dyn Fn(&str) -> Option<String>,
     present: &dyn Fn(&str) -> bool,
     held: Option<crate::project::vcs::Kind>,
+    declared: &[Credential<'_>],
 ) -> Vec<Finding> {
     let mut found = Vec::new();
     for path in paths {
@@ -60,7 +71,7 @@ pub fn faults_of(
             found.push(finding);
             continue;
         }
-        found.extend(credentials_in(path, read));
+        found.extend(credentials_in(path, read, declared));
     }
     found.extend(build_output(paths, present, held));
     found
@@ -125,16 +136,58 @@ fn file_name(path: &str) -> &str {
 
 /// One credential shape: a fixed prefix, a minimum run of admissible bytes after it, and a name.
 /// Entropy alone never matches.
-struct Credential {
-    name: &'static str,
-    prefix: &'static str,
+pub(crate) struct Credential<'a> {
+    name: &'a str,
+    prefix: &'a str,
     tail: usize,
     admits: fn(u8) -> bool,
 }
 
+/// The shortest prefix and tail a declared secret may have, so that it cannot match prose.
+const SHORTEST_PREFIX: usize = 3;
+const SHORTEST_TAIL: usize = 8;
+
+/// The shapes listed under `secrets`. Their tail admits letters, digits, `_` and `-`.
+pub(crate) fn declared(secrets: &[Secret]) -> Result<Vec<Credential<'_>>, String> {
+    secrets
+        .iter()
+        .map(|secret| {
+            let named = &secret.name;
+            if named.trim().is_empty() {
+                return Err(format!(
+                    "the `secrets` entry `{}` gives no `name`",
+                    secret.prefix
+                ));
+            }
+            if secret.prefix.chars().count() < SHORTEST_PREFIX || secret.tail < SHORTEST_TAIL {
+                return Err(format!(
+                    "the secret `{named}` needs a `prefix` of at least {SHORTEST_PREFIX} \
+                     characters and a `tail` of at least {SHORTEST_TAIL}, or it matches prose"
+                ));
+            }
+            Ok(Credential {
+                name: named,
+                prefix: &secret.prefix,
+                tail: secret.tail,
+                admits: |byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-',
+            })
+        })
+        .collect()
+}
+
+impl Credential<'_> {
+    pub(crate) fn name(&self) -> &str {
+        self.name
+    }
+
+    pub(crate) fn prefix(&self) -> &str {
+        self.prefix
+    }
+}
+
 /// Prefixes with a long fixed tail. `sk-` and the PEM header are left out: both match ordinary
 /// source too often.
-const CREDENTIALS: [Credential; 4] = [
+const CREDENTIALS: [Credential<'static>; 4] = [
     Credential {
         name: "AWS access key id",
         prefix: "AKIA",
@@ -161,21 +214,30 @@ const CREDENTIALS: [Credential; 4] = [
     },
 ];
 
-/// Credential literals in a configuration file. Source is skipped: a match there is rarely a leak,
-/// and this gate has no way to suppress one.
-fn credentials_in(path: &str, read: &dyn Fn(&str) -> Option<String>) -> Vec<Finding> {
+/// Credential literals: a known shape in a configuration file, a declared shape in any file. Test
+/// material and templates are skipped, as this gate has no way to suppress a match.
+fn credentials_in(
+    path: &str,
+    read: &dyn Fn(&str) -> Option<String>,
+    declared: &[Credential<'_>],
+) -> Vec<Finding> {
     let name = file_name(path);
     let extension = name.rsplit_once('.').map(|(_, extension)| extension);
     let configuration = extension.is_some_and(|extension| CONFIGURATION.contains(&extension));
-    if non_production(path) || is_template(name) || !configuration {
+    if non_production(path) || is_template(name) || !configuration && declared.is_empty() {
         return Vec::new();
     }
     let Some(text) = read(path) else {
         return Vec::new();
     };
+    let shape = |line: &str| {
+        let known: Option<&str> = credential_in(line).filter(|_| configuration);
+        let own = || declared.iter().find(|credential| holds(line, credential));
+        known.or_else(|| own().map(|credential| credential.name))
+    };
     text.lines()
         .enumerate()
-        .filter_map(|(index, line)| credential_in(line).map(|found| (index, found)))
+        .filter_map(|(index, line)| shape(line).map(|found| (index, found)))
         .map(|(index, found)| {
             Finding::at(path, "a credential literal: remove it and rotate the key")
                 .line(u32::try_from(index + 1).unwrap_or(u32::MAX))
@@ -207,7 +269,7 @@ fn credential_in(line: &str) -> Option<&'static str> {
 }
 
 /// Whether the line holds this credential: its prefix at a word boundary, with a long enough tail.
-fn holds(line: &str, credential: &Credential) -> bool {
+pub(crate) fn holds(line: &str, credential: &Credential) -> bool {
     let bytes = line.as_bytes();
     let mut from = 0;
     while let Some(offset) = line[from..].find(credential.prefix) {
@@ -542,6 +604,7 @@ mod tests {
             &|_| None,
             &|_| false,
             Some(crate::project::vcs::Kind::Git),
+            &[],
         );
         assert_eq!(gone, vec![]);
         let carried = faults_of(
@@ -549,6 +612,7 @@ mod tests {
             &|_| None,
             &|_| true,
             Some(crate::project::vcs::Kind::Git),
+            &[],
         );
         assert_eq!(
             rendered(&carried),
@@ -567,6 +631,7 @@ mod tests {
             &|_| None,
             &|_| true,
             Some(crate::project::vcs::Kind::Outpost),
+            &[],
         ));
         assert_eq!(
             said,
@@ -584,6 +649,7 @@ mod tests {
             &|_| None,
             &|_| true,
             Some(crate::project::vcs::Kind::Outpost),
+            &[],
         ));
         assert_eq!(
             said,
@@ -720,5 +786,55 @@ mod tests {
             matches!(GATE.kind, Kind::Binary(_)),
             "hygiene reports a verdict, not a number"
         );
+    }
+
+    fn secret(name: &str, prefix: &str, tail: usize) -> Secret {
+        Secret {
+            name: name.to_string(),
+            prefix: prefix.to_string(),
+            tail,
+        }
+    }
+
+    /// A declared shape is read in source too, past a word boundary and with its whole tail.
+    #[test]
+    fn a_declared_secret_is_found_in_any_tracked_file_but_test_material_and_templates() {
+        let secrets = [secret("Acme API key", "acme_", 12)];
+        let declared = declared(&secrets).unwrap();
+        let text = "let k = \"acme_ABCdef-123_xyz\";\nxacme_ABCdef123456 and acme_abc\n";
+        let paths = tracked_paths(&["src/main.rs", "tests/a.rs", "conf.example.toml"]);
+        let git = Some(crate::project::vcs::Kind::Git);
+        let said = rendered(&faults_of(&paths, &reads(text), &|_| true, git, &declared));
+        assert_eq!(
+            said,
+            ["src/main.rs:1: Acme API key: a credential literal: remove it and rotate the key"]
+        );
+        assert_eq!(
+            (declared[0].name(), declared[0].prefix()),
+            ("Acme API key", "acme_")
+        );
+        assert!(faults_of(&paths, &reads(text), &|_| true, git, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_declared_secret_too_short_to_tell_from_prose_is_refused() {
+        let weak = "needs a `prefix` of at least 3 characters and a `tail` of at least 8, or it \
+                    matches prose";
+        assert_eq!(
+            declared(&[secret("k", "ac", 12)]).err(),
+            Some(format!("the secret `k` {weak}"))
+        );
+        assert_eq!(
+            declared(&[secret("k", "acme", 7)]).err(),
+            Some(format!("the secret `k` {weak}"))
+        );
+        assert_eq!(
+            declared(&[secret(" ", "acme", 8)]).err(),
+            Some("the `secrets` entry `acme` gives no `name`".to_string())
+        );
+        let short = [secret("k", "acm", 8)];
+        let shortest = declared(&short).unwrap();
+        let named: Vec<(&str, &str)> = shortest.iter().map(|c| (c.name(), c.prefix())).collect();
+        assert_eq!(named, [("k", "acm")]);
     }
 }

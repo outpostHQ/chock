@@ -32,7 +32,33 @@ pub const GATE: Gate = Gate {
 fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let path = ensure(ctx)?;
     let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {FILE}: {e}"))?;
-    uncovered(&text, &ctx.root).map(|read| read.held_to(&ctx.named_against(GATE.name)))
+    let read = uncovered(&text, &ctx.root)?;
+    let listed = listed(&ctx.root, &read.lines);
+    let mut measured = read.held_to(&ctx.named_against(GATE.name));
+    if let Some(listed) = listed {
+        for finding in &mut measured.findings {
+            finding.message = format!("{} (every file's lines: {listed})", finding.message);
+        }
+    }
+    Ok(measured)
+}
+
+/// Where a run leaves the unrun lines of every file, so that two machines' lists can be compared.
+const LISTED: &str = "target/test-scratch/chock/coverage.txt";
+
+/// Writes `file: line(s) ...` for each file with an unrun line to `LISTED`, and gives its path;
+/// `None` when the file cannot be written.
+fn listed(root: &Path, lines: &BTreeMap<String, Vec<u32>>) -> Option<&'static str> {
+    let each = lines
+        .iter()
+        .filter(|(_, lines)| !lines.is_empty())
+        .map(|(file, lines)| format!("{file}: {}\n", runs(lines)));
+    let text: String = each.collect();
+    let path = root.join(LISTED);
+    let dir = path.parent()?;
+    std::fs::create_dir_all(dir).ok()?;
+    crate::project::document::write(&path, &text).ok()?;
+    Some(LISTED)
 }
 
 /// The LCOV report for this run, produced once and shared by every gate that reads it, failure
@@ -365,6 +391,22 @@ mod tests {
         assert_eq!(said, ["src/a.rs:2: no test ran line(s) 2-3, 7"]);
     }
 
+    /// Every file's unrun lines go to one file, so the list of a CI runner can be compared with
+    /// the list of another machine; a file with no unrun line is left out.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_run_lists_the_unrun_lines_of_every_file() {
+        let root = crate::testdir::make("coverage-listed");
+        let mut lines = uncovered(DETAILED, Path::new("/w")).unwrap().lines;
+        lines.insert("src/c.rs".to_string(), Vec::new());
+        assert_eq!(listed(&root, &lines), Some(LISTED));
+        let text = std::fs::read_to_string(root.join(LISTED)).unwrap();
+        assert_eq!(text, "src/a.rs: line(s) 2-3, 7\nsrc/b.rs: line(s) 4\n");
+        let blocked = crate::testdir::make("coverage-listed-blocked");
+        std::fs::write(blocked.join("target"), "a file, not a directory").unwrap();
+        assert_eq!(listed(&blocked, &lines), None);
+    }
+
     #[test]
     fn a_file_the_record_does_not_hold_names_every_line_no_test_ran() {
         let read = uncovered(DETAILED, Path::new("/w")).unwrap();
@@ -491,7 +533,11 @@ mod tests {
         writer(&mut dir, WRITE);
         let named = measure(&dir).unwrap().findings;
         let said: Vec<String> = named.iter().map(Finding::render).collect();
-        assert_eq!(said, ["src/lib.rs:1: no test ran line(s) 1"]);
+        let listed = "every file's lines: target/test-scratch/chock/coverage.txt";
+        assert_eq!(
+            said,
+            [format!("src/lib.rs:1: no test ran line(s) 1 ({listed})")]
+        );
         let mut was = Series::new();
         was.set("src/lib.rs", 1);
         dir.baseline.record(GATE.name, "uncovered line(s)", was);

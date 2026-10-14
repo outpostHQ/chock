@@ -70,6 +70,7 @@ pub fn dispatch(args: &[&str]) -> ExitCode {
             no_cache,
             miri_part,
             skip,
+            scope,
         } => {
             let how = How {
                 json,
@@ -78,6 +79,7 @@ pub fn dispatch(args: &[&str]) -> ExitCode {
                 commits: false,
                 miri_part,
                 skip: &skip,
+                scope: Some(&scope),
             };
             ExitCode::from(run_gates_code(&names, tier_for(fast, ci), how))
         }
@@ -333,6 +335,8 @@ struct How<'a> {
     miri_part: Option<crate::gates::tools::miri::Part>,
     /// Gates left out, though the tier and the config would run them.
     skip: &'a [&'a str],
+    /// The part of the suite the `test` gate runs; `None` is all of it.
+    scope: Option<&'a crate::run::Scope>,
 }
 
 fn run_gates_code(names: &[&str], tier: Tier, how: How<'_>) -> u8 {
@@ -341,6 +345,7 @@ fn run_gates_code(names: &[&str], tier: Tier, how: How<'_>) -> u8 {
             Ctx {
                 no_cache: how.no_cache,
                 miri_part: how.miri_part,
+                scope: how.scope.cloned().unwrap_or_default(),
                 ..ctx
             },
             config,
@@ -797,14 +802,23 @@ fn record_baseline(asked: &[&str]) -> ExitCode {
         Ok(held) => held,
         Err(e) => return cannot_run(&e),
     };
-    let (asked, chosen) = match keys::chosen(asked, config.as_ref()) {
-        Ok(chosen) => chosen,
-        Err(e) => return cannot_run(&e),
-    };
     let mut recorded = ctx.baseline.clone();
-    let failed = match keys::written(&asked, &chosen, &ctx, &mut recorded) {
-        Ok(failed) => failed,
-        Err(code) => return code,
+    let failed = match keys::moves(asked) {
+        // A moved file takes its keys and measures nothing, so no total goes up.
+        Some(moves) => {
+            let config = config.as_ref();
+            match moves.and_then(|moves| keys::moved(&moves, &ctx, config, &mut recorded)) {
+                Ok(()) => Vec::new(),
+                Err(e) => return cannot_run(&e),
+            }
+        }
+        None => match keys::chosen(asked, config.as_ref()) {
+            Ok((asked, chosen)) => match keys::written(&asked, &chosen, &ctx, &mut recorded) {
+                Ok(failed) => failed,
+                Err(code) => return code,
+            },
+            Err(e) => return cannot_run(&e),
+        },
     };
     recorded.chock = VERSION.to_string();
     let dir = ctx.root.join(".chock");

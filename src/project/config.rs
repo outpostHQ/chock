@@ -82,6 +82,9 @@ pub struct Config {
     /// Flags mutest takes after chock's own, such as `--timings`; the results directory then stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mutest_args: Option<Vec<String>>,
+    /// The most Kani harnesses `proof` verifies at once; each solver can hold several GB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof_jobs: Option<u32>,
     /// Checks whose tool CI cannot install: the hooks still run them, `chock run --ci` does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_only: Option<Vec<String>>,
@@ -103,6 +106,18 @@ pub struct Config {
     /// Settings of the `history` gate: the leaks it no longer reports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<History>,
+    /// Paths and crates only some files or packages may use, which the `seams` gate holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seams: Option<Vec<Seam>>,
+    /// Calls whose first argument one file reads, which the `owners` gate holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owners: Option<Vec<Owner>>,
+    /// Calls that need another call in the same function, which the `calls` gate holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calls: Option<Vec<Paired>>,
+    /// The project's own credential shapes, which `hygiene` and `history` find with their own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<Vec<Secret>>,
 }
 
 /// One declared check. A pass/fail command fails its gate by exiting non-zero; a counting one
@@ -134,6 +149,56 @@ pub struct Forbidden {
     /// Paths from the project root where the phrase is allowed; `*` is one segment, `**` any number.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub except: Vec<String>,
+    /// Paths from the project root where the phrase is refused; none is every path.
+    #[serde(default, rename = "in", skip_serializing_if = "Vec::is_empty")]
+    pub within: Vec<String>,
+}
+
+/// A Rust path, or a crate, that only the files or packages under `only` may use.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Seam {
+    /// A path such as `iroh` or `std::process::Command`; a use of it or of a path under it counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// A crate no package outside `only` may hold in its normal dependency tree.
+    #[serde(default, rename = "crate", skip_serializing_if = "Option::is_none")]
+    pub krate: Option<String>,
+    /// Files from the root for a path, with `*` and `**`; package names for a crate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub only: Vec<String>,
+    pub why: String,
+}
+
+/// A call whose first argument names a value, such as an environment variable, that one file reads.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Owner {
+    /// The full path of the function, such as `std::env::var`.
+    pub call: String,
+    pub why: String,
+}
+
+/// A call that needs another in the same function: earlier there with `after`, anywhere with `with`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Paired {
+    pub call: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub with: Option<String>,
+    pub why: String,
+}
+
+/// A credential shape of the project's own: a fixed prefix, then at least `tail` letters, digits,
+/// `_` or `-`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Secret {
+    pub name: String,
+    pub prefix: String,
+    pub tail: usize,
 }
 
 /// A file `mutest` does not mutate, such as generated code, and why.
@@ -267,6 +332,7 @@ impl Config {
             test_wrapper: None,
             mutest_exhaustive: None,
             mutest_args: None,
+            proof_jobs: None,
             local_only: None,
             strict: None,
             clean_when_touched: None,
@@ -274,6 +340,10 @@ impl Config {
             forbidden: None,
             not_mutated: None,
             history: None,
+            seams: None,
+            owners: None,
+            calls: None,
+            secrets: None,
         }
     }
 

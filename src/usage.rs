@@ -21,6 +21,8 @@ Every day
   chock run --no-cache            judge every gate again; no kept verdict answers
   chock run --miri-partition=K/N  run only part K of N of the Miri suite
   chock run --skip=GATE,...       run every gate but the ones named; CI runs those in other jobs
+  chock run test --package=NAME   run the suite of one package only
+  chock run test --filter=TEXT    run only the tests whose name holds TEXT
   chock cache clear               remove every kept verdict, so the next run judges every gate
   chock explain GATE              the findings of the last run, without a new run
   chock explain                   all the debt in the record, largest first, with the fix for each
@@ -33,6 +35,7 @@ Choose the gates
   chock survey                    what every gate measures here; it changes no config and no record
   chock baseline --lower GATE...  record a gain on a gate that measures differently by machine
   chock baseline GATE --keys KEY  write only these keys, such as a moved file's; none goes up
+  chock baseline --moved OLD=NEW  give a renamed file the keys of its old path; none goes up
 
 Called by the hooks
   chock message FILE              check one commit message

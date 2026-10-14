@@ -83,17 +83,23 @@ fn mentions(line: &str, phrase: &str, word: bool) -> bool {
     })
 }
 
-/// The entries that apply at a path from the project root, without those whose `except` names it.
+/// The entries that apply at a path from the project root: those whose `in` names it, or that have
+/// none, less those whose `except` names it.
 #[must_use]
 pub fn applying(forbidden: &[Forbidden], path: &str) -> Vec<Forbidden> {
     forbidden
         .iter()
-        .filter(|phrase| !phrase.except.iter().any(|allowed| globbed(allowed, path)))
+        .filter(|phrase| {
+            (phrase.within.is_empty() || phrase.within.iter().any(|scope| globbed(scope, path)))
+                && !phrase.except.iter().any(|allowed| globbed(allowed, path))
+        })
         .cloned()
         .collect()
 }
 
-fn globbed(pattern: &str, path: &str) -> bool {
+/// Whether a path from the project root matches a pattern: `*` within a segment, `**` any number.
+#[must_use]
+pub fn globbed(pattern: &str, path: &str) -> bool {
     let parts = |text: &str| -> Vec<String> {
         text.split('/')
             .filter(|part| !part.is_empty())
@@ -214,6 +220,19 @@ mod tests {
             [refused("§", "cite the file")]
         );
         assert_eq!(applying(&listed, "src/lib.rs"), listed);
+    }
+
+    #[test]
+    fn a_phrase_with_an_in_scope_is_refused_only_there_and_except_still_wins() {
+        let scoped = Forbidden {
+            within: vec!["crates/core/**".to_string()],
+            except: vec!["crates/core/src/vcs/**".to_string()],
+            ..refused("tokio", "the core stays runtime-free")
+        };
+        let listed = [scoped.clone()];
+        assert_eq!(applying(&listed, "crates/core/src/lib.rs"), [scoped]);
+        assert_eq!(applying(&listed, "crates/cli/src/main.rs"), []);
+        assert_eq!(applying(&listed, "crates/core/src/vcs/git.rs"), []);
     }
 
     fn debt_in(dir: &std::path::Path) -> Vec<String> {

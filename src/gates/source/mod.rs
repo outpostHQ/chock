@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use proc_macro2::LineColumn;
 use syn::punctuated::Punctuated;
 use syn::visit::Visit;
-use syn::{AttrStyle, Attribute, Expr, ExprLit, Lit, Meta, Token, UseTree};
+use syn::{AttrStyle, Attribute, Expr, ExprLit, Lit, Meta, Token};
 
 use crate::project;
 use crate::run::baseline::{Keys, Series};
@@ -729,9 +729,15 @@ struct Imports {
 
 impl Imports {
     fn of(file: &syn::File) -> Self {
-        let mut found = Self::default();
-        found.visit_file(file);
-        found
+        let leaves = crate::gates::rules::used(file);
+        let glob = leaves.iter().any(|leaf| leaf.glob);
+        let bound = leaves
+            .into_iter()
+            .filter_map(|leaf| Some((leaf.called?, leaf.path)));
+        Self {
+            bound: bound.collect(),
+            glob,
+        }
     }
 
     /// The full path a written path names. An unbound head is taken as a crate name, unless a glob
@@ -746,36 +752,6 @@ impl Imports {
             None if self.glob => None,
             None => Some(written.to_vec()),
         }
-    }
-
-    fn bind(&mut self, tree: &UseTree, prefix: &mut Vec<String>) {
-        match tree {
-            UseTree::Path(path) => {
-                prefix.push(path.ident.to_string());
-                self.bind(&path.tree, prefix);
-                prefix.pop();
-            }
-            UseTree::Name(name) => self.name(&name.ident, &name.ident, prefix),
-            UseTree::Rename(rename) => self.name(&rename.ident, &rename.rename, prefix),
-            UseTree::Glob(_) => self.glob = true,
-            UseTree::Group(group) => {
-                for item in &group.items {
-                    self.bind(item, prefix);
-                }
-            }
-        }
-    }
-
-    fn name(&mut self, ident: &syn::Ident, under: &syn::Ident, prefix: &[String]) {
-        let mut full = prefix.to_vec();
-        full.push(ident.to_string());
-        self.bound.insert(under.to_string(), full);
-    }
-}
-
-impl<'ast> Visit<'ast> for Imports {
-    fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
-        self.bind(&node.tree, &mut Vec::new());
     }
 }
 

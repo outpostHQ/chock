@@ -488,6 +488,38 @@ pub fn message_being_composed(root: &Path) -> Option<std::path::PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// The index git builds the commit in progress from, as it hands it to a hook. `git commit -a` and
+/// a commit of named paths keep it apart from `.git/index`, so a file chock adds must go there.
+#[must_use]
+pub fn commit_index(root: &Path) -> Option<std::path::PathBuf> {
+    commit_index_at(root, std::env::var_os("GIT_INDEX_FILE")?.as_ref())
+}
+
+/// `hook`, read from the top of the work tree as git writes it, where it lies in this repository's
+/// git directory; an index of another repository, such as one a test made, is never used.
+pub(crate) fn commit_index_at(root: &Path, hook: &Path) -> Option<std::path::PathBuf> {
+    let asked = ["rev-parse", "--show-toplevel", "--absolute-git-dir"];
+    let out = exec::run("git", &asked, root)
+        .ok()
+        .filter(exec::Output::success)?;
+    let mut lines = out.stdout.lines();
+    let index = Path::new(lines.next()?).join(hook);
+    let git_dir = std::fs::canonicalize(lines.next()?).ok()?;
+    let held = std::fs::canonicalize(index.parent()?).ok()?;
+    held.starts_with(git_dir).then_some(index)
+}
+
+/// Runs git on `index` where one is given, as a commit's hook must to stage a file.
+#[must_use]
+pub fn git_on(root: &Path, index: Option<&Path>, args: &[&str]) -> bool {
+    let named = index.map(|index| index.to_string_lossy().into_owned());
+    let env: Vec<(&str, &str)> = named
+        .iter()
+        .map(|path| ("GIT_INDEX_FILE", path.as_str()))
+        .collect();
+    exec::run_env("git", args, root, &env).is_ok_and(|out| out.success())
+}
+
 /// Commits not yet on the remote, as (id, message): only those can still be rewritten.
 pub fn unpushed(root: &Path, held: Option<Kind>) -> Result<Vec<(String, String)>, String> {
     match held {
@@ -531,6 +563,16 @@ pub fn dirty(root: &Path, held: Option<Kind>) -> Result<Vec<String>, String> {
         .into_iter()
         .filter(|path| holds.contains(path))
         .collect())
+}
+
+/// The files under the root that the repository neither holds nor ignores. Outpost keeps no such
+/// list chock reads, so a tree it holds alone names none.
+pub fn untracked(root: &Path, held: Option<Kind>) -> Result<Vec<String>, String> {
+    match held {
+        None => Err(NO_REPOSITORY.to_string()),
+        Some(Kind::Git) => git_untracked(root),
+        Some(Kind::Outpost) => Ok(Vec::new()),
+    }
 }
 
 /// What the local tree changed since its fork, with each file that git does not track yet.
@@ -836,6 +878,12 @@ mod tests {
             ["src/a.rs", "src/c.rs"]
         );
         assert_eq!(dirty(&root, None).unwrap_err(), NO_REPOSITORY);
+        assert_eq!(untracked(&root, Some(Kind::Git)).unwrap(), ["src/new.rs"]);
+        assert_eq!(
+            untracked(&root, Some(Kind::Outpost)).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(untracked(&root, None).unwrap_err(), NO_REPOSITORY);
         // Outpost may be absent on this machine; asking it answers either way, and never panics.
         let _ = dirty(&root, Some(Kind::Outpost));
     }
@@ -1991,5 +2039,28 @@ mod tests {
         assert_eq!(join("src", ""), "src");
         assert_eq!(join("src", "lib.rs"), "src/lib.rs");
         assert_eq!(join("", ""), "");
+    }
+
+    /// git names a commit's index from the top of the work tree; an index outside this
+    /// repository's git directory gives none.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_commit_index_is_one_in_this_repository_s_git_directory() {
+        let root = crate::testdir::repo("vcs-commit-index", &[("src/a.rs", "")]);
+        let other = crate::testdir::repo("vcs-commit-index-other", &[("src/a.rs", "")]);
+        let held = commit_index_at(&root.join("src"), Path::new(".git/index")).unwrap();
+        let real = |path: &Path| std::fs::canonicalize(path).unwrap();
+        assert_eq!(real(&held), real(&root.join(".git/index")));
+        let absolute = root.join(".git/index.lock");
+        assert_eq!(commit_index_at(&root, &absolute), Some(absolute));
+        assert_eq!(commit_index_at(&root, &other.join(".git/index")), None);
+        assert_eq!(commit_index_at(&root, Path::new("src/index")), None);
+        assert_eq!(commit_index_at(&root, Path::new("index")), None);
+        let named = ["ls-files", "--error-unmatch", "src/a.rs"];
+        assert!(git_on(&root, None, &named));
+        assert!(
+            !git_on(&root, Some(&root.join(".git/empty")), &named),
+            "an empty index"
+        );
     }
 }

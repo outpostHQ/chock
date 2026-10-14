@@ -479,6 +479,36 @@ mod tests {
                 why: "describe the behaviour instead".to_string(),
                 word: true,
                 except: vec!["**/vcs/**".to_string()],
+                within: vec!["crates/**".to_string()],
+            }]),
+            seams: Some(vec![
+                crate::project::config::Seam {
+                    path: Some("iroh".to_string()),
+                    only: vec!["src/net/**".to_string()],
+                    why: "one module talks to the network".to_string(),
+                    ..crate::project::config::Seam::default()
+                },
+                crate::project::config::Seam {
+                    krate: Some("aws-sdk-s3".to_string()),
+                    only: vec!["store".to_string()],
+                    why: "one package holds the cloud client".to_string(),
+                    ..crate::project::config::Seam::default()
+                },
+            ]),
+            owners: Some(vec![crate::project::config::Owner {
+                call: "std::env::var".to_string(),
+                why: "one file reads each variable".to_string(),
+            }]),
+            calls: Some(vec![crate::project::config::Paired {
+                call: "delete".to_string(),
+                after: Some("authorize".to_string()),
+                with: Some("audit".to_string()),
+                why: "a delete is authorized and audited".to_string(),
+            }]),
+            secrets: Some(vec![crate::project::config::Secret {
+                name: "service token".to_string(),
+                prefix: "svc_".to_string(),
+                tail: 32,
             }]),
             history: Some(crate::project::config::History {
                 accepted: vec![crate::project::config::Accepted {

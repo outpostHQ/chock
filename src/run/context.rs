@@ -47,6 +47,14 @@ pub struct Ctx {
     pub not_mutated: Vec<crate::project::config::Unmutated>,
     /// Leaks the project reviewed and accepted, which `history` does not report.
     pub accepted: Vec<crate::project::config::Accepted>,
+    /// Paths and crates only some files or packages may use.
+    pub seams: Vec<crate::project::config::Seam>,
+    /// Calls whose first argument one file reads.
+    pub owners: Vec<crate::project::config::Owner>,
+    /// Calls that need another call in the same function.
+    pub calls: Vec<crate::project::config::Paired>,
+    /// The project's own credential shapes.
+    pub secrets: Vec<crate::project::config::Secret>,
     /// Ratchets held to zero rather than to their record.
     pub strict: Vec<String>,
     /// Ratchets held to zero in each file the change touched.
@@ -61,12 +69,16 @@ pub struct Ctx {
     pub no_cache: bool,
     /// The part of the Miri suite this run takes, from `--miri-partition`; `None` is all of it.
     pub miri_part: Option<crate::gates::tools::miri::Part>,
+    /// The part of the suite the `test` gate runs, from `--package` and `--filter`.
+    pub scope: Scope,
     /// The command the suite runs under, from `test_wrapper`; empty runs it directly.
     pub test_wrapper: Vec<String>,
     /// Flags mutest takes after chock's own, from `mutest_args`.
     pub mutest_args: Vec<String>,
     /// Whether a whole-crate mutest run gives every test a verdict, from `mutest_exhaustive`.
     pub exhaustive: bool,
+    /// The most Kani harnesses `proof` verifies at once, from `proof_jobs`.
+    pub proof_jobs: Option<u32>,
 }
 
 impl Ctx {
@@ -94,6 +106,10 @@ impl Ctx {
             forbidden: Vec::new(),
             not_mutated: Vec::new(),
             accepted: Vec::new(),
+            seams: Vec::new(),
+            owners: Vec::new(),
+            calls: Vec::new(),
+            secrets: Vec::new(),
             strict: Vec::new(),
             clean_when_touched: Vec::new(),
             changed: std::sync::Arc::default(),
@@ -101,9 +117,11 @@ impl Ctx {
             whole: false,
             no_cache: false,
             miri_part: None,
+            scope: Scope::default(),
             test_wrapper: Vec::new(),
             mutest_args: Vec::new(),
             exhaustive: false,
+            proof_jobs: None,
         }
     }
 
@@ -136,6 +154,14 @@ impl Ctx {
                 .and_then(|set| set.history.clone())
                 .unwrap_or_default()
                 .accepted,
+            seams: config.and_then(|set| set.seams.clone()).unwrap_or_default(),
+            owners: config
+                .and_then(|set| set.owners.clone())
+                .unwrap_or_default(),
+            calls: config.and_then(|set| set.calls.clone()).unwrap_or_default(),
+            secrets: config
+                .and_then(|set| set.secrets.clone())
+                .unwrap_or_default(),
             strict: config
                 .and_then(|set| set.strict.clone())
                 .unwrap_or_default(),
@@ -149,6 +175,7 @@ impl Ctx {
                 .and_then(|set| set.mutest_args.clone())
                 .unwrap_or_default(),
             exhaustive: config.and_then(|set| set.mutest_exhaustive) == Some(true),
+            proof_jobs: config.and_then(|set| set.proof_jobs),
             ..Self::for_root(PathBuf::new(), Baseline::default())
         }
     }
@@ -343,6 +370,26 @@ pub fn coverage_for(config: Option<&crate::project::config::Config>) -> Coverage
     }
     coverage.argv = under_wrapper(config, coverage.argv);
     coverage
+}
+
+/// The part of the suite `--package=NAME` and `--filter=TEXT` narrow the `test` gate to; the
+/// default is all of it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Scope {
+    pub package: Option<String>,
+    pub filter: Option<String>,
+}
+
+impl Scope {
+    /// The part, as a verdict key names it; `None` for the whole suite.
+    #[must_use]
+    pub fn named(&self) -> Option<String> {
+        let parts: Vec<String> = [("package", &self.package), ("filter", &self.filter)]
+            .into_iter()
+            .filter_map(|(name, value)| value.as_ref().map(|value| format!("{name}={value}")))
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(":"))
+    }
 }
 
 /// What runs the suite, and the commands it calls that chock cannot see. A script is in the tree;

@@ -111,24 +111,33 @@ pub fn relaid(root: &Path, committing: bool) -> Vec<String> {
         true => &["linux", "macos", "windows"],
         false => &[],
     };
+    let index = crate::project::vcs::commit_index(root);
     systems
         .iter()
-        .filter_map(|system| relay(root, &kept_on(system)))
+        .filter_map(|system| relay(root, &kept_on(system), index.as_deref()))
         .collect()
 }
 
-/// `relaid` for one record, or `None` where it is compact, untracked, unstaged or unreadable.
-fn relay(root: &Path, name: &str) -> Option<String> {
+/// `relaid` for one record on the commit's index, or `None` where it is compact, untracked,
+/// unstaged or unreadable. A record git does not take back is left in its old layout.
+fn relay(root: &Path, name: &str, index: Option<&Path>) -> Option<String> {
     let held = std::fs::read_to_string(root.join(name)).ok()?;
     let compact = compacted(&held).ok()?;
-    let git = |args: &[&str]| exec::run("git", args, root).is_ok_and(|out| out.success());
+    let git = |args: &[&str]| crate::project::vcs::git_on(root, index, args);
     let tracked = git(&["ls-files", "--error-unmatch", "--", name]);
     if compact == held || !tracked || !git(&["diff", "--quiet", "--", name]) {
         return None;
     }
     crate::project::document::write(&root.join(name), &compact).ok()?;
-    let said = "again in the compact layout, with the same scores; it is in this commit";
-    git(&["add", "--", name]).then(|| format!("wrote {name} {said}"))
+    if git(&["add", "--", name]) {
+        let said = "again in the compact layout, with the same scores; it is in this commit";
+        return Some(format!("wrote {name} {said}"));
+    }
+    let kept = match crate::project::document::write(&root.join(name), &held) {
+        Ok(()) => "it keeps the old layout",
+        Err(_) => "commit it with the next change",
+    };
+    Some(format!("could not add {name} to this commit, so {kept}"))
 }
 
 /// `compact` over a report that is still text.
@@ -1187,6 +1196,42 @@ mod tests {
         assert_eq!(relaid(&root, true), Vec::<String>::new());
         assert_eq!(std::fs::read_to_string(root.join(&name)).unwrap(), edited);
         std::fs::write(root.join("untracked.json"), old).unwrap();
-        assert_eq!(relay(&root, "untracked.json"), None);
+        assert_eq!(relay(&root, "untracked.json", None), None);
+    }
+
+    /// `git commit -a` builds the commit in its own index, so the record goes there; where git
+    /// holds the index and takes nothing, the record keeps its old layout and the run says so.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_record_goes_into_the_index_the_commit_is_built_from() {
+        let name = kept_on("linux");
+        let old = "{\n  \"entries\": [\n    {\n      \"crap\": 2.0\n    }\n  ]\n}\n";
+        let root = crate::testdir::repo("crap-relaid-index", &[(name.as_str(), old)]);
+        let lock = root.join(".git/index.lock");
+        std::fs::copy(root.join(".git/index"), &lock).unwrap();
+        let said = format!("could not add {name} to this commit, so it keeps the old layout");
+        assert_eq!(relay(&root, &name, None), Some(said));
+        assert_eq!(std::fs::read_to_string(root.join(&name)).unwrap(), old);
+        let index = crate::project::vcs::commit_index_at(&root, Path::new(".git/index.lock"));
+        assert!(
+            index.is_some(),
+            "the lock lies in this repository's git directory"
+        );
+        let staged = format!(
+            "wrote {name} again in the compact layout, with the same scores; it is in this commit"
+        );
+        assert_eq!(relay(&root, &name, index.as_deref()), Some(staged));
+        let env = [("GIT_INDEX_FILE", ".git/index.lock")];
+        let cached = ["diff", "--cached", "--name-only"];
+        let in_lock = crate::exec::run_env("git", &cached, &root, &env)
+            .unwrap()
+            .stdout;
+        assert_eq!(in_lock, format!("{name}\n"));
+        std::fs::remove_file(&lock).unwrap();
+        let in_index = crate::exec::run("git", &cached, &root).unwrap().stdout;
+        assert_eq!(
+            in_index, "",
+            "the index git keeps apart from the commit stays as it was"
+        );
     }
 }

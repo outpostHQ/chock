@@ -384,6 +384,21 @@ pub struct Settled {
     pub waiting: Vec<String>,
     /// Each lowered or waiting record's total before and after, by the name it is said under.
     pub moved: BTreeMap<String, (u64, u64)>,
+    /// Each key of a waiting record the next commit lowers or drops, as `gate key 9 to 4`.
+    pub next: Vec<String>,
+}
+
+/// The keys the next commit lowers or drops, named in full up to this many.
+const NEXT_NAMED: usize = 10;
+
+/// Each key of `gate` that `now` holds lower than `was`, or not at all.
+fn lowering(gate: &str, was: &Series, now: &Series) -> Vec<String> {
+    let lower = |(key, was): (&String, &u64)| match now.get(key) {
+        Some(now) if now < *was => Some(format!("{gate} {key} {was} to {now}")),
+        Some(_) => None,
+        None => Some(format!("{gate} {key} {was} to none")),
+    };
+    was.0.iter().filter_map(lower).collect()
 }
 
 impl Settled {
@@ -394,6 +409,7 @@ impl Settled {
             lowered: Vec::new(),
             waiting: Vec::new(),
             moved: BTreeMap::new(),
+            next: Vec::new(),
         }
     }
 
@@ -406,6 +422,8 @@ impl Settled {
         // Work in progress can lose an item and get it back, so only a commit moves a record down.
         if held.has(&report.gate) && !committing {
             self.waiting.push(report.gate.clone());
+            let was = held.gate(&report.gate);
+            self.next.extend(lowering(&report.gate, &was, series));
             return;
         }
         self.record.set(&report.gate, series.clone());
@@ -433,8 +451,8 @@ impl Settled {
         // The file names the chock that wrote it, as `chock baseline` leaves it.
         self.record.chock = chock_version.to_string();
         let file = crate::run::baseline::FILE;
-        let git =
-            |args: &[&str]| crate::exec::run("git", args, root).is_ok_and(|out| out.success());
+        let index = crate::project::vcs::commit_index(root);
+        let git = |args: &[&str]| crate::project::vcs::git_on(root, index.as_deref(), args);
         let stages = committing && git(&["diff", "--quiet", "--", file]);
         let rendered = crate::project::document::render(&self.record);
         match crate::project::document::write(&root.join(file), &rendered) {
@@ -461,8 +479,16 @@ impl Settled {
             };
             gates.iter().map(moved).collect()
         };
+        let next = match self.next.len().saturating_sub(NEXT_NAMED) {
+            0 => self.next.join(", "),
+            more => format!("{} and {more} more", self.next[..NEXT_NAMED].join(", ")),
+        };
+        let next = match next.is_empty() {
+            true => next,
+            false => format!(": {next}"),
+        };
         let waiting = part("measured less for", &by(&self.waiting)).map(|said| {
-            format!("{said}, and the pre-commit hook lowers the record at the next commit")
+            format!("{said}, and the pre-commit hook lowers the record at the next commit{next}")
         });
         [
             part("wrote the first record for", &self.first),
@@ -1607,7 +1633,7 @@ mod tests {
         assert_eq!(
             working.said(),
             "wrote the first record for typos, nesting; measured less for slop (9 to 4), and the \
-             pre-commit hook lowers the record at the next commit"
+             pre-commit hook lowers the record at the next commit: slop src/a.rs 9 to 4"
         );
         assert_eq!(working.record.gate("slop").get("src/a.rs"), Some(9));
         let settled = locked_in(&held, &reports, true).unwrap();
@@ -1624,6 +1650,36 @@ mod tests {
         );
         assert_eq!(settled.record.gate("slop").get("src/a.rs"), Some(4));
         assert_eq!(settled.record.gate("nesting").get("src/a.rs"), Some(4));
+    }
+
+    /// Outside a commit the run names each key the next commit lowers or drops, ten in full.
+    #[test]
+    fn a_run_names_the_keys_the_next_commit_lowers_or_drops() {
+        let mut was = Series::new();
+        let mut now = Series::new();
+        for at in 0..12 {
+            was.set(&format!("src/{at:02}.rs"), 9);
+            now.set(&format!("src/{at:02}.rs"), if at == 1 { 9 } else { 4 });
+        }
+        was.set("src/gone.rs", 2);
+        let lowered = lowering("slop", &was, &now);
+        let fell = (0..12).filter(|at| *at != 1);
+        let mut expected: Vec<String> = fell
+            .map(|at| format!("slop src/{at:02}.rs 9 to 4"))
+            .collect();
+        expected.push("slop src/gone.rs 2 to none".to_string());
+        assert_eq!(lowered, expected);
+        let mut held = Baseline::empty("0.1.0");
+        held.set("slop", was);
+        let mut report = GateReport::new("slop", Verdict::Pass, "chock run");
+        report.tightened = Some(now);
+        let working = locked_in(&held, &[report], false).unwrap();
+        let said = working.said();
+        assert!(said.ends_with("src/10.rs 9 to 4 and 2 more"), "{said}");
+        assert!(
+            said.contains(": slop src/00.rs 9 to 4, slop src/02.rs 9 to 4"),
+            "{said}"
+        );
     }
 
     /// At a commit the record goes into the commit, unless the file held a change nobody staged.
