@@ -1,5 +1,5 @@
-//! Every line of every file the repository tracks, blank ones included, as `wc -l` counts them.
-//! A leaner tree holds this total down; chock's own records under `.chock` do not count.
+//! Every line of every text file the repository tracks, blank ones included, as `wc -l` counts
+//! them. A leaner tree holds this total down; chock's own records under `.chock` do not count.
 
 use std::io::BufRead;
 use std::path::Path;
@@ -9,7 +9,7 @@ use crate::run::{Ctx, Gate, Group, Kind};
 
 pub const GATE: Gate = Gate {
     name: "lines",
-    about: "the lines of every tracked file, blank ones included, as `wc -l` counts them; the \
+    about: "the lines of every tracked text file, blank ones included, as `wc -l` counts them; the \
             total only goes down",
     // Every change that adds a line trips it, so a project asks for it.
     group: Group::OptIn,
@@ -47,7 +47,15 @@ fn newlines(path: &Path) -> std::io::Result<u64> {
         Err(e) => return Err(e),
         Ok(_) => {}
     }
-    let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
+    counted(std::io::BufReader::new(std::fs::File::open(path)?))
+}
+
+/// The newline bytes `reader` holds. A binary file holds no lines: git reads a file with a NUL
+/// byte in its first 8000 bytes as binary.
+fn counted(mut reader: impl BufRead) -> std::io::Result<u64> {
+    if reader.fill_buf()?.iter().take(8000).any(|byte| *byte == 0) {
+        return Ok(0);
+    }
     let mut count = 0;
     loop {
         let read = reader.fill_buf()?;
@@ -73,14 +81,28 @@ mod tests {
     fn each_newline_counts_and_a_path_with_no_file_counts_none() {
         let root = crate::testdir::tree(
             "lines-newlines",
-            &[("a.txt", "one\n\nthree\nno newline"), ("dir/b.txt", "")],
+            &[
+                ("a.txt", "one\n\nthree\nno newline"),
+                ("dir/b.txt", ""),
+                ("c.png", "\u{89}PNG\r\n\u{1a}\n\0\0\n"),
+            ],
         );
         assert_eq!(newlines(&root.join("a.txt")).unwrap(), 3);
         assert_eq!(newlines(&root.join("dir/b.txt")).unwrap(), 0);
         assert_eq!(newlines(&root.join("dir")).unwrap(), 0);
         assert_eq!(newlines(&root.join("gone.txt")).unwrap(), 0);
+        assert_eq!(newlines(&root.join("c.png")).unwrap(), 0);
         // A NUL byte is no path on any system, so the error is no `NotFound`.
         assert!(newlines(Path::new("bad\0path")).is_err());
+    }
+
+    #[test]
+    fn a_nul_byte_in_the_first_8000_bytes_makes_a_file_binary() {
+        let mut late = vec![b'\n'; 8000];
+        late.push(0);
+        assert_eq!(counted(&late[..]).unwrap(), 8000);
+        late[7999] = 0;
+        assert_eq!(counted(&late[..]).unwrap(), 0);
     }
 
     #[test]

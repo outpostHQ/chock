@@ -47,6 +47,11 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it could not run there.
 - **A commit keeps the `lines` record.** The pre-commit hook read its key, `total`, as a deleted
   file and dropped it.
+- **`lines` counts no line in a binary file.** A file with a NUL byte in its first 8000 bytes is
+  binary, as git reads it. Before, an image counted each of its newline bytes as a line.
+- **`mutest` takes a progress journal whose pid another process holds now.** The process that
+  wrote the journal ended, and the system gave its pid to another process. Before, the run stopped
+  with "mutation progress process identity is stale". A TLA+ model in mutest-rs found it.
 - **`chock doctor` calls the editor hook silent only after an edit.** `chock init --local` marks
   when it wired the hook, so `just setup` on a new clone passes.
 - **The early-return finding of `testlint` says to drop the return** when you mark the test

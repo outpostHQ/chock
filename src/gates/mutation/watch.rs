@@ -296,8 +296,9 @@ fn correlate(pid: u32, ticks: u64, exe: &str) -> Result<(), String> {
     let Some(actual_ticks) = process_ticks(std::fs::read_to_string(root.join("stat")))? else {
         return Ok(());
     };
+    // Another start time: the writer ended, and the system gave its pid to another process.
     if actual_ticks != ticks {
-        return Err("mutation progress process identity is stale".to_string());
+        return Ok(());
     }
     checked_executable(std::fs::read_link(root.join("exe")), Path::new(exe))
 }
@@ -414,7 +415,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot open a file with O_NONBLOCK")]
-    fn watchdog_dispatch_rejects_a_stale_header_before_completion() {
+    fn watchdog_dispatch_takes_a_header_whose_pid_another_process_holds_now() {
         let (_root, mut watch, file) = setup();
         append(
             &watch,
@@ -434,9 +435,8 @@ mod tests {
             json!({"status":"completed","exit_code":0}),
         );
         let watchdog: &mut dyn crate::exec::Watchdog = &mut watch;
-        let expected = Err("mutation progress process identity is stale".into());
-        assert_eq!(watchdog.poll(), expected);
-        assert_eq!(watchdog.complete(), expected);
+        assert_eq!(watchdog.poll(), Ok(()));
+        assert_eq!(watchdog.complete(), Ok(()));
     }
 
     #[test]
@@ -727,11 +727,10 @@ mod tests {
     }
 
     #[test]
-    fn stale_process_identity_is_not_current_progress() {
-        let exe = std::fs::read_link("/proc/self/exe").unwrap();
+    fn a_pid_another_process_holds_now_names_a_writer_that_ended() {
         assert_eq!(
-            correlate(std::process::id(), 0, exe.to_str().unwrap()),
-            Err("mutation progress process identity is stale".into())
+            correlate(std::process::id(), 0, "/wrong/executable"),
+            Ok(())
         );
         assert!(journal_name("bad.jsonl", "0123456789abcdef0123456789abcdef").is_err());
     }
