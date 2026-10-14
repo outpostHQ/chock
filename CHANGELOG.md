@@ -51,6 +51,12 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `#[ignore = "why"]`.
 - **A second `chock init --global` installs nothing.** A tool already at its pin is kept, and
   only its setup line runs again. Before, chock fetched every pin on each run.
+- **Only one run holds a tree.** The run lock is the system's lock on `.chock/run.lock`, so the
+  system lets go of it when a run exits or dies. Before, two runs could each judge a dead run's
+  lock stale, and then both measured the tree. An older chock removes the file, so give every
+  run in a tree the same chock.
+- **A run reads the baseline after it takes the run lock.** Before, a `chock baseline` that ended
+  while the run waited lost its record when the run wrote the baseline back.
 - **The pins move to the newest releases:** cargo-binstall 1.25.3, cargo-nextest 0.9.148,
   cargo-crap 0.7.0 and typos-cli 1.51.1. cargo-crap 0.7.0 also scores the default methods of a
   trait, so `crap` can find a function over 30 that it could not see before.

@@ -159,6 +159,14 @@ fn context(ci: bool) -> Result<(Ctx, Option<Config>), String> {
     Ok((ctx, config))
 }
 
+/// The run lock, then the context. A run writes back the baseline it read, so it reads it under
+/// the lock: a `chock baseline` that ends while this run waits is then in the file it reads.
+fn locked_context(ci: bool) -> Result<(crate::run::lock::Held, Ctx, Option<Config>), String> {
+    let held = crate::run::lock::take(&root()?)?;
+    let (ctx, config) = context(ci)?;
+    Ok((held, ctx, config))
+}
+
 /// What git asked a hook for, kept apart from running it so a test needs no build.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Asked<'a> {
@@ -340,8 +348,10 @@ struct How<'a> {
 }
 
 fn run_gates_code(names: &[&str], tier: Tier, how: How<'_>) -> u8 {
-    let (ctx, config) = match context(tier.meets_an_absent_tool()) {
-        Ok((ctx, config)) => (
+    // Two runs in one tree would write the same coverage report and run the same suite.
+    let (_held, ctx, config) = match locked_context(tier.meets_an_absent_tool()) {
+        Ok((held, ctx, config)) => (
+            held,
             Ctx {
                 no_cache: how.no_cache,
                 miri_part: how.miri_part,
@@ -350,11 +360,6 @@ fn run_gates_code(names: &[&str], tier: Tier, how: How<'_>) -> u8 {
             },
             config,
         ),
-        Err(e) => return refused(&e),
-    };
-    // Two runs in one tree would write the same coverage report and run the same suite.
-    let _held = match crate::run::lock::take(&ctx.root) {
-        Ok(held) => held,
         Err(e) => return refused(&e),
     };
     let chosen = match skipping(selection(names, tier, config.as_ref()), how.skip) {
@@ -792,14 +797,10 @@ fn ago(ran_at: Option<u64>, now: std::time::SystemTime) -> Option<String> {
 
 /// Records without judging: a baseline from a failing tree is debt accepted in a readable commit.
 fn record_baseline(asked: &[&str]) -> ExitCode {
-    let (ctx, config) = match context(false) {
-        // A record holds the whole tree, never one change.
-        Ok((ctx, config)) => (run::Ctx { whole: true, ..ctx }, config),
-        Err(e) => return cannot_run(&e),
-    };
     // Recording measures the tree too, so it takes the same lock a run does.
-    let _held = match crate::run::lock::take(&ctx.root) {
-        Ok(held) => held,
+    let (_held, ctx, config) = match locked_context(false) {
+        // A record holds the whole tree, never one change.
+        Ok((held, ctx, config)) => (held, run::Ctx { whole: true, ..ctx }, config),
         Err(e) => return cannot_run(&e),
     };
     let mut recorded = ctx.baseline.clone();
