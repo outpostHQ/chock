@@ -424,6 +424,19 @@ fn systems(list: &str) -> Vec<String> {
         .collect()
 }
 
+/// A pin of `crate_name` at `want`, with no setup line and no systems line.
+#[cfg(test)]
+pub fn version_pinned(crate_name: &str, want: &str) -> Pin {
+    Pin {
+        key: format!("{}_VERSION", crate_name.to_uppercase().replace('-', "_")),
+        crate_name: crate_name.to_string(),
+        command: crate_name.to_string(),
+        want: want.to_string(),
+        setup: None,
+        systems: None,
+    }
+}
+
 /// The command of each pin in the shipped file, in the file's order.
 #[cfg(test)]
 pub const SHIPPED: [&str; 14] = [

@@ -49,6 +49,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   when it wired the hook, so `just setup` on a new clone passes.
 - **The early-return finding of `testlint` says to drop the return** when you mark the test
   `#[ignore = "why"]`.
+- **A second `chock init --global` installs nothing.** A tool already at its pin is kept, and
+  only its setup line runs again. Before, chock fetched every pin on each run.
 - **The pins move to the newest releases:** cargo-binstall 1.25.3, cargo-nextest 0.9.148,
   cargo-crap 0.7.0 and typos-cli 1.51.1. cargo-crap 0.7.0 also scores the default methods of a
   trait, so `crap` can find a function over 30 that it could not see before.

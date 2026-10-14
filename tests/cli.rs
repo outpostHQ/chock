@@ -2294,11 +2294,13 @@ printf 'stable-x86_64-unknown-linux-gnu (default)\n'
     says(&unreadable.out, "cannot_run_reason");
 }
 
-/// A cargo that logs what it was asked: `binstall -V` and a binstall fetch exit as the test says.
+/// A cargo that logs what it was asked: `binstall -V` and a binstall fetch exit as the test says,
+/// and `install --list` prints `LISTED`.
 #[cfg(unix)]
 const LOGGING_CARGO: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> cargo.log
 case "$*" in
+  "install --list") printf '%s' "$LISTED"; exit 0 ;;
   "binstall -V") exit "$BINSTALL_HERE" ;;
   binstall*) exit "$BINSTALL_FETCHES" ;;
 esac
@@ -2335,6 +2337,30 @@ fn init_global_takes_a_prebuilt_release_through_binstall_and_compiles_when_it_ca
             .collect();
         assert_eq!(fetches, asked, "binstall here {here}, fetching {fetching}");
     }
+}
+
+/// A second `chock init --global` fetches nothing that is already at its pin.
+#[cfg(unix)]
+#[test]
+fn init_global_keeps_a_tool_already_at_its_pin() {
+    let dir = project("init-kept", &[]);
+    put(&dir, "tool-versions.env", "CARGO_DENY_VERSION=0.20.2\n");
+    put(&dir, "bin/cargo", LOGGING_CARGO);
+    make_runnable(&dir.join("bin/cargo"));
+    let listed = "cargo-deny v0.20.2:\n    cargo-deny\n";
+    let env = [
+        ("BINSTALL_HERE", "0"),
+        ("BINSTALL_FETCHES", "0"),
+        ("LISTED", listed),
+    ];
+    let ran = with_tools(&dir, &["init", "--global"], &env);
+    assert_eq!(ran.code, 0, "{}{}", ran.out, ran.err);
+    says(
+        &ran.out,
+        "  kept      cargo-deny 0.20.2 — already at its pin",
+    );
+    let log = std::fs::read_to_string(dir.join("cargo.log")).unwrap();
+    assert!(!log.contains("cargo-deny"), "{log}");
 }
 
 /// A rustup whose `nightly` holds what `RUSTUP_HAS` names, and that installs where `RUSTUP_ADDS` is 0.

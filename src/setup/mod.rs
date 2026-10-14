@@ -4,6 +4,7 @@
 mod adoption;
 pub mod agents;
 pub mod doctor;
+mod fetching;
 pub mod hooks;
 pub mod init;
 mod merge;
