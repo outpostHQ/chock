@@ -4,7 +4,9 @@ use std::time::Duration;
 
 /// Byte bounds per record and per journal file, which a header must declare and the watch enforces.
 pub(super) const LINE_LIMIT: usize = 16_384;
-pub(super) const FILE_LIMIT: u64 = 67_108_864;
+pub(super) const FILE_LIMIT: u64 = 1_073_741_824;
+/// The journal bound of mutest builds from before 1 GiB, which a header may still declare.
+const FIRST_FILE_LIMIT: u64 = 67_108_864;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Header {
@@ -472,7 +474,7 @@ impl Progress {
         )?;
         require(
             u64::try_from(LINE_LIMIT) == Ok(header.record_limit_bytes)
-                && header.file_limit_bytes == FILE_LIMIT,
+                && (FIRST_FILE_LIMIT..=FILE_LIMIT).contains(&header.file_limit_bytes),
             "invalid progress size limits",
         )?;
         self.header = Some(Header {
@@ -991,9 +993,22 @@ mod tests {
 
     #[test]
     fn size_limits_must_match_the_protocol_limits() {
+        let why = "invalid progress size limits";
         for field in ["record_limit_bytes", "file_limit_bytes"] {
-            let why = "invalid progress size limits";
             assert_eq!(opened_with(field, json!(1)), Err(why.into()));
+        }
+        // A journal may declare 64 MiB, as mutest did first, up to 1 GiB, and nothing outside.
+        for (bound, opened) in [
+            (FIRST_FILE_LIMIT - 1, Err(why.into())),
+            (FIRST_FILE_LIMIT, Ok(())),
+            (FILE_LIMIT, Ok(())),
+            (FILE_LIMIT + 1, Err(why.into())),
+        ] {
+            assert_eq!(
+                opened_with("file_limit_bytes", json!(bound)),
+                opened,
+                "{bound}"
+            );
         }
     }
 

@@ -5,6 +5,45 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-17
+
+- **Proofs: `tla`, `verus` and `links`.** Three opt-in gates check the specs and proofs that a
+  project keeps beside its code.
+  - `tla` runs TLC on each model under `proofs/tla`. `M.cfg` must pass, `M_reach.cfg` must fail,
+    and each other `M_*.cfg` is a bad variant that must fail. Each invariant must fail in at least
+    one bad variant. Apalache proves the inductive invariant `IndInv`: `Init` makes it true, one
+    step keeps it true, and it implies each invariant. TLC 1.8 and later write a trace spec next
+    to the model at each violation. chock stops this, so a run adds no file to `proofs/tla`.
+  - `verus` runs Verus on each file of `proofs/verus`. Each patch in `proofs/verus/mutants` puts a
+    fault in one function, and Verus must fail on it. chock patches a copy, never your file.
+  - `links` holds a model or a proof to the code that it describes. A comment such as
+    `\* code: src/run/lock.rs::once` names the code. The gate counts each comment that names no
+    code, or names code that is not there, and the count must not go up.
+- **Download pins.** `tool-versions.env` pins a tool that is no crate, such as TLC, Apalache or
+  Verus, with `X_VERSION`, `X_URL` and `X_SHA256`. A pin can give one URL and hash for each
+  system, such as `X_URL_x86_linux`. `chock init --downloads` fetches the download of each gate
+  that is on, and holds it to its hash. `chock doctor` reports each download. A hash with no URL
+  stays the project's own, unless a gate claims it.
+- **Git pins.** `X_GIT` and `X_REV` install a crate from one commit of a repository. chock pins
+  `cargo-deny` to the commit `07d1287` of the `outpostHQ/cargo-deny` fork, which holds a fix that
+  is not in a release yet.
+- **Each message names its repair.** A gate whose download is not fetched says to run
+  `chock init --downloads`, and `chock enable GATE` first for a gate that is off. A pin with no
+  URL gives the URL line that chock ships. `chock doctor` runs the Java that `tla` finds, and
+  asks for no pin for it.
+- **Help for each command.** `chock COMMAND --help` explains one command. A command or a gate name
+  that is nearly right gets "did you mean". `chock run --skip NAME` runs every gate but that one.
+- **The gate list.** chock has 67 gates: 38 are on by default, and 29 are opt-in.
+  `chock gates` lists each one, with what it checks.
+- **New documentation.** The README starts with a quick start and the words that chock uses. The
+  guide follows the work in order, from the install to the removal, and ends with a table of
+  common problems and their repairs.
+- **Larger mutest runs.** A mutest run over a whole crate can write more than 64 MiB of progress.
+  chock now accepts a progress file of up to 1 GiB, and still reads a file from an older mutest
+  build, with its limit of 64 MiB.
+- **Tools.** `cargo-crap` is 0.8.0. TLC is 1.7.4, Apalache is 0.62.4, and Verus is
+  0.2026.10.04.426d8b0. The mutest fork builds with `nightly-2026-10-17`.
+
 ## [0.9.1] - 2026-10-14
 
 - **A commit that leaves out a change in the work tree lowers no record.** The pre-commit hook

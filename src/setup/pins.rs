@@ -21,17 +21,44 @@ pub struct Pin {
     /// The systems the tool runs on, as `std::env::consts::OS` names them; `None` is every one.
     /// cackle refuses to compile off Linux, and Kani publishes no Windows build.
     pub systems: Option<Vec<String>>,
+    /// The repository and commit to compile instead of the crates.io release: a fork with a fix that
+    /// no release has yet. `want` stays the version its manifest says.
+    pub git: Option<Git>,
+}
+
+/// A crate built as `cargo install --git URL --rev REV` builds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Git {
+    pub url: String,
+    pub rev: String,
 }
 
 /// The version a tool that is not on crates.io is pinned at. There is no coordinate to pin, so
 /// `cargo install` cannot fetch it and `doctor` can only say whether the binary is there.
 pub const UNPUBLISHED: &str = "0.0.0";
 
+impl Git {
+    /// The first 12 digits of the commit, enough to find it.
+    #[must_use]
+    pub fn short(&self) -> &str {
+        self.rev.get(..12).unwrap_or(&self.rev)
+    }
+}
+
 impl Pin {
     /// Whether this tool has to be built from a checkout rather than fetched.
     #[must_use]
     pub fn unpublished(&self) -> bool {
         self.want == UNPUBLISHED
+    }
+
+    /// The pin as a reader names it: the version, and the commit for a git pin.
+    #[must_use]
+    pub fn wanted(&self) -> String {
+        match &self.git {
+            Some(git) => format!("{} from {} at {}", self.want, git.url, git.short()),
+            None => self.want.clone(),
+        }
     }
 
     /// Why `os` has no use for this tool, when its pin names the systems it runs on and `os` is
@@ -60,12 +87,6 @@ pub enum ParseError {
         line: usize,
         key: String,
     },
-    /// A value holding whitespace and no quotes. CI sources this file, where `K=a b` runs `b`
-    /// with `K=a` set rather than assigning the string.
-    Unquoted {
-        line: usize,
-        key: String,
-    },
     /// `FOO_BIN=bar` or `FOO_SETUP=…` with no `FOO_VERSION` anywhere in the file.
     Orphan {
         line: usize,
@@ -75,6 +96,13 @@ pub enum ParseError {
     InvalidToolchain {
         line: usize,
         key: String,
+    },
+    /// A value chock refuses, and why: a space with no quotes, a `${NAME}` that no earlier line
+    /// sets, or a `_GIT` or `_REV` key that does not pin one commit of one https repository.
+    Refused {
+        line: usize,
+        key: String,
+        why: String,
     },
 }
 
@@ -87,17 +115,13 @@ impl fmt::Display for ParseError {
             Self::EmptyVersion { line, key } | Self::InvalidToolchain { line, key } => {
                 write!(f, "line {line}: {key} {}", self.invalid_value())
             }
-            Self::Unquoted { line, key } => write!(
-                f,
-                "line {line}: {key} has spaces in its value and no quotes; a shell sourcing this \
-                 file would run it instead of assigning it"
-            ),
             Self::Orphan { line, key, suffix } => {
                 write!(
                     f,
                     "line {line}: {key}{suffix} has no matching {key}_VERSION"
                 )
             }
+            Self::Refused { line, key, why } => write!(f, "line {line}: {key} {why}"),
         }
     }
 }
@@ -134,7 +158,10 @@ const SETUP_SUFFIX: &str = "_SETUP";
 const OS_SUFFIX: &str = "_OS";
 const NIGHTLY_SUFFIX: &str = "_NIGHTLY";
 /// Keys that say something about a `*_VERSION` pin of the same stem, and mean nothing without one.
-const QUALIFIERS: [&str; 3] = [BIN_SUFFIX, SETUP_SUFFIX, OS_SUFFIX];
+const GIT_SUFFIX: &str = "_GIT";
+const REV_SUFFIX: &str = "_REV";
+/// The keys that qualify a `_VERSION` pin; each needs its pin.
+const QUALIFIERS: [&str; 5] = [BIN_SUFFIX, SETUP_SUFFIX, OS_SUFFIX, GIT_SUFFIX, REV_SUFFIX];
 
 /// Each qualifier's values by the stem they qualify, with the line each was set on.
 type Qualified = BTreeMap<&'static str, BTreeMap<String, (usize, String)>>;
@@ -157,10 +184,14 @@ pub struct ToolchainPin {
 pub struct AdditionalPins {
     pub toolchains: Vec<ToolchainPin>,
     pub unchecked: Vec<String>,
+    pub downloads: Vec<crate::setup::downloads::Download>,
 }
 
 pub fn additional(text: &str) -> Result<AdditionalPins, ParseError> {
-    let mut found = AdditionalPins::default();
+    let mut found = AdditionalPins {
+        downloads: crate::setup::downloads::parse(text)?,
+        ..AdditionalPins::default()
+    };
     for (i, raw) in text.lines().enumerate() {
         let line = i + 1;
         let Some((key, value)) = assignment(raw, line)? else {
@@ -177,11 +208,18 @@ pub fn additional(text: &str) -> Result<AdditionalPins, ParseError> {
                 key: key.to_string(),
                 want: value.to_string(),
             });
-        } else if !key.ends_with(VERSION_SUFFIX) && qualifier(key).is_none() {
+        } else if !known_key(key) {
             found.unchecked.push(format!("line {line}: {key}"));
         }
     }
     Ok(found)
+}
+
+/// Whether chock reads `key`: a version, a qualifier of one, or a part of a download pin.
+fn known_key(key: &str) -> bool {
+    key.ends_with(VERSION_SUFFIX)
+        || qualifier(key).is_some()
+        || crate::setup::downloads::is_download_key(key)
 }
 
 /// A pin file moved to the pins of the chock that runs: its new text, the chock the old text named,
@@ -338,7 +376,7 @@ fn before_comment(line: &str) -> &str {
 
 /// One `KEY=VALUE` line, or `None` for a blank or a comment. The shell quoting is settled here so
 /// the caller sees the value a shell would have assigned.
-fn assignment(raw: &str, line: usize) -> Result<Option<(&str, &str)>, ParseError> {
+pub(super) fn assignment(raw: &str, line: usize) -> Result<Option<(&str, &str)>, ParseError> {
     let trimmed = before_comment(raw.trim());
     if trimmed.is_empty() {
         return Ok(None);
@@ -351,9 +389,12 @@ fn assignment(raw: &str, line: usize) -> Result<Option<(&str, &str)>, ParseError
     };
     let (key, value) = (key.trim(), value.trim());
     if value.contains(char::is_whitespace) && !quoted(value) {
-        return Err(ParseError::Unquoted {
+        return Err(ParseError::Refused {
             line,
             key: key.to_string(),
+            why: "has spaces in its value and no quotes; a shell sourcing this file would run it \
+                  instead of assigning it"
+                .to_string(),
         });
     }
     Ok(Some((key, unquote(value))))
@@ -386,6 +427,8 @@ pub fn parse(text: &str) -> Result<Vec<Pin>, ParseError> {
         }
     }
 
+    // A stem with a URL is fetched as a file, so it is no crate for `cargo install`.
+    let downloads = crate::setup::downloads::stems(text);
     let pinned: Vec<&String> = versions.iter().map(|(_, stem, _)| stem).collect();
     let unpinned = |suffix| orphan(&pinned, suffix, qualified.get(suffix)?);
     if let Some(orphan) = QUALIFIERS.into_iter().find_map(unpinned) {
@@ -398,22 +441,66 @@ pub fn parse(text: &str) -> Result<Vec<Pin>, ParseError> {
             .map(|(_, value)| value.clone())
     };
 
-    Ok(versions
+    let set = |suffix, stem: &String| qualified.get(suffix)?.get(stem);
+    versions
         .into_iter()
+        .filter(|(_, stem, _)| !downloads.contains(stem))
         .map(|(_, stem, want)| {
             let crate_name = stem.to_lowercase().replace('_', "-");
             let command = said(BIN_SUFFIX, &stem).unwrap_or_else(|| crate_name.clone());
             let systems = said(OS_SUFFIX, &stem).map(|list| systems(&list));
-            Pin {
+            let git = git_of(&stem, set(GIT_SUFFIX, &stem), set(REV_SUFFIX, &stem))?;
+            Ok(Pin {
                 key: format!("{stem}{VERSION_SUFFIX}"),
                 crate_name,
                 command,
                 want,
                 setup: said(SETUP_SUFFIX, &stem),
                 systems,
-            }
+                git,
+            })
         })
-        .collect())
+        .collect()
+}
+
+/// The repository and commit of `stem`: both or neither, an https URL, and a whole commit hash,
+/// because a branch, a tag or a short hash can come to name other code.
+fn git_of(
+    stem: &str,
+    url: Option<&(usize, String)>,
+    rev: Option<&(usize, String)>,
+) -> Result<Option<Git>, ParseError> {
+    let refused = |line: usize, suffix: &str, why: String| ParseError::Refused {
+        line,
+        key: format!("{stem}{suffix}"),
+        why,
+    };
+    let whole = |rev: &str| rev.len() == 40 && rev.bytes().all(|byte| byte.is_ascii_hexdigit());
+    match (url, rev) {
+        (None, None) => Ok(None),
+        (Some((line, _)), None) => Err(refused(
+            *line,
+            GIT_SUFFIX,
+            format!("has no {stem}{REV_SUFFIX}: a git pin names the commit it builds"),
+        )),
+        (None, Some((line, _))) => Err(refused(
+            *line,
+            REV_SUFFIX,
+            format!("has no {stem}{GIT_SUFFIX}: a commit needs the repository that holds it"),
+        )),
+        (Some((line, url)), _) if !url.starts_with("https://") => {
+            Err(refused(*line, GIT_SUFFIX, "must be an https:// URL".into()))
+        }
+        (_, Some((line, rev))) if !whole(rev) => Err(refused(
+            *line,
+            REV_SUFFIX,
+            "must be a whole 40-digit commit hash; a branch, a tag or a short hash can move".into(),
+        )),
+        (Some((_, url)), Some((_, rev))) => Ok(Some(Git {
+            url: url.clone(),
+            rev: rev.to_lowercase(),
+        })),
+    }
 }
 
 /// `linux,macos`: a comma list, because a value with a space in it is a command to the shell that
@@ -434,6 +521,7 @@ pub fn version_pinned(crate_name: &str, want: &str) -> Pin {
         want: want.to_string(),
         setup: None,
         systems: None,
+        git: None,
     }
 }
 
@@ -547,6 +635,11 @@ mod tests {
 
     #[test]
     fn a_systems_line_with_no_version_is_an_orphan_like_any_other_qualifier() {
+        let said = parse("CARGO_ACL_OS=linux\n").unwrap_err().to_string();
+        assert_eq!(
+            said,
+            "line 1: CARGO_ACL_OS has no matching CARGO_ACL_VERSION"
+        );
         assert_eq!(
             parse("CARGO_ACL_OS=linux\n"),
             Err(ParseError::Orphan {
@@ -572,7 +665,38 @@ mod tests {
             want: want.to_string(),
             setup: None,
             systems: None,
+            git: None,
         }
+    }
+
+    #[test]
+    fn a_git_pin_names_one_commit_of_one_https_repository() {
+        let rev = "0123456789abcdef0123456789ABCDEF01234567";
+        let text = format!(
+            "CARGO_DENY_VERSION=0.18.6\nCARGO_DENY_GIT=https://github.com/o/cargo-deny\nCARGO_DENY_REV={rev}\n"
+        );
+        let git = parse(&text).unwrap().remove(0).git.unwrap();
+        assert_eq!(git.url, "https://github.com/o/cargo-deny");
+        assert_eq!(
+            (git.short(), git.rev.as_str()),
+            ("0123456789ab", rev.to_lowercase().as_str())
+        );
+        let refused = |text: &str| parse(text).unwrap_err().to_string();
+        let half = refused("A_VERSION=1\nA_GIT=https://h/a\n");
+        assert_eq!(
+            half,
+            "line 2: A_GIT has no A_REV: a git pin names the commit it builds"
+        );
+        let hex = (3, rev.to_lowercase());
+        let git = |url: Option<&(usize, String)>| git_of("A", url, Some(&hex)).unwrap_err();
+        assert!(git(None).to_string().contains("A_REV has no A_GIT"));
+        assert!(
+            git(Some(&(2, "http://h/a".into())))
+                .to_string()
+                .contains("https://")
+        );
+        assert!(refused("A_VERSION=1\nA_GIT=https://h/a\nA_REV=main\n").contains("40-digit"));
+        assert!(refused("A_GIT=https://h/a\n").contains("has no matching A_VERSION"));
     }
 
     #[test]
@@ -818,7 +942,7 @@ mod tests {
                     key: "MUTEST_NIGHTLY".to_string(),
                     want: "nightly-2026-09-26".to_string()
                 }],
-                unchecked: Vec::new(),
+                ..AdditionalPins::default()
             }
         );
     }
@@ -834,6 +958,7 @@ mod tests {
                     "line 1: TOOL_VERSIONX".to_string(),
                     "line 2: TOOL_REPO".to_string()
                 ],
+                ..AdditionalPins::default()
             }
         );
         assert_eq!(parse(text).unwrap(), Vec::new());

@@ -355,7 +355,7 @@ fn defined(ctx: &Ctx) -> Result<Defined, String> {
 }
 
 /// The token ranges of the items under `#[cfg(test)]`.
-fn test_only(lexed: &Lexed) -> Vec<RangeInclusive<usize>> {
+pub(crate) fn test_only(lexed: &Lexed) -> Vec<RangeInclusive<usize>> {
     let word = |word: &str| Tok::Ident(word.to_string());
     let gate = [word("cfg"), Tok::Open('('), word("test"), Tok::Close(')')];
     let gated = |item: &&Item| {

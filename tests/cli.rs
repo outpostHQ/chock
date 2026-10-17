@@ -605,15 +605,19 @@ fn doctor_json_emits_the_run_schema() {
 }
 
 #[test]
-fn run_refuses_a_gate_name_that_does_not_exist_and_lists_the_real_ones() {
+fn run_refuses_a_gate_name_that_does_not_exist_and_offers_the_one_it_is_close_to() {
     let dir = project("run-unknown-gate", &[]);
 
     let ran = exits(&dir, &["run", "nope"], 2);
-    says(&ran.err, "chock: no gate named `nope`. There is: ");
-    for gate in chock::gates::registry() {
-        says(&ran.err, gate.name);
-    }
+    let listed = "(`chock gates` lists every gate)";
+    assert_eq!(
+        ran.err.trim(),
+        format!("chock: no gate named `nope` {listed}")
+    );
     assert_eq!(ran.out, "");
+    let typed = exits(&dir, &["run", "typo"], 2);
+    let meant = format!("chock: no gate named `typo` {listed}; did you mean `typos`?");
+    assert_eq!(typed.err.trim(), meant);
 }
 
 #[test]
@@ -632,7 +636,10 @@ fn explain_refuses_a_name_that_is_not_a_gate() {
     let dir = project("explain-unknown-gate", &[]);
 
     let ran = exits(&dir, &["explain", "nope"], 2);
-    says(&ran.err, "chock: no gate named `nope`. There is: ");
+    says(
+        &ran.err,
+        "chock: no gate named `nope` (`chock gates` lists every gate)",
+    );
 }
 
 #[test]
@@ -2740,4 +2747,30 @@ fn mutation_target_failure_never_replaces_a_baseline_with_partial_results() {
         .unwrap();
         assert_eq!(after.gate("mutest"), series);
     }
+}
+
+#[test]
+fn a_command_s_help_prints_its_own_lines_and_an_unknown_one_the_whole_usage() {
+    let dir = scratch("command-help");
+    let run = chock(&dir, &["run", "--help"]);
+    assert_eq!(run.code, 0, "{}", run.err);
+    says(&run.out, "chock run [GATE...]");
+    assert!(!run.out.contains("chock doctor"), "{}", run.out);
+    let unknown = chock(&dir, &["help", "nosuch"]);
+    assert_eq!(unknown.code, 0, "{}", unknown.err);
+    for line in USAGE_LINES {
+        says(&unknown.out, line);
+    }
+}
+
+/// `--downloads` installs no crate tool, so a download whose gate is off asks the network nothing.
+#[test]
+fn init_downloads_fetches_only_the_downloads_of_gates_that_are_on() {
+    let dir = project("init-downloads", &[]);
+    let sha = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88";
+    let pin =
+        format!("TLA_TOOLS_VERSION=1\nTLA_TOOLS_URL=https://x/t.jar\nTLA_TOOLS_SHA256={sha}\n");
+    put(&dir, "tool-versions.env", &pin);
+    let ran = exits(&dir, &["init", "--downloads"], 0);
+    says(&ran.out, "skipped   tla-tools — the `tla` gate is off");
 }

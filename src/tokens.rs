@@ -168,7 +168,7 @@ impl Lexed {
 
     /// Where the item at `head` ends: the brace closing its first block, its `;`, or the token
     /// before the delimiter that closes whatever holds it.
-    fn item_end(&self, head: usize) -> usize {
+    pub(crate) fn item_end(&self, head: usize) -> usize {
         let mut j = head;
         loop {
             match self.toks.get(j) {
@@ -197,7 +197,7 @@ pub fn lex(source: &str) -> Result<Vec<Tok>, String> {
 }
 
 /// The tokens without their `#[doc = "…"]` and `#![doc = "…"]` runs, and how many runs there were.
-fn without_docs(toks: &[Tok]) -> (Vec<Tok>, usize) {
+pub(crate) fn without_docs(toks: &[Tok]) -> (Vec<Tok>, usize) {
     let (mut out, mut runs, mut i) = (Vec::with_capacity(toks.len()), 0, 0);
     while i < toks.len() {
         let open = i + 1 + usize::from(matches!(toks.get(i + 1), Some(Tok::Punct('!', _))));

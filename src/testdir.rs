@@ -120,6 +120,38 @@ pub fn repo(name: &str, files: &[(&str, &str)]) -> Scratch {
     root
 }
 
+/// A proof gate's tools in `dir`, with `sh` running `script` in place of each program; the script
+/// reads the program as `$1`, and its arguments after it.
+#[must_use]
+#[allow(
+    clippy::unwrap_used,
+    reason = "a fake that was not written is the test failing"
+)]
+pub fn faked(dir: &Path, script: &str) -> crate::gates::proofs::Tools {
+    let fake = dir.join("fake.sh");
+    std::fs::write(&fake, script).unwrap();
+    crate::gates::proofs::Tools {
+        home: Some(dir.join("tools")),
+        launcher: vec!["sh".into(), fake.display().to_string()],
+    }
+}
+
+/// The pin lines of a download that holds `file`, fetched and stamped in the tools of `dir`.
+#[must_use]
+#[allow(
+    clippy::unwrap_used,
+    reason = "a download that was not made is the test failing"
+)]
+pub fn fetched(dir: &Path, stem: &str, file: &str) -> String {
+    let sha = "b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4";
+    let pin = format!("{stem}_VERSION=1\n{stem}_URL=https://x/{file}\n{stem}_SHA256={sha}\n");
+    let at = crate::setup::downloads::parse(&pin).unwrap()[0].dir(&dir.join("tools"), sha);
+    std::fs::create_dir_all(&at).unwrap();
+    std::fs::write(at.join(file), "").unwrap();
+    std::fs::write(at.join(crate::setup::downloads::STAMP), sha).unwrap();
+    pin
+}
+
 #[allow(
     clippy::panic,
     clippy::unwrap_used,

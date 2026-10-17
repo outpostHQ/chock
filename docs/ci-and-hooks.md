@@ -86,7 +86,7 @@ can skip.
 Install the pinned tools, then run every gate but the `local_only` ones:
 
 ```yaml
-- uses: actions/checkout@v6
+- uses: actions/checkout@v7
   with:
     fetch-depth: 2           # `clean_when_touched` compares HEAD with its parent
 - uses: cargo-bins/cargo-binstall@main
@@ -94,6 +94,22 @@ Install the pinned tools, then run every gate but the `local_only` ones:
 - run: chock init --global   # the tools, prebuilt, at the versions in tool-versions.env
 - run: chock run --ci
 ```
+
+`chock init --global` also fetches the pinned downloads of the gates that are on, such as TLC for
+`tla`. A job that runs only `tla` or `verus` can run `chock init --downloads`, which installs no
+cargo tool. TLC and Apalache run on Java, so give such a job Java 21 first:
+
+```yaml
+- uses: actions/setup-java@v6
+  with:
+    distribution: temurin
+    java-version: '21'
+- run: chock init --downloads
+- run: chock run tla
+```
+
+A tool that `tool-versions.env` pins to a git commit, such as `cargo-deny` with `CARGO_DENY_GIT`,
+has no prebuilt file, so `chock init --global` compiles it. That step takes some minutes.
 
 `chock run --fast --ci` runs only the gates of the commit set, with CI's rules. chock's own CI runs
 it as a quick first job on Linux.

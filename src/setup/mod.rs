@@ -4,6 +4,7 @@
 mod adoption;
 pub mod agents;
 pub mod doctor;
+pub mod downloads;
 mod fetching;
 pub mod hooks;
 pub mod init;
@@ -14,4 +15,5 @@ pub mod mutest;
 pub mod network;
 pub mod pins;
 mod repin;
+pub mod sha256;
 pub mod version;

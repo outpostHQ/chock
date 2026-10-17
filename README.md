@@ -6,20 +6,17 @@
 
 **Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers.**
 
-chock runs 64 gates over a Rust project and gives one result and one exit code. The gates cover
-your tests, clippy, rustfmt, coverage, mutation testing, the supply chain, complexity and
-duplication.
+chock checks a Rust project with 67 gates and gives one answer with one exit code. The gates cover
+your tests, clippy, rustfmt, coverage, mutation testing, the supply chain, complexity, duplication,
+and proofs.
 
-Most projects hold debt on the day they adopt chock. chock records that debt as a limit for each
-file and function, in a file that you commit. The limit is where the project starts. It is not the
-goal:
+Most projects hold debt on the day they adopt chock. You do not have to fix it first. chock writes
+today's numbers into a file that you commit, and from then on:
 
-- New code starts at zero. A new file or function with any debt trips its gate.
-- Old debt cannot grow, and debt that you removed cannot come back.
-- Each fix lowers the limit in the same run. No run raises it.
-- `chock explain` lists all the debt that is left, largest first, with the fix for each kind.
-- You decide how fast the rest must go: [in each file that a change touches, or in the whole tree
-  at once](#how-old-debt-goes-down).
+- **New code must be clean.** A new file or function with any debt trips its gate.
+- **Old debt cannot grow.** A count above its record trips the gate.
+- **Each fix stays fixed.** A lower count lowers the record at the next commit, so the debt cannot
+  come back.
 
 ```
 $ chock run test lint modcheck complexity
@@ -35,34 +32,56 @@ complexity — chock run complexity
 1 of 4 gates tripped (complexity).
 ```
 
-[Install](#install) · [Use it](#use-it) · [How chock decides](#how-chock-decides) ·
-[Old debt](#how-old-debt-goes-down) · [Commands](#commands) · [For agents](#for-agents) ·
-[The gates](#the-gates) · [Documentation](#documentation)
+[Quick start](#quick-start) · [Words](#words-chock-uses) · [Daily work](#daily-work) ·
+[When a gate does not pass](#when-a-gate-does-not-pass) · [Old debt](#how-old-debt-goes-down) ·
+[Commands](#commands) · [For agents](#for-agents) · [The gates](#the-gates) ·
+[Documentation](#documentation)
 
-## Install
+## Quick start
 
-You need Rust 1.99.0 or newer and a git or [Outpost](https://github.com/outpostHQ) repository.
+You need Rust 1.99.0 or newer, and a git or [Outpost](https://github.com/outpostHQ) repository.
 
 ```sh
 # once on each machine
 cargo install cargo-binstall   # skip this if you have it
 cargo binstall chock           # prebuilt for Linux, macOS and Windows; `cargo install chock` compiles it
-chock init --global            # the tools chock runs, prebuilt, at pinned versions
 
 # once in each repository
 cd your-project
-chock init --local             # measures the tree, chooses the gates, installs the hooks
-chock run                      # judges the tree and writes each gate's first record
+chock init                     # chooses the gates, installs the hooks, then installs the tools
+chock run                      # judges the tree and writes the first record of each gate
 ```
 
-Commit the files that chock wrote. After that, chock runs at each commit and each push. The
-[guide](docs/guide.md) explains each step and each file.
+Then commit the files that chock wrote; `git status` lists them. From now on the git hooks run
+chock at each commit and each push, and CI runs it on each change.
 
-To work on chock itself, you need rustup and [just](https://github.com/casey/just). From the root
-of a clone, `just setup` installs the pinned Rust, builds this chock, installs every tool a gate
-runs at its pinned version, and wires the hooks.
+Each gate gives one of three answers:
 
-## Use it
+| you see | it means | do this |
+|---|---|---|
+| `ok` | the gate passed | nothing |
+| `TRIPPED` | new code has debt, or old debt grew | fix each finding; its `fix:` line says how |
+| `CANNOT RUN` | chock measured nothing: a tool is missing, or a file did not parse | do what the `fix:` line says, then run the gate again |
+
+`chock help` lists every command, and `chock help run` (or `chock run --help`) shows one. When you
+mistype a command or a gate, chock names the closest one. The [guide](docs/guide.md) explains each
+step and each file.
+
+## Words chock uses
+
+| word | what it means |
+|---|---|
+| gate | one check, such as `lint` or `coverage`. `chock gates` lists all of them. |
+| pass/fail gate | a gate that trips on any problem, such as `test` or `lint` |
+| ratchet | a gate that counts debt for each file or function and compares it with the record |
+| record | the counts in `.chock/baseline.json` that a ratchet holds the code to; also called the baseline |
+| trip | a gate trips when it finds a problem. The run then exits `1`. |
+| cannot run | the gate measured nothing. It is never a pass. The run then exits `2`. |
+| stage | when a gate runs: at each `commit`, at each `push`, only in `ci`, or only when you name it (`manual`) |
+| fast set | the gates of the `commit` stage. None of them compiles, so `chock run --fast` takes seconds. |
+| kept verdict | the last answer of a slow gate. A run uses it again while nothing the gate reads changed, and its row says `recalled`. |
+
+## Daily work
 
 ```
    edit ──► chock run --fast ──► git commit ──► git push ──► CI
@@ -75,17 +94,15 @@ runs at its pinned version, and wires the hooks.
 | get an answer in seconds while you work | `chock run --fast` |
 | run every gate that is on | `chock run` |
 | run one gate again after a fix | `chock run complexity` |
+| run every gate but one | `chock run --skip mutest` |
 | read the last findings of a gate again | `chock explain complexity` |
 | see all the debt on record, largest first | `chock explain` |
 | see every gate, and whether it is on | `chock gates` |
 | know whether this machine has the tools | `chock doctor` |
 
-chock keeps the verdict of each slow gate: tests, coverage, mutation testing, Miri, binary size
-and more. The next run recalls it when nothing that the gate reads has changed: the files, the
-tools, the config and the record. The row then says `recalled`.
-`chock run --no-cache` judges every gate again, and `chock cache clear` removes the kept verdicts.
+The hooks run the same gates, so these commands only give you the answer earlier.
 
-When a gate does not pass, the result says what to do:
+## When a gate does not pass
 
 ```
                     ┌─ fix the code ................... the normal answer
@@ -95,35 +112,14 @@ When a gate does not pass, the result says what to do:
    CANNOT RUN ─────── read the reason, do what `fix:` says, then run the gate again
 ```
 
-## How chock decides
-
-A gate is one of two kinds.
-
-- A **pass/fail gate** trips on any problem. Tests, lints, docs, advisories, MSRV and committed
-  secrets are of this kind.
-- A **ratchet** keeps a number for each file or function in `.chock/baseline.json`. Comment length,
-  complexity and coverage are of this kind. New code must be clean, and a recorded number cannot
-  go up. When a number goes down, the next commit lowers the record, so the gain stays.
-
-```
-   your tree ──► measure every file and function ──► compare with .chock/baseline.json
-
-   new code with any debt ..................... TRIPPED     exit 1
-   a recorded count grew ...................... TRIPPED     exit 1
-   a recorded count stayed the same ........... ok          exit 0
-   a recorded count went down ................. ok          exit 0; the pre-commit hook lowers
-                                                            the record and adds it to the commit
-   a tool was missing or its output unreadable  CANNOT RUN  exit 2, never counted as a pass
-```
-
-A run exits with the highest code among its gates: `0` every gate passed, `1` a gate tripped, `2` a
-gate could not run.
+`chock baseline` raises a record, and a reviewer sees the higher number in the diff. Use it only
+when the team accepts the debt. The guide lists the [common problems](docs/guide.md#11-common-problems)
+and their fixes.
 
 ## How old debt goes down
 
-When `chock init --local` switches a ratchet on, the ratchet starts with the numbers that the tree
-has today. The first `chock run` writes them to `.chock/baseline.json` as the first record. After
-that, the record moves in one direction:
+When `chock init` switches a ratchet on, the first `chock run` records the counts that the tree has
+today. After that, a record moves in one direction only:
 
 ```
    adoption              you fix one function           the debt comes back
@@ -132,76 +128,45 @@ that, the record moves in one direction:
 ```
 
 ```
-$ chock run nesting
-  nesting    ok          3 against 6
-chock: measured less for nesting (6 to 3), and the pre-commit hook lowers the record at the next commit
 $ git commit -m "Split the parser"
   nesting    ok          3 against 6
 chock: lowered the record for nesting (6 to 3); .chock/baseline.json is in this commit
 ```
 
-Only `chock baseline GATE` raises a record. A person runs it, and a reviewer sees the number rise
-in the diff.
-
-chock does not make you repair a file that no change touches. Two keys in `.chock/config.json`
-say how much a change must repair, for the ratchets that you list in them:
+chock does not make you repair a file that no change touches. Two keys in `.chock/config.json` set
+how much each change must repair, for the ratchets that you list in them:
 
 | key | a change passes when | use it |
 |---|---|---|
-| `clean_when_touched` | each file it touches has no debt left | `chock init --local` writes it, so the debt leaves each file that the team changes |
-| neither | it adds no debt | remove a gate from `clean_when_touched` when its old files are too large to clean in one change |
+| `clean_when_touched` | each file it touches has no debt left | `chock init` writes it, so the debt leaves each file that the team changes |
+| neither | it adds no debt | for a gate whose old files are too large to clean in one change |
 | `strict` | the tree has no debt | for a gate that must be at zero now |
 
-```json
-"clean_when_touched": ["complexity", "nesting"],
-"strict": ["unsafety"]
-```
-
-`clean_when_touched` holds only a gate that keeps a number for each file. chock refuses a config
-that lists another gate there, such as `binsize`, because the key would do nothing for that gate.
-
-`chock explain` lists the debt that is left, with the fix for each kind, so a person or an agent
-can work through it. chock measures and refuses. It does not rewrite your code.
+chock measures and refuses. It does not change your code.
 
 ## Commands
 
+The commands for every day:
+
 | command | what it does |
 |---|---|
-| `chock init` | sets up this project, then installs the tools it pins; `--global` and `--local` do one half each; a tool already at its pin is not installed again |
-| `chock baseline [GATE...]` | accepts today's numbers as the record, also where they got worse |
-| `chock baseline --lower GATE...` | records a gain on a gate that measures differently by machine |
-| `chock baseline GATE... --keys KEY...` | writes only the named keys, such as the keys of a moved file; none goes up |
-| `chock baseline --moved OLD=NEW` | gives a renamed file the keys of its old path, on every system's record; none goes up |
-| `chock doctor` | says whether this machine has the tools this project pins |
 | `chock run [GATE...]` | runs the named gates; no name means every gate that is on |
-| `chock run --fast` | runs only the gates staged for a commit; they need no compiler |
-| `chock run --ci` | runs the gates a CI job runs; `--fast --ci` runs only the commit set |
-| `chock run --skip=GATE` | runs every gate that is on but the named ones |
-| `chock run test --package=NAME --filter=TEXT` | runs part of the suite: one package, or the tests whose name holds `TEXT` |
-| `chock run mutest --mutate=FILE,...` | mutates only the named files, and keeps the record of every other file |
-| `chock run --miri-partition=K/N miri` | runs part K of N of the Miri suite, for a CI job each |
-| `chock run --no-cache` | judges every gate again; no kept verdict answers |
-| `chock cache clear` | removes every kept verdict, so the next run judges every gate |
-| `chock explain [GATE]` | shows the findings of the last run of one gate; with no name, all the debt on record |
+| `chock run --fast` | runs only the gates of a commit: quick, and none of them compiles |
+| `chock run --skip GATE` | runs every gate that is on but the named ones |
+| `chock explain [GATE]` | shows the last findings of one gate; with no name, all the debt on record |
 | `chock gates` | lists every gate: what it measures, its stage, and whether it is on |
 | `chock enable GATE...` | switches gates on |
 | `chock disable GATE... --reason WHY` | switches gates off and records the reason |
-| `chock stage GATE... STAGE` | sets when they run: `commit`, `push`, `ci` or `manual` |
-| `chock survey` | measures what every gate finds here; it changes no config and no record |
-| `chock edited PATH...` | checks each file's own text, as the editor hook does; `--hook` reads stdin |
-| `chock message FILE` | checks a commit message against the `message` limits |
-| `chock slop [DIR]` | lists comment blocks longer than the limit, in any tree |
-| `chock lean [DIR]` | lists every line a tree could lose, file by file, largest first; it reads no record and writes none |
-| `chock oracle --old A --new B --corpus FILE` | runs two builds of one program over the same scenarios and compares each answer |
-| `chock sweep REV [PATH...]` | proves that only comments changed since `REV`, file by file |
-| `chock moved REV PATH...` | proves that code only moved between the named files since `REV` |
+| `chock doctor` | says whether this machine has the tools that this project pins |
+| `chock baseline GATE` | accepts today's counts as the record, also where they got worse |
 
-`chock --help` lists every command, and `--json` gives machine-readable output. The
-[guide](docs/guide.md#9-every-command) has the full list.
+`--json` gives machine-readable output, for an agent or a CI job. The guide lists
+[every command](docs/guide.md#9-every-command), with the options for CI, for a part of the suite,
+and for the special tools.
 
 ## For agents
 
-`chock init --local` writes `.chock/agents.md`, the contract for an agent; it is
+`chock init` writes `.chock/agents.md`, the contract for an agent; it is
 [`docs/agents.md`](docs/agents.md) in this repository. It also adds one line that points to that
 file in each of `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md` and
 `.cursor/rules/chock.mdc` that the project already has.
@@ -217,8 +182,8 @@ Three rules:
 - **`cannot_run` is not a pass.** Nothing was measured, so exit code `2` says nothing about the
   code.
 - **Never run `chock baseline` to make a gate pass.** It raises the record, which accepts the debt.
-  That is a person's decision, made in a commit a reviewer sees.
-- **Let a commit lower a record.** The pre-commit hook writes each lower number into
+  That is a person's decision, made in a commit that a reviewer sees.
+- **Let a commit lower a record.** The pre-commit hook writes each lower count into
   `.chock/baseline.json` and adds the file to the commit. Without the hook, run
   `chock baseline --lower GATE` and commit the file, or CI fails.
 
@@ -228,12 +193,13 @@ with each field explained.
 
 ## The gates
 
-64 gates: 37 are on by default and 27 are opt-in. `chock gates` prints the list from the binary,
+67 gates: 38 are on by default and 29 are opt-in. `chock gates` prints the list from the binary,
 and [docs/gates.md](docs/gates.md) says when each one trips.
 
 | topic | on by default | opt-in |
 |---|---|---|
 | Tests | `test`, `coverage`, `crap`, `assertions`, `testlint`, `admits` | `mutest`, `idempotent`, `miri`, `proof` |
+| Proofs and models | `links` | `tla`, `verus` |
 | Lints and format | `lint`, `codeslop`, `source`, `typos` | `fmt`, `shellcheck` |
 | Docs and comments | `doc`, `slop`, `citations`, `claims` | `phrases` |
 | Code shape | `complexity`, `nesting`, `bigfiles`, `splits`, `lean`, `duplication`, `unsafety`, `modcheck` | `duplicates`, `dead`, `lines` |
@@ -243,11 +209,15 @@ and [docs/gates.md](docs/gates.md) says when each one trips.
 | Your own checks | | `commands`, `commands-build`, `seams`, `owners`, `calls` |
 | [Outpost](https://github.com/outpostHQ) | | `padding`, `boundaries`, `scan`, `hazards`, `unreferenced`, `lenses`, `measures`, `unread` |
 
+A project with TLA+ models or Verus proofs gets three more checks. `tla` runs TLC and Apalache on
+each model, `verus` runs Verus on each proof, and `links` holds each `code:` comment in a model to
+the code that it names. [Proofs and models](docs/gates.md#proofs-and-models) shows how to start.
+
 ## Documentation
 
 | page | read it for |
 |---|---|
-| [Guide](docs/guide.md) | the first install, the daily loop, how to read a result, every command |
+| [Guide](docs/guide.md) | the first install, the daily loop, how to read a result, every command, common problems |
 | [The gates](docs/gates.md) | when each gate trips, what it needs, and what it leaves out |
 | [Configuration](docs/configuration.md) | every key of `.chock/config.json`, `strict`, your own checks |
 | [Hooks, stages and CI](docs/ci-and-hooks.md) | which gate runs at which step, the CI job, how to update chock |
@@ -256,7 +226,8 @@ and [docs/gates.md](docs/gates.md) says when each one trips.
 
 ## Limits
 
-- **Rust only.** chock reads `.rs` files and `Cargo.toml`.
+- **Rust only.** chock reads `.rs` files and `Cargo.toml`, and the TLA+ models and Verus proofs
+  next to them.
 - **The baseline is trusted.** Anyone can raise a record with `chock baseline`; chock makes that
   visible in the diff, and reviewers have to look.
 - **A record is keyed by name.** Renaming a function, or splitting a file, drops the old record and
@@ -264,8 +235,13 @@ and [docs/gates.md](docs/gates.md) says when each one trips.
   record with `chock baseline --moved OLD=NEW`.
 
 `chock run --ci` runs every gate that is on but the `local_only` ones, on Linux, macOS and Windows.
-chock's own CI also runs the commit set first, on Linux only. Where a gate's tool does not run on a
-system, the run leaves that gate out and says so.
+Where a gate's tool does not run on a system, the run leaves that gate out and says so.
+
+## Work on chock itself
+
+You need rustup and [just](https://github.com/casey/just). From the root of a clone, `just setup`
+installs the pinned Rust, builds this chock, installs every tool that a gate runs at its pinned
+version, and wires the hooks. chock's own CI also runs the commit set first, on Linux only.
 
 ## Licence
 

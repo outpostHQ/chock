@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/baseline-v1.json",
   "version": 1,
-  "chock": "0.9.0",
+  "chock": "0.9.1",
   "gates": {
     "admits": {},
     "assertions": {
@@ -294,6 +294,7 @@
       "hazard_unenumerated_table": 0,
       "hazard_unordered_into_ordered": 0
     },
+    "links": {},
     "manifest": {},
     "measures": {
       "commit_message_faults": 0,
@@ -623,6 +624,7 @@
     "features": "feature declaration issue(s)",
     "hazards": "hazard(s)",
     "lean": "removable line(s)",
+    "links": "stale link(s)",
     "manifest": "unpinned dependency declaration(s)",
     "measures": "counted",
     "modcheck": "orphan module file(s)",

@@ -21,6 +21,14 @@ pub fn not_installed(tool: &str) -> String {
 
 const NOTHING_TO_RUN: &str = " is not installed, so this gate has nothing to run";
 
+/// Why a gate stops when the download it needs is pinned but not fetched to this machine.
+#[must_use]
+pub fn not_fetched(download: &str) -> String {
+    format!("`{download}`{NOT_FETCHED}")
+}
+
+const NOT_FETCHED: &str = " is not fetched, so this gate has nothing to run";
+
 /// The tool a `not_installed` reason names.
 fn tool_named(reason: &str) -> Option<&str> {
     let quoted = reason.strip_suffix(NOTHING_TO_RUN)?;
@@ -44,8 +52,18 @@ pub fn repair(reason: &str) -> Option<&'static str> {
         tool::FOREIGN => Some(tool::REPAIR),
         miri::ABSENT => Some(NIGHTLY),
         said if no_nightly(said) => Some(NIGHTLY),
-        said => tool_named(said).map(installing),
+        said => ending(said).or_else(|| tool_named(said).map(installing)),
     }
+}
+
+/// The repair of a reason that ends with the words of a download pin's problem.
+fn ending(said: &str) -> Option<&'static str> {
+    let endings = [
+        (crate::setup::downloads::NOT_PINNED, PIN_DOWNLOADS),
+        (NOT_FETCHED, FETCH),
+    ];
+    let found = endings.into_iter().find(|(end, _)| said.ends_with(end));
+    found.map(|(_, repair)| repair)
 }
 
 const DECLARE_MSRV: &str = "add `rust-version = \"1.NN\"` under `[package]` in Cargo.toml: the oldest Rust this crate promises to build on";
@@ -57,8 +75,16 @@ const PINNED: &str = "run `chock init --global`: it installs each tool that `too
 
 const RUSTUP: &str = "install Rust with rustup: https://rustup.rs";
 
+const PIN_DOWNLOADS: &str = "run `chock init --local`: it adds the download pins of this chock to `tool-versions.env`; then run `chock init --global`";
+
+const FETCH: &str = "run `chock init --downloads`: it fetches the downloads of each gate that is on, so for a gate that is off, run `chock enable GATE` first";
+
 /// The repair for each tool that `chock init --global` does not install from `tool-versions.env`.
-const INSTALLS: [(&str, &str); 6] = [
+const INSTALLS: [(&str, &str); 7] = [
+    (
+        "java",
+        "install a Java runtime, 21 or newer, such as Temurin 21, or set JAVA_HOME to one",
+    ),
     ("cargo-mutest", tool::REPAIR),
     ("rustfmt", "run `rustup component add rustfmt`"),
     ("clippy-driver", "run `rustup component add clippy`"),
@@ -75,7 +101,7 @@ fn installing(tool: &str) -> &'static str {
     found.map_or(PINNED, |(_, repair)| repair)
 }
 
-const FIXES: [(&str, &str); 64] = [
+const FIXES: [(&str, &str); 67] = [
     (
         "test",
         "run the rerun command, read each failing test's output, and fix the code or the test; a crate with no tests needs one",
@@ -194,6 +220,18 @@ const FIXES: [(&str, &str); 64] = [
     (
         "proof",
         "run the failing harness with `cargo kani --harness <name>` and fix the code or the proof",
+    ),
+    (
+        "tla",
+        "run TLC on the named cfg and read its trace: fix the model, or the cfg's `\\* expect:` line",
+    ),
+    (
+        "verus",
+        "run `verus <file> --crate-type=lib` and fix the proof it names; for a mutant that verifies, make the proof state what the mutant breaks",
+    ),
+    (
+        "links",
+        "write each `code:` link as `file.rs::Type::fn` or `Type::fn` that names one item; for a drifted item, read the model against the code, then commit the model",
     ),
     (
         "deps",
@@ -368,6 +406,12 @@ mod tests {
             [told("kani"), told("cargo-acl")],
             [Some(PINNED), Some(PINNED)]
         );
+        let fetch = not_fetched("tla-tools");
+        assert_eq!(
+            fetch,
+            "`tla-tools` is not fetched, so this gate has nothing to run"
+        );
+        assert_eq!(repair(&fetch), Some(FETCH));
     }
 
     #[test]

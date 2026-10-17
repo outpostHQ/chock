@@ -25,7 +25,7 @@ impl Stop {
     /// The exit of the command `name` that stopped.
     fn exit(self, name: &str) -> ExitCode {
         match self {
-            Self::Usage(why) => usage(&why),
+            Self::Usage(why) => usage(&why, Some(name)),
             Self::CannotRun(why) => cannot_run(&format!("{name}: {why}")),
         }
     }

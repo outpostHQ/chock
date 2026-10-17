@@ -21,7 +21,7 @@ use crate::setup::pins::{self, Pin};
 
 /// chock's own files are the template, because chock runs its own gates on itself; a separate
 /// template would drift.
-const PIN_FILE: &str = include_str!("../../tool-versions.env");
+pub(super) const PIN_FILE: &str = include_str!("../../tool-versions.env");
 const DENY: &str = include_str!("../../deny.toml");
 
 /// The baselines are deliberately absent: they are the shared reference the gates measure against,
@@ -82,17 +82,20 @@ pub struct Scope {
     pub fast: bool,
     /// Print what the options are and do nothing.
     pub help: bool,
+    /// Of the global half, fetch only the download pins, such as the jars of the `tla` gate.
+    pub downloads: bool,
 }
 
 /// What `chock init --help` prints. It lists every option, because `--fast` saves an adopted
 /// repository a full measurement it throws away.
 pub const USAGE: &str = "\
-chock init [--global] [--local] [--fast]
+chock init [--global] [--local] [--fast] [--downloads]
 
-  --global   install the pinned tools, once per machine: this project's pins, or chock's own
-  --local    write this project's hooks, pins and config
-  --fast     measure only the gates that need no compiler; skips the builds
-  --help     this text
+  --global     install the pinned tools, once per machine: this project's pins, or chock's own
+  --local      write this project's hooks, pins and config
+  --fast       measure only the gates that need no compiler; skips the builds
+  --downloads  fetch only the pinned downloads, such as TLC for the `tla` gate; implies --global
+  --help       this text
 
   With neither --global nor --local, `chock init` does both. After you install a newer chock,
   run it again: it moves this project's pins to that chock and keeps the pins chock does not set.
@@ -105,12 +108,14 @@ pub fn scope_of(args: &[&str]) -> Result<Scope, Error> {
         local: false,
         fast: false,
         help: false,
+        downloads: false,
     };
     for arg in args {
         match *arg {
             "--global" => scope.global = true,
             "--local" => scope.local = true,
             "--fast" => scope.fast = true,
+            "--downloads" => scope.downloads = true,
             "--help" | "-h" => scope.help = true,
             other => return Err(Error::UnknownOption((*other).to_string())),
         }
@@ -118,11 +123,15 @@ pub fn scope_of(args: &[&str]) -> Result<Scope, Error> {
     if scope.help {
         return Ok(scope);
     }
-    if !scope.global && !scope.local {
-        scope.global = true;
-        scope.local = true;
-    }
-    Ok(scope)
+    Ok(halves(scope))
+}
+
+/// `--downloads` fetches into this machine, so it is the global half; no half named means both.
+fn halves(mut scope: Scope) -> Scope {
+    let both = !scope.downloads && !scope.global && !scope.local;
+    scope.global |= scope.downloads || both;
+    scope.local |= both;
+    scope
 }
 
 pub fn run(args: &[&str]) -> ExitCode {
@@ -158,10 +167,12 @@ pub fn run(args: &[&str]) -> ExitCode {
     }
     // Every pin is read and parsed before any install starts.
     let parsed = match pins_for(root.as_deref()) {
-        Ok((source, text)) => pins::parse(&text).map_err(|e| format!("{source}: {e}")),
+        Ok((source, text)) => pins::parse(&text)
+            .and_then(|crates| Ok((crates, crate::setup::downloads::parse(&text)?)))
+            .map_err(|e| format!("{source}: {e}")),
         Err(e) => Err(e.to_string()),
     };
-    let parsed = match parsed {
+    let (parsed, downloads) = match parsed {
         Ok(p) => p,
         Err(e) => {
             eprintln!("chock init: {e}");
@@ -170,11 +181,19 @@ pub fn run(args: &[&str]) -> ExitCode {
     };
     // A dropped link is common on a laptop, and the next try often gets through.
     let patient = super::network::patiently(&crate::exec::run_env, &std::thread::sleep);
-    if let Err(e) = install_global(&parsed, &*patient, root.as_deref()) {
-        eprintln!("chock init: {e}");
-        return ExitCode::from(1);
+    let installed = match scope.downloads {
+        true => Ok(()),
+        false => install_global(&parsed, &*patient, root.as_deref()),
+    };
+    let tools = crate::gates::proofs::Tools::here();
+    let failed = fetch_downloads(&downloads, root.as_deref(), &tools);
+    match joined(installed, failed) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("chock init: {e}");
+            ExitCode::from(1)
+        }
     }
-    ExitCode::SUCCESS
 }
 
 /// Where `--global` finds no pin file, it installs the pins this chock ships.
@@ -841,6 +860,69 @@ fn install_global(pins: &[Pin], start: Start, root: Option<&Path>) -> Result<(),
     }
 }
 
+/// The installs' result, with the download pins that failed added to it.
+fn joined(installed: Result<(), Error>, failed: Vec<String>) -> Result<(), Error> {
+    match installed {
+        Err(Error::NotInstalled(mut crates)) => {
+            crates.extend(failed);
+            Err(Error::NotInstalled(crates))
+        }
+        Ok(()) if !failed.is_empty() => Err(Error::NotInstalled(failed)),
+        other => other,
+    }
+}
+
+/// Download pins, each checked against its SHA-256. A gate's own tool comes only while the project
+/// has that gate on, so a project without `tla` never fetches 200 MB of Java.
+fn fetch_downloads(
+    downloads: &[crate::setup::downloads::Download],
+    root: Option<&Path>,
+    tools: &crate::gates::proofs::Tools,
+) -> Vec<String> {
+    let config = root.and_then(|root| project::document::read::<Config>(root).ok().flatten());
+    let on = |gate: &str| config.as_ref().is_some_and(|held| held.is_on(gate));
+    let wanted: Vec<_> = downloads
+        .iter()
+        .filter(|pin| match pin.gate().filter(|gate| !on(gate)) {
+            Some(gate) => {
+                println!("  skipped   {} — the `{gate}` gate is off", pin.name);
+                false
+            }
+            None => true,
+        })
+        .collect();
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let Some(home) = tools.home.as_deref() else {
+        println!("  FAILED    downloads — no home directory holds them; set CHOCK_TOOLS");
+        return wanted.iter().map(|pin| pin.name.clone()).collect();
+    };
+    wanted
+        .into_iter()
+        .filter(|pin| {
+            !(reported(&crate::setup::downloads::fetch(pin, home, tools)) && set_up(pin, home))
+        })
+        .map(|pin| pin.name.clone())
+        .collect()
+}
+
+/// A download pin's `_SETUP` line, run in the directory that holds the fetched file.
+fn set_up(pin: &crate::setup::downloads::Download, home: &Path) -> bool {
+    let (Some(line), Ok(Some(file))) = (&pin.setup, pin.here()) else {
+        return true;
+    };
+    let dir = pin.dir(home, &file.sha256);
+    let ran = setup_command(line)
+        .map(|(program, args)| Command::new(program).args(&args).current_dir(&dir).status());
+    let done = ran.is_some_and(|status| status.is_ok_and(|status| status.success()));
+    match done {
+        true => println!("  set up    {} — {line}", pin.name),
+        false => println!("  FAILED    {} — `{line}` did not finish", pin.name),
+    }
+    done
+}
+
 /// One pin: Outpost's fork of mutest-rs is built from its repository, any other tool is fetched.
 fn installs(pin: &Pin, installed: &dyn Fn(&Pin) -> Option<String>, start: Start) -> bool {
     if !crate::setup::mutest::is_pin(pin, std::env::consts::OS) {
@@ -867,9 +949,10 @@ fn binstall_here() -> bool {
 }
 
 /// A binstall that fails for any reason falls back to the compile, whose errors `install_one`
-/// already knows how to read.
+/// already knows how to read. binstall fetches releases, so a git pin always compiles.
 fn fetch(pin: &Pin, binstall: bool) -> std::io::Result<std::process::Output> {
-    let fetched = binstall.then(|| Command::new("cargo").args(fetch_args(pin, true)).output());
+    let fetched = binstall.then_some(pin).filter(|pin| pin.git.is_none());
+    let fetched = fetched.map(|pin| Command::new("cargo").args(fetch_args(pin, true)).output());
     match fetched {
         Some(Ok(out)) if out.status.success() => Ok(out),
         _ => Command::new("cargo").args(fetch_args(pin, false)).output(),
@@ -931,7 +1014,8 @@ mod tests {
                     global: false,
                     local: false,
                     fast: false,
-                    help: true
+                    help: true,
+                    downloads: false
                 }
             );
         }
@@ -1347,6 +1431,7 @@ mod tests {
             want: "1.0.0".to_string(),
             setup: setup.map(str::to_string),
             systems: None,
+            git: None,
         }
     }
 
@@ -1433,6 +1518,7 @@ mod tests {
                 local: true,
                 fast: false,
                 help: false,
+                downloads: false,
             })
         );
     }
@@ -1446,6 +1532,7 @@ mod tests {
                 local: false,
                 fast: false,
                 help: false,
+                downloads: false,
             })
         );
         assert_eq!(
@@ -1455,6 +1542,7 @@ mod tests {
                 local: true,
                 fast: false,
                 help: false,
+                downloads: false,
             })
         );
     }
@@ -1468,8 +1556,15 @@ mod tests {
                 local: true,
                 fast: false,
                 help: false,
+                downloads: false,
             })
         );
+    }
+
+    #[test]
+    fn downloads_alone_mean_the_global_half_and_not_the_local() {
+        let scope = scope_of(&["--downloads"]).unwrap();
+        assert!(scope.global && scope.downloads && !(scope.local || scope.fast || scope.help));
     }
 
     #[test]
@@ -1652,6 +1747,7 @@ mod tests {
                 local: true,
                 fast: true,
                 help: false,
+                downloads: false,
             }
         );
         assert_eq!(
@@ -1661,6 +1757,7 @@ mod tests {
                 local: true,
                 fast: true,
                 help: false,
+                downloads: false,
             }
         );
         assert_eq!(
@@ -1670,6 +1767,7 @@ mod tests {
                 local: true,
                 fast: false,
                 help: false,
+                downloads: false,
             }
         );
     }
@@ -2132,5 +2230,57 @@ mod tests {
             let after = fs::read_to_string(&path).unwrap();
             assert_eq!((got, after.as_str()), (added, want), "{name}");
         }
+    }
+
+    #[test]
+    fn a_failed_download_joins_the_crates_that_failed() {
+        let names = |names: &[&str]| names.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(joined(Ok(()), Vec::new()), Ok(()));
+        let failed = Err(Error::NotInstalled(names(&["j"])));
+        assert_eq!(joined(Ok(()), names(&["j"])), failed);
+        let both = Err(Error::NotInstalled(names(&["c", "j"])));
+        assert_eq!(
+            joined(Err(Error::NotInstalled(names(&["c"]))), names(&["j"])),
+            both
+        );
+        let refused = Err(Error::NotARustProject);
+        assert_eq!(joined(refused.clone(), names(&["j"])), refused);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_download_fails_the_init_where_its_fetch_or_its_setup_line_fails() {
+        let root = crate::testdir::make("init-downloads");
+        let kept = crate::testdir::fetched(&root, "J", "j.jar");
+        let plain = crate::testdir::fetched(&root, "K", "k.jar");
+        let tools = crate::gates::proofs::Tools {
+            home: Some(root.join("tools")),
+            launcher: vec!["chock-no-such-program".into()],
+        };
+        let text = format!(
+            "{kept}J_SETUP=\"sh -c true\"\n{plain}TLA_TOOLS_VERSION=1\nTLA_TOOLS_URL=https://x/t.jar\nTLA_TOOLS_SHA256=b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4\n"
+        );
+        let pins = |text: &str| crate::setup::downloads::parse(text).unwrap();
+        let fetched = |text: &str, root, tools| fetch_downloads(&pins(text), root, tools);
+        assert_eq!(fetched(&text, Some(&root), &tools), Vec::<String>::new());
+        let config = crate::project::config::Config::of(["tla"]);
+        let file = root.join(crate::project::config::FILE);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, crate::project::document::render(&config)).unwrap();
+        assert_eq!(fetched(&text, Some(&root), &tools), ["tla-tools"]);
+        let failing = text.replace("sh -c true", "sh -c false");
+        assert_eq!(fetched(&failing, Some(&root), &tools), ["j", "tla-tools"]);
+        let home = root.join("tools");
+        let set = |text: &str, at: usize| set_up(&pins(text)[at], &home);
+        assert_eq!(
+            (set(&text, 0), set(&failing, 0), set(&text, 1)),
+            (true, false, true)
+        );
+        let homeless = crate::gates::proofs::Tools::default();
+        assert_eq!(
+            fetched(&text, Some(&root), &homeless),
+            ["j", "k", "tla-tools"]
+        );
+        assert_eq!(fetched(&text, None, &homeless), ["j", "k"]);
     }
 }

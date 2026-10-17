@@ -16,11 +16,67 @@ pub(super) fn check(ctx: &Ctx) -> Result<Outcome, String> {
              policy to hold anything to"
         ));
     }
-    let mut args = vec!["deny", "check"];
-    args.extend(&asked);
-    let out = exec::tool(&ctx.root, "cargo", &args)?;
-    let outcome = with_unplaced(verdict(&out, &ctx.root), &out);
+    let deny = |checks: &[&str]| -> Result<Outcome, String> {
+        let args: Vec<&str> = ["deny", "check"].iter().chain(checks).copied().collect();
+        let out = exec::tool(&ctx.root, "cargo", &args)?;
+        Ok(with_unplaced(verdict(&out, &ctx.root), &out))
+    };
+    let outcome = checked(&asked, &deny)?;
     Ok(with_unasked(outcome, &asked))
+}
+
+/// All the `asked` checks in one run, then each alone when that run gave nothing to read.
+fn checked(
+    asked: &[&str],
+    deny: &dyn Fn(&[&str]) -> Result<Outcome, String>,
+) -> Result<Outcome, String> {
+    let whole = deny(asked)?;
+    match unread(&whole) && asked.len() > 1 {
+        true => alone(asked, whole, deny),
+        false => Ok(whole),
+    }
+}
+
+/// Each check alone, after a run of all of them gave nothing to read: cargo-deny 0.20.2 overflows
+/// its stack in `bans` on a dev-dependency cycle, and that hid what the other checks found.
+fn alone(
+    asked: &[&str],
+    whole: Outcome,
+    deny: &dyn Fn(&[&str]) -> Result<Outcome, String>,
+) -> Result<Outcome, String> {
+    let mut found = Outcome::passed();
+    let mut silent = Vec::new();
+    for check in asked {
+        let one = deny(&[check])?;
+        if unread(&one) {
+            silent.push((*check, one));
+            continue;
+        }
+        found.passed &= one.passed;
+        found.findings.extend(one.findings);
+    }
+    if silent.len() == asked.len() {
+        return Ok(whole);
+    }
+    // Every other check passed, so the one that stopped is the whole answer, and cannot run.
+    if found.passed {
+        return Ok(silent.into_iter().next().map_or(found, |(_, one)| one));
+    }
+    let stopped = silent.iter().map(|(check, one)| stopped(check, one));
+    found.findings.extend(stopped.collect::<Vec<_>>());
+    Ok(found)
+}
+
+/// The finding for a check that gave nothing to read even alone, with the last line it wrote.
+fn stopped(check: &str, one: &Outcome) -> Finding {
+    let said = one.said.as_deref().unwrap_or_default();
+    let last = said.lines().map(str::trim).rfind(|line| !line.is_empty());
+    let message = format!(
+        "`cargo deny check {check}` stopped with nothing chock could read, so {check} went \
+         unchecked: {}",
+        last.unwrap_or("it wrote nothing")
+    );
+    Finding::at(DENY, &message).item(check)
 }
 
 /// A failed outcome, with cargo-deny's errors that point at no place; a pass keeps what it has.
@@ -223,5 +279,91 @@ mod tests {
         assert_eq!(with_unasked(unread.clone(), &asked), unread);
         let every = ["advisories", "bans", "licenses", "sources"];
         assert_eq!(with_unasked(Outcome::passed(), &every), Outcome::passed());
+    }
+
+    /// The run scm saw: `bans` overflows its stack, and an advisory went unreported with it.
+    #[test]
+    fn a_check_that_crashes_alone_hides_no_finding_of_the_others() {
+        let asked = ["advisories", "bans", "sources"];
+        let crashed = || {
+            let mut out = Outcome::failed(Vec::new());
+            out.said = Some("thread 'main' has overflowed its stack\nfatal runtime error\n".into());
+            out
+        };
+        let advisory = || Outcome::failed(vec![Finding::at("Cargo.lock", "zip 8.6.0").item("A-1")]);
+        let deny = |checks: &[&str]| -> Result<Outcome, String> {
+            Ok(match checks {
+                ["advisories"] => advisory(),
+                ["bans"] => crashed(),
+                _ => Outcome::passed(),
+            })
+        };
+        let found = alone(&asked, crashed(), &deny).unwrap();
+        assert!(!found.passed);
+        assert_eq!(
+            rendered(&found.findings),
+            [
+                "Cargo.lock: A-1: zip 8.6.0",
+                "deny.toml: bans: `cargo deny check bans` stopped with nothing chock could read, so \
+                 bans went unchecked: fatal runtime error"
+            ]
+        );
+        let clean = |checks: &[&str]| -> Result<Outcome, String> {
+            Ok(if checks == ["bans"] {
+                crashed()
+            } else {
+                Outcome::passed()
+            })
+        };
+        let refused = alone(&asked, Outcome::failed(Vec::new()), &clean).unwrap();
+        assert_eq!(
+            refused,
+            crashed(),
+            "the others passed, so the crash is the answer"
+        );
+        let mut whole = Outcome::failed(Vec::new());
+        whole.said = Some("every check together".into());
+        let all = |_: &[&str]| -> Result<Outcome, String> { Ok(crashed()) };
+        assert_eq!(alone(&asked, whole.clone(), &all).unwrap(), whole);
+    }
+
+    /// One call answers, unless several checks ran together and left nothing to read.
+    #[test]
+    fn only_a_silent_run_of_several_checks_runs_each_check_again() {
+        let asked = ["advisories", "bans", "sources"];
+        let crashed = || {
+            let mut out = Outcome::failed(Vec::new());
+            out.said = Some("thread 'main' has overflowed its stack\n".into());
+            out
+        };
+        let advisory = || Outcome::failed(vec![Finding::at("Cargo.lock", "zip 8.6.0").item("A-1")]);
+        let calls = &std::cell::Cell::new(0);
+        let deny = |checks: &[&str]| -> Result<Outcome, String> {
+            calls.set(calls.get() + 1);
+            Ok(match checks {
+                ["advisories"] => advisory(),
+                ["bans"] | [_, _, _] => crashed(),
+                _ => Outcome::passed(),
+            })
+        };
+        let found = checked(&asked, &deny).unwrap();
+        assert_eq!(calls.get(), 4);
+        assert_eq!(found, alone(&asked, crashed(), &deny).unwrap());
+        calls.set(0);
+        // The second call of each would answer otherwise, so only one call may happen.
+        let first = |answer: fn() -> Outcome| {
+            move |_: &[&str]| -> Result<Outcome, String> {
+                calls.set(calls.get() + 1);
+                Ok(if calls.get() == 1 {
+                    answer()
+                } else {
+                    Outcome::passed()
+                })
+            }
+        };
+        assert_eq!(checked(&asked, &first(advisory)).unwrap(), advisory());
+        assert_eq!(calls.replace(0), 1);
+        assert_eq!(checked(&["bans"], &first(crashed)).unwrap(), crashed());
+        assert_eq!(calls.get(), 1);
     }
 }

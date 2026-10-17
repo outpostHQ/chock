@@ -15,6 +15,17 @@ pub fn from_cargo_listing(listing: &str, crate_name: &str) -> Option<String> {
     })
 }
 
+/// Where cargo's listing says a crate came from: the text in parentheses after its version. A git
+/// or a path install has one; a crates.io install has none.
+#[must_use]
+pub fn source_in_listing<'a>(listing: &'a str, crate_name: &str) -> Option<&'a str> {
+    listing.lines().find_map(|line| {
+        let rest = line.strip_prefix(crate_name)?.strip_prefix(" v")?;
+        let (_, source) = rest.split_once(" (")?;
+        source.rsplit_once(')').map(|(source, _)| source)
+    })
+}
+
 /// The first three-part version in a tool's `--version` output.
 #[must_use]
 pub fn from_version_output(output: &str) -> Option<String> {

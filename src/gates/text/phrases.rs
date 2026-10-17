@@ -121,17 +121,32 @@ fn segments(pattern: &[String], path: &[String]) -> bool {
         .is_some_and(|(name, left)| segment(first, name) && segments(rest, left))
 }
 
-/// Within one segment, `*` stands for any run of characters.
+/// Within one segment, `*` stands for any run of characters and `?` for one.
 fn segment(pattern: &str, name: &str) -> bool {
-    let Some((head, tail)) = pattern.split_once('*') else {
+    let Some(at) = pattern.find(['*', '?']) else {
         return pattern == name;
     };
+    let (head, wild) = pattern.split_at(at);
+    let (one, tail) = (wild.starts_with('?'), &wild[1..]);
     name.strip_prefix(head).is_some_and(|rest| {
-        rest.char_indices()
-            .map(|(at, _)| at)
-            .chain([rest.len()])
+        starts(rest, one)
+            .into_iter()
             .any(|at| segment(tail, &rest[at..]))
     })
+}
+
+/// Where the rest of a name can go on after a wildcard: after its first character for `?`, and at
+/// each character and at the end for `*`.
+fn starts(rest: &str, one: bool) -> Vec<usize> {
+    let at: Vec<usize> = rest
+        .char_indices()
+        .map(|(at, _)| at)
+        .chain([rest.len()])
+        .collect();
+    match one {
+        true => at.into_iter().skip(1).take(1).collect(),
+        false => at,
+    }
 }
 
 #[cfg(test)]
@@ -205,6 +220,10 @@ mod tests {
             ("src/*.rs", "src/é.rs", true),
             ("src/a*b.rs", "src/ab.rs", true),
             ("src/a*b.rs", "src/xab.rs", false),
+            ("proofs/law?_*.rs", "proofs/law3_merge.rs", true),
+            ("proofs/law?_*.rs", "proofs/law_merge.rs", false),
+            ("proofs/law?_*.rs", "proofs/law12_merge.rs", false),
+            ("proofs/la?", "proofs/laé", true),
         ] {
             assert_eq!(globbed(pattern, path), holds, "{pattern} against {path}");
         }

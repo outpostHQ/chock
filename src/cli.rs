@@ -17,7 +17,6 @@ use crate::project::{
 };
 use crate::run::{self, Ctx, baseline::Baseline, report::LAST_RUN, report::Run, report::Verdict};
 use crate::setup::{doctor, init, pins};
-use crate::usage::USAGE;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -61,7 +60,9 @@ impl Change<'_> {
 }
 
 pub fn dispatch(args: &[&str]) -> ExitCode {
-    match parse(args) {
+    let joined = args::joined(args);
+    let args: Vec<&str> = joined.iter().map(String::as_str).collect();
+    match parse(&args) {
         Command::Run {
             names,
             json,
@@ -96,10 +97,10 @@ pub fn dispatch(args: &[&str]) -> ExitCode {
         Command::Tree(name, rest) => tree::reads(name, rest),
         Command::Init(rest) => init::run(rest),
         Command::Print(text) => {
-            emit(text);
+            emit(&text);
             ExitCode::SUCCESS
         }
-        Command::Usage(problem) => usage(&problem),
+        Command::Usage(problem) => usage(&problem, args.first().copied()),
     }
 }
 
@@ -110,8 +111,10 @@ fn emit(text: &str) {
     let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
 }
 
-fn usage(problem: &str) -> ExitCode {
-    eprintln!("chock: {problem}\n\n{USAGE}");
+/// The problem, then the lines of the command it came from; all of the usage when none was given.
+fn usage(problem: &str, command: Option<&str>) -> ExitCode {
+    let more = crate::usage::after_problem(command);
+    eprintln!("chock: {problem}\n\n{more}");
     ExitCode::from(2)
 }
 
@@ -532,7 +535,8 @@ fn all_on(config: Option<&Config>) -> Result<Vec<&'static run::Gate>, String> {
 
 fn unknown_gate(name: &str) -> String {
     let known: Vec<&str> = gates::registry().iter().map(|g| g.name).collect();
-    format!("no gate named `{name}`. There is: {}", known.join(", "))
+    let guess = crate::usage::guess(name, &known, "");
+    format!("no gate named `{name}` (`chock gates` lists every gate){guess}")
 }
 
 /// Registry order, not config order, so a cheap failure always reports first.
@@ -937,7 +941,10 @@ fn answered(found: &[crate::run::report::Finding], json: bool, hook: bool) -> Ex
 fn named(rest: &[&str]) -> Result<Vec<String>, ExitCode> {
     if rest.first() != Some(&"--hook") {
         return match rest {
-            [] => Err(usage("edited takes one or more paths, or --hook")),
+            [] => Err(usage(
+                "edited takes one or more paths, or --hook",
+                Some("edited"),
+            )),
             paths => Ok(paths.iter().map(|p| (*p).to_string()).collect()),
         };
     }
@@ -1124,7 +1131,7 @@ mod tests {
             "message", "edited", "slop", "lean", "oracle", "sweep", "moved", "init",
         ] {
             assert!(
-                USAGE.contains(&format!("chock {name}")),
+                crate::usage::USAGE.contains(&format!("chock {name}")),
                 "{name} missing from usage"
             );
         }
@@ -1202,8 +1209,9 @@ mod tests {
     #[test]
     fn an_unknown_gate_name_is_refused_and_lists_the_real_ones() {
         let err = select(&["nope"], None).unwrap_err();
-        assert!(err.starts_with("no gate named `nope`"));
-        assert!(err.contains("slop"));
+        assert_eq!(err, "no gate named `nope` (`chock gates` lists every gate)");
+        let typo = select(&["lnks"], None).unwrap_err();
+        assert!(typo.ends_with("gate); did you mean `links`?"), "{typo}");
     }
 
     #[test]

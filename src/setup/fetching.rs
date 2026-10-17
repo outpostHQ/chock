@@ -30,7 +30,8 @@ pub(super) fn replacing(pin: &Pin, installed: Option<&str>) -> Option<String> {
     }
     Some(format!(
         "  replacing {} {have} with {}, which every project on this machine then measures with",
-        pin.crate_name, pin.want
+        pin.crate_name,
+        pin.wanted()
     ))
 }
 
@@ -68,6 +69,14 @@ fn for_another_system(pin: &Pin, os: &str) -> Option<String> {
 
 /// Printed before each tool, because a compile takes minutes and silence reads as hung.
 pub(super) fn starting(pin: &Pin, binstall: bool) -> String {
+    if let Some(git) = &pin.git {
+        return format!(
+            "  installing {} — compiled from {} at {}",
+            pin.crate_name,
+            git.url,
+            git.short()
+        );
+    }
     let how = match binstall {
         true => "its own prebuilt release where it has one, else compiled",
         false => "compiled from crates.io",
@@ -79,8 +88,13 @@ pub(super) fn starting(pin: &Pin, binstall: bool) -> String {
 /// release the tool publishes itself, and falls back to compiling when there is none.
 pub(super) fn fetch_args(pin: &Pin, binstall: bool) -> Vec<String> {
     let at = format!("{}@{}", pin.crate_name, pin.want);
-    let args = match binstall {
-        true => vec![
+    // `--force`: cargo keeps a crates.io build of the same version, and the commit replaces it.
+    let args = match &pin.git {
+        Some(git) => {
+            let source = ["install", "--git", &git.url, "--rev", &git.rev];
+            [&source[..], &["--locked", "--force", &pin.crate_name]].concat()
+        }
+        None if binstall => vec![
             "binstall",
             "-y",
             "--locked",
@@ -88,7 +102,7 @@ pub(super) fn fetch_args(pin: &Pin, binstall: bool) -> Vec<String> {
             "quick-install",
             &at,
         ],
-        false => vec![
+        None => vec![
             "install",
             &pin.crate_name,
             "--version",
@@ -214,6 +228,27 @@ mod tests {
 
     /// The `--global`/`--local` split holds that sharing executables makes two projects comparable.
     /// That needs them to agree on the version, so a change is worth naming even when scores hold.
+    #[test]
+    fn a_git_pin_is_compiled_from_its_commit_over_a_crates_io_build() {
+        let (rev, url) = (
+            "0123456789abcdef0123456789abcdef01234567",
+            "https://h/o/cargo-deny",
+        );
+        let text = format!("CARGO_DENY_VERSION=0.18.6\nCARGO_DENY_GIT={url}\nCARGO_DENY_REV={rev}");
+        let pin = pins::parse(&text).unwrap().remove(0);
+        let git = ["install", "--git", url, "--rev", rev];
+        let args = [&git[..], &["--locked", "--force", "cargo-deny"]].concat();
+        assert_eq!(fetch_args(&pin, true), args);
+        let installing = format!("  installing cargo-deny — compiled from {url} at 0123456789ab");
+        assert_eq!(starting(&pin, true), installing);
+        let crates = "0.18.6 from crates.io";
+        let replaced = format!(
+            "  replacing cargo-deny {crates} with 0.18.6 from {url} at 0123456789ab, \
+                                which every project on this machine then measures with"
+        );
+        assert_eq!(replacing(&pin, Some(crates)).unwrap(), replaced);
+    }
+
     #[test]
     fn replacing_a_version_another_project_pins_is_said_out_loud() {
         let pin = version_pinned("cargo-crap", "0.5.0");

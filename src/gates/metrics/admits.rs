@@ -1,5 +1,5 @@
-//! `sorry`, `admit`, `native_decide` and `axiom` in Lean files, counted per file and word. Each one
-//! lets a theorem stand on a step that Lean's kernel never checked.
+//! `sorry`, `admit`, `native_decide` and `axiom` in Lean files, and Verus's escapes in Rust files
+//! that hold a `verus!` block, counted per file and word. Each one lets a proof skip a step.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -11,8 +11,8 @@ use crate::run::{Ctx, Gate, Group, Kind};
 
 pub const GATE: Gate = Gate {
     name: "admits",
-    about: "`sorry`, `admit`, `native_decide` and `axiom` in Lean proof files, counted per file \
-            and word",
+    about: "proof steps nothing checked: `sorry` or `axiom` in Lean, `assume(` or \
+            `verifier::external` in Verus, counted per file and word",
     group: Group::Quality,
     builds: false,
     reads: None,
@@ -37,16 +37,87 @@ const FETCHED: [&str; 2] = [".lake", "lake-packages"];
 fn measure(ctx: &Ctx) -> Result<Series, String> {
     let entered = |dir: &str| !project::SKIPPED.contains(&dir) && !FETCHED.contains(&dir);
     let named = |name: &str, _: &Path| {
-        Path::new(name).extension().is_some_and(|it| it == "lean") && name != "lakefile.lean"
+        let extension = Path::new(name).extension();
+        extension.is_some_and(|it| it == "rs" || it == "lean") && name != "lakefile.lean"
     };
     let files = project::walked(&ctx.listing, &ctx.root, &entered, &named)?;
     let mut read = Vec::new();
     for path in files {
         let shown = project::relative(&ctx.root, &path);
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("{shown}: {e}"))?;
-        read.push((shown, counted(&text)));
+        let words = words_in(&path, &shown)?;
+        read.push((shown, words));
     }
+    read.retain(|(_, words)| !words.is_empty());
     Ok(keyed(read))
+}
+
+/// The words of one file: the escapes of a Rust file, the steps of a Lean one.
+fn words_in(path: &Path, shown: &str) -> Result<BTreeMap<&'static str, u64>, String> {
+    let rust = shown.ends_with(".rs");
+    match std::fs::read_to_string(path) {
+        Ok(text) if rust => Ok(escapes(&text)),
+        Ok(text) => Ok(counted(&text)),
+        // A Rust file that is not UTF-8 holds no `verus!` block.
+        Err(e) if rust && e.kind() == std::io::ErrorKind::InvalidData => Ok(BTreeMap::new()),
+        Err(e) => Err(format!("{shown}: {e}")),
+    }
+}
+
+/// Verus's ways past its verifier, in a file with a `verus!` block: a call to `assume` or `admit`,
+/// `verifier::external` in any form, and `assume_specification`. Comments and strings hold none.
+fn escapes(text: &str) -> BTreeMap<&'static str, u64> {
+    let mut found = BTreeMap::new();
+    if !text.contains("verus!") {
+        return found;
+    }
+    let Ok(tokens) = text.parse::<proc_macro2::TokenStream>() else {
+        return found;
+    };
+    escapes_in(tokens, &mut found);
+    found
+}
+
+fn escapes_in(tokens: proc_macro2::TokenStream, found: &mut BTreeMap<&'static str, u64>) {
+    use proc_macro2::{Delimiter, TokenTree};
+    let trees: Vec<TokenTree> = tokens.into_iter().collect();
+    for (at, tree) in trees.iter().enumerate() {
+        let next = trees.get(at + 1);
+        let word = match tree {
+            TokenTree::Group(group) => {
+                escapes_in(group.stream(), found);
+                None
+            }
+            TokenTree::Ident(ident) => {
+                let called = matches!(next, Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis);
+                escape(&ident.to_string(), called, &trees[at + 1..])
+            }
+            _ => None,
+        };
+        if let Some(word) = word {
+            *found.entry(word).or_default() += 1;
+        }
+    }
+}
+
+/// The escape a name starts, given whether a call follows it and the tokens after it.
+fn escape(name: &str, called: bool, after: &[proc_macro2::TokenTree]) -> Option<&'static str> {
+    use proc_macro2::TokenTree;
+    match name {
+        "assume" if called => Some("assume"),
+        "admit" if called => Some("admit"),
+        _ if name.starts_with("assume_spec") => Some("assume_specification"),
+        // `verifier::external_body`, and the older `verifier(external_body)`.
+        "verifier" => {
+            let path: String = after.iter().take(3).map(ToString::to_string).collect();
+            let args = match after.first() {
+                Some(TokenTree::Group(args)) => args.stream().to_string(),
+                _ => String::new(),
+            };
+            let external = path.starts_with("::external") || args.starts_with("external");
+            external.then_some("verifier::external")
+        }
+        _ => None,
+    }
 }
 
 /// Each of `WORDS` in Lean code: not in a comment, a string, a character, a `«»` name or a
@@ -169,6 +240,41 @@ mod tests {
     }
 
     #[test]
+    fn each_verus_escape_in_code_is_counted_and_a_mention_is_not() {
+        let text = "use vstd::prelude::*;\nverus! {\n\
+                    #[verifier::external_body]\nfn a() {}\n#[verifier(external)]\nfn b() {}\n\
+                    #[verifier::opaque]\n#[verifier(opaque)]\nfn e() {}\n\
+                    pub assume_specification[ f ](x: u8);\n\
+                    proof fn c() { assume(false); admit(); }\n\
+                    // assume(true) and verifier::external_body in a comment\n\
+                    fn d() { let s = \"admit()\"; let assume = 1; }\n}\n";
+        let found: Vec<(&str, u64)> = escapes(text).into_iter().collect();
+        let all = [("admit", 1), ("assume", 1), ("assume_specification", 1)];
+        assert_eq!(found, [&all[..], &[("verifier::external", 2)]].concat());
+        assert_eq!(escapes("fn f() { assume(x) }\n"), BTreeMap::new());
+        assert_eq!(escapes("verus! { fn f( }\n"), BTreeMap::new());
+        let mut walked = BTreeMap::new();
+        escapes_in("{ [admit()] }".parse().unwrap(), &mut walked);
+        assert_eq!(walked, BTreeMap::from([("admit", 1)]));
+        let after = |text: &str| -> Vec<proc_macro2::TokenTree> {
+            let stream: proc_macro2::TokenStream = text.parse().unwrap();
+            stream.into_iter().collect()
+        };
+        let external = Some("verifier::external");
+        for text in [
+            "::external",
+            "::external_body",
+            "(external)",
+            "(external_body)",
+        ] {
+            assert_eq!(escape("verifier", false, &after(text)), external, "{text}");
+        }
+        for text in ["::opaque", "(opaque)", "", ": external", "external"] {
+            assert_eq!(escape("verifier", false, &after(text)), None, "{text}");
+        }
+    }
+
+    #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn each_proof_file_is_keyed_by_file_and_word_and_lake_s_own_are_not() {
         let ctx = crate::testdir::Held::tree(
@@ -179,15 +285,26 @@ mod tests {
                 ("lakefile.lean", "-- sorry\nsorry\n"),
                 (".lake/packages/x/X.lean", "axiom x : False\n"),
                 ("lake-packages/y/Y.lean", "axiom y : False\n"),
+                ("src/law.rs", "verus! { proof fn l() { assume(false); } }\n"),
+                ("src/plain.rs", "fn f() { assume(x) }\n"),
             ],
         );
+        // In name order this file comes first, so the walk must go on past it.
+        std::fs::write(ctx.root.join("src/a.rs"), [0xff, 0xfe]).unwrap();
         let series = measure(&ctx).unwrap();
         let keys: Vec<(&str, u64)> = series.0.iter().map(|(k, n)| (k.as_str(), *n)).collect();
         assert_eq!(
             keys,
-            [("Proofs/A.lean#axiom", 1), ("Proofs/A.lean#sorry", 1)]
+            [
+                ("Proofs/A.lean#axiom", 1),
+                ("Proofs/A.lean#sorry", 1),
+                ("src/law.rs#assume", 1)
+            ]
         );
         let none = crate::testdir::Held::tree("gate-admits-none", &[("src/lib.rs", "")]);
         assert_eq!(measure(&none).unwrap(), Series::new());
+        let raw = crate::testdir::Held::tree("gate-admits-raw", &[("src/lib.rs", "")]);
+        std::fs::write(raw.root.join("Raw.lean"), [0xff, 0xfe]).unwrap();
+        assert!(measure(&raw).unwrap_err().starts_with("Raw.lean: "));
     }
 }

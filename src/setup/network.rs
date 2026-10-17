@@ -64,7 +64,7 @@ mod tests {
     use std::path::Path;
 
     const TIMED_OUT: &str = "error: could not download file from 'https://static.rust-lang.org/\
-        dist/2026-10-03/channel-rust-nightly.toml': error sending request: connection error: \
+        dist/2026-10-17/channel-rust-nightly.toml': error sending request: connection error: \
         timed out\n";
 
     fn output(code: i32, stderr: &str) -> Output {
@@ -83,7 +83,7 @@ mod tests {
             answers[at].clone()
         };
         let wait = |pause: Duration| waited.borrow_mut().push(pause.as_secs());
-        let args = ["toolchain", "install", "nightly-2026-10-03"];
+        let args = ["toolchain", "install", "nightly-2026-10-17"];
         let done = patiently(&start, &wait)("rustup", &args, Path::new("."), &[]);
         (done, waited.into_inner(), runs.into_inner())
     }
@@ -121,7 +121,7 @@ mod tests {
             Ok(output(128, TIMED_OUT)),
         ];
         let reason = format!(
-            "`rustup toolchain install nightly-2026-10-03` failed 3 times: {}; check the \
+            "`rustup toolchain install nightly-2026-10-17` failed 3 times: {}; check the \
              connection, a VPN or a proxy, then run `chock init --global` again, which keeps what \
              is installed",
             TIMED_OUT.trim_end()

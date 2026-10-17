@@ -55,8 +55,9 @@ pub enum Command<'a> {
     /// `slop`, `lean` and `oracle`: each reads a tree or a program that chock does not own.
     Tree(&'a str, &'a [&'a str]),
     Init(&'a [&'a str]),
-    /// `--version` and `--help`: the text each one prints.
-    Print(&'static str),
+    /// `--version`, `--help`, and the lines of one command for `chock COMMAND --help` and
+    /// `chock help COMMAND`: the text each one prints.
+    Print(String),
     Usage(String),
 }
 
@@ -64,7 +65,10 @@ pub enum Command<'a> {
 fn named<'a>(cmd: &'a str, rest: &'a [&'a str]) -> Command<'a> {
     match cmd {
         "lean" | "oracle" | "sweep" | "moved" => Command::Tree(cmd, rest),
-        _ => Command::Usage(format!("unknown command `{cmd}`")),
+        _ => Command::Usage(format!(
+            "unknown command `{cmd}`{}",
+            crate::usage::guess(cmd, &crate::usage::commands(), "chock ")
+        )),
     }
 }
 
@@ -102,6 +106,29 @@ const PACKAGE: &str = "--package=";
 const FILTER: &str = "--filter=";
 
 const MUTATE: &str = "--mutate=";
+
+/// The flags of `run` that take a value, which may follow as the next word.
+const VALUED: [&str; 5] = ["--skip", "--package", "--filter", "--mutate", PARTITION];
+
+/// `run --skip miri` as `run --skip=miri`, so a flag of `run` that takes a value takes it either
+/// way.
+#[must_use]
+pub fn joined(args: &[&str]) -> Vec<String> {
+    let run = args.first() == Some(&"run");
+    let mut out = Vec::new();
+    let mut words = args.iter().peekable();
+    while let Some(word) = words.next() {
+        let value = words.peek().filter(|value| !value.starts_with('-'));
+        match value {
+            Some(value) if run && VALUED.contains(word) => {
+                out.push(format!("{word}={value}"));
+                words.next();
+            }
+            _ => out.push((*word).to_string()),
+        }
+    }
+    out
+}
 
 /// A flag of `run`: `--fast`, `--ci`, `--no-cache`, `--miri-partition=K/N`, `--skip=NAME,...`,
 /// `--package=NAME`, `--filter=TEXT` or `--mutate=FILE,...`.
@@ -179,7 +206,7 @@ fn skipped<'a>(names: &[&'a str]) -> Vec<&'a str> {
 fn to_run<'a>(rest: &[&'a str]) -> Command<'a> {
     let (names, json) = split_json(rest);
     match names.iter().find(|n| n.starts_with('-') && !known(n)) {
-        Some(flag) => Command::Usage(format!("unknown option `{flag}`")),
+        Some(flag) => Command::Usage(unknown_option(flag)),
         // A malformed `--miri-partition` is a usage error too.
         None => match (miri_part(&names), scope(&names)) {
             (Err(why), _) | (_, Err(why)) => Command::Usage(why),
@@ -215,7 +242,7 @@ pub fn parse<'a>(args: &'a [&'a str]) -> Command<'a> {
         [cmd, rest @ ..]
             if *cmd != "init" && rest.iter().any(|arg| matches!(*arg, "--help" | "-h")) =>
         {
-            Command::Print(USAGE)
+            Command::Print(help(cmd))
         }
         ["run", rest @ ..] => to_run(rest),
         ["gates", rest @ ..] => json_only("gates", rest, |json| Command::Gates { json }),
@@ -233,11 +260,32 @@ pub fn parse<'a>(args: &'a [&'a str]) -> Command<'a> {
         ["edited", rest @ ..] => Command::Edited(rest),
         ["slop", rest @ ..] => Command::Tree("slop", rest),
         ["init", rest @ ..] => Command::Init(rest),
-        ["--version" | "-V"] => Command::Print(VERSION_LINE),
-        ["help", "init"] => Command::Init(&["--help"]),
-        ["--help" | "-h"] | ["help", ..] => Command::Print(USAGE),
+        ["--version" | "-V"] => Command::Print(VERSION_LINE.to_string()),
+        ["help", cmd] => helped(cmd),
+        ["--help" | "-h"] | ["help", ..] => Command::Print(USAGE.to_string()),
         [] => Command::Usage("no command given".to_string()),
         [cmd, rest @ ..] => named(cmd, rest),
+    }
+}
+
+/// `help COMMAND`: the lines of that command, which `init` gives itself.
+fn helped(cmd: &str) -> Command<'_> {
+    match cmd {
+        "init" => Command::Init(&["--help"]),
+        _ => Command::Print(help(cmd)),
+    }
+}
+
+/// The lines of `cmd`, or all of the usage for a word that is no command.
+fn help(cmd: &str) -> String {
+    crate::usage::about(cmd).unwrap_or_else(|| USAGE.to_string())
+}
+
+/// A flag `run` does not know, or one that takes a value and came with none.
+fn unknown_option(flag: &str) -> String {
+    match VALUED.contains(&flag) {
+        true => format!("`{flag}` names nothing"),
+        false => format!("unknown option `{flag}`"),
     }
 }
 
@@ -304,12 +352,18 @@ mod tests {
         assert_eq!(parse(&["doctor"]), Command::Doctor { json: false });
         assert_eq!(parse(&["baseline"]), Command::Baseline(vec![]));
         assert_eq!(parse(&["gates"]), Command::Gates { json: false });
-        assert_eq!(parse(&["--version"]), Command::Print(VERSION_LINE));
-        assert_eq!(parse(&["-V"]), Command::Print(VERSION_LINE));
-        assert_eq!(parse(&["--help"]), Command::Print(USAGE));
-        assert_eq!(parse(&["-h"]), Command::Print(USAGE));
-        assert_eq!(parse(&["help"]), Command::Print(USAGE));
-        assert_eq!(parse(&["help", "run"]), Command::Print(USAGE));
+        let (version, usage) = (
+            Command::Print(VERSION_LINE.into()),
+            Command::Print(USAGE.into()),
+        );
+        assert_eq!(parse(&["--version"]), version);
+        assert_eq!(parse(&["-V"]), version);
+        assert_eq!(parse(&["--help"]), usage);
+        assert_eq!(parse(&["-h"]), usage);
+        assert_eq!(parse(&["help"]), usage);
+        assert_eq!(parse(&["help", "nope"]), usage);
+        let run = crate::usage::about("run").map(Command::Print);
+        assert_eq!(Some(parse(&["help", "run"])), run);
         assert_eq!(parse(&["help", "init"]), Command::Init(&["--help"]));
     }
 
@@ -480,8 +534,16 @@ mod tests {
         let asked = ["run", "--skip=miri,mutest,", "--ci", "lint", "--skip=bsize"];
         assert_eq!(parse(&asked), expected);
         assert_eq!(
-            parse(&["run", "--skip", "miri"]),
-            Command::Usage("unknown option `--skip`".to_string())
+            joined(&["run", "--skip", "miri", "--ci"]),
+            ["run", "--skip=miri", "--ci"]
+        );
+        assert_eq!(
+            joined(&["disable", "--skip", "miri"]),
+            ["disable", "--skip", "miri"]
+        );
+        assert_eq!(
+            parse(&["run", "lint", "--skip"]),
+            Command::Usage("`--skip` names nothing".to_string())
         );
     }
 
@@ -518,10 +580,9 @@ mod tests {
         assert_eq!(parse(&["run", "test", "lint", "--package=a"]), alone);
         let twice = parse(&["run", "test", "--filter=a", "--filter=b"]);
         assert_eq!(twice, usage("`--filter` is given twice"));
-        let empty = parse(&["run", "test", "--package="]);
-        assert_eq!(empty, usage("`--package` names nothing"));
-        let unknown = parse(&["run", "test", "--package", "a"]);
-        assert_eq!(unknown, usage("unknown option `--package`"));
+        let empty = usage("`--package` names nothing");
+        assert_eq!(parse(&["run", "test", "--package="]), empty);
+        assert_eq!(parse(&["run", "test", "--package"]), empty);
     }
 
     #[test]
@@ -613,7 +674,11 @@ mod tests {
         assert_eq!(parse(&[]), Command::Usage("no command given".to_string()));
         assert_eq!(
             parse(&["doctr"]),
-            Command::Usage("unknown command `doctr`".to_string())
+            Command::Usage("unknown command `doctr`; did you mean `chock doctor`?".to_string())
+        );
+        assert_eq!(
+            parse(&["deploy"]),
+            Command::Usage("unknown command `deploy`".to_string())
         );
     }
 
@@ -691,18 +756,20 @@ mod tests {
         );
     }
 
-    /// `--help` after any command in the usage prints usage; `init` answers it with its own text.
+    /// `--help` after any command in the usage prints that command's lines; `init` answers it
+    /// with its own text.
     #[test]
-    fn help_after_any_command_prints_usage() {
+    fn help_after_any_command_prints_its_lines() {
         let commands = USAGE
             .lines()
             .filter_map(|line| line.strip_prefix("  chock ")?.split_whitespace().next())
             .filter(|command| *command != "init");
         for command in commands {
+            let usage = crate::usage::about(command).map(Command::Print);
             for help in ["--help", "-h"] {
-                let usage = Command::Print(USAGE);
-                assert_eq!(parse(&[command, help]), usage, "{command} {help}");
-                assert_eq!(parse(&[command, "x", help]), usage, "{command} x {help}");
+                let (alone, after) = ([command, help], [command, "x", help]);
+                assert_eq!(Some(parse(&alone)), usage, "{command} {help}");
+                assert_eq!(Some(parse(&after)), usage, "{command} x {help}");
             }
         }
     }

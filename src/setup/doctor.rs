@@ -155,14 +155,15 @@ pub fn git_hooks(installed: &[(String, Option<String>)]) -> Vec<Row> {
         .collect()
 }
 
-/// Commands a toolchain itself ships, the nightly's miri among them. Nobody pins these; `cargo`
-/// stands for the toolchain.
-const TOOLCHAIN: [&str; 5] = [
+/// Commands a toolchain itself ships, the nightly's miri among them, and Java, which the system
+/// gives and the `java` row checks. Nobody pins these; `cargo` stands for the toolchain.
+const TOOLCHAIN: [&str; 6] = [
     "cargo",
     "rustfmt",
     "clippy-driver",
     "rustdoc",
     "cargo +nightly miri",
+    "java",
 ];
 
 /// Tools a gate runs without declaring them for its verdict cache. `test` and `coverage` are absent
@@ -290,6 +291,32 @@ fn miri_in(
     on.then(|| inspected(name, standing()))
 }
 
+/// Java runs TLC and Apalache for `tla`. No pin holds it, so doctor runs the one the gate finds.
+fn java_in(
+    config: &Result<Option<crate::project::config::Config>, String>,
+    start: crate::exec::Start,
+    root: &std::path::Path,
+    home: Option<std::ffi::OsString>,
+) -> Option<Row> {
+    let on = matches!(config, Ok(Some(config)) if config.is_on("tla"));
+    on.then(|| {
+        let java = crate::gates::proofs::tla::java_program(home);
+        let standing = match start(&java, &["-version"], root, &[]) {
+            // `java -version` prints its version to stderr.
+            Ok(out) if out.success() => {
+                let said = out.stderr.lines().next().unwrap_or_default();
+                (Verdict::Pass, said.to_string())
+            }
+            _ => {
+                let missing = crate::gates::fixes::not_installed("java");
+                let repair = crate::gates::fixes::repair(&missing).unwrap_or_default();
+                (Verdict::Tripped, format!("`{java}` does not run: {repair}"))
+            }
+        };
+        inspected("java", standing)
+    })
+}
+
 fn inspected(command: &str, (verdict, message): (Verdict, String)) -> Row {
     Row {
         command: command.to_string(),
@@ -317,6 +344,7 @@ pub fn gathered(
     rows.extend(miri_in(&config, &|| {
         crate::setup::miri::standing(start, root)
     }));
+    rows.extend(java_in(&config, start, root, std::env::var_os("JAVA_HOME")));
     rows.extend(machine_health(root, extra));
     // Doctor does not report on an editor hook that chock did not wire into the settings it writes.
     let wired = std::fs::read_to_string(root.join(".claude/settings.json"))
@@ -414,6 +442,13 @@ pub fn machine_health(
         crate::exec::run("rustup", &["toolchain", "list"], root).map_err(|e| e.to_string())
     };
     let mut rows = additional(extra, &listing);
+    let on = |gate: &str| {
+        crate::project::document::read::<crate::project::config::Config>(root)
+            .is_ok_and(|held| held.is_some_and(|held| held.is_on(gate)))
+    };
+    let home = crate::setup::downloads::home();
+    // outpost: ignore[rust-path-traversal] the tools directory is the user's own setting.
+    rows.extend(downloaded(&extra.downloads, home.as_deref(), &on));
     if let Some((top, below)) = hooks_declared_at(root) {
         let declarations = crate::project::vcs::git_hook_declarations(&top);
         let path = std::env::var_os("PATH");
@@ -428,6 +463,42 @@ pub fn machine_health(
         ));
     }
     rows
+}
+
+/// A download pin is ok once its file for this machine is fetched and stamped with the pinned hash.
+/// One a gate claims waits for that gate, so a project that leaves `tla` off fetches nothing.
+#[must_use]
+pub fn downloaded(
+    downloads: &[crate::setup::downloads::Download],
+    home: Option<&std::path::Path>,
+    on: &dyn Fn(&str) -> bool,
+) -> Vec<Row> {
+    let status = |pin: &crate::setup::downloads::Download| {
+        if let Some(gate) = pin.gate().filter(|gate| !on(gate)) {
+            return Status::available(format!("not needed while the `{gate}` gate is off"));
+        }
+        let file = match pin.here() {
+            Err(why) => return Status::broken(why),
+            Ok(None) => return Status::available("the pin has no file for this machine".into()),
+            Ok(Some(file)) => file,
+        };
+        let Some(home) = home else {
+            return Status::unreadable("no home directory holds downloads; set CHOCK_TOOLS".into());
+        };
+        let want = pin.want.clone();
+        if crate::setup::downloads::fetched(&pin.dir(home, &file.sha256), &file.sha256) {
+            Status::Matches(want)
+        } else {
+            Status::Missing { want }
+        }
+    };
+    downloads
+        .iter()
+        .map(|pin| Row {
+            command: pin.name.clone(),
+            status: status(pin),
+        })
+        .collect()
 }
 
 /// A failed query is not an empty installation; neither may pass as a missing comparison.
@@ -457,7 +528,7 @@ pub fn additional(
         .collect();
     rows.extend(pins.unchecked.iter().map(|key| Row {
         command: key.clone(),
-        status: Status::broken("unrecognized pin key; supported suffixes are _VERSION, _BIN, _SETUP and _NIGHTLY; this value was not executed or checked".to_string()),
+        status: Status::broken("unrecognized pin key; supported suffixes are _VERSION, _BIN, _SETUP, _OS, _GIT, _REV, _NIGHTLY, _URL and _SHA256; this value was not executed or checked".to_string()),
     }));
     rows
 }
@@ -649,14 +720,12 @@ fn check_on(pins: &[Pin], installed: &dyn Fn(&Pin) -> Option<String>, os: &str) 
 fn row(pin: &Pin, installed: &dyn Fn(&Pin) -> Option<String>) -> Row {
     let status = match installed(pin) {
         None if pin.unpublished() => Status::Unbuilt,
-        None => Status::Missing {
-            want: pin.want.clone(),
-        },
+        None => Status::Missing { want: pin.wanted() },
         Some(have) if pin.unpublished() => Status::Unpinned(have),
         Some(have) if have == pin.want => Status::Matches(have),
         Some(have) => Status::Drifted {
             have,
-            want: pin.want.clone(),
+            want: pin.wanted(),
         },
     };
     Row {
@@ -793,6 +862,17 @@ fn summary(rows: &[Row]) -> String {
     out
 }
 
+/// The version of a git pin's crate, as cargo's listing gives it, when it came from the pinned
+/// commit; one from crates.io or another commit says where it came from, so it never matches.
+fn from_commit(listing: &str, crate_name: &str, git: &crate::setup::pins::Git) -> Option<String> {
+    let have = version::from_cargo_listing(listing, crate_name)?;
+    match version::source_in_listing(listing, crate_name) {
+        Some(source) if source.contains(&git.rev) => Some(have),
+        Some(source) => Some(format!("{have} from {source}")),
+        None => Some(format!("{have} from crates.io")),
+    }
+}
+
 /// What is installed here: one `cargo install --list` for all pins, then `--version` for a pin
 /// the listing lacks.
 pub fn installed_on_this_machine() -> impl Fn(&Pin) -> Option<String> {
@@ -810,8 +890,20 @@ fn read_installation(
     listing: Option<&crate::exec::Output>,
     version: &dyn Fn() -> Option<crate::exec::Output>,
 ) -> Option<String> {
+    let listing = listing.filter(|out| out.success() && !out.truncated);
+    let from_git = |git| from_commit(&listing?.stdout, &pin.crate_name, git);
+    pin.git
+        .as_ref()
+        .map_or_else(|| released(pin, listing, version), from_git)
+}
+
+/// The version of a released crate: from cargo's listing, else from the tool's own `--version`.
+fn released(
+    pin: &Pin,
+    listing: Option<&crate::exec::Output>,
+    version: &dyn Fn() -> Option<crate::exec::Output>,
+) -> Option<String> {
     listing
-        .filter(|out| out.success() && !out.truncated)
         .and_then(|out| version::from_cargo_listing(&out.stdout, &pin.crate_name))
         .or_else(|| {
             let out = version()?;
@@ -1059,7 +1151,7 @@ mod tests {
                 key: "TEST_NIGHTLY".into(),
                 want: "nightly-1900-01-01".into(),
             }],
-            unchecked: Vec::new(),
+            ..crate::setup::pins::AdditionalPins::default()
         };
         let rows = machine_health(&dir, &extra);
         assert_eq!(rows, vec![Row { command: "TEST_NIGHTLY".into(), status: Status::broken("pinned toolchain nightly-1900-01-01 is not installed; run `rustup toolchain install nightly-1900-01-01`".into()) }]);
@@ -1112,6 +1204,43 @@ mod tests {
         assert!(answered.is_some(), "cargo answered no version");
         assert_eq!(answered, version::from_version_output(&said.stdout));
         assert_eq!(installed(&pin("chock-no-such-tool", "1.0.0")), None);
+    }
+
+    #[test]
+    fn a_git_pin_matches_only_a_build_of_its_commit() {
+        let rev = "0123456789abcdef0123456789abcdef01234567";
+        let git = crate::setup::pins::Git {
+            url: "https://h/o/cargo-deny".into(),
+            rev: rev.into(),
+        };
+        let ours = format!(
+            "cargo-deny v0.18.6 (https://h/o/cargo-deny?rev={rev}#01234567):\n    cargo-deny\n"
+        );
+        assert_eq!(
+            from_commit(&ours, "cargo-deny", &git).as_deref(),
+            Some("0.18.6")
+        );
+        let released = "cargo-deny v0.18.6:\n    cargo-deny\n";
+        assert_eq!(
+            from_commit(released, "cargo-deny", &git).as_deref(),
+            Some("0.18.6 from crates.io")
+        );
+        let other = "cargo-deny v0.18.6 (https://h/o/cargo-deny?rev=main#89abcdef):\n";
+        let said = from_commit(other, "cargo-deny", &git).unwrap();
+        assert_eq!(said, "0.18.6 from https://h/o/cargo-deny?rev=main#89abcdef");
+        let tool = Pin {
+            git: Some(git.clone()),
+            ..pin("cargo-deny", "0.18.6")
+        };
+        let built = listing(&ours).unwrap();
+        let read = read_installation(&tool, Some(&built), &|| None);
+        assert_eq!(read.as_deref(), Some("0.18.6"));
+        let asked = read_installation(&tool, None, &|| listing("cargo-deny 0.18.6").ok());
+        assert_eq!(asked, None);
+        assert_eq!(
+            from_commit("cargo-sort v2.0.0:\n", "cargo-deny", &git),
+            None
+        );
     }
 
     #[test]
@@ -1690,6 +1819,43 @@ mod tests {
         assert_eq!(describe(&row.status), "no `rust-src`");
     }
 
+    #[test]
+    fn java_gets_a_row_where_tla_is_on_and_no_pin_is_asked_for_it() {
+        use crate::project::config::Config;
+        let root = std::path::Path::new(".");
+        let java = |code: i32| {
+            move |program: &str, args: &[&str], _: &std::path::Path, _: &[(&str, &str)]| {
+                assert_eq!((program, args), ("java", &["-version"][..]));
+                Ok(crate::exec::Output::of(
+                    Some(code),
+                    "",
+                    "openjdk version \"21.0.4\" 2024-07-16\nOpenJDK Runtime\n",
+                ))
+            }
+        };
+        let row =
+            |on: &str, code: i32| java_in(&Ok(Some(Config::of([on]))), &java(code), root, None);
+        assert_eq!(row("lint", 0), None);
+        assert_eq!(java_in(&Ok(None), &java(0), root, None), None);
+        let ok = row("tla", 0).unwrap();
+        assert_eq!((ok.command.as_str(), ok.verdict()), ("java", Verdict::Pass));
+        assert_eq!(
+            describe(&ok.status),
+            "openjdk version \"21.0.4\" 2024-07-16"
+        );
+        let absent = row("tla", 127).unwrap();
+        assert_eq!(absent.verdict(), Verdict::Tripped);
+        assert_eq!(
+            describe(&absent.status),
+            "`java` does not run: install a Java runtime, 21 or newer, such as Temurin 21, or set \
+             JAVA_HOME to one"
+        );
+        let tla = crate::gates::registry()
+            .iter()
+            .find(|gate| gate.name == "tla");
+        assert_eq!(tools_of(tla.unwrap()), Vec::<&str>::new());
+    }
+
     fn pin(command: &str, want: &str) -> Pin {
         Pin {
             key: format!("{}_VERSION", command.to_uppercase()),
@@ -1698,6 +1864,7 @@ mod tests {
             want: want.to_string(),
             setup: None,
             systems: None,
+            git: None,
         }
     }
 
@@ -1959,5 +2126,46 @@ mod tests {
         assert!(shown.contains("outpost hooks trust"), "{shown}");
         let json = render_json(std::slice::from_ref(&row), "0.1.0");
         assert!(json.contains("not trusted"), "{json}");
+    }
+
+    #[test]
+    fn a_download_pin_is_ok_once_fetched_and_waits_while_its_gate_is_off() {
+        let root = crate::testdir::make("doctor-downloaded");
+        let other = if cfg!(windows) { "linux" } else { "windows" };
+        let text = format!(
+            "{}APALACHE_VERSION=1\nAPALACHE_URL=https://x/a.jar\nAPALACHE_SHA256=b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4\nVERUS_VERSION=1\nVERUS_URL=https://x/v.zip\nVERUS_SHA256=b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4\nB_VERSION=1\nB_URL=http://x\nB_SHA256=b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4\nE_VERSION=1\nE_URL_{other}=https://x\nE_SHA256_{other}=b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4\n",
+            crate::testdir::fetched(&root, "TLA_TOOLS", "t.jar")
+        );
+        let downloads = crate::setup::downloads::parse(&text).unwrap();
+        let home = root.join("tools");
+        let rows = downloaded(&downloads, Some(&home), &|gate| gate == "tla");
+        let statuses: Vec<Status> = rows.into_iter().map(|row| row.status).collect();
+        let off = "not needed while the `verus` gate is off";
+        let expected = [
+            Status::Matches("1".into()),
+            Status::Missing { want: "1".into() },
+            Status::available(off.into()),
+            Status::broken("B_URL must start with https://".into()),
+            Status::available("the pin has no file for this machine".into()),
+        ];
+        assert_eq!(statuses, expected);
+        let homeless = downloaded(&downloads[..1], None, &|_| true);
+        let why = "no home directory holds downloads; set CHOCK_TOOLS";
+        assert_eq!(homeless[0].status, Status::unreadable(why.into()));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn machine_health_reads_the_project_s_gates_for_a_claimed_download() {
+        let root = crate::testdir::make("doctor-claimed");
+        let pin = "TLA_TOOLS_VERSION=1\nTLA_TOOLS_URL=https://x/t.jar\nTLA_TOOLS_SHA256=b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4\n";
+        let extra = crate::setup::pins::additional(pin).unwrap();
+        let off = Status::available("not needed while the `tla` gate is off".into());
+        assert_eq!(machine_health(&root, &extra)[0].status, off);
+        let file = root.join(crate::project::config::FILE);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let config = crate::project::config::Config::of(["tla"]);
+        std::fs::write(&file, crate::project::document::render(&config)).unwrap();
+        assert_ne!(machine_health(&root, &extra)[0].status, off);
     }
 }

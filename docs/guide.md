@@ -2,13 +2,15 @@
 
 How to use chock, from the first install to the daily routine. The other pages are reference:
 [the gates](gates.md), [configuration](configuration.md), [hooks, stages and CI](ci-and-hooks.md)
-and [the contract for agents](agents.md).
+and [the contract for agents](agents.md). New to chock? Read the [quick start](../README.md#quick-start)
+and [the words chock uses](../README.md#words-chock-uses) first.
 
 [Install](#1-install) · [Set up a project](#2-set-up-a-project) · [The daily loop](#3-the-daily-loop) ·
 [Read a result](#4-read-a-result) · [When a gate does not pass](#5-when-a-gate-does-not-pass) ·
 [See all the debt](#6-see-all-the-debt) · [Choose the gates](#7-choose-the-gates) ·
 [JSON output](#8-json-output) · [Every command](#9-every-command) ·
-[Cut code with proof](#10-cut-code-with-proof) · [Limits](#limits)
+[Cut code with proof](#10-cut-code-with-proof) · [Common problems](#11-common-problems) ·
+[Remove chock](#12-remove-chock) · [Limits](#limits)
 
 ## 1. Install
 
@@ -23,6 +25,11 @@ chock init --global            # the tools chock runs, prebuilt, at pinned versi
 
 `chock doctor` says which of the pinned tools this machine has. A second `chock init --global`
 installs nothing: a tool already at its pin stays, and only its setup step runs again.
+
+Some opt-in gates run a tool that is not a crate, such as TLC for `tla`. `tool-versions.env` pins
+each of these downloads by its URL and its SHA-256, and `chock init --global` fetches one only when
+its gate is on. The files go into `CHOCK_TOOLS`, else into `chock-tools` in cargo's home, such as
+`~/.cargo/chock-tools`. `chock init --downloads` fetches only the downloads.
 
 ## 2. Set up a project
 
@@ -49,6 +56,9 @@ Then commit the files that chock wrote.
 | `AGENTS.md`, `CLAUDE.md` and the like | one line that points to `.chock/agents.md`, only in the files the project already has |
 | `.chock/hooks/*` | one stub for each git hook, on git older than 2.54 only |
 | `.outposthooks.toml` | the `pre-commit` hook, in an Outpost repository |
+
+A run also writes two files that git ignores: `.chock/last-run.json` holds the last findings for
+`chock explain`, and `.chock/verdicts.json` holds the kept verdicts. Do not commit them.
 
 Three facts about `chock init --local`:
 
@@ -264,13 +274,16 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 
 ## 9. Every command
 
-`chock --help` and `chock help` print this list. `chock init --help` shows the options of `init`.
+`chock --help` and `chock help` print this list. `chock help COMMAND`, or `chock COMMAND --help`,
+shows one command and its options, such as `chock help run`. A mistyped command or gate gets the
+closest name: `` unknown command `doctr`; did you mean `chock doctor`? ``.
 
 | command | what it does |
 |---|---|
 | `chock init` | sets up this project, then installs the tools it pins |
 | `chock init --global` | only the tools, once per machine |
 | `chock init --local` | only this project: pins, config and hooks |
+| `chock init --downloads` | only the pinned downloads of the gates that are on, such as TLC for `tla` |
 | `chock baseline [GATE...]` | accepts today's numbers as the record, also where they got worse |
 | `chock baseline --lower GATE...` | records a gain on a gate that measures differently by machine |
 | `chock baseline GATE... --keys KEY...` | writes only the named keys, such as the keys of a moved file; none goes up |
@@ -281,7 +294,7 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 | `chock run --ci` | runs the gates a CI job runs: staged for commit, push or ci |
 | `chock run --no-cache` | judges every gate again; no kept verdict answers |
 | `chock run --miri-partition=K/N` | runs only part K of N of the Miri suite |
-| `chock run --skip=GATE,...` | runs every gate but the ones named; CI runs those in other jobs |
+| `chock run --skip GATE` | runs every gate but the one named; `--skip=A,B` names several, such as the gates that CI runs in other jobs |
 | `chock run test --package=NAME` | runs the suite of one package only |
 | `chock run test --filter=TEXT` | runs only the tests whose name holds `TEXT` |
 | `chock run mutest --mutate=FILE,...` | mutates only the named files, and keeps the record of every other file |
@@ -469,6 +482,46 @@ chock moved main src/run/mod.rs src/run/report.rs
 The report lists each token that the move removed and each token that it added. A split adds
 `mod`, `use` and `pub` tokens, so read the added list. The command exits `0` when no token was
 lost, `1` when one was, and `2` when it could not read the revision.
+
+## 11. Common problems
+
+| you see | why | do this |
+|---|---|---|
+| `` `cargo-llvm-cov` is not installed, so this gate has nothing to run `` | the pinned tool is not on this machine | run `chock init --global`, then `chock doctor` |
+| `` `tla-tools` is not fetched, so this gate has nothing to run `` | the pinned download is not on this machine | run `chock init --downloads`; for a gate that is off, run `chock enable GATE` first |
+| `TLA_TOOLS_URL is missing; add the line chock ships: …` | the pin file has a version and a hash, but no URL | add the line that the message gives to `tool-versions.env` |
+| `no record … is committed` in CI | no commit holds the gate's first record | run `chock run GATE` on your machine and commit `.chock/baseline.json` |
+| `… where the record holds 12: a commit through the pre-commit hook lowers the record` in CI | a commit lowered a count but not its record, often with `--no-verify` | run `chock baseline --lower GATE` and commit `.chock/baseline.json` |
+| a renamed file trips a ratchet | a record is keyed by the path | run `chock baseline --moved OLD=NEW` |
+| `stopped … at the memory limit` | the tool's processes held too much memory | set `CHOCK_MEMORY`, or fewer build jobs with `CHOCK_JOBS` |
+| a tool `ran past its … limit` | one run took longer than its limit | raise the limit that the message names, or `CHOCK_TIMEOUT` |
+| a run takes minutes | the gates that compile are slow | use `chock run --fast` while you work; the hooks and CI run the rest |
+| a file `<name>.chock` beside one of yours | `chock init` never overwrites your file | copy what you need from the `.chock` file into yours, then delete it |
+| a conflict in `.chock/baseline.json` | two branches lowered the same record | keep the lower number of each key |
+
+[Hooks, stages and CI](ci-and-hooks.md#ci) lists the variables `CHOCK_TIMEOUT`, `CHOCK_JOBS` and
+`CHOCK_MEMORY`.
+
+## 12. Remove chock
+
+chock keeps its state in the project, and its tools in cargo's home or in `CHOCK_TOOLS`. To
+remove it from a project, delete what `chock init` wrote:
+
+```sh
+git config --remove-section hook.chock-pre-commit   # git 2.54 and later
+git config --remove-section hook.chock-commit-msg
+git config --remove-section hook.chock-pre-push
+git config --unset core.hooksPath                   # older git, where chock set it
+rm -r .chock                                        # config, records, kept verdicts, hook stubs
+```
+
+Then remove the line that points to `.chock/agents.md` from `AGENTS.md` and the like, the editor
+hook from `.claude/settings.json`, the `chock` entry from `.outposthooks.toml`, and the chock lines
+from `.gitignore`. Keep `tool-versions.env` and `deny.toml` if other tools read them.
+
+To remove chock from a machine, run `cargo uninstall chock` and delete `CHOCK_TOOLS`, or
+`~/.cargo/chock-tools`, which holds the downloads. The tools that `chock init --global` installed
+are cargo tools; `cargo uninstall` removes each one.
 
 ## Limits
 

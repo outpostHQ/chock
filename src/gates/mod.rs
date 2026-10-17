@@ -8,6 +8,7 @@ pub mod fixes;
 pub mod metrics;
 pub mod mutation;
 pub mod outpost;
+pub mod proofs;
 pub mod repo;
 pub mod rules;
 pub mod source;
@@ -48,6 +49,9 @@ static REGISTRY: &[Gate] = &[
     outpost::intel::UNREAD,
     outpost::scan::GATE,
     tools::proof::GATE,
+    proofs::tla::GATE,
+    proofs::verus::GATE,
+    proofs::links::GATE,
     tools::DEPS,
     tools::SORT,
     tools::dupdeps::GATE,

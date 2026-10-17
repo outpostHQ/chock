@@ -50,6 +50,8 @@ Without the parent, the gate cannot run.
 | `calls` | calls that need another call in the same function, `after` it or `with` it; the `calls` gate holds them |
 | `secrets` | the project's own credential shapes, by `name`, `prefix` and `tail`; `hygiene` and `history` find them |
 | `proof_jobs` | the most Kani harnesses `proof` verifies at once; a lower number uses less memory |
+| `tla` | how the `tla` gate checks TLA+ models: `dirs` (`["proofs/tla"]`), `workers` of one TLC run (2), `timeout_s` of one cfg (300), `timeouts` by model or cfg, `inductive` (the models Apalache proves, each with its invariant; `{}` proves none) and `length` (the steps of a bounded Apalache run) |
+| `verus` | how the `verus` gate runs Verus: `files` (`["proofs/verus/*.rs"]`), `mutants` (`proofs/verus/mutants`), `args` after the file (`["--crate-type=lib"]`) and `timeout_s` of one run (600) |
 | `not_mutated` | Rust files `mutest` does not mutate, each a `path` from the root with the `why`; a path that is no source mutest mutates fails the run |
 | `history` | `accepted`: credentials published on purpose, such as a test key, each named by `commit`, `path` and `rule` with the `reason` it is safe; `history` no longer reports them |
 | `vcs` | `git` or `outpost`, for a tree both hold, when you want to name the one chock reads |

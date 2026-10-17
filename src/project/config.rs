@@ -118,6 +118,12 @@ pub struct Config {
     /// The project's own credential shapes, which `hygiene` and `history` find with their own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secrets: Option<Vec<Secret>>,
+    /// Settings of the `tla` gate: where the models are, and how long TLC may take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tla: Option<Tla>,
+    /// Settings of the `verus` gate: the files Verus must verify, and the mutants it must refute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verus: Option<Verus>,
 }
 
 /// One declared check. A pass/fail command fails its gate by exiting non-zero; a counting one
@@ -207,6 +213,50 @@ pub struct Secret {
 pub struct Unmutated {
     pub path: String,
     pub why: String,
+}
+
+/// What the `verus` gate verifies. A field left out keeps chock's default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Verus {
+    /// Paths or globs from the root of the files Verus must verify; `proofs/verus/*.rs` when left
+    /// out. A crate's `lib.rs` verifies its modules with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<String>>,
+    /// The directory of mutant patches, each of which Verus must refute; `proofs/verus/mutants`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutants: Option<String>,
+    /// The arguments each Verus run takes after the file; `["--crate-type=lib"]` when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    /// Seconds one Verus run may take; 600 when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_s: Option<u64>,
+}
+
+/// How the `tla` gate checks TLA+ models. A field left out keeps chock's default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tla {
+    /// Directories, from the root, whose `.cfg` files TLC checks; `proofs/tla` when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dirs: Option<Vec<String>>,
+    /// Worker threads of one TLC run; 2 when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workers: Option<u32>,
+    /// Seconds one cfg or one Apalache check may run; 300 when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_s: Option<u64>,
+    /// Seconds for the cfgs of one model, or for one cfg, by the model's name or the cfg's stem.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub timeouts: BTreeMap<String, u64>,
+    /// The models Apalache proves inductive, each with its inductive invariant. Left out, every
+    /// model whose own cfg lists `IndInv`; `{}` proves none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inductive: Option<BTreeMap<String, String>>,
+    /// Steps of a bounded Apalache check from `Init` after the proof; none when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<u32>,
 }
 
 /// What the `history` gate accepts as it reads every commit.
@@ -342,6 +392,8 @@ impl Config {
             forbidden: None,
             not_mutated: None,
             history: None,
+            tla: None,
+            verus: None,
             seams: None,
             owners: None,
             calls: None,

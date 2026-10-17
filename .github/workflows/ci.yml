@@ -15,12 +15,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # No `toolchain:` input: the action reads rust-toolchain.toml, so CI and a laptop compile the
       # same tree with the same rustc. Its own cache is off because the next step is the cache.
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache: false
 
@@ -38,7 +38,7 @@ jobs:
       - name: Install the pinned tools these gates need
         run: |
           . ./tool-versions.env
-          cargo binstall -y --locked cargo-deny@"$CARGO_DENY_VERSION"
+          cargo install --locked --git "$CARGO_DENY_GIT" --rev "$CARGO_DENY_REV" cargo-deny
           cargo binstall -y --locked cargo-machete@"$CARGO_MACHETE_VERSION"
           cargo binstall -y --locked cargo-sort@"$CARGO_SORT_VERSION"
           cargo binstall -y --locked typos-cli@"$TYPOS_CLI_VERSION"
@@ -71,12 +71,12 @@ jobs:
     steps:
       # `mutation` diffs against HEAD~1, which a shallow clone does not have.
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 2
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           components: clippy, rustfmt, llvm-tools-preview
           cache: false
@@ -103,7 +103,7 @@ jobs:
           cargo binstall -y --locked cargo-nextest@"$CARGO_NEXTEST_VERSION"
           cargo binstall -y --locked cargo-llvm-cov@"$CARGO_LLVM_COV_VERSION"
           cargo binstall -y --locked cargo-crap@"$CARGO_CRAP_VERSION"
-          cargo binstall -y --locked cargo-deny@"$CARGO_DENY_VERSION"
+          cargo install --locked --git "$CARGO_DENY_GIT" --rev "$CARGO_DENY_REV" cargo-deny
           cargo binstall -y --locked cargo-machete@"$CARGO_MACHETE_VERSION"
           cargo binstall -y --locked cargo-sort@"$CARGO_SORT_VERSION"
           if here "$CARGO_ACL_OS"; then cargo binstall -y --locked cargo-acl@"$CARGO_ACL_VERSION"; fi
@@ -130,6 +130,16 @@ jobs:
 
       - name: Install chock from this checkout
         run: cargo install --locked --path .
+
+      # The `tla` gate runs TLC and Apalache on Java 21, from the jars that `--downloads` fetches.
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Fetch the pinned downloads
+        run: chock init --downloads
 
       # Not `chock doctor`: it checks every pin, including the opt-in tools this job deliberately
       # does not install. `chock run` is the proof — a gate whose tool is absent cannot pass.
@@ -162,12 +172,12 @@ jobs:
     steps:
       # `mutation` diffs against HEAD~1, which a shallow clone does not have.
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 2
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache: false
 
@@ -199,7 +209,7 @@ jobs:
 
       - name: Restore mutest built from that commit
         id: built
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/bin/cargo-mutest*
@@ -229,7 +239,7 @@ jobs:
       # Saved at once, so a later gate failure does not lose the build.
       - name: Keep that build for the next run
         if: steps.built.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             ~/.cargo/bin/cargo-mutest*
@@ -280,7 +290,7 @@ jobs:
           done
       - name: Keep mutest's results
         if: failure() || cancelled()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mutest-results-${{ matrix.system }}
           path: |
@@ -305,10 +315,10 @@ jobs:
         shell: bash
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache: false
 

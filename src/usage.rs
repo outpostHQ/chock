@@ -16,7 +16,7 @@ Set up
 
 Every day
   chock run [GATE...]             run the named gates; no name means every gate that is on
-  chock run --fast                only the gates staged for a commit; they need no compile
+  chock run --fast                only the gates a commit runs: quick, and none of them compiles
   chock run --ci                  the gates a CI job runs: staged for commit, push or ci
   chock run --no-cache            judge every gate again; no kept verdict answers
   chock run --miri-partition=K/N  run only part K of N of the Miri suite
@@ -53,8 +53,145 @@ Cut code, then show that nothing changed
 
 Options
   --json                          machine-readable output, for an agent or a CI job
-  -h, --help                      this text; `chock init --help` shows the options of init
+  -h, --help                      this text; `chock COMMAND --help` shows one command
   -V, --version                   the version of chock
 
 Exit codes: 0 every gate passed, 1 a gate tripped, 2 a gate could not run.
 ";
+
+/// The line that follows a part of the usage, to say where the rest is.
+pub(crate) const EVERY: &str = "`chock --help` shows every command.\n";
+
+/// The commands the usage shows, in its order.
+pub(crate) fn commands() -> Vec<&'static str> {
+    let mut commands: Vec<&str> = Vec::new();
+    for command in USAGE
+        .lines()
+        .filter_map(|line| line.strip_prefix("  chock ")?.split_whitespace().next())
+    {
+        if !commands.contains(&command) {
+            commands.push(command);
+        }
+    }
+    commands
+}
+
+/// The lines of the usage that show `command`, then where the rest is; `None` for no command.
+pub(crate) fn about(command: &str) -> Option<String> {
+    let lines = shown_in(USAGE, command);
+    (!lines.is_empty()).then(|| format!("{}\n\n{EVERY}", lines.join("\n")))
+}
+
+/// The lines of `usage` that show `command`, each with the lines that go on from it.
+fn shown_in<'u>(usage: &'u str, command: &str) -> Vec<&'u str> {
+    let shown = format!("  chock {command}");
+    let mut taking = false;
+    let mut lines: Vec<&str> = Vec::new();
+    for line in usage.lines() {
+        taking = match line.strip_prefix(&shown) {
+            Some(rest) => rest.is_empty() || rest.starts_with(' '),
+            // A long command's text goes on in a line of its own, indented deeper.
+            None => taking && line.starts_with("    "),
+        };
+        if taking {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
+/// What follows a problem: the lines of the command it came from, or all of the usage when it came
+/// from none.
+pub(crate) fn after_problem(command: Option<&str>) -> String {
+    match command {
+        None => USAGE.to_string(),
+        Some(command) => about(command).unwrap_or_else(|| EVERY.to_string()),
+    }
+}
+
+/// "; did you mean `{shown}WORD`?" for the word of `known` that `typed` most likely meant; nothing
+/// where no word is near.
+pub(crate) fn guess(typed: &str, known: &[&str], shown: &str) -> String {
+    match closest(typed, known) {
+        Some(meant) => format!("; did you mean `{shown}{meant}`?"),
+        None => String::new(),
+    }
+}
+
+/// The word of `known` that `typed` most likely meant: about one edit in every three letters.
+pub(crate) fn closest<'k>(typed: &str, known: &[&'k str]) -> Option<&'k str> {
+    let most = (typed.chars().count() + 1) / 3;
+    known
+        .iter()
+        .map(|word| (edits(typed, word), *word))
+        .filter(|(edits, _)| *edits <= most.max(1))
+        .min_by_key(|(edits, _)| *edits)
+        .map(|(_, word)| word)
+}
+
+/// How many letters to add, remove or change to make `a` into `b`.
+fn edits(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, letter) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, other) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (above + 1)
+                .min(row[j] + 1)
+                .min(diagonal + usize::from(letter != *other));
+            diagonal = above;
+        }
+    }
+    row[b.len()]
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "a failed unwrap in a test is the test failing"
+)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_command_s_help_is_its_own_lines_and_the_way_to_the_rest() {
+        let run = about("run").unwrap();
+        assert!(run.starts_with("  chock run [GATE...]"), "{run}");
+        assert!(run.contains("chock run --skip=GATE,..."));
+        assert!(!run.contains("chock cache clear"));
+        assert!(run.ends_with(EVERY));
+        let oracle = about("oracle").unwrap();
+        assert!(
+            oracle.contains("run two builds over the same scenarios"),
+            "{oracle}"
+        );
+        assert_eq!(about("runner"), None);
+        assert_eq!(about("nothing"), None);
+        let usage = "    before\n  chock x\n    more\n  chock xy z\n  chock x  y\n";
+        assert_eq!(
+            shown_in(usage, "x"),
+            ["  chock x", "    more", "  chock x  y"]
+        );
+        assert_eq!(after_problem(Some("run")), run);
+        assert_eq!(after_problem(Some("nothing")), EVERY);
+        assert_eq!(after_problem(None), USAGE);
+    }
+
+    #[test]
+    fn a_typo_finds_the_word_it_missed_and_a_stranger_finds_none() {
+        let known = commands();
+        assert_eq!(closest("doctr", &known), Some("doctor"));
+        assert_eq!(closest("baseine", &known), Some("baseline"));
+        assert_eq!(closest("deploy", &known), None);
+        assert_eq!(closest("lnks", &["lint", "links", "lines"]), Some("links"));
+        let guessed = guess("doctr", &known, "chock ");
+        assert_eq!(guessed, "; did you mean `chock doctor`?");
+        assert_eq!(guess("deploy", &known, "chock "), "");
+        assert_eq!(edits("kitten", "sitting"), 3);
+        assert_eq!((edits("ab", "b"), edits("abc", "")), (1, 3));
+        // Five letters may hold two edits.
+        assert_eq!(closest("gtaes", &["gates"]), Some("gates"));
+    }
+}

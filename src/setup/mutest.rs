@@ -297,7 +297,7 @@ mod tests {
 
     const NEWEST: &str = "392a07841b5f05acc96a62facac7d24e9a8c3182";
     const OLDER: &str = "0123456789abcdef0123456789abcdef01234567";
-    const FORK_TOOLCHAIN: &str = "[toolchain]\nchannel = \"nightly-2026-10-03\"\ncomponents = [\"rustc-dev\", \"llvm-tools\"]\n";
+    const FORK_TOOLCHAIN: &str = "[toolchain]\nchannel = \"nightly-2026-10-17\"\ncomponents = [\"rustc-dev\", \"llvm-tools\"]\n";
     const HELP: &str = "      --require-progress  Require protocol-v1 progress\n";
     /// An exit code that stands for a program that did not start.
     const NO_START: i32 = i32::MIN;
@@ -395,11 +395,12 @@ mod tests {
             want: want.to_string(),
             setup: None,
             systems: None,
+            git: None,
         }
     }
 
     const GIT: &str = "GIT_TERMINAL_PROMPT=0 git";
-    const CARGO: &str = "RUSTUP_TOOLCHAIN=nightly-2026-10-03 CARGO_ENCODED_RUSTFLAGS= cargo";
+    const CARGO: &str = "RUSTUP_TOOLCHAIN=nightly-2026-10-17 CARGO_ENCODED_RUSTFLAGS= cargo";
 
     /// Every command of an install that reaches the build, in order.
     fn whole_install() -> Vec<String> {
@@ -408,10 +409,10 @@ mod tests {
             format!("{GIT} init --quiet"),
             format!("{GIT} fetch --quiet --depth 1 {FORK} {NEWEST}"),
             format!("{GIT} checkout --quiet FETCH_HEAD"),
-            "rustup toolchain install nightly-2026-10-03 --profile minimal --no-self-update"
+            "rustup toolchain install nightly-2026-10-17 --profile minimal --no-self-update"
                 .to_string(),
-            "rustup component add --toolchain nightly-2026-10-03 rustc-dev".to_string(),
-            "rustup component add --toolchain nightly-2026-10-03 llvm-tools".to_string(),
+            "rustup component add --toolchain nightly-2026-10-17 rustc-dev".to_string(),
+            "rustup component add --toolchain nightly-2026-10-17 llvm-tools".to_string(),
             "cargo install --list".to_string(),
             format!("{CARGO} build --quiet --locked --profile=release -p mutest-runtime"),
             format!("{CARGO} install --quiet --locked --force --path mutest-driver"),
@@ -453,7 +454,7 @@ mod tests {
     #[test]
     fn the_toolchain_is_what_the_file_of_the_fork_names_and_nothing_chock_cannot_pass_on() {
         let fork = Toolchain {
-            channel: "nightly-2026-10-03".to_string(),
+            channel: "nightly-2026-10-17".to_string(),
             components: vec!["rustc-dev".to_string(), "llvm-tools".to_string()],
         };
         assert_eq!(read_toolchain(FORK_TOOLCHAIN), Some(fork));
@@ -586,13 +587,13 @@ mod tests {
             ),
             (
                 "toolchain install",
-                "rustup toolchain install nightly-2026-10-03 --profile minimal --no-self-update"
+                "rustup toolchain install nightly-2026-10-17 --profile minimal --no-self-update"
                     .to_string(),
                 5,
             ),
             (
                 "llvm-tools",
-                "rustup component add --toolchain nightly-2026-10-03 llvm-tools".to_string(),
+                "rustup component add --toolchain nightly-2026-10-17 llvm-tools".to_string(),
                 7,
             ),
             ("install --list", "cargo install --list".to_string(), 8),

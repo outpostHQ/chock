@@ -508,6 +508,86 @@
           }
         }
       }
+    },
+    "tla": {
+      "description": "Settings of the opt-in `tla` gate. TLC checks each `.cfg` under the model directories. `M.cfg` and `M_live.cfg` must pass; every other `M_*.cfg` is a bad variant that must fail, unless a `\\* expect: pass|deadlock|violation` comment says otherwise. Apalache proves the inductive invariant of each model.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dirs": {
+          "description": "Directories, from the project root, whose `.cfg` files TLC checks. `[\"proofs/tla\"]` when left out.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "workers": {
+          "description": "Worker threads of one TLC run. 2 when left out.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeout_s": {
+          "description": "Seconds one cfg, or one Apalache check, may run. 300 when left out.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeouts": {
+          "description": "Seconds for one cfg, by its stem, or for all cfgs of one model, by the model's name. A cfg stem wins over its model.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "inductive": {
+          "description": "The models Apalache proves inductive, each mapped to its inductive invariant, such as `{\"RunLock\": \"IndInv\"}`. Left out, every model whose own cfg lists `IndInv`. `{}` proves none.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "length": {
+          "description": "Steps of a bounded Apalache check from `Init`, after the proof. No bounded check when left out or 0.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "verus": {
+      "description": "Settings of the opt-in `verus` gate. Verus must verify each file that `files` names with 0 errors. Each mutant patch must make Verus fail: its line 1 is `--- <file it patches>`, a path from the directory that holds the mutants directory, and its line 2 is `+++ <function that must fail>`, `module::function` or a function of the root.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "description": "Paths or globs, from the project root, of the crate roots Verus verifies. `[\"proofs/verus/*.rs\"]` when left out.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "mutants": {
+          "description": "The directory, from the project root, of the mutant `.patch` files. `proofs/verus/mutants` when left out.",
+          "type": "string",
+          "minLength": 1
+        },
+        "args": {
+          "description": "Arguments Verus gets after the file. `[\"--crate-type=lib\"]` when left out.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout_s": {
+          "description": "Seconds one Verus run may take. 600 when left out.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
     }
   }
 }
