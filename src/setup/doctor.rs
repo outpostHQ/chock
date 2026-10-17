@@ -2129,6 +2129,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_download_pin_is_ok_once_fetched_and_waits_while_its_gate_is_off() {
         let root = crate::testdir::make("doctor-downloaded");
         let other = if cfg!(windows) { "linux" } else { "windows" };

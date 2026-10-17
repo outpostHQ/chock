@@ -140,6 +140,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_missing_scratch_is_clear_and_a_present_one_is_removed() {
         let dir = crate::testdir::tree("proofs-cleared", &[("scratch/a/b", "x")]);
         let scratch = dir.join("scratch");
@@ -152,6 +153,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_scratch_is_made_only_at_an_absolute_path() {
         let dir = crate::testdir::tree("proofs-made", &[]);
         let at = dir.join("a").join("b");

@@ -583,6 +583,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_new_hash_gets_a_new_directory_and_only_a_stamped_one_counts() {
         let text = format!(
             "TLA_TOOLS_VERSION=1.8.0-20261015.1\nTLA_TOOLS_URL=https://x/t.jar\nTLA_TOOLS_SHA256={SHA}\n"
@@ -649,6 +650,7 @@ mod tests {
     const OTHER: &str = if cfg!(windows) { "linux" } else { "windows" };
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gate_finds_its_file_only_in_a_fetched_download_of_its_own_pin() {
         let root = crate::testdir::make("downloads-located");
         let home = root.join("tools");

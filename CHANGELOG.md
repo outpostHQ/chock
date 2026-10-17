@@ -31,6 +31,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `chock init --downloads`, and `chock enable GATE` first for a gate that is off. A pin with no
   URL gives the URL line that chock ships. `chock doctor` runs the Java that `tla` finds, and
   asks for no pin for it.
+- **Miri names the test it stopped in.** When Miri cannot emulate an operation, such as a
+  directory open on Windows, the `miri` message names the test that asked for it.
 - **Help for each command.** `chock COMMAND --help` explains one command. A command or a gate name
   that is nearly right gets "did you mean". `chock run --skip NAME` runs every gate but that one.
 - **The gate list.** chock has 67 gates: 38 are on by default, and 29 are opt-in.

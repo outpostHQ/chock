@@ -133,21 +133,37 @@ pub(super) type Ended = Result<Vec<(String, u64)>, Fault>;
 pub(super) fn ended(group: &Group, ran: &Result<exec::Output, exec::ExecError>) -> Ended {
     match ran {
         Ok(out) if out.success() => Ok(times(group, &out.stdout)),
-        Ok(out) => Err(super::never_ran(&out.stderr).map_or(Fault::Failed, Fault::Refused)),
+        Ok(out) => Err(super::never_ran(&out.stderr).map_or(Fault::Failed, |why| {
+            Fault::Refused(refused_in(why, &out.stdout))
+        })),
         Err(stopped) => Err(stopped_on(group, stopped).map_or(Fault::Failed, Fault::Stopped)),
     }
 }
 
-/// The test a group was in when chock stopped it. libtest names a test before it runs, so the
-/// last test line then has no verdict.
-fn stopped_on(group: &Group, stopped: &exec::ExecError) -> Option<String> {
-    let lines = stopped.reason.lines();
-    let (named, verdict) = lines
+/// Why miri refused, with the test it refused in, so the reader knows which test to change.
+fn refused_in(why: String, stdout: &str) -> String {
+    match running(stdout) {
+        Some(test) => format!("{why} It stopped in `{test}`."),
+        None => why,
+    }
+}
+
+/// The test libtest was in when its run ended. libtest names a test before it runs, so the last
+/// test line then has no verdict.
+fn running(text: &str) -> Option<&str> {
+    let (named, verdict) = text
+        .lines()
         .filter_map(|line| line.strip_prefix("test ")?.split_once(" ... "))
         .next_back()?;
     let test = named.split_once(" - ").map_or(named, |(test, _)| test);
-    let running = stopped.hung() && verdict.is_empty() && group.tests.iter().any(|own| own == test);
-    running.then(|| test.to_string())
+    verdict.is_empty().then_some(test)
+}
+
+/// The test a group was in when chock stopped it.
+fn stopped_on(group: &Group, stopped: &exec::ExecError) -> Option<String> {
+    let test = running(&stopped.reason)?;
+    let own = stopped.hung() && group.tests.iter().any(|own| own == test);
+    own.then(|| test.to_string())
 }
 
 /// What nextest runs again: each group that did not pass, less the test chock stopped it in. With
@@ -428,8 +444,13 @@ mod tests {
         let refused = "error: unsupported operation: can't call foreign function `posix_spawn`\n";
         let why = ended(&both, &said(1, "", refused)).unwrap_err();
         assert!(
-            matches!(&why, Fault::Refused(why) if why.contains("`posix_spawn`")),
+            matches!(&why, Fault::Refused(why) if why.contains("`posix_spawn`") && why.ends_with("above it.")),
             "{why:?}"
+        );
+        let within = ended(&both, &said(1, "test a ... ok\ntest b ... ", refused)).unwrap_err();
+        assert!(
+            matches!(&within, Fault::Refused(why) if why.ends_with("above it. It stopped in `b`.")),
+            "{within:?}"
         );
         let hung = |reason| Err(stopped(exec::Stage::Hung, reason));
         assert_eq!(

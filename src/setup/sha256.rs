@@ -201,12 +201,18 @@ mod tests {
     #[test]
     fn the_standard_vectors_hash_as_fips_180_4_says() {
         let long = b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
-        let hashed = [of(b""), of(b"abc"), of(long), of(&[b'a'; 1_000_000])];
+        let hashed = [of(b""), of(b"abc"), of(long)];
         let said = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
                     ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad \
-                    248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1 \
-                    cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0";
+                    248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1";
         assert_eq!(hashed.join(" "), said);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri takes 15 minutes to hash a million bytes")]
+    fn a_million_bytes_hash_as_fips_180_4_says() {
+        let said = "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0";
+        assert_eq!(of(&[b'a'; 1_000_000]), said);
     }
 
     #[test]
