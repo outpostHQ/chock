@@ -5,6 +5,12 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-18
+
+- **The crates.io description counts no gates.** The 0.10.0 description said "59 gates", and
+  chock has 67. The description now says what chock does, so a new gate does not make it wrong.
+- **The `--json` example in the guide shows the version that prints it.** It said 0.9.0.
+
 ## [0.10.0] - 2026-10-17
 
 - **Proofs: `tla`, `verus` and `links`.** Three opt-in gates check the specs and proofs that a
