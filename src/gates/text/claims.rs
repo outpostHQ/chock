@@ -210,7 +210,7 @@ fn read(text: &str) -> Claims {
 
 /// The directive in a line's `<!-- … -->`: its word and the text after the colon. One inside a
 /// code span is a document showing the syntax.
-fn directive(line: &str) -> Option<(&str, &str)> {
+pub(super) fn directive(line: &str) -> Option<(&str, &str)> {
     let masked = masked(line);
     let at = masked.find("<!--")? + 4;
     let end = at + masked.get(at..)?.find("-->")?;
@@ -237,7 +237,7 @@ fn masked(line: &str) -> String {
 }
 
 /// The text of each code span on a line.
-fn spans(line: &str) -> impl Iterator<Item = &str> {
+pub(super) fn spans(line: &str) -> impl Iterator<Item = &str> {
     line.split('`').skip(1).step_by(2)
 }
 

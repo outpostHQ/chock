@@ -101,7 +101,7 @@ fn installing(tool: &str) -> &'static str {
     found.map_or(PINNED, |(_, repair)| repair)
 }
 
-const FIXES: [(&str, &str); 67] = [
+const FIXES: [(&str, &str); 68] = [
     (
         "test",
         "run the rerun command, read each failing test's output, and fix the code or the test; a crate with no tests needs one",
@@ -136,6 +136,10 @@ const FIXES: [(&str, &str); 67] = [
     (
         "claims",
         "cite a line the file still has, or the path with no line; drop from the `<!-- absent: … -->` list what the tree now holds, and give each `absent-by-design` its reason after a dash",
+    ),
+    (
+        "pinned",
+        "restore the pinned test, or the pin that left the documents; to drop a pin on purpose, take it out of the documents and run `chock baseline pinned`",
     ),
     (
         "commits",

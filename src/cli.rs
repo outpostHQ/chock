@@ -15,7 +15,8 @@ use crate::project::{
     config::{Config, Stage},
     document, vcs,
 };
-use crate::run::{self, Ctx, baseline::Baseline, report::LAST_RUN, report::Run, report::Verdict};
+use crate::run::report::{LAST_RUN, Rows, Run, Verdict};
+use crate::run::{self, Ctx, baseline::Baseline};
 use crate::setup::{doctor, init, pins};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -69,12 +70,14 @@ pub fn dispatch(args: &[&str]) -> ExitCode {
             fast,
             ci,
             no_cache,
+            verbose,
             miri_part,
             skip,
             scope,
         } => {
             let how = How {
                 json,
+                rows: Rows::asked(verbose, !names.is_empty()),
                 no_cache,
                 hook: false,
                 commits: false,
@@ -336,6 +339,8 @@ fn gated(code: u8, when: &str, fix: &str) -> ExitCode {
 #[derive(Debug, Clone, Copy, Default)]
 struct How<'a> {
     json: bool,
+    /// The gates the text report gives a row.
+    rows: Rows,
     /// A git hook asked, for which no gate staged is not a refusal.
     hook: bool,
     /// The pre-commit hook asked, so a lower number goes into the record and into the commit.
@@ -375,7 +380,7 @@ fn run_gates_code(names: &[&str], tier: Tier, how: How<'_>) -> u8 {
     let result = run::run_all(&chosen, &ctx, VERSION, &|done| {
         eprintln!("{}", done.progress())
     });
-    emit_run(&result, how.json);
+    emit_run(&result, how.json, how.rows);
     run::github::tell(&result, &ctx.root);
     run::report::settle(
         &ctx.root,
@@ -410,11 +415,11 @@ fn cleared() -> Result<usize, String> {
         .map_err(|e| format!("cannot remove {}: {e}", crate::run::verdicts::FILE))
 }
 
-fn emit_run(result: &Run, json: bool) {
+fn emit_run(result: &Run, json: bool, rows: Rows) {
     emit(&if json {
         result.render_json()
     } else {
-        result.render()
+        result.render(rows)
     });
 }
 
@@ -487,7 +492,8 @@ fn run_survey(json: bool) -> ExitCode {
         Err(e) => return ExitCode::from(refused(&e)),
     };
     let result = run::survey_all(&gates::surveyable(), &ctx, VERSION);
-    emit_run(&result, json);
+    // A survey reports what each gate measures here, so a passing gate keeps its row.
+    emit_run(&result, json, Rows::Every);
     ExitCode::from(result.verdict().code())
 }
 

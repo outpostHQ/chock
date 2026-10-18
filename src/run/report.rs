@@ -861,10 +861,13 @@ impl Run {
         text
     }
 
+    /// The text report: the rows `rows` asks for, the findings of each gate that has any, and the
+    /// tally, which also counts the gates that got no row.
     #[must_use]
-    pub fn render(&self) -> String {
+    pub fn render(&self, rows: Rows) -> String {
         let mut out = String::new();
-        for gate in &self.gates {
+        let shown = |gate: &&GateReport| rows == Rows::Every || gate.verdict != Verdict::Pass;
+        for gate in self.gates.iter().filter(shown) {
             out.push_str(&gate.summary());
             out.push('\n');
         }
@@ -877,7 +880,30 @@ impl Run {
         if let Some(once) = self.not_compiling() {
             out.push_str(&format!("{once}\n"));
         }
-        out
+        out.trim_start_matches('\n').to_string()
+    }
+}
+
+/// The gates that get a row in a text report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Rows {
+    /// Every gate: `--verbose`, or a run that names its gates.
+    Every,
+    /// Each gate that tripped or could not run. A run of a whole stage passes most gates, and the
+    /// tally counts them.
+    #[default]
+    NotPassed,
+}
+
+impl Rows {
+    /// The rows of a `chock run`: every gate for `--verbose`, or for a run that names its gates,
+    /// since those are the gates its reader asked about, passed or not.
+    #[must_use]
+    pub fn asked(verbose: bool, named: bool) -> Self {
+        match verbose || named {
+            true => Self::Every,
+            false => Self::NotPassed,
+        }
     }
 }
 
@@ -1151,7 +1177,7 @@ mod tests {
             format!("chock: proof CANNOT RUN after 0 s\n  proof      CANNOT RUN  {reason}{block}")
         );
         let run = Run::new("0.1.0", vec![stopped]);
-        assert!(run.render().contains(&format!("{block}\n")));
+        assert!(run.render(Rows::Every).contains(&format!("{block}\n")));
         assert_eq!(
             skipped("mutest", crate::gates::mutation::tool::FOREIGN),
             format!(
@@ -1171,7 +1197,7 @@ mod tests {
         let mut tripped = GateReport::new("slop", Verdict::Tripped, "chock run slop");
         tripped.findings = vec![Finding::at("src/a.rs", "block of 5 lines").line(4)];
         tripped.fix = Some("cut the comment to two lines".to_string());
-        let rendered = Run::new("0.1.0", vec![tripped.clone()]).render();
+        let rendered = Run::new("0.1.0", vec![tripped.clone()]).render(Rows::Every);
         let told = "slop — chock run slop\n  src/a.rs:4: block of 5 lines\n  fix: cut the comment to two lines\n";
         assert!(rendered.contains(told), "{rendered}");
         assert_eq!(
@@ -1218,7 +1244,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            run.render(),
+            run.render(Rows::Every),
             "  lint       ok\n  \
              slop       TRIPPED\n\n\
              slop — chock run slop\n  \
@@ -1227,11 +1253,42 @@ mod tests {
         );
     }
 
+    /// A run of a whole stage passes most of its gates, so the tally counts them and a row goes
+    /// only to a gate that did not pass. An advisory keeps its block.
+    #[test]
+    fn a_run_of_a_stage_gives_a_row_only_to_a_gate_that_did_not_pass() {
+        let passed =
+            |gate: &str| GateReport::new(gate, Verdict::Pass, &format!("chock run {gate}"));
+        let mut tripped = GateReport::new("slop", Verdict::Tripped, "chock run slop");
+        tripped.findings = vec![Finding::at("src/a.rs", "block of 5 lines").line(4)];
+        let mut advised = passed("profile");
+        advised.findings = vec![Finding::at("Cargo.toml", "opt-level is z").line(9)];
+        let run = Run::new("0.1.0", vec![passed("lint"), tripped, advised]);
+        assert_eq!(
+            run.render(Rows::NotPassed),
+            "  slop       TRIPPED\n\n\
+             slop — chock run slop\n  \
+             src/a.rs:4: block of 5 lines\n\n\
+             profile — advisory, and it passed — chock run profile\n  \
+             Cargo.toml:9: opt-level is z\n\n\
+             1 of 3 gates tripped (slop).\n"
+        );
+        let clean = Run::new("0.1.0", vec![passed("lint"), passed("fmt")]);
+        assert_eq!(clean.render(Rows::NotPassed), "2 gates ok.\n");
+    }
+
+    #[test]
+    fn a_run_that_names_its_gates_or_says_verbose_gives_every_gate_a_row() {
+        assert_eq!(Rows::asked(false, false), Rows::NotPassed);
+        assert_eq!(Rows::asked(true, false), Rows::Every);
+        assert_eq!(Rows::asked(false, true), Rows::Every);
+    }
+
     #[test]
     fn a_passing_gate_with_findings_heads_them_as_advisory() {
         let mut passed = GateReport::new("miri", Verdict::Pass, "chock run miri");
         passed.findings = vec![Finding::at("src/a.rs", "deprecated: fetch_update").line(9)];
-        let text = Run::new("0.1.0", vec![passed]).render();
+        let text = Run::new("0.1.0", vec![passed]).render(Rows::Every);
         assert!(
             text.contains("miri — advisory, and it passed — chock run miri"),
             "{text}"
@@ -1261,7 +1318,7 @@ mod tests {
                 ),
             ],
         );
-        let text = run.render();
+        let text = run.render(Rows::Every);
         assert!(
             text.contains("2 of those could not run because this tree does not compile"),
             "{text}"
@@ -1289,7 +1346,7 @@ mod tests {
                 ),
             ],
         );
-        let text = run.render();
+        let text = run.render(Rows::Every);
         assert!(
             text.contains(
                 "2 of those could not run because this project's own suite does not pass"
@@ -1318,7 +1375,7 @@ mod tests {
                 refused("crap", "the coverage run failed: error: test run failed"),
             ],
         );
-        let text = run.render();
+        let text = run.render(Rows::Every);
         assert!(text.contains("does not compile"), "{text}");
         assert!(!text.contains("own suite does not pass"), "{text}");
     }
@@ -1333,7 +1390,7 @@ mod tests {
                 "the coverage run failed: error: test run failed",
             )],
         );
-        let text = run.render();
+        let text = run.render(Rows::Every);
         assert!(!text.contains("which is one problem"), "{text}");
     }
 
@@ -1479,7 +1536,7 @@ mod tests {
         let of = |name: &str| GateReport::new(name, Verdict::Pass, "chock run x");
         let run = Run::new("0.1.0", vec![of("a"), of("b"), of("c")]);
         assert_eq!(run.tally(), "3 gates ok.");
-        let text = run.render();
+        let text = run.render(Rows::Every);
         assert!(text.ends_with("3 gates ok.\n"), "{text}");
     }
 

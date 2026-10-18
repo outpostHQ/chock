@@ -1,6 +1,6 @@
 # The gates
 
-`chock gates` prints this list from the binary: 67 gates, 38 on by default and 29 opt-in.
+`chock gates` prints this list from the binary: 68 gates, 39 on by default and 29 opt-in.
 `chock gates --json` gives the same list to a program.
 
 A gate is one of two kinds.
@@ -55,6 +55,7 @@ A gate is one of two kinds.
 | `assertions` | ✓ | a test gains an assertion about *how many* instead of *what* |
 | `testlint` | ✓ | a file gains a test that asserts nothing, cannot fail, returns before it checks, is skipped with no reason or has a name that states no claim |
 | `claims` | ✓ | a document gains a citation of a line past the end of its file, or names as absent a thing that the tree holds |
+| `pinned` | ✓ | a document's `test:<file>#<name>` pin names a test or a table row that the file no longer has, or a pin on record leaves the documents |
 | `links` | ✓ | a `code:` comment in a TLA+ model or a Verus proof gains a link to an item the code does not have, or the code it links changes after the model last did |
 
 ## Opt-in
@@ -340,6 +341,27 @@ chock keeps the files in `CHOCK_TOOLS`, else in `chock-tools` in cargo's home, s
 
   The text after `doc-check: foreign` describes another tree, up to `doc-check: ours`. There the
   gate checks only a path written from the root of this tree.
+- **How `pinned` reads a pin.** A pin keeps a named test in place after the plan row that cited it
+  is gone. It is a code span in a `.md` file of the tree: `test:`, a Rust file written from the
+  root, `#` and a name. A fenced block shows syntax and pins nothing, so this list is an example:
+
+  ```md
+  ## Pinned
+  - Q157: `test:crates/core/src/push.rs#a_lost_answer_lands_once`
+  ```
+
+  The pin holds while the file has one of these:
+  - a function under a test attribute: `#[test]`, a runtime's `#[tokio::test]`, `#[rstest]`,
+    `#[test_case]`, or an attribute whose name ends in `_test`, such as `#[repo_test]`. A test in a
+    `proptest!` block counts too.
+  - a string that opens a row of a table in test code, as in `("name", …)`. Test code is a file
+    under `tests/` or `benches/`, a `tests.rs` file, or an item under `#[cfg(test)]`. Two rows can
+    have the same name, and either one holds the pin.
+
+  Each pin is one row of the record: 0 while it holds, 1 when its test is gone. A new pin is a note
+  until `chock baseline pinned` records it. A recorded pin that leaves the documents trips the gate
+  until `chock baseline pinned` records that change. So a commit that deletes a test and its pin
+  also changes `.chock/baseline.json`, and a reviewer sees it.
 - **`unused` and `dead` give leads.** Neither sees a dependency used only in a doc example, or a
   function reached only through a name a macro builds; mark such a function `#[expect(dead_code)]`.
 
@@ -485,6 +507,7 @@ A gate leaves these out on purpose. Each one has a place that shows it.
 | `shellcheck` | a file that neither ends in `.sh` or `.bash` nor starts with a `sh`, `bash`, `dash`, `ksh` or `busybox` shebang | the first line of the file |
 | `testlint` | a rule that a test waives with `// test-lint: allow(<rule>) — <reason>`; a test that asserts only through a production function is a finding | the comment in the test, with its reason |
 | `claims` | a fenced block; a citation with no `/` in its path; a file name that two files of the tree have; a name that only test code defines | the document |
+| `pinned` | a fenced block; the text after `doc-check: foreign`; a `test:` span whose file does not end in `.rs` | the document |
 | `modcheck` | the directory of a file that holds the text `chock:modcheck-exempt` | the comment in that file |
 | `modcheck` | a `mod` name that a macro builds and no file has; a `.rs` file that does not parse and is outside `src/` or read by `include!` | the compiler, where a build uses it |
 

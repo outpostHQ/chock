@@ -5,6 +5,20 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-19
+
+- **A short report for a run that names no gate.** `chock run`, `--fast`, `--ci` and the hooks give
+  a line only to each gate that tripped or could not run, and the last line counts the rest. A
+  clean `chock run --fast` now prints one line, such as `45 gates ok.`, where it printed one line
+  for each gate. A run that names its gates, `chock survey` and the new `chock run --verbose` still
+  give every gate a line. An advisory keeps its block, and the JSON does not change.
+- **The `pinned` gate.** A document pins a test with a code span `test:<file>#<name>`. The gate
+  trips when the file no longer has that test, a test in a `proptest!` block, or a table row with
+  that name in its test code. Each pin is one row of the record, so a pin that leaves the documents
+  also trips the gate until `chock baseline pinned` records the change. The gate is on by default
+  and reads source only.
+  chock now has 68 gates: 39 are on by default, and 29 are opt-in.
+
 ## [0.10.3] - 2026-10-19
 
 - **`links` finds the items in a `verus!` block.** A link such as `\* code: src/stat.rs::vouches`

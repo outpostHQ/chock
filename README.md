@@ -6,7 +6,7 @@
 
 **Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers.**
 
-chock checks a Rust project with 67 gates and gives one answer with one exit code. The gates cover
+chock checks a Rust project with 68 gates and gives one answer with one exit code. The gates cover
 your tests, clippy, rustfmt, coverage, mutation testing, the supply chain, complexity, duplication,
 and proofs.
 
@@ -129,7 +129,7 @@ today. After that, a record moves in one direction only:
 
 ```
 $ git commit -m "Split the parser"
-  nesting    ok          3 against 6
+45 gates ok.
 chock: lowered the record for nesting (6 to 3); .chock/baseline.json is in this commit
 ```
 
@@ -193,7 +193,7 @@ with each field explained.
 
 ## The gates
 
-67 gates: 38 are on by default and 29 are opt-in. `chock gates` prints the list from the binary,
+68 gates: 39 are on by default and 29 are opt-in. `chock gates` prints the list from the binary,
 and [docs/gates.md](docs/gates.md) says when each one trips.
 
 | topic | on by default | opt-in |
@@ -201,7 +201,7 @@ and [docs/gates.md](docs/gates.md) says when each one trips.
 | Tests | `test`, `coverage`, `crap`, `assertions`, `testlint`, `admits` | `mutest`, `idempotent`, `miri`, `proof` |
 | Proofs and models | `links` | `tla`, `verus` |
 | Lints and format | `lint`, `codeslop`, `source`, `typos` | `fmt`, `shellcheck` |
-| Docs and comments | `doc`, `slop`, `citations`, `claims` | `phrases` |
+| Docs and comments | `doc`, `slop`, `citations`, `claims`, `pinned` | `phrases` |
 | Code shape | `complexity`, `nesting`, `bigfiles`, `splits`, `lean`, `duplication`, `unsafety`, `modcheck` | `duplicates`, `dead`, `lines` |
 | Dependencies | `deps`, `manifest`, `placement`, `features`, `sort`, `dupdeps`, `unused`, `supply` | `unused-deep`, `acl` |
 | Build and release | `msrv`, `profile`, `toolchain`, `binsize` | `bsize` |

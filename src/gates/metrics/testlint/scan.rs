@@ -72,7 +72,7 @@ pub fn scan_source(file: &str, raw: &str) -> FileScan {
 
 /// Whether the whole file is test code, judged by its path: a `tests` or `benches` directory, or a
 /// whole-file test module.
-fn is_test_code(file: &str) -> bool {
+pub(crate) fn is_test_code(file: &str) -> bool {
     let (dirs, name) = file.rsplit_once('/').unwrap_or(("", file));
     let holds_tests = |dir: &str| matches!(dir, "tests" | "benches");
     prodlines::is_test_file(name) || dirs.split('/').any(holds_tests)
@@ -80,7 +80,7 @@ fn is_test_code(file: &str) -> bool {
 
 /// Whether an attribute block compiles its item for tests only: a `cfg` that names `test` and
 /// does not negate it.
-fn gated_for_tests(lexed: &Lexed, attrs: Range<usize>) -> bool {
+pub(crate) fn gated_for_tests(lexed: &Lexed, attrs: Range<usize>) -> bool {
     let word = |text: &str| Tok::Ident(text.to_string());
     let negated = [word("not"), Tok::Open('('), word("test")];
     lexed.attrs(attrs).any(|open| {
@@ -104,7 +104,7 @@ fn helpers_in(file: &str, lexed: &Lexed, items: &[Item]) -> Vec<Helper> {
 }
 
 /// The last word of the path an attribute starts with: `test` for `#[tokio::test(flavor = "x")]`.
-fn attr_name(inside: &[Tok]) -> &str {
+pub(crate) fn attr_name(inside: &[Tok]) -> &str {
     let words = inside.iter().map_while(|t| match t {
         Tok::Ident(s) => Some(s.as_str()),
         Tok::Punct(':', _) => Some(""),

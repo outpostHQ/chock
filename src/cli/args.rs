@@ -17,6 +17,8 @@ pub enum Command<'a> {
         ci: bool,
         /// Judges every gate again, with no kept verdict recalled.
         no_cache: bool,
+        /// A row in the text report for every gate, also for one that passed.
+        verbose: bool,
         /// The part of the Miri suite to run, from `--miri-partition=K/N`.
         miri_part: Option<Part>,
         /// Gates left out, from `--skip=NAME,...`: CI runs the slow ones in jobs of their own.
@@ -130,10 +132,10 @@ pub fn joined(args: &[&str]) -> Vec<String> {
     out
 }
 
-/// A flag of `run`: `--fast`, `--ci`, `--no-cache`, `--miri-partition=K/N`, `--skip=NAME,...`,
-/// `--package=NAME`, `--filter=TEXT` or `--mutate=FILE,...`.
+/// A flag of `run`: `--fast`, `--ci`, `--no-cache`, `--verbose`, `--miri-partition=K/N`,
+/// `--skip=NAME,...`, `--package=NAME`, `--filter=TEXT` or `--mutate=FILE,...`.
 fn known(flag: &str) -> bool {
-    matches!(flag, "--fast" | "--ci" | "--no-cache")
+    matches!(flag, "--fast" | "--ci" | "--no-cache" | "--verbose")
         || [PARTITION, SKIP, PACKAGE, FILTER, MUTATE]
             .iter()
             .any(|at| flag.starts_with(at))
@@ -214,6 +216,7 @@ fn to_run<'a>(rest: &[&'a str]) -> Command<'a> {
                 fast: names.contains(&"--fast"),
                 ci: names.contains(&"--ci"),
                 no_cache: names.contains(&"--no-cache"),
+                verbose: names.contains(&"--verbose"),
                 skip: skipped(&names),
                 names: names.into_iter().filter(|n| !known(n)).collect(),
                 json,
@@ -396,6 +399,7 @@ mod tests {
                 fast: false,
                 ci: false,
                 no_cache: false,
+                verbose: false,
                 miri_part: None,
                 skip: Vec::new(),
                 scope: Scope::default()
@@ -414,6 +418,7 @@ mod tests {
                 fast: true,
                 ci: false,
                 no_cache: false,
+                verbose: false,
                 miri_part: None,
                 skip: Vec::new(),
                 scope: Scope::default()
@@ -427,6 +432,7 @@ mod tests {
                 fast: true,
                 ci: false,
                 no_cache: false,
+                verbose: false,
                 miri_part: None,
                 skip: Vec::new(),
                 scope: Scope::default()
@@ -444,6 +450,7 @@ mod tests {
                 fast: false,
                 ci: false,
                 no_cache: false,
+                verbose: false,
                 miri_part: None,
                 skip: Vec::new(),
                 scope: Scope::default()
@@ -459,6 +466,7 @@ mod tests {
             fast: false,
             ci: false,
             no_cache: false,
+            verbose: false,
             miri_part: None,
             skip: Vec::new(),
             scope: Scope::default(),
@@ -475,12 +483,30 @@ mod tests {
             fast: false,
             ci: true,
             no_cache: true,
+            verbose: false,
             miri_part: None,
             skip: Vec::new(),
             scope: Scope::default(),
         };
         assert_eq!(parse(&["run", "--no-cache", "--ci", "lint"]), expected);
         assert_eq!(parse(&["run", "lint", "--ci", "--no-cache"]), expected);
+    }
+
+    #[test]
+    fn verbose_is_a_flag_on_run_wherever_it_stands() {
+        let expected = Command::Run {
+            names: vec![],
+            json: false,
+            fast: true,
+            ci: false,
+            no_cache: false,
+            verbose: true,
+            miri_part: None,
+            skip: Vec::new(),
+            scope: Scope::default(),
+        };
+        assert_eq!(parse(&["run", "--verbose", "--fast"]), expected);
+        assert_eq!(parse(&["run", "--fast", "--verbose"]), expected);
     }
 
     #[test]
@@ -491,6 +517,7 @@ mod tests {
             fast: false,
             ci: true,
             no_cache: false,
+            verbose: false,
             miri_part: Some(Part { index: 2, of: 12 }),
             skip: Vec::new(),
             scope: Scope::default(),
@@ -511,6 +538,7 @@ mod tests {
                 fast: false,
                 ci: false,
                 no_cache: false,
+                verbose: false,
                 miri_part: Some(Part { index, of }),
                 skip: Vec::new(),
                 scope: Scope::default(),
@@ -527,6 +555,7 @@ mod tests {
             fast: false,
             ci: true,
             no_cache: false,
+            verbose: false,
             miri_part: None,
             skip: vec!["miri", "mutest", "bsize"],
             scope: Scope::default(),
@@ -562,6 +591,7 @@ mod tests {
             fast: false,
             ci: false,
             no_cache: false,
+            verbose: false,
             miri_part: None,
             skip: Vec::new(),
             scope: Scope {
@@ -594,6 +624,7 @@ mod tests {
             fast: false,
             ci: false,
             no_cache: false,
+            verbose: false,
             miri_part: None,
             skip: Vec::new(),
             scope: Scope {

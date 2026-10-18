@@ -19,6 +19,7 @@ Every day
   chock run --fast                only the gates a commit runs: quick, and none of them compiles
   chock run --ci                  the gates a CI job runs: staged for commit, push or ci
   chock run --no-cache            judge every gate again; no kept verdict answers
+  chock run --verbose             a line for every gate, also for each one that passed
   chock run --miri-partition=K/N  run only part K of N of the Miri suite
   chock run --skip=GATE,...       run every gate but the ones named; CI runs those in other jobs
   chock run test --package=NAME   run the suite of one package only

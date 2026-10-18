@@ -139,8 +139,12 @@ complexity — chock run complexity
 1 of 4 gates tripped (complexity).
 ```
 
-- **The first block has one line for each gate.** A ratchet adds what it measured and what the
-  record holds: complexity is 34 where the record holds 26.
+- **The first block has one line for each gate that you named.** A ratchet adds what it measured
+  and what the record holds: complexity is 34 where the record holds 26.
+- **A run that names no gate shows only the gates that did not pass.** `chock run`, `--fast`,
+  `--ci` and the hooks run many gates, so a gate that passed gets no line, and the last line counts
+  it. `--verbose` gives every gate a line. A gate that passed with an advisory still shows its
+  block.
 - **The second block has the findings of each gate that did not pass.** Its heading ends with the
   command that runs that one gate again. Each finding names the file, the function or lint, and the
   two numbers.
@@ -228,7 +232,7 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/run-v1.json",
   "version": 1,
-  "chock": "0.10.3",
+  "chock": "0.11.0",
   "gates": [
     {
       "gate": "complexity",
@@ -293,6 +297,7 @@ closest name: `` unknown command `doctr`; did you mean `chock doctor`? ``.
 | `chock run --fast` | runs only the gates staged for a commit; they need no compiler |
 | `chock run --ci` | runs the gates a CI job runs: staged for commit, push or ci |
 | `chock run --no-cache` | judges every gate again; no kept verdict answers |
+| `chock run --verbose` | gives every gate a line in the report, also each gate that passed |
 | `chock run --miri-partition=K/N` | runs only part K of N of the Miri suite |
 | `chock run --skip GATE` | runs every gate but the one named; `--skip=A,B` names several, such as the gates that CI runs in other jobs |
 | `chock run test --package=NAME` | runs the suite of one package only |

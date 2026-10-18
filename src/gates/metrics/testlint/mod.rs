@@ -13,7 +13,7 @@ use crate::run::{Ctx, Gate, Group, Inspection, Kind};
 use crate::tokens::{Lexed, Tok};
 
 mod per_test;
-mod scan;
+pub(crate) mod scan;
 
 use scan::{FileScan, Helper, TestItem};
 

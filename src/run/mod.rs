@@ -2254,7 +2254,7 @@ mod tests {
             read.gates[0].findings[0].item.as_deref(),
             Some("integration test commands")
         );
-        let text = run.render();
+        let text = run.render(report::Rows::Every);
         assert!(text.contains("advisory, and it passed"), "{text}");
         assert!(text.contains("not mutation-covered"), "{text}");
     }
