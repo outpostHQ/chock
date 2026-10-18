@@ -5,6 +5,13 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-10-18
+
+- **A new item against a record of zeros trips the gate.** A ratchet that keys by item, such as
+  `duplicates`, refused to run when its record held only items at zero and the tree had a new one.
+  It said that the keys changed, and it told the reader to re-record. Now the gate trips and names
+  the new item, because a record that owes nothing has no debt that a re-key could hide.
+
 ## [0.10.1] - 2026-10-18
 
 - **The crates.io description counts no gates.** The 0.10.0 description said "59 gates", and

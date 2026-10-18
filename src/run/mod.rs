@@ -640,14 +640,18 @@ fn rekeyed(now: &Series, was: &Series, keys: Keys) -> Option<String> {
     if now.is_empty() {
         // A gone item or measure is paid debt. Only a census owes a row for every key, so only
         // there does measuring nothing mean the gate stopped answering.
-        return match keys {
-            Keys::Items | Keys::Sizes { .. } | Keys::Measures => None,
-            Keys::Census => Some(format!(
+        return matches!(keys, Keys::Census).then(|| {
+            format!(
                 "nothing was measured, and the baseline records {} key(s) — that is a gate that \
                  stopped answering, not a tree that got better",
                 was.len()
-            )),
-        };
+            )
+        });
+    }
+    // An item held at zero owes nothing, so a record of only such items has no debt that a re-key
+    // could pass off as paid, and a new item is plain new debt.
+    if matches!(keys, Keys::Items) && was.0.values().all(|held| *held == 0) {
+        return None;
     }
     if now.0.keys().any(|key| was.get(key).is_some()) {
         return None;
@@ -1404,6 +1408,22 @@ mod tests {
         assert_eq!(rekeyed(&overlapping, &was, Keys::Items), None);
         // Nothing on record yet is the first recording, not a re-key.
         assert_eq!(rekeyed(&now, &Series::new(), Keys::Items), None);
+    }
+
+    /// scm's `duplicates` record held one item at zero, and its first new duplicate read as a
+    /// changed reader, so the gate could not run where it should have tripped.
+    #[test]
+    fn an_item_record_that_owes_nothing_takes_a_new_item_as_debt_not_as_a_re_key() {
+        let mut was = Series::new();
+        was.set("src/a.rs#past_group", 0);
+        let mut now = Series::new();
+        now.set("src/b.rs#load_symbols", 12);
+        assert_eq!(rekeyed(&now, &was, Keys::Items), None);
+        // A census answers for each key it holds, at zero too.
+        assert!(rekeyed(&now, &was, Keys::Census).is_some());
+        // One item that owes something is still evidence of the reader.
+        was.set("src/c.rs#held", 3);
+        assert!(rekeyed(&now, &was, Keys::Items).is_some());
     }
 
     /// A census owes a row per key, so measuring none is a gate that stopped answering — `lenses`
