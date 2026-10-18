@@ -374,7 +374,7 @@ fn definitions(src: &str) -> Vec<(String, &'static str, usize)> {
     let tested = test_only(&lexed);
     let defines = |i: usize| {
         let word = lexed.ident(i);
-        let is_macro = word == "macro_rules" && lexed.is_punct(i + 1, '!');
+        let is_macro = lexed.calls(i, "macro_rules");
         let kind = KINDS.iter().find(|kind| **kind == word);
         let (kind, at) = match kind {
             _ if is_macro => ("macro", i + 2),

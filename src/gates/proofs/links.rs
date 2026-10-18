@@ -435,7 +435,7 @@ fn module(file: &str) -> Vec<String> {
 }
 
 /// Each item of a source that a link can name, with its path inside the file. A file that does not
-/// lex names nothing; code under `#[cfg(test)]` and the inside of a function are left out.
+/// lex names nothing. Left out: `#[cfg(test)]` code, function bodies, macro bodies except `verus!`.
 fn defined(src: &str) -> Vec<Defined> {
     let Ok(lexed) = Lexed::new(src) else {
         return Vec::new();
@@ -476,7 +476,12 @@ fn item(
     out: &mut Vec<Defined>,
 ) -> Option<usize> {
     let word = lexed.ident(i);
-    let rules = word == "macro_rules" && lexed.is_punct(i + 1, '!');
+    // A `verus!` block holds items as a module body does, at the path of what holds it.
+    if lexed.calls(i, "verus") {
+        scan(lexed, i + 3, outer, tested, out);
+        return lexed.pair.get(i + 2).map(|close| close + 1);
+    }
+    let rules = lexed.calls(i, "macro_rules");
     if !DEFINES.contains(&word) && !rules {
         return None;
     }
@@ -740,6 +745,18 @@ mod tests {
             ]
         );
         assert_eq!(paths("fn ( {"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_items_of_a_verus_block_take_the_path_of_what_holds_it() {
+        let src = "verus! {\npub fn vouches(same: bool, at: (i64, u32)) -> (r: bool)\n\
+                   \x20   requires at.1 < 1_000_000_000,\n    ensures r == same,\n{ same }\n\
+                   pub open spec fn law() -> bool { true }\n}\n\
+                   mod m { verus! { proof fn lemma() ensures true {} } }\nm! { fn inside() {} }\n";
+        let mut found = paths(src);
+        found.sort();
+        assert_eq!(found, ["law", "m", "m::lemma", "vouches"]);
+        assert_eq!(paths("verus!"), Vec::<String>::new());
     }
 
     #[test]

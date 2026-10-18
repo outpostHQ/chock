@@ -92,6 +92,12 @@ impl Lexed {
         matches!(self.toks.get(i), Some(Tok::Punct(p, _)) if *p == c)
     }
 
+    /// Whether the word at `i` calls the macro `name`: `name!`.
+    #[must_use]
+    pub fn calls(&self, i: usize, name: &str) -> bool {
+        self.ident(i) == name && self.is_punct(i + 1, '!')
+    }
+
     #[must_use]
     pub fn opens(&self, i: usize, c: char) -> bool {
         self.toks.get(i) == Some(&Tok::Open(c))

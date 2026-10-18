@@ -228,7 +228,7 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/run-v1.json",
   "version": 1,
-  "chock": "0.10.2",
+  "chock": "0.10.3",
   "gates": [
     {
       "gate": "complexity",

@@ -5,6 +5,13 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-10-19
+
+- **`links` finds the items in a `verus!` block.** A link such as `\* code: src/stat.rs::vouches`
+  said that it names nothing when `vouches` was inside `verus! { … }`, because the gate skipped the
+  body of each macro call. Now the items of a `verus!` block take the path of the module that holds
+  the block. The body of any other macro call still holds no item that a link can name.
+
 ## [0.10.2] - 2026-10-18
 
 - **A new item against a record of zeros trips the gate.** A ratchet that keys by item, such as
