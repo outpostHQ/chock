@@ -397,7 +397,7 @@ says which of them this machine has. These gates need more:
 | `verus` | the pinned Verus, which `chock init --downloads` fetches, and the Rust toolchain that this Verus names |
 | `acl` | a `cackle.toml`, and bubblewrap; Linux only |
 | `commits`, `hygiene`, `history` | a git or Outpost repository; outside one they report that they could not run |
-| Outpost gates, `history`, `duplicates`, `unread` | [Outpost](https://github.com/outpostHQ) on `PATH`, with `check --grouping=report` |
+| Outpost gates, `history`, `duplicates`, `unread` | [Outpost](https://github.com/outpostHQ) on `PATH`, one whose `check` reports the grouping measures by default (2026-10-18 on) |
 
 On a system a gate's tool does not run on (`acl` off Linux, `proof` on Windows), `chock run` leaves
 that gate out and says so; a Linux run enforces it.

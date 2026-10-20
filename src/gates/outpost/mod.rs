@@ -195,12 +195,8 @@ impl Measure {
 pub fn once(ctx: &crate::run::Ctx) -> Result<&Check, String> {
     ctx.checked
         .get_or_init(|| {
-            // Below modularity 0.3 Outpost withholds the grouping rows `boundaries` reads unless
-            // `--grouping=report` asks for them.
-            checked(&spawn(
-                &ctx.root,
-                &["check", "--json", "--grouping=report"],
-            )?)
+            // Outpost reports the grouping rows `boundaries` reads even below modularity 0.3.
+            checked(&spawn(&ctx.root, &["check", "--json"])?)
         })
         .as_ref()
         .map_err(Clone::clone)

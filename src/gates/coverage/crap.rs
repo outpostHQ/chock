@@ -316,9 +316,8 @@ impl Scored {
         self.crap > OVER
     }
 
-    /// A score above the record's, or a function the record lacks that is over the threshold. A
-    /// function in a file the coverage run did not build, such as a Kani proof or code for another
-    /// target, has no coverage, so its score is never judged.
+    /// A score above the record's, or a new function over the threshold. A function with no
+    /// coverage, such as a Kani proof or code for another target, is never judged.
     fn worse(&self) -> bool {
         let judged = self.coverage.is_some();
         match self.status.as_str() {

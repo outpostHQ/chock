@@ -134,12 +134,33 @@ fn read_outpost(out: &exec::Output) -> Result<Vec<String>, String> {
     if !out.success() {
         return Err(reason("outpost could not read the tree", out));
     }
-    let tree: Node = serde_json::from_str(&out.stdout)
+    let mut found = serde_json::from_str(&out.stdout)
+        .and_then(files_in)
         .map_err(|e| format!("outpost printed a tree chock cannot read: {e}"))?;
-    let mut found = Vec::new();
-    paths(&tree, "", &mut found);
     found.sort();
     enumerated(found.iter().map(String::as_str))
+}
+
+/// The files of `outpost tree --json`. A newer Outpost lists each entry with its path from the
+/// root; an older one nests each directory's entries under it.
+fn files_in(tree: serde_json::Value) -> Result<Vec<String>, serde_json::Error> {
+    let mut found = Vec::new();
+    match tree {
+        listed @ serde_json::Value::Array(_) => {
+            let entries: Vec<Listed> = serde_json::from_value(listed)?;
+            let files = entries.into_iter().filter(|entry| entry.kind == "File");
+            found.extend(files.map(|entry| entry.path));
+        }
+        nested => paths(&serde_json::from_value(nested)?, "", &mut found),
+    }
+    Ok(found)
+}
+
+/// One entry of a newer Outpost's tree: a `File` or a `Dir`, at its path from the root.
+#[derive(Deserialize)]
+struct Listed {
+    path: String,
+    kind: String,
 }
 
 /// One node of `outpost tree --json`, of the two variants that carry a path.
@@ -2128,6 +2149,19 @@ mod tests {
             read_outpost(&ran(tree, Some(0))).unwrap(),
             vec!["Cargo.toml".to_string(), "src/lib.rs".to_string()]
         );
+    }
+
+    #[test]
+    fn a_tree_that_lists_each_entry_with_its_path_gives_its_files() {
+        let listed = serde_json::json!([
+            {"path": "src", "name": "src", "kind": "Dir", "mode": 16384, "id": "aa", "meta": null},
+            {"path": "src/lib.rs", "name": "lib.rs", "kind": "File", "mode": 33188, "id": "bb"},
+            {"path": "Cargo.toml", "name": "Cargo.toml", "kind": "File", "size": 1, "id": "cc"}
+        ]);
+        assert_eq!(files_in(listed).unwrap(), ["src/lib.rs", "Cargo.toml"]);
+        let pathless = serde_json::json!([{"name": "lib.rs", "kind": "File"}]);
+        let err = files_in(pathless).unwrap_err().to_string();
+        assert!(err.contains("missing field `path`"), "{err}");
     }
 
     #[test]

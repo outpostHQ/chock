@@ -5,6 +5,17 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-20
+
+- **chock reads the tree of a newer Outpost.** A newer Outpost prints `outpost tree --json` as a
+  list of entries, each with its path from the root, where an older one nested each directory's
+  entries under it. In a project whose config names `"vcs": "outpost"`, `hygiene`, `shellcheck`,
+  `lines` and the edit hook said `outpost printed a tree chock cannot read: invalid type: map,
+  expected a sequence`, so the pre-commit hook refused every commit. chock now reads both shapes.
+- **chock no longer passes `--grouping=report` to `outpost check`.** Outpost reports the grouping
+  measures by default from 2026-10-18, and a later Outpost drops the option. An older Outpost
+  withholds them below its modularity floor, so `boundaries` and `measures` see fewer rows there.
+
 ## [0.11.0] - 2026-10-19
 
 - **A short report for a run that names no gate.** `chock run`, `--fast`, `--ci` and the hooks give
