@@ -1,0 +1,11 @@
+--- jobs.rs
++++ shared
+@@ -63,7 +63,7 @@
+         share <= if jobs == 0 { 1 } else { jobs },
+         share > 1 ==> share * running <= jobs,
+ {
+-    let lanes = running.max(1);
++    let lanes = running;
+     let share = (jobs / lanes).max(1);
+     proof {
+         assert(jobs / lanes <= jobs) by (nonlinear_arith)

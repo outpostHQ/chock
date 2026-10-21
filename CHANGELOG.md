@@ -5,6 +5,21 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-21
+
+- **chock runs every gate on itself but `shellcheck`,** which has no shell script to read. Five
+  more gates are on: `lines`, `seams`, `owners`, `calls` and `verus`. `seams` keeps `syn` and
+  `proc_macro2` in the gates and the token reader, and `std::process::Command` in `exec`, `init`
+  and the oracle's sandbox. `owners` keeps each environment variable in one reader, so `PATH`
+  and `JAVA_HOME` each have one now. `calls` wants a write before each `std::fs::rename`.
+- **chock proves its job counts with Verus.** `proofs/verus/jobs.rs` holds copies of six
+  functions that plan the jobs of a run. Verus proves that each gives at least one job, and no
+  more than the cores, the memory or the person allow. Each of its 8 mutants breaks one function,
+  and Verus must fail on it.
+- **`chock init --downloads` installs the Rust toolchain that the pinned Verus names.** The new
+  `VERUS_SETUP` line runs `rustup toolchain install 1.99.1 --profile minimal`, so the `verus`
+  gate runs in a new CI job too.
+
 ## [0.13.0] - 2026-10-21
 
 - **`chock run tla --model=NAME,...`** checks only the cfgs of the named models, and proves only

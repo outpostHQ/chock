@@ -344,7 +344,12 @@ pub fn gathered(
     rows.extend(miri_in(&config, &|| {
         crate::setup::miri::standing(start, root)
     }));
-    rows.extend(java_in(&config, start, root, std::env::var_os("JAVA_HOME")));
+    rows.extend(java_in(
+        &config,
+        start,
+        root,
+        crate::gates::proofs::tla::java_home(),
+    ));
     rows.extend(machine_health(root, extra));
     // Doctor does not report on an editor hook that chock did not wire into the settings it writes.
     let wired = std::fs::read_to_string(root.join(".claude/settings.json"))
@@ -451,7 +456,7 @@ pub fn machine_health(
     rows.extend(downloaded(&extra.downloads, home.as_deref(), &on));
     if let Some((top, below)) = hooks_declared_at(root) {
         let declarations = crate::project::vcs::git_hook_declarations(&top);
-        let path = std::env::var_os("PATH");
+        let path = crate::exec::search_path();
         let startable = |program: &str| match &path {
             Some(path) => crate::setup::hooks::executable(root, program, path),
             None => Err("PATH is not available".to_string()),

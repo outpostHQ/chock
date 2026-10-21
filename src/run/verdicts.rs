@@ -297,7 +297,7 @@ fn cargo_configs(root: &Path, home: Option<std::path::PathBuf>) -> Vec<std::path
 
 /// Size and mtime of the tool's binary as the process's `PATH` resolves it.
 fn stamped(tool: &str) -> Option<(u64, std::time::SystemTime)> {
-    binary_of(&std::env::var_os("PATH").unwrap_or_default(), tool)
+    binary_of(&crate::exec::search_path().unwrap_or_default(), tool)
 }
 
 /// The version plus the binary's size and mtime, since one version string can name many builds.

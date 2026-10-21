@@ -243,6 +243,9 @@ You need rustup and [just](https://github.com/casey/just). From the root of a cl
 installs the pinned Rust, builds this chock, installs every tool that a gate runs at its pinned
 version, and wires the hooks. chock's own CI also runs the commit set first, on Linux only.
 
+chock turns on every gate for itself but `shellcheck`, because it has no shell script. `--ci`
+leaves out the 10 gates that read Outpost's graph; `chock run` without it runs them too.
+
 ## Licence
 
 Apache-2.0 — Copyright 2026 Outpost Innovations, Inc. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

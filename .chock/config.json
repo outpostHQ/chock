@@ -9,6 +9,7 @@
     "binsize",
     "boundaries",
     "bsize",
+    "calls",
     "citations",
     "claims",
     "codeslop",
@@ -32,6 +33,7 @@
     "idempotent",
     "lean",
     "lenses",
+    "lines",
     "links",
     "lint",
     "manifest",
@@ -41,6 +43,7 @@
     "msrv",
     "mutest",
     "nesting",
+    "owners",
     "padding",
     "phrases",
     "pinned",
@@ -48,6 +51,7 @@
     "profile",
     "proof",
     "scan",
+    "seams",
     "slop",
     "sort",
     "source",
@@ -63,6 +67,7 @@
     "unsafety",
     "unused",
     "unused-deep",
+    "verus",
     "wiring"
   ],
   "vcs": "git",
@@ -101,6 +106,18 @@
     { "text": "comprehensive", "why": "A reader cannot check it. Name the property.", "word": true },
     { "text": "crucial", "why": "A reader cannot check it. Name the property.", "word": true },
     { "text": "delve", "why": "Write \"read\" or \"look at\".", "word": true }
+  ],
+  "seams": [
+    { "path": "syn", "only": ["src/gates/**", "src/tokens.rs"], "why": "Only the gates and the token reader parse Rust source." },
+    { "path": "proc_macro2", "only": ["src/gates/**", "src/tokens.rs"], "why": "Only the gates and the token reader parse Rust source." },
+    { "path": "std::process::Command", "only": ["src/exec/**", "src/setup/init.rs", "src/oracle/side.rs"], "why": "A gate starts each process in exec, which paces it and stops it at its limit. Only init's installs, which show their progress, and the oracle's sandbox start their own." }
+  ],
+  "owners": [
+    { "call": "std::env::var", "why": "Read each variable in one place, and pass the value on." },
+    { "call": "std::env::var_os", "why": "Read each variable in one place, and pass the value on." }
+  ],
+  "calls": [
+    { "call": "std::fs::rename", "after": "write", "why": "A rename puts a staged file or directory in place, so a reader never sees it half written. Write the staged item first." }
   ],
   "stage": {
     "acl": "ci",

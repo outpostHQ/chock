@@ -1,0 +1,11 @@
+--- jobs.rs
++++ jobs
+@@ -23,7 +23,7 @@
+         Ok(by_memory) => by_memory,
+         Err(_) => usize::MAX,
+     };
+-    let count = cpus.min(by_memory).max(1);
++    let count = cpus.max(1);
+     proof {
+         let quotient = available_mb / per_job_mb;
+         assert(quotient * per_job_mb <= available_mb) by (nonlinear_arith)

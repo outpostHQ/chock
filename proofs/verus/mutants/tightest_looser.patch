@@ -1,0 +1,11 @@
+--- jobs.rs
++++ tightest
+@@ -50,7 +50,7 @@
+         tight matches Some(t) ==> (host == Some(t) || container == Some(t)),
+ {
+     match (host, container) {
+-        (Some(host), Some(container)) => Some(host.min(container)),
++        (Some(host), Some(container)) => Some(host.max(container)),
+         (found, None) | (None, found) => found,
+     }
+ }

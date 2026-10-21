@@ -1,0 +1,11 @@
+--- jobs.rs
++++ jobs
+@@ -17,7 +17,7 @@
+         asked is None && count > 1 ==> count * per_job_mb <= available_mb,
+ {
+     if let Some(asked) = asked {
+-        return asked.max(1);
++        return asked;
+     }
+     let by_memory = match usize::try_from(available_mb / per_job_mb) {
+         Ok(by_memory) => by_memory,

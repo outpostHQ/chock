@@ -1,0 +1,11 @@
+--- jobs.rs
++++ within
+@@ -93,7 +93,7 @@
+         set matches Some(n) ==> count <= if n == 0 { 1 } else { n },
+ {
+     match set {
+-        Some(set) => set.min(jobs),
++        Some(set) => set,
+         None => jobs,
+     }.max(1)
+ }

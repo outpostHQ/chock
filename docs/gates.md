@@ -195,8 +195,9 @@ chock patches a copy under `target/test-scratch/chock/verus`, never your file, a
 only the named function. A mutant that stops Verus before it verifies, such as one that does not
 compile, refutes nothing, and the gate reports it.
 
-Verus runs on the Rust toolchain that its release names. When that toolchain is not installed,
-the gate names the `rustup install` command to run.
+Verus runs on the Rust toolchain that its release names. The `VERUS_SETUP` line of the pin
+installs it, so `chock init --downloads` adds it. When that toolchain is not installed, the gate
+names the `rustup install` command to run.
 
 ### `links`
 
@@ -422,7 +423,7 @@ says which of them this machine has. These gates need more:
 | `mutest` | Outpost's fork of [mutest-rs](https://github.com/outpostHQ/mutest-rs) and the nightly it names; `chock init --global` builds the newest commit of the fork's `main`, which needs `git` |
 | `proof` | `#[kani::proof]` functions; Linux or macOS |
 | `tla` | Java 11 or later for TLC, and Java 21 or later for Apalache; the pinned jars and tlapm, which `chock init --downloads` fetches |
-| `verus` | the pinned Verus, which `chock init --downloads` fetches, and the Rust toolchain that this Verus names |
+| `verus` | the pinned Verus, which `chock init --downloads` fetches, and the Rust toolchain that this Verus names, which its `VERUS_SETUP` line installs |
 | `acl` | a `cackle.toml`, and bubblewrap; Linux only |
 | `commits`, `hygiene`, `history` | a git or Outpost repository; outside one they report that they could not run |
 | Outpost gates, `history`, `duplicates`, `unread` | [Outpost](https://github.com/outpostHQ) on `PATH`, one whose `check` reports the grouping measures by default (2026-10-18 on) |

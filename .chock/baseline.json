@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/baseline-v1.json",
   "version": 1,
-  "chock": "0.12.0",
+  "chock": "0.14.0",
   "gates": {
     "admits": {},
     "assertions": {
@@ -35,6 +35,9 @@
     "boundaries": {
       "mixed_directory_foreign_files_production": 35,
       "scattered_groups_production": 2
+    },
+    "calls": {
+      "src/setup/downloads.rs#std::fs::rename in fetch": 1
     },
     "citations": {},
     "claims": {},
@@ -294,6 +297,9 @@
       "hazard_unenumerated_table": 0,
       "hazard_unordered_into_ordered": 0
     },
+    "lines": {
+      "total": 90604
+    },
     "links": {},
     "manifest": {},
     "measures": {
@@ -549,6 +555,12 @@
       "src/gates/source/testonly.rs#arguments": 1,
       "src/project/mod.rs#walk": 1
     },
+    "owners": {
+      "src/gates/proofs/tla.rs#std::env::var_os(\"JAVA_HOME\")": 1,
+      "src/run/verdicts.rs#std::env::var_os(\"PATH\")": 1,
+      "src/setup/doctor.rs#std::env::var_os(\"JAVA_HOME\")": 1,
+      "src/setup/doctor.rs#std::env::var_os(\"PATH\")": 1
+    },
     "padding": {
       "src/gates/cargo/profile.rs#free_wins": 1,
       "src/gates/tools/mod.rs#all": 5,
@@ -590,6 +602,10 @@
       "src/setup/init.rs#rust-path-traversal": 4,
       "src/setup/version.rs#discarded-result": 1
     },
+    "seams": {
+      "src/oracle/side.rs#std::process::Command": 3,
+      "src/setup/init.rs#std::process::Command": 6
+    },
     "slop": {},
     "sort": {},
     "source": {},
@@ -625,6 +641,7 @@
     "assertions": "length assertion(s)",
     "binsize": "byte(s)",
     "boundaries": "file(s) off one concern, tree-wide",
+    "calls": "unpaired call(s)",
     "citations": "stale citation(s)",
     "claims": "stale claim(s)",
     "commands": "declared finding(s)",
@@ -635,17 +652,20 @@
     "features": "feature declaration issue(s)",
     "hazards": "hazard(s)",
     "lean": "removable line(s)",
+    "lines": "line(s)",
     "links": "stale link(s)",
     "manifest": "unpinned dependency declaration(s)",
     "measures": "counted",
     "modcheck": "orphan module file(s)",
     "mutest": "mutation(s) no test killed",
+    "owners": "read(s) of a value another file reads",
     "padding": "line(s) over",
     "phrases": "forbidden phrase(s)",
     "pinned": "lost test(s)",
     "placement": "misplaced dependency declaration(s)",
     "proof": "failed harness(es)",
     "scan": "finding(s)",
+    "seams": "use(s) past a seam",
     "slop": "over-long comment block(s)",
     "sort": "unsorted manifest(s)",
     "splits": "movable parts",

@@ -27,6 +27,12 @@ pub fn depth() -> u32 {
         .unwrap_or(0)
 }
 
+/// The directories this process looks a program up in: its `PATH`.
+#[must_use]
+pub fn search_path() -> Option<std::ffi::OsString> {
+    std::env::var_os("PATH")
+}
+
 /// Which step of running a tool failed, as distinct from the tool running and saying no.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {

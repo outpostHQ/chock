@@ -463,7 +463,13 @@ fn uncovered(
 
 /// A Java runtime: `JAVA_HOME`'s, else the one on `PATH`. Both TLC and Apalache run on it.
 fn java(ctx: &Ctx) -> Result<String, String> {
-    java_in(ctx, std::env::var_os("JAVA_HOME"))
+    java_in(ctx, java_home())
+}
+
+/// The Java home this process names: its `JAVA_HOME`. `doctor` checks the same one.
+#[must_use]
+pub fn java_home() -> Option<std::ffi::OsString> {
+    std::env::var_os("JAVA_HOME")
 }
 
 fn java_in(ctx: &Ctx, home: Option<std::ffi::OsString>) -> Result<String, String> {

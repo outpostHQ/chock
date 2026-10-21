@@ -1,0 +1,11 @@
+--- jobs.rs
++++ kani_jobs
+@@ -112,7 +112,7 @@
+         },
+         None => usize::MAX,
+     };
+-    share.clamp(1, 8).min(asked).max(1)
++    share.clamp(1, 16).min(asked).max(1)
+ }
+ 
+ // code: src/gates/proofs/verus.rs::shares

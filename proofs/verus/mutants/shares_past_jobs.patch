@@ -1,0 +1,11 @@
+--- jobs.rs
++++ shares
+@@ -124,7 +124,7 @@
+         split.0 * split.1 <= if cap == 0 { 1 } else { cap },
+ {
+     let cap = cap.max(1);
+-    let workers = cap.min(jobs).max(1);
++    let workers = cap;
+     let threads = (cap / workers).max(1);
+     proof {
+         assert(cap / workers >= 1) by (nonlinear_arith)
