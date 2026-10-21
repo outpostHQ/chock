@@ -939,7 +939,7 @@ fn a_fix_lowers_the_record_at_a_commit_and_ci_refuses_a_change_that_did_not_comm
     let counted = exits(&dir, &["baseline", "--lower", "slop"], 0);
     says(
         &counted.err,
-        "chock: the record counts changes that are not staged: src/new.rs; commit them",
+        "chock: the record counts changes that are not staged, and CI does not: src/new.rs",
     );
     std::fs::remove_file(dir.join("src/new.rs")).unwrap();
 

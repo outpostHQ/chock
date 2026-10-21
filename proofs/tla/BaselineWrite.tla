@@ -60,7 +60,7 @@ Read(w, from, to) ==
     /\ pc' = [pc EXCEPT ![w] = to]
     /\ UNCHANGED <<disk, torn, holder, written, crashes>>
 
-\* code: src/run/report.rs::Settled::written and src/cli.rs::record_baseline (document::write; git is read after it)
+\* code: src/run/report.rs::Settled::written and src/cli.rs::record_baseline (document::write; counted_unstaged reads git after it)
 Write(w) ==
     /\ pc[w] = "read"
     /\ disk' = [snap[w] EXCEPT ![w] = 1]
