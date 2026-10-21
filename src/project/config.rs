@@ -85,6 +85,9 @@ pub struct Config {
     /// The most Kani harnesses `proof` verifies at once; each solver can hold several GB.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proof_jobs: Option<u32>,
+    /// Settings of the `proof` gate: the packages Kani verifies, and how long it may take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<Proof>,
     /// Checks whose tool CI cannot install: the hooks still run them, `chock run --ci` does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_only: Option<Vec<String>>,
@@ -215,6 +218,18 @@ pub struct Unmutated {
     pub why: String,
 }
 
+/// What the `proof` gate verifies. A field left out keeps chock's default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Proof {
+    /// The packages Kani lists and verifies, each as `-p`; the whole workspace when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packages: Option<Vec<String>>,
+    /// Seconds the Kani run of every harness may take; chock's tool limit when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_s: Option<u64>,
+}
+
 /// What the `verus` gate verifies. A field left out keeps chock's default.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -241,10 +256,10 @@ pub struct Tla {
     /// Directories, from the root, whose `.cfg` files TLC checks; `proofs/tla` when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dirs: Option<Vec<String>>,
-    /// Worker threads of one TLC run; 2 when left out.
+    /// Worker threads of one TLC run, and of one tlapm run; 2 when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workers: Option<u32>,
-    /// Seconds one cfg or one Apalache check may run; 300 when left out.
+    /// Seconds one cfg, one Apalache check, or the tlapm proof of one module may run; 300 when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_s: Option<u64>,
     /// Seconds for the cfgs of one model, or for one cfg, by the model's name or the cfg's stem.
@@ -385,6 +400,7 @@ impl Config {
             mutest_exhaustive: None,
             mutest_args: None,
             proof_jobs: None,
+            proof: None,
             local_only: None,
             strict: None,
             clean_when_touched: None,

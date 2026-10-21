@@ -59,7 +59,7 @@ fn inspect(ctx: &Ctx) -> Result<Inspection, String> {
     found.extend(early_returns(&scans));
     found.extend(ambiguous_names(&scans));
     found.extend(shell_harnesses(ctx)?);
-    found.sort_by(|a, b| (&a.file, a.line, &a.item).cmp(&(&b.file, b.line, &b.item)));
+    Finding::sort_by_place(&mut found);
     Ok(Inspection::debt(found))
 }
 

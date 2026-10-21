@@ -116,6 +116,12 @@ impl Finding {
         }
     }
 
+    /// By file, then line, then item: the one order every gate sorts its findings in, so the
+    /// binary holds one copy of the sort.
+    pub fn sort_by_place(found: &mut [Self]) {
+        found.sort_by(|a, b| (&a.file, a.line, &a.item).cmp(&(&b.file, b.line, &b.item)));
+    }
+
     #[must_use]
     pub fn candidate(mut self) -> Self {
         self.grade = Grade::Candidate;

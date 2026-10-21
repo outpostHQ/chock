@@ -49,9 +49,10 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
     let baseline = baseline();
     let held = held_by(&ctx.root, &baseline, ctx.ci)?;
     crate::gates::coverage::ensure(ctx)?;
-    let record = or_first(held, &ctx.root, &baseline, &|| scores(ctx))?;
+    let record = or_first(held, &ctx.root, &baseline, &|| whole_scores(ctx))?;
     let out = crap(&ctx.root, &["--baseline", &baseline, "--fail-regression"])?;
-    judged(&out.stdout, out.success(), &ctx.root, &record)
+    let left = crate::gates::coverage::unmerged(ctx);
+    judged(&out.stdout, out.success(), &ctx.root, &record).map(|it| it.read_in_part(&left))
 }
 
 /// What cargo-crap leaves out: a build script, which no coverage run reaches, and a file of test
@@ -96,6 +97,11 @@ fn or_first(
 /// Every function's score today as cargo-crap reports it, each path relative: what a record holds.
 pub fn scores(ctx: &Ctx) -> Result<String, String> {
     as_record(&crap(&ctx.root, &["--sort", "file"])?, &ctx.root)
+}
+
+/// The scores, from a coverage run that merged every profile: only such scores make a record.
+pub fn whole_scores(ctx: &Ctx) -> Result<String, String> {
+    crate::gates::coverage::merged_whole(ctx).and_then(|()| scores(ctx))
 }
 
 fn as_record(report: &exec::Output, root: &Path) -> Result<String, String> {

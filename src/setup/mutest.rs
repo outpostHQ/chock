@@ -342,6 +342,7 @@ mod tests {
                     program: program.to_string(),
                     stage: exec::Stage::Spawn,
                     reason: reason.to_string(),
+                    printed: None,
                 }),
                 (0, said) => Ok(output(0, said, "")),
                 (code, said) => Ok(output(code, "", said)),

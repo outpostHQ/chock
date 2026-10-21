@@ -40,6 +40,7 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     for finding in &mut measured.findings {
         finding.message.push_str(&said);
     }
+    measured.unmeasured.extend(unmerged(ctx));
     Ok(measured)
 }
 
@@ -76,6 +77,8 @@ pub(crate) struct Report {
     root: std::path::PathBuf,
     argv: Vec<String>,
     digest: u64,
+    /// Each profile the run left out of its merge, as `path: reason`.
+    unmerged: Vec<String>,
 }
 
 impl Report {
@@ -114,8 +117,14 @@ fn write_report(ctx: &Ctx) -> Result<Report, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("cannot remove the old {FILE}: {e}")),
     }
-    let run = crate::exec::run(program, &args, &ctx.root)
-        .map_err(|e| format!("{e} — this gate needs a command that writes {FILE}"))?;
+    let flags = profdata_flags(&std::env::var("LLVM_PROFDATA_FLAGS").unwrap_or_default());
+    let run = crate::exec::run_env(
+        program,
+        &args,
+        &ctx.root,
+        &[("LLVM_PROFDATA_FLAGS", &flags)],
+    )
+    .map_err(|e| format!("{e} — this gate needs a command that writes {FILE}"))?;
     if !run.success() {
         return Err(format!(
             "the coverage run failed, so there is nothing to measure: {}",
@@ -127,7 +136,48 @@ fn write_report(ctx: &Ctx) -> Result<Report, String> {
         root: ctx.root.clone(),
         argv: ctx.coverage.argv.clone(),
         digest: report_digest(&path)?,
+        unmerged: left_out_profiles(&run.stderr),
     })
+}
+
+/// The flags for llvm-profdata, which then leaves out a profile it cannot read (one cut short) and
+/// merges the rest. A failure mode that the project set stays.
+fn profdata_flags(set: &str) -> String {
+    match set.contains("failure-mode") {
+        true => set.to_string(),
+        false => format!("{set} -failure-mode=all").trim_start().to_string(),
+    }
+}
+
+/// Each profile the merge left out, from llvm-profdata's `warning: <path>: <reason>` lines.
+fn left_out_profiles(stderr: &str) -> Vec<String> {
+    let said = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix("warning: "));
+    said.filter(|said| said.contains(".profraw: "))
+        .map(|said| format!("{said} (left out of the merge)"))
+        .collect()
+}
+
+/// Each profile the coverage run left out of its merge, as `path: reason`.
+pub fn unmerged(ctx: &Ctx) -> Vec<String> {
+    let report = ctx
+        .coverage
+        .report
+        .get()
+        .and_then(|report| report.as_ref().ok());
+    report
+        .map(|report| report.unmerged.clone())
+        .unwrap_or_default()
+}
+
+/// Refuses a record from a run that left a profile out: what that profile ran would read as debt.
+pub fn merged_whole(ctx: &Ctx) -> Result<(), String> {
+    let left = unmerged(ctx);
+    match left.is_empty() {
+        true => Ok(()),
+        false => Err(crate::run::unread_of(&left)),
+    }
 }
 
 /// Whether the run wrote its report; a command can exit clean without writing one.
@@ -542,6 +592,41 @@ mod tests {
         was.set("src/lib.rs", 1);
         dir.baseline.record(GATE.name, "uncovered line(s)", was);
         assert!(measure(&dir).unwrap().findings.is_empty());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_profile_the_merge_left_out_is_named_and_the_rest_is_shown_but_not_ruled_on() {
+        let mut dir = held("coverage-unmerged");
+        let warned = "echo 'warning: /t/a.profraw: invalid instrumentation profile data' >&2";
+        let flags = "printf '%s' \"$LLVM_PROFDATA_FLAGS\" > flags";
+        writer(&mut dir, &format!("{warned}; {flags}; {WRITE}"));
+        let read = measure(&dir).unwrap();
+        let left = "/t/a.profraw: invalid instrumentation profile data (left out of the merge)";
+        let left = [left.to_string()];
+        assert_eq!(read.unmeasured, left);
+        assert_eq!(read.series.0.get("src/lib.rs"), Some(&1));
+        let unread = crate::run::unread_of(&left);
+        assert_eq!(read.whole().err(), Some(unread.clone()));
+        assert_eq!(merged_whole(&dir).err(), Some(unread.clone()));
+        assert_eq!(crap::whole_scores(&dir).err(), Some(unread));
+        let set = std::env::var("LLVM_PROFDATA_FLAGS").unwrap_or_default();
+        let passed = std::fs::read_to_string(dir.root.join("flags")).unwrap();
+        assert_eq!(passed, profdata_flags(&set));
+        let mut clean = held("coverage-merged");
+        writer(&mut clean, WRITE);
+        measure(&clean).unwrap();
+        assert_eq!(merged_whole(&clean), Ok(()));
+    }
+
+    #[test]
+    fn llvm_profdata_leaves_out_what_it_cannot_read_unless_the_project_said_otherwise() {
+        assert_eq!(profdata_flags(""), "-failure-mode=all");
+        assert_eq!(
+            profdata_flags("-sparse=true"),
+            "-sparse=true -failure-mode=all"
+        );
+        assert_eq!(profdata_flags("-failure-mode=any"), "-failure-mode=any");
     }
 
     #[test]

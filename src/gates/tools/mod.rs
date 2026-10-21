@@ -1347,7 +1347,7 @@ mod tests {
     fn the_suite_is_started_by_the_command_the_project_named() {
         let mut ctx = ctx_here();
         ctx.runner.argv = vec!["true".to_string()];
-        assert!(suite(&ctx).unwrap().success());
+        assert!(suite(&ctx, "test").unwrap().success());
     }
 
     #[test]
@@ -1355,7 +1355,7 @@ mod tests {
     fn a_failing_runner_is_a_failing_suite_and_not_a_gate_that_could_not_run() {
         let mut ctx = ctx_here();
         ctx.runner.argv = vec!["false".to_string()];
-        assert!(!suite(&ctx).unwrap().success());
+        assert!(!suite(&ctx, "test").unwrap().success());
     }
 
     /// Falling back to a default would run something the project did not ask for.
@@ -1364,7 +1364,7 @@ mod tests {
         let mut ctx = ctx_here();
         ctx.runner.argv = Vec::new();
         assert_eq!(
-            suite(&ctx).unwrap_err(),
+            suite(&ctx, "test").unwrap_err(),
             "the configured `runner` names no command"
         );
     }

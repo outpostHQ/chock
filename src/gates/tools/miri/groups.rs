@@ -393,6 +393,7 @@ mod tests {
             program: "cargo".to_string(),
             stage,
             reason: reason.to_string(),
+            printed: None,
         }
     }
 

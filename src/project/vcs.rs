@@ -1460,6 +1460,23 @@ mod tests {
         );
     }
 
+    /// A mutant that clears a spawn's environment clears that ceiling too; `testdir` keeps an empty
+    /// repository at the scratch root, where such a git stops.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn git_without_the_ceiling_stops_at_the_scratch_root() {
+        let dir = crate::testdir::make("vcs-unceiled");
+        let asked = ["rev-parse", "--show-toplevel"];
+        let out = exec::run_env("git", &asked, &dir, &[("GIT_CEILING_DIRECTORIES", "")]).unwrap();
+        let top = std::path::Path::new(out.stdout.trim()).canonicalize();
+        assert_eq!(
+            top.ok(),
+            dir.parent().unwrap().canonicalize().ok(),
+            "{}",
+            out.stderr
+        );
+    }
+
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_changed_files_are_those_since_the_upstream_fork_and_in_ci_those_of_the_commit() {

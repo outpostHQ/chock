@@ -109,7 +109,7 @@ fn faults(root: &Path, metadata_json: &str, tree: &Tree) -> Result<Vec<Finding>,
         findings.extend(unreferenced(package, read, &join(dir, MANIFEST)));
         findings.extend(undeclared(package, read));
     }
-    findings.sort_by(|a, b| (&a.file, a.line, &a.item).cmp(&(&b.file, b.line, &b.item)));
+    Finding::sort_by_place(&mut findings);
     Ok(findings)
 }
 

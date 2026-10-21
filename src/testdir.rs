@@ -78,13 +78,28 @@ pub const UNPARSABLE: [(&str, &str); 2] = [("Cargo.toml", ""), ("src/lib.rs", "f
 #[must_use]
 pub fn make(name: &str) -> Scratch {
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/test-scratch")
-        .join(format!("{name}-{}-{n}", std::process::id()));
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch");
+    fence(&root);
+    let dir = root.join(format!("{name}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     // No panic here: the test's own write fails and names the file it wanted.
     let _ = std::fs::create_dir_all(&dir);
     Scratch(dir)
+}
+
+/// An empty git repository at the scratch root, where git stops if a mutant clears the ceiling that
+/// `.cargo/config.toml` sets, so that git never reaches the repository around the crate.
+fn fence(root: &Path) {
+    let git = root.join(".git");
+    if git.join("HEAD").is_file() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(git.join("objects"));
+    let _ = std::fs::create_dir_all(git.join("refs/heads"));
+    // Renamed into place, so a test running beside this one never reads half a HEAD.
+    let part = git.join(format!("HEAD.{}", std::process::id()));
+    let _ = std::fs::write(&part, "ref: refs/heads/main\n");
+    let _ = std::fs::rename(&part, git.join("HEAD"));
 }
 
 /// A scratch directory that holds `files`; a path that names directories gets them made.

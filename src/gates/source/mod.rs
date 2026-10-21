@@ -101,7 +101,7 @@ fn found_in(ctx: &Ctx) -> Result<Vec<Finding>, String> {
         findings.retain(|found| &found.file != shown);
         findings.extend(judge.of(shown, src, true)?);
     }
-    findings.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    Finding::sort_by_place(&mut findings);
     Ok(findings)
 }
 
@@ -312,7 +312,7 @@ impl<'a> Scan<'a> {
             found.extend(shipped(self.path, &self.attrs));
         }
         found.extend(stacked(self.path, self.src, &self.attrs));
-        found.sort_by(|a, b| (a.line, &a.item).cmp(&(b.line, &b.item)));
+        Finding::sort_by_place(&mut found);
         found
     }
 

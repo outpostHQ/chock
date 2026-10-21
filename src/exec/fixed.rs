@@ -21,6 +21,7 @@ pub fn run(
         program: program.to_string(),
         stage: Stage::Spawn,
         reason: e.to_string(),
+        printed: None,
     })?;
     let (pipe, text) = (process.child.stdin.take(), stdin.to_string());
     // On its own thread: a child that never reads would block this one once the pipe fills.

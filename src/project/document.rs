@@ -139,10 +139,13 @@ pub fn render<T: serde::Serialize>(document: &T) -> String {
 /// `now` written over the file it was read from, so the diff shows the change and not chock's
 /// order. A key keeps its place and spelling unless its value changed; a key unknown to `T` stays.
 pub fn rewrite<T: serde::Serialize + DeserializeOwned>(original: &str, now: &T) -> String {
+    // Each side read back from the text `render` writes: `T` gets one serializer, not a second
+    // into a `Value`.
+    let value = |document: &T| serde_json::from_str::<Value>(&render(document));
     let read = (
         serde_json::from_str::<Entries>(original),
-        serde_json::from_str::<T>(original).and_then(serde_json::to_value),
-        serde_json::to_value(now),
+        serde_json::from_str::<T>(original).and_then(|was| value(&was)),
+        value(now),
     );
     let (Ok(Entries(entries)), Ok(Value::Object(before)), Ok(Value::Object(after))) = read else {
         return render(now);

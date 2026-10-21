@@ -1,7 +1,8 @@
 //! The `tla` gate: each TLA+ cfg checks under TLC as it expects, each invariant a model lists is
-//! refuted by a bad variant, and Apalache proves each inductive invariant.
+//! refuted by a bad variant, Apalache proves each inductive invariant, and TLAPS each theorem.
 
 mod apalache;
+mod tlaps;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -13,11 +14,11 @@ use crate::run::{Ctx, Gate, Group, Kind, Outcome};
 
 pub const GATE: Gate = Gate {
     name: "tla",
-    about: "each TLA+ model passes TLC, each bad variant of it fails, and Apalache proves IndInv",
+    about: "each TLA+ model passes TLC, each bad variant of it fails, Apalache proves IndInv, and TLAPS each theorem",
     group: Group::OptIn,
     builds: true,
     // The tree holds the models and the pins of both jars; Java is the one thing outside it.
-    reads: Some(crate::run::verdicts::Reads::tree_and(&["java"]).versioned("tla-v1")),
+    reads: Some(crate::run::verdicts::Reads::tree_and(&["java"]).versioned("tla-v2")),
     kind: Kind::Binary(check),
 };
 
@@ -200,7 +201,7 @@ fn model_of<'a>(stem: &str, models: &'a [String]) -> Option<&'a String> {
 fn discovered(root: &Path, dirs: &[String]) -> (Vec<Cfg>, Vec<Finding>) {
     let mut holders = Vec::new();
     for dir in dirs {
-        holders_under(&root.join(dir), 4, &mut holders);
+        holders_under(&root.join(dir), ".cfg", 4, &mut holders);
     }
     let mut cfgs = Vec::new();
     let mut findings = Vec::new();
@@ -253,10 +254,10 @@ fn cfg_at(root: &Path, dir: &Path, stem: String, models: &[String]) -> Result<Cf
     })
 }
 
-/// `dir` and the directories below it that hold a `.cfg`, in name order.
-fn holders_under(dir: &Path, depth: u32, found: &mut Vec<PathBuf>) {
+/// `dir` and the directories below it that hold a file ending in `ext`, in name order.
+fn holders_under(dir: &Path, ext: &str, depth: u32, found: &mut Vec<PathBuf>) {
     let names = names_in(dir);
-    if names.iter().any(|name| name.ends_with(".cfg")) {
+    if names.iter().any(|name| name.ends_with(ext)) {
         found.push(dir.to_path_buf());
     }
     let below = names
@@ -264,7 +265,7 @@ fn holders_under(dir: &Path, depth: u32, found: &mut Vec<PathBuf>) {
         .filter(|name| !name.starts_with('.') && *name != "states");
     for name in below.filter(|name| crate::project::descends_into(&dir.join(name))) {
         if depth > 0 {
-            holders_under(&dir.join(name), depth - 1, found);
+            holders_under(&dir.join(name), ext, depth - 1, found);
         }
     }
 }
@@ -526,6 +527,7 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
     } = apalache::proofs(ctx, &cfgs)?;
     let scratch = ctx.root.join(SCRATCH);
     let workers = settings.workers.unwrap_or(WORKERS).max(1);
+    let theorems = tlaps::theorems(ctx, &dirs, workers)?;
     let limit = |cfg: &Cfg| limit_of(settings, &cfg.stem, &cfg.model);
     let mut jobs: Vec<Run> = cfgs
         .iter()
@@ -537,12 +539,9 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
         .collect();
     jobs.extend(proofs);
     with_tmp(&mut jobs, &scratch)?;
-    let outs = super::run_all(
-        &ctx.tools,
-        &java,
-        &jobs,
-        lanes(exec::budget::cap(), workers),
-    );
+    let lanes = lanes(exec::budget::cap(), workers);
+    let outs = super::run_all(&ctx.tools, &java, &jobs, lanes);
+    let proved = super::run_all(&ctx.tools, &theorems.program, &theorems.runs, lanes);
     super::cleared(&scratch)?;
     let mut outs = outs.into_iter();
     let said: Vec<Said> = cfgs
@@ -560,8 +559,14 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
     for (step, out) in steps.iter().zip(outs) {
         findings.extend(step.judged(out)?);
     }
+    // Each module has two runs in turn: its summary, then its proof.
+    let mut proved = proved.into_iter();
+    let pairs = std::iter::from_fn(|| proved.next().zip(proved.next()));
+    for (module, (summary, proof)) in theorems.modules.iter().zip(pairs) {
+        findings.extend(module.judged(summary, proof)?);
+    }
     Ok(match findings.is_empty() {
-        true => Outcome::noted(notes),
+        true => Outcome::noted(notes.into_iter().chain(theorems.notes).collect()),
         false => Outcome::failed(findings),
     })
 }
@@ -835,7 +840,7 @@ mod tests {
         ];
         let dir = crate::testdir::tree("tla-discovered", &files);
         let mut holders = Vec::new();
-        holders_under(&dir.join("m"), 4, &mut holders);
+        holders_under(&dir.join("m"), ".cfg", 4, &mut holders);
         assert_eq!(holders, [dir.join("m"), dir.join("m/a/b/c/d")]);
         let (cfgs, findings) = discovered(&dir, &["m".into()]);
         let read: Vec<(&str, Expect)> = cfgs
@@ -1031,6 +1036,21 @@ echo "Error: Invariant $name is violated."; exit 12
             "{:?}",
             clean.findings
         );
+        std::fs::write(
+            ctx.root.join("proofs/tla/Proved.tla"),
+            "THEOREM T == TRUE\n",
+        )
+        .unwrap();
+        let pin_file = ctx.root.join(crate::project::PIN_FILE);
+        let pins = std::fs::read_to_string(&pin_file).unwrap();
+        let tlapm = crate::testdir::fetched(&ctx.root, "TLAPM", "tlapm");
+        std::fs::write(&pin_file, pins + &tlapm).unwrap();
+        let proved = check(&ctx).unwrap();
+        let said: Vec<String> = proved.findings.iter().map(Finding::render).collect();
+        assert_eq!(
+            said,
+            ["proofs/tla/Proved.tla: Proved: tlapm gave no verdict on its proofs"]
+        );
         ctx.tla.dirs = Some(vec!["nowhere".into()]);
         let none = "no .cfg file under nowhere, so TLC would check nothing";
         assert_eq!(check(&ctx).unwrap_err(), none);
@@ -1038,11 +1058,7 @@ echo "Error: Invariant $name is violated."; exit 12
 
     #[test]
     fn a_run_past_its_limit_is_timed_out_and_one_that_did_not_start_is_an_error() {
-        let error = |stage| exec::ExecError {
-            program: "java".into(),
-            stage,
-            reason: "gone".into(),
-        };
+        let error = |stage| exec::ExecError::of("java", stage, "gone");
         assert_eq!(
             read_tlc(Err(error(exec::Stage::Hung)), 7),
             Ok(Said::TimedOut(7))

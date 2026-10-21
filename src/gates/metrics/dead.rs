@@ -49,7 +49,7 @@ fn unreached(
             })
         })
         .collect();
-    found.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    Finding::sort_by_place(&mut found);
     found
 }
 

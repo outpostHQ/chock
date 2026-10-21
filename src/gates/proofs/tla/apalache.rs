@@ -195,11 +195,7 @@ mod tests {
 
     #[test]
     fn a_step_past_its_limit_fails_and_one_that_did_not_start_is_an_error() {
-        let error = |stage| exec::ExecError {
-            program: "java".into(),
-            stage,
-            reason: "gone".into(),
-        };
+        let error = |stage| exec::ExecError::of("java", stage, "gone");
         let step = Step {
             file: "M.cfg".into(),
             model: "M".into(),

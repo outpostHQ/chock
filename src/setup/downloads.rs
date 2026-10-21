@@ -15,9 +15,10 @@ pub(crate) const STAMP: &str = ".chock-sha256";
 
 /// The download pins a gate needs. `init --global` fetches one only where its gate is on, so a
 /// project without that gate never downloads hundreds of MB for nothing.
-pub const CLAIMED: [(&str, &str); 3] = [
+pub const CLAIMED: [(&str, &str); 4] = [
     ("TLA_TOOLS", "tla"),
     ("APALACHE", "tla"),
+    ("TLAPM", "tla"),
     ("VERUS", "verus"),
 ];
 
@@ -359,10 +360,13 @@ fn find(dir: &Path, wanted: &str, depth: u32) -> Option<PathBuf> {
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .collect();
     entries.sort();
+    // A file only: a download often holds a directory named as its program, such as `tlapm/`.
     let named = |path: &&PathBuf| {
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| matches(name, wanted))
+        path.is_file()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| matches(name, wanted))
     };
     if let Some(hit) = entries.iter().find(named) {
         return Some(hit.clone());

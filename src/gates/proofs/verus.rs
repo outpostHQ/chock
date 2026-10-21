@@ -834,11 +834,7 @@ esac
             function: Some("put".into()),
             argv: Vec::new(),
         };
-        let error = |stage| exec::ExecError {
-            program: "verus".into(),
-            stage,
-            reason: "gone".into(),
-        };
+        let error = |stage| exec::ExecError::of("verus", stage, "gone");
         let hung = job
             .finding(Err(error(exec::Stage::Hung)), 9)
             .unwrap()

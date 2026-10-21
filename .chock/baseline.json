@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/baseline-v1.json",
   "version": 1,
-  "chock": "0.11.1",
+  "chock": "0.12.0",
   "gates": {
     "admits": {},
     "assertions": {
@@ -560,6 +560,13 @@
     "phrases": {},
     "pinned": {},
     "placement": {},
+    "proof": {
+      "gates::metrics::duplication::proofs::a_shape_past_the_bound_could_not_have_reached_the_threshold": 0,
+      "gates::metrics::duplication::proofs::the_bound_itself_is_never_ruled_out": 0,
+      "setup::version::proofs::no_text_up_to_six_bytes_makes_from_version_output_panic": 0,
+      "setup::version::proofs::semver_end_consumes_only_single_byte_characters": 0,
+      "setup::version::proofs::semver_end_never_points_past_the_bytes_it_read": 0
+    },
     "scan": {
       "src/cli.rs#discarded-result": 2,
       "src/cli.rs#path-is-dir-follows-symlinks": 1,
@@ -637,6 +644,7 @@
     "phrases": "forbidden phrase(s)",
     "pinned": "lost test(s)",
     "placement": "misplaced dependency declaration(s)",
+    "proof": "failed harness(es)",
     "scan": "finding(s)",
     "slop": "over-long comment block(s)",
     "sort": "unsorted manifest(s)",

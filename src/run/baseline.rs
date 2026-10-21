@@ -84,6 +84,12 @@ impl Series {
         Self(BTreeMap::new())
     }
 
+    /// The sum of every row.
+    #[must_use]
+    pub fn summed(&self) -> u64 {
+        self.0.values().sum()
+    }
+
     pub fn set(&mut self, key: &str, value: u64) {
         self.0.insert(key.to_string(), value);
     }

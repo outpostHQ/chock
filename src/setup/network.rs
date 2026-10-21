@@ -46,6 +46,7 @@ pub fn patiently<'a>(start: Start<'a>, wait: &'a dyn Fn(Duration)) -> Box<Starte
                     PAUSES.len() + 1,
                     out.why_it_failed()
                 ),
+                printed: None,
             }),
         }
     })
@@ -130,6 +131,7 @@ mod tests {
             program: "rustup".to_string(),
             stage: Stage::Offline,
             reason,
+            printed: None,
         };
         assert_eq!(tried(&answers), (Err(failed.clone()), vec![10, 30], 3));
         assert_eq!(
@@ -144,6 +146,7 @@ mod tests {
             program: "rustup".to_string(),
             stage: Stage::Spawn,
             reason: "not found".to_string(),
+            printed: None,
         };
         assert_eq!(
             tried(&[Err(missing.clone())]),

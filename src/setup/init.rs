@@ -730,7 +730,7 @@ pub fn record_crap(ctx: &Ctx, lower: bool, did: &str) -> bool {
 /// cargo-crap's report over the record. Paths are made relative first, because the record holds
 /// relative paths and cargo-crap reports absolute ones.
 fn merged_crap(ctx: &Ctx, lower: bool) -> Result<String, String> {
-    let measured = crate::gates::coverage::crap::scores(ctx)?;
+    let measured = crate::gates::coverage::crap::whole_scores(ctx)?;
     let path = ctx.root.join(crate::gates::coverage::crap::baseline());
     let held = fs::read_to_string(path).unwrap_or_default();
     crap_kept_higher(held_unless(lower, &held), &measured, &ctx.root)
@@ -1385,6 +1385,7 @@ mod tests {
                 program: program.to_string(),
                 stage,
                 reason: "no answer".to_string(),
+                printed: None,
             })
         }
     }

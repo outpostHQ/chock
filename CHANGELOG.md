@@ -5,6 +5,32 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-21
+
+- **A profile the merge cannot read no longer stops `coverage` and `crap`.** chock runs the
+  coverage command with `-failure-mode=all` added to `LLVM_PROFDATA_FLAGS`, so llvm-profdata leaves
+  a cut-short `.profraw` out and merges the rest. Each gate then gives CANNOT RUN, names each
+  profile left out, and still shows what the rest count. No record is written from such a run. A
+  failure mode the project sets itself stays.
+- **TLAPS in the `tla` gate.** tlapm proves each module under `tla.dirs` that states a theorem.
+  The gate trips on an obligation that no backend proves, on an `OMITTED` proof, and on a step
+  with no proof, and names the file and the line of each. The project pins tlapm as `TLAPM` in
+  `tool-versions.env`, and `chock init --downloads` fetches it; without the pin, the gate gives a
+  note. `tla.timeout_s`, `tla.timeouts` and `tla.workers` apply to tlapm too.
+- **Each suite run keeps its whole output.** `target/test-scratch/chock/test.txt` and
+  `idempotent.txt` now hold the output of every run, under a line that counts the tests that
+  passed, failed and were ignored. A run that chock stops at its memory limit or its deadline
+  keeps what it printed too, and its CANNOT RUN reason gives the count and names the file.
+- **`proof` keeps a row for each Kani harness.** A harness that leaves the code trips the gate
+  until `chock baseline proof` records the change, as `pinned` does for a pin. A harness that fails
+  still trips the gate whatever the record holds, and chock records nothing from that run. The gate
+  now needs a record: a local `chock run proof` writes the first one, and CI cannot run the gate
+  until that record is committed.
+- **The `proof` config section.** `proof.packages` names the packages Kani lists and verifies, each
+  passed as `-p`; the whole workspace when left out. `proof.timeout_s` limits the verification run;
+  chock's tool limit, 1800 s or `CHOCK_TIMEOUT`, when left out. A run past the limit trips the gate
+  and names `proof.timeout_s`, where it said before that chock gave up waiting for cargo.
+
 ## [0.11.1] - 2026-10-20
 
 - **chock reads the tree of a newer Outpost.** A newer Outpost prints `outpost tree --json` as a

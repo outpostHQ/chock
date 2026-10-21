@@ -70,6 +70,8 @@ pub struct ExecError {
     pub program: String,
     pub stage: Stage,
     pub reason: String,
+    /// What a tool that was stopped had printed, where both streams were read whole.
+    pub printed: Option<Box<Output>>,
 }
 
 impl ExecError {
@@ -77,6 +79,19 @@ impl ExecError {
     #[must_use]
     pub fn hung(&self) -> bool {
         self.stage == Stage::Hung
+    }
+}
+
+#[cfg(test)]
+impl ExecError {
+    /// A tool that could not be run, with nothing it printed kept.
+    pub(crate) fn of(program: &str, stage: Stage, reason: &str) -> Self {
+        Self {
+            program: program.to_string(),
+            stage,
+            reason: reason.to_string(),
+            printed: None,
+        }
     }
 }
 
@@ -547,12 +562,15 @@ impl Capture {
     }
 }
 
+/// A stream read to its end, and whether it was cut at the capture limit; or why it was not read.
+type Drained = Result<(String, bool), (Stage, String)>;
+
 /// A captured stream, or an error once `grace` passes with something still holding the pipe.
 fn drained(
     reading: &std::sync::mpsc::Receiver<Result<(String, bool), String>>,
     which: &str,
     grace: std::time::Duration,
-) -> Result<(String, bool), (Stage, String)> {
+) -> Drained {
     reading
         .recv_timeout(grace)
         .map_err(|_| {
@@ -797,6 +815,7 @@ fn run_full(
         program: program.to_string(),
         stage,
         reason,
+        printed: None,
     };
 
     let (spawn, argv) = spawned(program, args, crate::exec::budget::politely(program));
@@ -866,6 +885,7 @@ fn finish_capture(
         .and_then(|(text, _)| marked(text))
         .map(|line| format!("\nwhat it marked as the error: {line}"))
         .unwrap_or_default();
+    let printed = stopped_streams(waited.is_err(), &out, &err);
     let fail = |(stage, reason): (Stage, String)| ExecError {
         program: program.to_string(),
         stage,
@@ -874,6 +894,7 @@ fn finish_capture(
             stdout.diagnostic("stdout"),
             stderr.diagnostic("stderr")
         ),
+        printed,
     };
     let cleanup = early_cleanup.unwrap_or_else(|| process.finish());
     let captured = waited.and_then(|()| Ok((out?, err?)));
@@ -884,6 +905,19 @@ fn finish_capture(
         stdout,
         stderr,
         truncated: out_cut || err_cut,
+    })
+}
+
+/// A stopped tool's streams, read whole, so that a caller can keep all that it printed.
+fn stopped_streams(stopped: bool, out: &Drained, err: &Drained) -> Option<Box<Output>> {
+    let ((stdout, out_cut), (stderr, err_cut)) = (out.as_ref().ok()?, err.as_ref().ok()?);
+    stopped.then(|| {
+        Box::new(Output {
+            code: None,
+            stdout: stdout.clone(),
+            stderr: stderr.clone(),
+            truncated: *out_cut || *err_cut,
+        })
     })
 }
 
@@ -1016,6 +1050,7 @@ mod tests {
                 program: program.to_string(),
                 stage: Stage::Spawn,
                 reason: "not found".to_string(),
+                printed: None,
             })
         };
         assert_eq!(
@@ -1242,7 +1277,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
-    fn a_timed_out_command_keeps_its_bounded_diagnostics_from_both_streams() {
+    fn a_timed_out_command_keeps_its_bounded_diagnostics_and_all_it_printed() {
         let mut child = Process::spawn(Command::new("sh")
             .args(["-c", "printf 'starting fixture\\n'; printf 'error: fixture stalled\\n' >&2; exec sleep 600"])
             .stdout(Stdio::piped())
@@ -1264,6 +1299,11 @@ mod tests {
         assert!(why.reason.contains("fixture stalled"), "{why}");
         assert!(why.reason.contains("stdout"), "{why}");
         assert!(why.reason.contains("stderr"), "{why}");
+        let printed = (why.printed.as_deref()).map(|it| (it.stdout.as_str(), it.stderr.as_str()));
+        assert_eq!(
+            printed,
+            Some(("starting fixture\n", "error: fixture stalled\n"))
+        );
     }
 
     #[test]
@@ -1290,6 +1330,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(why.stage, Stage::Capture);
         assert!(why.reason.contains("fixture still owns this pipe"), "{why}");
+        assert_eq!(why.printed, None);
     }
 
     #[test]

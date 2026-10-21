@@ -171,7 +171,7 @@ fn inspect(ctx: &Ctx) -> Result<Inspection, String> {
         found.extend(stale(doc, &claims.anchors, &tree, &mut lines));
         found.extend(refuted(doc, &claims.absent, &tree));
     }
-    found.sort_by(|a, b| (&a.file, a.line, &a.item).cmp(&(&b.file, b.line, &b.item)));
+    Finding::sort_by_place(&mut found);
     Ok(Inspection::debt(found))
 }
 

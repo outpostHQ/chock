@@ -13,6 +13,9 @@ pub struct Measurement {
     pub details: Details,
     /// Each file the gate could not read, as `path: reason`. A read with any rules on nothing.
     pub unmeasured: Vec<String>,
+    /// What trips the gate whatever its record holds, such as a proof that fails. A read with any
+    /// is never recorded, so a fault cannot become debt.
+    pub faults: Vec<Finding>,
 }
 
 /// A gate's details, by the key they are about.
@@ -27,6 +30,7 @@ impl Measurement {
             findings,
             details: Details::new(),
             unmeasured: Vec::new(),
+            faults: Vec::new(),
         }
     }
 
@@ -39,22 +43,47 @@ impl Measurement {
             .collect()
     }
 
-    /// A read of every file. Recording or comparing a read that left a file out would take that
-    /// file's debt as paid.
+    /// A read of every file, with no fault. Recording or comparing a read that left a file out
+    /// would take that file's debt as paid, and recording a fault would make it debt.
     pub fn whole(self) -> Result<Self, String> {
-        match self.unmeasured.is_empty() {
-            true => Ok(self),
-            false => Err(self.unread()),
+        match self.why_unrecorded() {
+            Some(why) => Err(why),
+            None => Ok(self),
         }
+    }
+
+    /// Why this read is not recorded, if it is not.
+    fn why_unrecorded(&self) -> Option<String> {
+        if !self.unmeasured.is_empty() {
+            return Some(self.unread());
+        }
+        (!self.faults.is_empty()).then(|| self.unrecorded())
+    }
+
+    /// Why a read with a fault is not recorded: each fault, as a report line.
+    #[must_use]
+    pub fn unrecorded(&self) -> String {
+        let faults: Vec<String> = self.faults.iter().map(Finding::render).collect();
+        format!(
+            "{} fault(s) trip this gate whatever its record holds, so nothing is recorded: {}",
+            faults.len(),
+            faults.join("; ")
+        )
     }
 
     /// Why a read that left files out rules on nothing: each file it could not read, and why.
     #[must_use]
     pub fn unread(&self) -> String {
-        format!(
-            "{} file(s) could not be read, so nothing is ruled on or recorded: {}",
-            self.unmeasured.len(),
-            self.unmeasured.join("; ")
-        )
+        unread_of(&self.unmeasured)
     }
+}
+
+/// Why a read that left `files` out rules on nothing, each as `path: reason`.
+#[must_use]
+pub fn unread_of(files: &[String]) -> String {
+    format!(
+        "{} file(s) could not be read, so nothing is ruled on or recorded: {}",
+        files.len(),
+        files.join("; ")
+    )
 }

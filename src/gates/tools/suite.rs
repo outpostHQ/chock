@@ -96,17 +96,18 @@ pub(super) fn worse(line: &str) -> Option<Finding> {
 /// Every test given a failing verdict, from both streams: nextest's lines, or libtest's own where
 /// nextest named none, as under a runner that calls `cargo test`.
 pub(super) fn failing_tests(out: &exec::Output) -> BTreeSet<String> {
-    // A set, since the same line can reach both streams.
-    let named = |verdict: fn(&str) -> Option<String>| -> BTreeSet<String> {
-        [&out.stdout, &out.stderr]
-            .into_iter()
-            .flat_map(|text| text.lines())
-            .filter_map(|line| verdict(&exec::strip_colour(line)))
-            .collect()
-    };
-    Some(named(failed_test))
+    Some(verdict_lines(out, failed_test))
         .filter(|nextest| !nextest.is_empty())
-        .unwrap_or_else(|| named(libtest_failure))
+        .unwrap_or_else(|| verdict_lines(out, libtest_failure))
+}
+
+/// Each test a verdict line in either stream names: a set, since the same line can reach both.
+fn verdict_lines(out: &exec::Output, verdict: impl Fn(&str) -> Option<String>) -> BTreeSet<String> {
+    [&out.stdout, &out.stderr]
+        .into_iter()
+        .flat_map(|text| text.lines())
+        .filter_map(|line| verdict(&exec::strip_colour(line)))
+        .collect()
 }
 
 /// `test <path> ... FAILED`, or the header over what a failed test printed, `---- <path> stdout
@@ -167,11 +168,7 @@ pub(super) fn failed_test(line: &str) -> Option<String> {
 
 /// Every test nextest stopped at its time limit, from both streams.
 pub(super) fn timed_out_tests(out: &exec::Output) -> BTreeSet<String> {
-    [&out.stdout, &out.stderr]
-        .into_iter()
-        .flat_map(|text| text.lines())
-        .filter_map(|line| marked(&exec::strip_colour(line), &["TIMEOUT"]))
-        .collect()
+    verdict_lines(out, |line| marked(line, &["TIMEOUT"]))
 }
 
 /// The test a nextest verdict line names, when the line starts with one of `verdicts`.
@@ -206,7 +203,7 @@ pub(super) fn idempotent(ctx: &Ctx) -> Result<Outcome, String> {
     if !first.success() {
         return Err("the suite fails on its first run, so a second says nothing".to_string());
     }
-    let second = suite(ctx)?;
+    let second = suite(ctx, "idempotent")?;
     if second.success() {
         return Ok(Outcome::passed());
     }
@@ -215,26 +212,68 @@ pub(super) fn idempotent(ctx: &Ctx) -> Result<Outcome, String> {
     Ok(Outcome::failed(found))
 }
 
-/// Where a run with a failed test leaves its whole output; a finding quotes only a part of it.
+/// Where each run of the suite leaves its whole output; a finding quotes only a part of it.
 const KEPT: &str = "target/test-scratch/chock";
 
-/// Writes the whole output of a failed run to `KEPT`, and names that file in each finding that
-/// names no file of its own. A file that cannot be written leaves the findings as they are.
+/// Keeps the whole output of a run, and names that file in each finding that names no file of its
+/// own. A file that cannot be written leaves the findings as they are.
 fn kept_for(root: &Path, gate: &str, out: &exec::Output, found: &mut [Finding]) {
-    if out.success() || !found.iter().any(|finding| finding.file.is_empty()) {
-        return;
-    }
-    let path = format!("{KEPT}/{gate}.txt");
-    let text = format!(
-        "--- stdout ---\n{}\n--- stderr ---\n{}",
-        out.stdout, out.stderr
-    );
-    let said = std::fs::create_dir_all(root.join(KEPT))
-        .and_then(|()| crate::project::document::write(&root.join(&path), &text))
-        .map(|()| format!(" (the whole output: {path})"))
-        .unwrap_or_default();
+    let said = log_kept(root, gate, out);
     for finding in found.iter_mut().filter(|finding| finding.file.is_empty()) {
         finding.message.push_str(&said);
+    }
+}
+
+/// Writes the whole output of a run to `KEPT`, under the count of its tests. Says where, as the end
+/// of a message, or nothing where the file cannot be written.
+fn log_kept(root: &Path, gate: &str, out: &exec::Output) -> String {
+    let path = format!("{KEPT}/{gate}.txt");
+    let (tests, stdout, stderr) = (test_counts(out), &out.stdout, &out.stderr);
+    let text =
+        format!("--- tests: {tests} ---\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}");
+    std::fs::create_dir_all(root.join(KEPT))
+        .and_then(|()| crate::project::document::write(&root.join(&path), &text))
+        .map(|()| format!(" (the whole output: {path})"))
+        .unwrap_or_default()
+}
+
+/// How many tests passed, failed and were ignored, by their verdict lines: nextest's, or libtest's
+/// where nextest gave none. A run that was stopped counts only the tests that finished.
+fn test_counts(out: &exec::Output) -> String {
+    let nextest = [
+        verdict_lines(out, |line| marked(line, &["PASS"])),
+        verdict_lines(out, failed_test),
+        verdict_lines(out, |line| marked(line, &["SKIP"])),
+    ];
+    let libtest = [
+        verdict_lines(out, |line| libtest_verdict(line, "ok")),
+        verdict_lines(out, libtest_failure),
+        verdict_lines(out, |line| libtest_verdict(line, "ignored")),
+    ];
+    let [passed, failed, ignored] = match nextest.iter().all(BTreeSet::is_empty) {
+        true => libtest,
+        false => nextest,
+    };
+    let (passed, failed, ignored) = (passed.len(), failed.len(), ignored.len());
+    format!("{passed} passed, {failed} failed, {ignored} ignored")
+}
+
+/// The test that `test <path> ... <verdict>` names, when its verdict starts with `verdict`.
+fn libtest_verdict(line: &str, verdict: &str) -> Option<String> {
+    let (named, said) = line.trim().strip_prefix("test ")?.split_once(" ... ")?;
+    said.starts_with(verdict).then(|| named.trim().to_string())
+}
+
+/// Why the runner did not finish, with the tests it finished and the file that keeps all it
+/// printed, where its output was read whole.
+fn stopped_run(root: &Path, gate: &str, e: &exec::ExecError) -> String {
+    match e.printed.as_deref() {
+        Some(out) => format!(
+            "{e}\nbefore it stopped: {}{}",
+            test_counts(out),
+            log_kept(root, gate, out)
+        ),
+        None => e.to_string(),
     }
 }
 
@@ -290,7 +329,7 @@ fn first_run(ctx: &Ctx) -> Result<(exec::Output, Vec<String>), String> {
 /// Runs the suite, and names each file the repository holds whose bytes differ after it.
 fn watched(ctx: &Ctx) -> Result<(exec::Output, Vec<String>), String> {
     let before = changes(ctx);
-    let out = suite(ctx)?;
+    let out = suite(ctx, "test")?;
     let changed = match (before, changes(ctx)) {
         (Some(before), Some(after)) => crate::project::differing(&before, &after),
         _ => Vec::new(),
@@ -341,13 +380,14 @@ fn written_on_purpose(commands: &[Command], path: &str) -> bool {
 }
 
 /// Runs whatever the project's `runner` setting names, since some suites need their own setup.
-pub(super) fn suite(ctx: &Ctx) -> Result<exec::Output, String> {
+/// A run that was stopped keeps what it printed under `gate`'s name.
+pub(super) fn suite(ctx: &Ctx, gate: &str) -> Result<exec::Output, String> {
     let argv = narrowed(&ctx.runner.argv, &ctx.scope)?;
     let (program, args) = argv
         .split_first()
         .ok_or("the configured `runner` names no command")?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    exec::tool(&ctx.root, program, &args)
+    exec::run(program, &args, &ctx.root).map_err(|e| stopped_run(&ctx.root, gate, &e))
 }
 
 /// The runner's argv narrowed to `scope`: `--package NAME` in place of `--workspace`, and the
@@ -396,13 +436,13 @@ fn narrowed(argv: &[String], scope: &Scope) -> Result<Vec<String>, String> {
 mod tests {
     use super::*;
 
-    /// A failed run leaves its whole output in a file that each finding without a file of its own
-    /// names; a run that passed writes nothing.
+    /// Each run leaves its whole output, under the count of its tests, in a file that each finding
+    /// without a file of its own names.
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    fn a_failed_test_names_the_file_that_holds_the_whole_output() {
+    fn each_run_keeps_its_whole_output_in_a_file_its_findings_name() {
         let root = crate::testdir::make("suite-kept");
-        let failed = "test a::b ... FAILED\n";
+        let failed = "test a::b ... FAILED\ntest a::c ... ok\n";
         let out = exec::Output::of(Some(101), failed, "it broke");
         let mut found = vec![
             Finding::at("", "this test failed").item("a::b"),
@@ -414,22 +454,51 @@ mod tests {
         assert_eq!(found[0].message, named);
         assert_eq!(found[1].message, "expected `u8`");
         let kept = std::fs::read_to_string(root.join(path)).unwrap();
-        assert_eq!(
-            kept,
-            format!("--- stdout ---\n{failed}\n--- stderr ---\nit broke")
-        );
+        let tests = "--- tests: 1 passed, 1 failed, 0 ignored ---";
+        let whole = format!("{tests}\n--- stdout ---\n{failed}\n--- stderr ---\nit broke");
+        assert_eq!(kept, whole);
         let passed = exec::Output::of(Some(0), "test a::b ... ok\n", "");
-        let mut none = vec![Finding::at("", "this test failed").item("a::b")];
-        kept_for(&root, "idempotent", &passed, &mut none);
-        assert_eq!(none[0].message, "this test failed");
+        kept_for(&root, "idempotent", &passed, &mut []);
+        let kept = std::fs::read_to_string(root.join(KEPT).join("idempotent.txt")).unwrap();
         assert!(
-            !root
-                .join("target/test-scratch/chock/idempotent.txt")
-                .exists()
+            kept.starts_with("--- tests: 1 passed, 0 failed, 0 ignored ---\n"),
+            "{kept}"
         );
-        let mut filed = vec![Finding::at("src/a.rs", "expected `u8`").item("E0308")];
-        kept_for(&root, "spans", &out, &mut filed);
-        assert!(!root.join("target/test-scratch/chock/spans.txt").exists());
+    }
+
+    /// nextest's verdict lines count where it gave any, else libtest's; a test that both streams
+    /// name counts once.
+    #[test]
+    fn a_run_counts_its_tests_by_their_verdict_lines() {
+        let libtest = "test a::b ... ok\ntest a::c ... FAILED\ntest a::d ... ignored, needs root\n";
+        let both = exec::Output::of(Some(101), libtest, "test a::b ... ok\n");
+        assert_eq!(test_counts(&both), "1 passed, 1 failed, 1 ignored");
+        let nextest = "    PASS [   0.004s] (1/2) chock a::b\n    FAIL [   0.010s] (2/2) chock a::c\n\
+                       SKIP [         ] chock a::d\n";
+        let mixed = exec::Output::of(Some(100), "test a::e ... ok\n", nextest);
+        assert_eq!(test_counts(&mixed), "1 passed, 1 failed, 1 ignored");
+    }
+
+    /// A runner that was stopped says how many tests it finished, and keeps all that it printed.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_stopped_run_counts_the_tests_it_finished_and_keeps_its_output() {
+        let root = crate::testdir::make("suite-stopped");
+        let mut stopped = exec::ExecError::of("cargo", exec::Stage::Memory, "it held too much");
+        let path = "target/test-scratch/chock/test.txt";
+        assert_eq!(
+            stopped_run(&root, "test", &stopped),
+            "stopped cargo: it held too much"
+        );
+        assert!(!root.join(path).exists());
+        let printed = exec::Output::of(None, "test a::b ... ok\n", "");
+        stopped.printed = Some(Box::new(printed));
+        let said = format!(
+            "stopped cargo: it held too much\nbefore it stopped: 1 passed, 0 failed, 0 ignored \
+             (the whole output: {path})"
+        );
+        assert_eq!(stopped_run(&root, "test", &stopped), said);
+        assert!(root.join(path).is_file());
     }
 
     /// A suite whose own stage prints `FAIL <case> <why>` and names no test fails at that case.

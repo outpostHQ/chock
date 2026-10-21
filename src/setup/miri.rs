@@ -118,6 +118,7 @@ mod tests {
             program: "rustup".to_string(),
             stage,
             reason: "no answer".to_string(),
+            printed: None,
         }
     }
 

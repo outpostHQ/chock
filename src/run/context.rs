@@ -79,6 +79,8 @@ pub struct Ctx {
     pub exhaustive: bool,
     /// The most Kani harnesses `proof` verifies at once, from `proof_jobs`.
     pub proof_jobs: Option<u32>,
+    /// Which packages `proof` verifies and how long Kani may take, from `proof`.
+    pub proof: crate::project::config::Proof,
     /// Where the TLA+ models are and how `tla` checks them, from `tla`.
     pub tla: crate::project::config::Tla,
     /// What `verus` verifies and which mutants it must refute, from `verus`.
@@ -128,6 +130,7 @@ impl Ctx {
             mutest_args: Vec::new(),
             exhaustive: false,
             proof_jobs: None,
+            proof: crate::project::config::Proof::default(),
             tla: crate::project::config::Tla::default(),
             verus: crate::project::config::Verus::default(),
             tools: crate::gates::proofs::Tools::here(),
@@ -185,6 +188,7 @@ impl Ctx {
                 .unwrap_or_default(),
             exhaustive: config.and_then(|set| set.mutest_exhaustive) == Some(true),
             proof_jobs: config.and_then(|set| set.proof_jobs),
+            proof: config.and_then(|set| set.proof.clone()).unwrap_or_default(),
             tla: config.and_then(|set| set.tla.clone()).unwrap_or_default(),
             verus: config.and_then(|set| set.verus.clone()).unwrap_or_default(),
             ..Self::for_root(PathBuf::new(), Baseline::default())

@@ -1,21 +1,32 @@
-//! The `proof` gate: every kani harness in the workspace must verify.
+//! The `proof` gate: every kani harness in the workspace must verify, and a harness taken out
+//! trips until the record lets it go.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::exec;
+use crate::run::Measurement;
+use crate::run::baseline::{Keys, Series};
 use crate::run::report::Finding;
-use crate::run::{Ctx, Gate, Group, Kind, Outcome};
+use crate::run::{Ctx, Gate, Group, Kind};
 
 pub const GATE: Gate = Gate {
     name: "proof",
-    about: "every kani harness still verifies; needs harnesses to have been written",
+    about: "every kani harness still verifies, per harness; a harness taken out trips until the \
+            record lets it go",
     group: Group::OptIn,
     builds: true,
     // The verdict depends only on the tree and the cargo and kani versions, so it can be recalled.
-    reads: Some(crate::run::verdicts::Reads::tree_and(&["cargo", "kani"]).versioned("proof-v2")),
-    kind: Kind::Binary(check),
+    reads: Some(crate::run::verdicts::Reads::tree_and(&["cargo", "kani"]).versioned("proof-v3")),
+    kind: Kind::AnnotatedRatchet {
+        measure,
+        // One row per harness, zero while it verifies. A failing harness is a fault, which trips
+        // whatever the record holds and is never recorded.
+        keys: Keys::Census,
+        unit: "failed harness(es)",
+    },
 };
 
 #[derive(Debug, Deserialize)]
@@ -26,20 +37,29 @@ struct Listing {
     contract: serde_json::Value,
 }
 
-fn check(ctx: &Ctx) -> Result<Outcome, String> {
+fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     ctx.default_build("cargo kani")?;
     clear_listing(&ctx.root)?;
-    let listed = exec::run("cargo", &invocation(&ctx.features, &LIST), &ctx.root)
-        .map_err(|e| e.to_string())?;
-    let harnesses = read_harnesses(&listed, || read_listing(&ctx.root))?;
-    let jobs = jobs(crate::exec::budget::cap(), ctx.proof_jobs).to_string();
-    let out = exec::run(
+    let packages = ctx.proof.packages.as_deref().unwrap_or_default();
+    let listed = exec::run(
         "cargo",
-        &invocation(&ctx.features, &verify(&jobs)),
+        &invocation(packages, &ctx.features, &LIST),
         &ctx.root,
     )
     .map_err(|e| e.to_string())?;
-    read_verdict(&out, &harnesses)
+    let harnesses = read_harnesses(&listed, || read_listing(&ctx.root))?;
+    let jobs = jobs(crate::exec::budget::cap(), ctx.proof_jobs).to_string();
+    let limit = ctx
+        .proof
+        .timeout_s
+        .unwrap_or_else(|| exec::deadline().as_secs());
+    let pace: exec::Pace = (|_| false, Duration::from_secs(limit));
+    let argv = invocation(packages, &ctx.features, &verify(&jobs));
+    match exec::run_paced("cargo", &argv, &ctx.root, &[], pace) {
+        Ok(out) => read_verdict(&out, &harnesses),
+        Err(e) if e.hung() => Ok(timed_out(&harnesses, limit)),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 const LIST: [&str; 3] = ["list", "--format", "json"];
@@ -58,10 +78,16 @@ fn verify(jobs: &str) -> [&str; 4] {
     ["--output-format", "terse", "--jobs", jobs]
 }
 
-/// The listing and the verification build the same features.
-fn invocation<'a>(features: &'a [String], then: &[&'a str]) -> Vec<&'a str> {
+/// The listing and the verification build the same packages and features.
+fn invocation<'a>(
+    packages: &'a [String],
+    features: &'a [String],
+    then: &[&'a str],
+) -> Vec<&'a str> {
+    let mut argv = vec!["kani"];
     // Without `--workspace`, a virtual workspace lists only cargo's default members.
-    let mut argv = vec!["kani", "--workspace"];
+    argv.extend(packages.is_empty().then_some("--workspace"));
+    argv.extend(packages.iter().flat_map(|name| ["-p", name.as_str()]));
     argv.extend(features.iter().map(String::as_str));
     argv.extend(then);
     argv
@@ -100,14 +126,45 @@ fn listed_harnesses(text: &str) -> Result<BTreeSet<String>, String> {
     Ok(harnesses)
 }
 
-/// Judges the run; exit zero counts only with a complete summary for every listed harness.
-fn read_verdict(out: &exec::Output, expected: &BTreeSet<String>) -> Result<Outcome, String> {
+/// Judges the run as a row per listed harness, one where it is at fault. Exit zero counts only with
+/// a complete summary for every listed harness.
+fn read_verdict(out: &exec::Output, expected: &BTreeSet<String>) -> Result<Measurement, String> {
     let harnesses = verified_summaries(out, expected)?;
     let judged = findings(&harnesses);
-    if !judged.is_empty() {
-        return Ok(Outcome::failed(judged));
+    finished_unless_failed(out, &judged)?;
+    let failed = judged
+        .iter()
+        .filter_map(|found| found.item.clone())
+        .collect();
+    let mut read = Measurement::of(rows(expected, &failed), Vec::new());
+    read.faults = judged;
+    Ok(read)
+}
+
+/// Exit zero counts only for a run that names no failed harness; one that names some is read.
+fn finished_unless_failed(out: &exec::Output, judged: &[Finding]) -> Result<(), String> {
+    match judged.is_empty() {
+        true => finished(out),
+        false => Ok(()),
     }
-    finished(out)
+}
+
+/// A run stopped at its limit proves nothing. Each listed harness stays a row, so a harness taken
+/// out is still named.
+fn timed_out(listed: &BTreeSet<String>, limit: u64) -> Measurement {
+    let mut read = Measurement::of(rows(listed, &BTreeSet::new()), Vec::new());
+    let why =
+        format!("kani ran past its {limit} s limit; raise `proof.timeout_s` if it needs longer");
+    read.faults.push(Finding::at("", &why).item("kani"));
+    read
+}
+
+fn rows(listed: &BTreeSet<String>, failed: &BTreeSet<String>) -> Series {
+    let mut series = Series::new();
+    for name in listed {
+        series.set(name, u64::from(failed.contains(name)));
+    }
+    series
 }
 
 fn verified_summaries(
@@ -137,9 +194,9 @@ fn findings(harnesses: &[Harness]) -> Vec<Finding> {
         .collect()
 }
 
-fn finished(out: &exec::Output) -> Result<Outcome, String> {
+fn finished(out: &exec::Output) -> Result<(), String> {
     if out.success() {
-        return Ok(Outcome::passed());
+        return Ok(());
     }
     Err(format!(
         "kani did not finish successfully: {}",
@@ -502,11 +559,26 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
         names.iter().map(|name| (*name).to_string()).collect()
     }
 
-    fn verdict_of(stdout: &str, code: i32) -> Result<Outcome, String> {
+    fn verdict_of(stdout: &str, code: i32) -> Result<Measurement, String> {
         read_verdict(
             &exec::Output::of(Some(code), stdout, ""),
             &expected(&["one"]),
         )
+    }
+
+    /// What a run in which every listed harness verified reads: a row of zero for each.
+    fn verified(names: &[&str]) -> Measurement {
+        Measurement::of(rows(&expected(names), &BTreeSet::new()), Vec::new())
+    }
+
+    /// The rows a run counts as failed harnesses.
+    fn failed(read: &Measurement) -> Vec<&str> {
+        read.series
+            .0
+            .iter()
+            .filter(|(_, failed)| **failed == 1)
+            .map(|(name, _)| name.as_str())
+            .collect()
     }
 
     #[test]
@@ -518,8 +590,13 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
             "proofs::doubling_never_exceeds_the_range",
         ]);
         let outcome = read_verdict(&exec::Output::of(Some(0), MEASURED, ""), &names).unwrap();
-        assert!(!outcome.passed);
-        let said: Vec<String> = outcome.findings.iter().map(Finding::render).collect();
+        let faulted: BTreeSet<&str> = outcome
+            .faults
+            .iter()
+            .flat_map(|it| it.item.as_deref())
+            .collect();
+        assert_eq!(failed(&outcome), Vec::from_iter(faulted));
+        let said: Vec<String> = outcome.faults.iter().map(Finding::render).collect();
         assert_eq!(
             said,
             [
@@ -532,7 +609,7 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
 
     #[test]
     fn every_expected_harness_must_have_a_complete_reachable_summary() {
-        assert_eq!(verdict_of(HONEST, 0).unwrap(), Outcome::passed());
+        assert_eq!(verdict_of(HONEST, 0).unwrap(), verified(&["one"]));
         let why = read_verdict(
             &exec::Output::of(Some(0), HONEST, ""),
             &expected(&["one", "two"]),
@@ -555,10 +632,10 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
     fn a_harness_with_zero_checks_is_a_measured_vacuous_proof() {
         let outcome = verdict_of(&HONEST.replace("0 of 2", "0 of 0"), 0).unwrap();
         assert_eq!(
-            outcome.findings,
+            outcome.faults,
             [Finding::at("", "nothing was checked, so verifying proved nothing").item("one")]
         );
-        assert!(!outcome.passed);
+        assert_eq!(failed(&outcome), ["one"]);
     }
 
     /// Kani 0.68's four answers, captured from a crate holding one harness of each.
@@ -598,13 +675,16 @@ Complete - 2 successfully verified harnesses, 2 failures, 4 total.
         let unexpected =
             "kani's verdict is FAILED (encountered no panics, but at least one was expected)";
         assert_eq!(
-            outcome.findings,
+            outcome.faults,
             [
                 Finding::at("", "1 of 1 checks failed").item("proofs::fails_without_panicking"),
                 Finding::at("", unexpected).item("proofs::never_panics"),
             ]
         );
-        assert!(!outcome.passed);
+        assert_eq!(
+            failed(&outcome),
+            ["proofs::fails_without_panicking", "proofs::never_panics"]
+        );
     }
 
     #[test]
@@ -615,8 +695,7 @@ Complete - 2 successfully verified harnesses, 2 failures, 4 total.
         let passing = format!("{HONEST}{}", &SHOULD_PANIC[witness..]);
         let names = expected(&["one", "proofs::panics_as_expected"]);
         let outcome = read_verdict(&exec::Output::of(Some(0), &passing, ""), &names).unwrap();
-        assert_eq!(outcome.findings, []);
-        assert!(outcome.passed);
+        assert_eq!(outcome, verified(&["one", "proofs::panics_as_expected"]));
     }
 
     #[test]
@@ -684,7 +763,7 @@ VERIFICATION:- SUCCESSFUL
         let names = expected(&["fails", "holds", "later"]);
         let outcome = read_verdict(&exec::Output::of(Some(1), SIDE_BY_SIDE, ""), &names).unwrap();
         assert_eq!(
-            outcome.findings,
+            outcome.faults,
             [Finding::at("", "1 of 2 checks failed").item("fails")]
         );
         let why = summarised("Thread 2: \n ** 0 of 1 failed\n").unwrap_err();
@@ -707,10 +786,10 @@ VERIFICATION:- SUCCESSFUL
     fn a_failed_check_is_named_without_calling_the_run_a_success() {
         let outcome = verdict_of(&HONEST.replace("0 of 2", "1 of 2"), 1).unwrap();
         assert_eq!(
-            outcome.findings,
+            outcome.faults,
             [Finding::at("", "1 of 2 checks failed").item("one")]
         );
-        assert!(!outcome.passed);
+        assert_eq!(failed(&outcome), ["one"]);
     }
 
     #[test]
@@ -782,10 +861,11 @@ VERIFICATION:- SUCCESSFUL
     fn a_nonzero_run_can_report_named_failures_but_cannot_invent_checked_harnesses() {
         let outcome = verdict_of(&format!("{HONEST}Failed Checks: overflow in add\n"), 1).unwrap();
         assert_eq!(
-            outcome.findings,
+            outcome.faults,
             [Finding::at("", "overflow in add").item("kani")]
         );
-        assert!(!outcome.passed);
+        // The check names no harness, so it trips as a fault and counts in no row.
+        assert_eq!(outcome.series, verified(&["one"]).series);
         assert!(verdict_of("VERIFICATION:- FAILED\n", 1).is_err());
         assert!(verdict_of(HONEST, 1).is_err());
     }
@@ -794,13 +874,13 @@ VERIFICATION:- SUCCESSFUL
     fn colour_does_not_change_a_harness_identity_or_summary() {
         let coloured = format!("\u{1b}[32m{}\u{1b}[0m...", "one");
         let text = HONEST.replace("one...", &coloured);
-        assert_eq!(verdict_of(&text, 0).unwrap(), Outcome::passed());
+        assert_eq!(verdict_of(&text, 0).unwrap(), verified(&["one"]));
     }
 
     #[test]
     fn progress_before_the_first_harness_and_satisfied_covers_are_not_failures() {
         let text = format!("Compiling fixture\n{HONEST} ** 1 of 1 cover properties satisfied\n");
-        assert_eq!(verdict_of(&text, 0).unwrap(), Outcome::passed());
+        assert_eq!(verdict_of(&text, 0).unwrap(), verified(&["one"]));
         assert_eq!(Harness::default().fault(), None);
     }
 
@@ -888,7 +968,7 @@ VERIFICATION:- SUCCESSFUL
     fn listing_and_verification_build_the_same_configured_features() {
         let features = ["--no-default-features", "--features", "testkit,extra"].map(String::from);
         assert_eq!(
-            invocation(&features, &verify("4")),
+            invocation(&[], &features, &verify("4")),
             [
                 "kani",
                 "--workspace",
@@ -902,7 +982,7 @@ VERIFICATION:- SUCCESSFUL
             ]
         );
         assert_eq!(
-            invocation(&features, &LIST),
+            invocation(&[], &features, &LIST),
             [
                 "kani",
                 "--workspace",
@@ -915,9 +995,30 @@ VERIFICATION:- SUCCESSFUL
             ]
         );
         assert_eq!(
-            invocation(&[], &LIST),
+            invocation(&[], &[], &LIST),
             ["kani", "--workspace", "list", "--format", "json"]
         );
+    }
+
+    #[test]
+    fn configured_packages_take_the_place_of_the_workspace() {
+        let packages = ["outpost-kernel", "outpost-ipc"].map(String::from);
+        let said = invocation(&packages, &[], &LIST).join(" ");
+        assert_eq!(
+            said,
+            "kani -p outpost-kernel -p outpost-ipc list --format json"
+        );
+    }
+
+    #[test]
+    fn a_run_past_its_limit_trips_and_keeps_each_listed_harness_as_a_row() {
+        let read = timed_out(&expected(&["one", "two"]), 3600);
+        let said: Vec<String> = read.faults.iter().map(Finding::render).collect();
+        assert_eq!(
+            said,
+            ["kani: kani ran past its 3600 s limit; raise `proof.timeout_s` if it needs longer"]
+        );
+        assert_eq!(read.series, verified(&["one", "two"]).series);
     }
 
     #[test]

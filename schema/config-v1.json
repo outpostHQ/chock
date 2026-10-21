@@ -192,6 +192,28 @@
       "type": "integer",
       "minimum": 1
     },
+    "proof": {
+      "description": "Settings of the opt-in `proof` gate, which records one row per Kani harness. A harness that fails trips the gate whatever the record holds. A harness taken out trips until `chock baseline proof` lets it go.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "packages": {
+          "description": "The packages Kani lists and verifies, each passed as `-p`. The whole workspace when left out.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "timeout_s": {
+          "description": "Seconds the Kani run of every harness may take. chock's tool limit when left out: 1800, or `CHOCK_TIMEOUT`.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
     "mutest_args": {
       "description": "Flags `cargo mutest run` takes after chock's own, such as `--timings`. The results directory under `target/test-scratch/` stays after such a run; delete it when you are done. Use `mutest_exhaustive`, not `--exhaustive` here.",
       "type": "array",
@@ -524,17 +546,17 @@
           "uniqueItems": true
         },
         "workers": {
-          "description": "Worker threads of one TLC run. 2 when left out.",
+          "description": "Worker threads of one TLC run, and of one tlapm run. 2 when left out.",
           "type": "integer",
           "minimum": 1
         },
         "timeout_s": {
-          "description": "Seconds one cfg, or one Apalache check, may run. 300 when left out.",
+          "description": "Seconds one cfg, one Apalache check, or the tlapm proof of one module may run. 300 when left out.",
           "type": "integer",
           "minimum": 1
         },
         "timeouts": {
-          "description": "Seconds for one cfg, by its stem, or for all cfgs of one model, by the model's name. A cfg stem wins over its model.",
+          "description": "Seconds for one cfg, by its stem, or for all cfgs of one model, by the model's name, which also limits the tlapm proof of that module. A cfg stem wins over its model.",
           "type": "object",
           "additionalProperties": {
             "type": "integer",

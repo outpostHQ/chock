@@ -77,9 +77,9 @@ records the reason under `left_off` in the config.
 | `dead` | | a private function nothing in the crate names |
 | `acl` | | a dependency reaches an API its `cackle.toml` entry does not grant |
 | `idempotent` | | the suite passes once and fails the second time |
-| `proof` | | a Kani proof that verified no longer does |
+| `proof` | ✓ | a Kani harness does not verify, or a harness on record is gone |
 | `miri` | | a test fails under Miri; the run lists every failing test |
-| `tla` | | TLC finds a fault in a model, a bad variant of a model passes, or Apalache cannot prove the inductive invariant |
+| `tla` | | TLC finds a fault in a model, a bad variant of a model passes, Apalache cannot prove the inductive invariant, or TLAPS does not prove a theorem |
 | `verus` | | Verus does not verify a proof file, or verifies a mutant, a patch that puts a fault in one function |
 | `unused-deep` | | a real (nightly) compile shows an unused dependency |
 | `fmt` | | rustfmt would change a file; needs no compiler, so a commit can run it |
@@ -114,6 +114,7 @@ it finds nothing where a project has no model. `tla` and `verus` are opt-in.
 ```
    proofs/tla/M.tla ──── tla ────► TLC: M.cfg passes, and each bad variant fails
           │                        Apalache: IndInv holds in every state
+          │                        TLAPS: each theorem is proved, and no proof is left out
           │
    proofs/verus/*.rs ─── verus ──► Verus: each proof verifies, and each mutant fails
           │
@@ -152,9 +153,17 @@ three things: `Init` makes `IndInv` true, one step keeps it true, and `IndInv` i
 invariant. `tla.inductive` names the models and their invariants yourself, and `{}` proves none.
 `tla.length` adds a bounded Apalache run of that many steps from `Init`.
 
+TLAPS proves each module that states a `THEOREM`, `LEMMA`, `PROPOSITION` or `COROLLARY`. The gate
+trips on an obligation that no backend of tlapm proves, on an `OMITTED` proof, and on a step with
+no proof, and it names the file and the line of each. `BY OBVIOUS` is a proof, because a backend
+must prove it. The project pins tlapm itself, as `TLAPM` in `tool-versions.env`; chock ships no
+pin for it. Without that pin, the gate gives a note and proves no theorem. `tla.timeout_s` and
+`tla.timeouts`, by the module's name, limit the proof of each module, and `tla.workers` sets the
+threads of tlapm.
+
 TLC needs Java 11 or later, and Apalache needs Java 21 or later. The gate uses
-`$JAVA_HOME/bin/java`, else the `java` on `PATH`. TLC writes its states under
-`target/test-scratch/chock/tla`.
+`$JAVA_HOME/bin/java`, else the `java` on `PATH`. TLC writes its states, and tlapm its cache,
+under `target/test-scratch/chock/tla`.
 
 ### `verus`
 
@@ -228,7 +237,7 @@ TLA_TOOLS_SHA256=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e8
 |---|---|
 | `X_VERSION` | the version; the other keys can use it as `${X_VERSION}` |
 | `X_URL`, `X_SHA256` | the file and its hash. chock refuses a file with another hash. |
-| `X_URL_<system>`, `X_SHA256_<system>` | one file for each system: `x86_linux`, `x86_macos`, `arm64_macos` or `x86_win` |
+| `X_URL_<system>`, `X_SHA256_<system>` | one file for each system, in words that name it, such as `x86_linux`, `x86_64_linux_gnu`, `arm64_macos`, `arm64_darwin` or `x86_win` |
 | `X_SETUP` | a command that runs after the download |
 | `X_GIT`, `X_REV` | a cargo tool that `chock init --global` builds from one commit of a repository, such as `CARGO_DENY_GIT` |
 
@@ -362,6 +371,11 @@ chock keeps the files in `CHOCK_TOOLS`, else in `chock-tools` in cargo's home, s
   until `chock baseline pinned` records it. A recorded pin that leaves the documents trips the gate
   until `chock baseline pinned` records that change. So a commit that deletes a test and its pin
   also changes `.chock/baseline.json`, and a reviewer sees it.
+- **How `proof` keeps each harness.** Kani lists the harnesses of `proof.packages`, or of the whole
+  workspace, and verifies them in one run. Each harness is one row of the record, 0 when it
+  verifies. A harness that fails trips the gate whatever the record holds, and chock records
+  nothing from that run. A harness that leaves the code trips the gate until `chock baseline proof`
+  records that change. A run past `proof.timeout_s` trips with every harness unproven.
 - **`unused` and `dead` give leads.** Neither sees a dependency used only in a doc example, or a
   function reached only through a name a macro builds; mark such a function `#[expect(dead_code)]`.
 
@@ -393,7 +407,7 @@ says which of them this machine has. These gates need more:
 | `msrv` | the Rust release that `rust-version` in `Cargo.toml` names; `chock init --global` installs it in the crate it runs in |
 | `mutest` | Outpost's fork of [mutest-rs](https://github.com/outpostHQ/mutest-rs) and the nightly it names; `chock init --global` builds the newest commit of the fork's `main`, which needs `git` |
 | `proof` | `#[kani::proof]` functions; Linux or macOS |
-| `tla` | Java 11 or later for TLC, and Java 21 or later for Apalache; the pinned jars, which `chock init --downloads` fetches |
+| `tla` | Java 11 or later for TLC, and Java 21 or later for Apalache; the pinned jars and tlapm, which `chock init --downloads` fetches |
 | `verus` | the pinned Verus, which `chock init --downloads` fetches, and the Rust toolchain that this Verus names |
 | `acl` | a `cackle.toml`, and bubblewrap; Linux only |
 | `commits`, `hygiene`, `history` | a git or Outpost repository; outside one they report that they could not run |
@@ -431,7 +445,9 @@ every other file. Its verdict answers for those files alone.
 A finding quotes only a part of a long output, so some gates keep the whole of it under
 `target/test-scratch/chock/`:
 
-- `test.txt` and `idempotent.txt` hold the whole output of a failed suite run.
+- `test.txt` and `idempotent.txt` hold the whole output of each suite run, under a line that
+  counts the tests that passed, failed and were ignored. A run that chock stops at its memory
+  limit or its deadline keeps what it printed too, and its CANNOT RUN reason gives the count.
 - `coverage.txt` lists the lines no test ran, file by file. Keep it from a CI job and compare it
   with the list of your machine when the two counts differ.
 
@@ -452,6 +468,13 @@ two `coverage.txt` lists, and change the code or the tests so that the same line
 `coverage` leaves out the code that only tests compile: a `tests.rs` or `*_tests.rs` file, and the
 lines of each `#[cfg(test)]` module. A test module counts the same in its parent file and in its
 own `tests.rs`.
+
+A test process that stops early can leave a cut-short `.profraw` profile. chock adds
+`-failure-mode=all` to `LLVM_PROFDATA_FLAGS` for the coverage command, unless the variable already
+names a failure mode, so llvm-profdata leaves such a profile out and merges the rest. chock reads
+llvm-profdata's `warning: <path>.profraw: <reason>` lines from the command's stderr (the first 16
+MiB). For each profile left out, `coverage` and `crap` give CANNOT RUN and name the profile. They
+still show what the other profiles count, and no record is written from that run.
 
 ## How `crap` counts
 

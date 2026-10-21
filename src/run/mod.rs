@@ -9,6 +9,7 @@ pub mod lock;
 pub mod report;
 pub mod verdicts;
 
+mod compare;
 mod context;
 mod lanes;
 mod measurement;
@@ -22,8 +23,9 @@ use std::time::Instant;
 
 use crate::run::baseline::{Keys, Series};
 use crate::run::report::{Finding, GateReport, Run, Verdict};
+use compare::{compared, placed};
 pub(crate) use lanes::recorded_tests;
-pub use measurement::{Details, Measurement};
+pub use measurement::{Details, Measurement, unread_of};
 use workers::on_workers;
 
 /// What a pass/fail gate found. `passed` is the tool's own verdict rather than a count of
@@ -38,6 +40,8 @@ pub struct Outcome {
     pub counted: Option<(u64, u64, &'static str)>,
     /// Each test's time in ms under its binary and name, from a gate that timed its tests.
     pub tests_ms: std::collections::BTreeMap<String, u64>,
+    /// Why the gate read only part of its input: its report is CANNOT RUN with the findings it has.
+    pub partial: Option<String>,
 }
 
 impl Outcome {
@@ -49,6 +53,7 @@ impl Outcome {
             said: None,
             counted: None,
             tests_ms: std::collections::BTreeMap::new(),
+            partial: None,
         }
     }
 
@@ -62,6 +67,7 @@ impl Outcome {
             said: None,
             counted: None,
             tests_ms: std::collections::BTreeMap::new(),
+            partial: None,
         }
     }
 
@@ -82,7 +88,18 @@ impl Outcome {
             said: None,
             counted: None,
             tests_ms: std::collections::BTreeMap::new(),
+            partial: None,
         }
+    }
+
+    /// The same outcome from a read that left `left` out: it rules on nothing, and keeps its
+    /// findings.
+    #[must_use]
+    pub fn read_in_part(mut self, left: &[String]) -> Self {
+        if !left.is_empty() {
+            self.partial = Some(measurement::unread_of(left));
+        }
+        self
     }
 
     /// The number this run counted beside the number on record, so the report shows both.
@@ -526,7 +543,7 @@ fn surveyed(gate: &Gate, ctx: &Ctx, unit: &str) -> GateReport {
         Err(reason) => GateReport::cannot_run(gate.name, rerun(gate.name).as_str(), &reason),
         Ok(read) => {
             let mut report = GateReport::new(gate.name, Verdict::Pass, rerun(gate.name).as_str());
-            report.measured = Some(read.series.0.values().sum());
+            report.measured = Some(read.series.summed());
             report.unit = Some(unit.to_string());
             report.findings = read.findings;
             report
@@ -589,6 +606,15 @@ fn reported(gate: &Gate, verdict: Verdict, outcome: Outcome) -> GateReport {
     }
     report.findings = outcome.findings;
     report.tests_ms = outcome.tests_ms;
+    ruled_on_part(report, outcome.partial)
+}
+
+/// A gate that read only part of its input rules on nothing, but keeps what the rest hold.
+fn ruled_on_part(mut report: GateReport, partial: Option<String>) -> GateReport {
+    if let Some(why) = partial {
+        report.verdict = Verdict::CannotRun;
+        report.cannot_run_reason = Some(why);
+    }
     report
 }
 
@@ -713,7 +739,7 @@ fn first_notes(gate: &Gate, findings: Vec<Finding>) -> Vec<Finding> {
 /// verdict. A file the change touched is still held to zero where the project asks that.
 fn first_record(gate: &Gate, ctx: &Ctx, read: Measurement, keys: Keys, unit: &str) -> GateReport {
     let now = read.series;
-    let total = now.0.values().sum();
+    let total = now.summed();
     let mut report = numbered(gate, Verdict::Pass, total, total, unit);
     report.findings = first_notes(gate, read.findings);
     if let Err(why) = touched(&mut report, gate, ctx, &now, &now, keys) {
@@ -755,18 +781,42 @@ fn ratchet(gate: &Gate, ctx: &Ctx, keys: Keys, unit: &str) -> GateReport {
     ruled_on(gate, ctx, read, keys, unit)
 }
 
-/// The verdict on what a gate read. A read that left files out rules on nothing and records nothing,
-/// since a file it could not read looks like debt paid; it still shows what the rest hold.
+/// The verdict on what a gate read. A read that left a file out rules on nothing: it writes no
+/// record, and shows what the rest hold.
 fn ruled_on(gate: &Gate, ctx: &Ctx, read: Measurement, keys: Keys, unit: &str) -> GateReport {
     if read.unmeasured.is_empty() {
-        return measured_ratchet(gate, ctx, read, keys, unit);
+        return faulted(gate, ctx, read, keys, unit);
     }
     let was = held_against(gate, ctx, &read.series);
-    let (_, over) = compared(&read.series, &was, keys, gate.name, unit, &read.details);
+    let over = compared(&read.series, &was, keys, gate.name, unit, &read.details).1;
     let why = read.unread();
     let mut report = GateReport::cannot_run(gate.name, rerun(gate.name).as_str(), &why);
     report.unit = Some(unit.to_string());
-    report.findings = over.into_iter().chain(read.findings).collect();
+    with_findings(report, read, over)
+}
+
+/// A read of every file. One with a fault trips whatever the record holds and writes no record;
+/// its rows are compared at zero, so a row gone is named and a fault is not named twice.
+fn faulted(gate: &Gate, ctx: &Ctx, read: Measurement, keys: Keys, unit: &str) -> GateReport {
+    if read.faults.is_empty() {
+        return measured_ratchet(gate, ctx, read, keys, unit);
+    }
+    let was = held_against(gate, ctx, &read.series);
+    let zeroed = ctx.baseline.has(gate.name).then(|| read.series.zeroed());
+    let over = zeroed.map(|now| compared(&now, &was, keys, gate.name, unit, &read.details).1);
+    let total = read.series.summed();
+    let report = numbered(gate, Verdict::Tripped, total, was.summed(), unit);
+    with_findings(report, read, over.unwrap_or_default())
+}
+
+/// The report with the read's faults first, then what its rows went over, then its other findings.
+fn with_findings(mut report: GateReport, read: Measurement, over: Vec<Finding>) -> GateReport {
+    report.findings = read
+        .faults
+        .into_iter()
+        .chain(over)
+        .chain(read.findings)
+        .collect();
     report
 }
 
@@ -784,7 +834,7 @@ fn measured_ratchet(
         return first_record(gate, ctx, read, keys, unit);
     }
     let now = read.series;
-    let total = now.0.values().sum();
+    let total = now.summed();
     let was = held_against(gate, ctx, &now);
     let regroup = regrouped(gate, &now, &was, keys);
     let recount = recounted(ctx.baseline.unit(gate.name), unit);
@@ -792,7 +842,7 @@ fn measured_ratchet(
         return GateReport::cannot_run(gate.name, rerun(gate.name).as_str(), &reason);
     }
     let (verdict, findings) = compared(&now, &was, keys, gate.name, unit, &read.details);
-    let mut report = numbered(gate, verdict, total, was.0.values().sum(), unit);
+    let mut report = numbered(gate, verdict, total, was.summed(), unit);
     report.findings = findings;
     report.findings.extend(read.findings);
     if let Err(why) = touched(&mut report, gate, ctx, &now, &was, keys) {
@@ -909,41 +959,6 @@ fn unrecorded(tighter: &Series, was: &Series, unit: &str) -> Vec<Finding> {
         .collect()
 }
 
-/// What the comparison says, once it is known to be possible. Each of its three questions goes
-/// only to the key kinds it fits, and only the first two can fail the gate.
-fn compared(
-    now: &Series,
-    was: &Series,
-    keys: Keys,
-    gate: &str,
-    unit: &str,
-    details: &Details,
-) -> (Verdict, Vec<Finding>) {
-    let regressions = now.regressions(was, keys);
-    // A census row on record that this run did not produce is a check that stopped happening, and
-    // no number reports it. An absent item is a deleted file, so the question is not asked.
-    let dropped = match keys {
-        Keys::Census => now.stopped_measuring(was),
-        Keys::Items | Keys::Sizes { .. } | Keys::Measures => Vec::new(),
-    };
-    // A new key at zero that is not an item means the checking grew and found nothing: a note.
-    let added = match keys {
-        Keys::Measures | Keys::Census => now.new_at_zero(was),
-        Keys::Items | Keys::Sizes { .. } => Vec::new(),
-    };
-    let verdict = match regressions.is_empty() && dropped.is_empty() {
-        true => Verdict::Pass,
-        false => Verdict::Tripped,
-    };
-    let findings = regressions
-        .iter()
-        .map(|change| finding_for(change, unit).detailed(details.get(change.key())))
-        .chain(dropped.iter().map(|key| dropped_finding(key, was, unit)))
-        .chain(added.iter().map(|key| added_finding(key, now, gate, unit)))
-        .collect();
-    (verdict, findings)
-}
-
 /// Whether a baseline may carry these keys. Asked where a record is written as well as where one is
 /// read, because a first run refuses before it measures and never reaches the comparison.
 pub fn portable(series: &Series) -> Result<(), String> {
@@ -954,46 +969,6 @@ pub fn portable(series: &Series) -> Result<(), String> {
              elsewhere, so it cannot be keyed by one machine's paths"
         )),
     }
-}
-
-/// A key is a path when it looks like one, so the finding lands where an editor can open it.
-fn placed(key: &str, message: &str) -> Finding {
-    match key.split_once('#') {
-        Some((path, name)) => Finding::at(path, message).item(name),
-        None if key.contains('/') || key.contains(".rs") => Finding::at(key, message),
-        None => Finding::at("", message).item(key),
-    }
-}
-
-fn finding_for(change: &crate::run::baseline::Change, unit: &str) -> Finding {
-    let (message, held) = match change {
-        crate::run::baseline::Change::Grew { was, now, .. } => {
-            (format!("{now} {unit}, over the recorded {was}"), Some(*was))
-        }
-        crate::run::baseline::Change::New { now, .. } => {
-            (format!("{now} {unit}, not in the baseline"), None)
-        }
-    };
-    placed(change.key(), &message).numbers(change.now(), held)
-}
-
-/// A key this run measured at zero and the baseline does not carry. It passes: zero is no worse
-/// than absent, and the same key above zero is a regression.
-fn added_finding(key: &str, now: &Series, gate: &str, unit: &str) -> Finding {
-    let measured = now.get(key).unwrap_or_default();
-    let message =
-        format!("{measured} {unit}, newly measured — `chock baseline {gate}` puts it on record");
-    placed(key, &message).numbers(measured, None)
-}
-
-/// A key the baseline records and this run never produced. `measured` stays absent, because a zero
-/// there reads as a clean result rather than as nothing measured.
-fn dropped_finding(key: &str, was: &Series, unit: &str) -> Finding {
-    let recorded = was.get(key).unwrap_or_default();
-    let message = format!("not measured this run; the baseline records {recorded} {unit}");
-    let mut finding = placed(key, &message);
-    finding.baseline = Some(recorded);
-    finding
 }
 
 #[cfg(test)]
@@ -1007,6 +982,7 @@ mod tests {
     use crate::gates;
     use crate::gates::tools::miri::Part;
     use crate::run::baseline::Baseline;
+    use crate::run::compare::finding_for;
     use crate::run::report::locked_in;
     use std::path::PathBuf;
 
@@ -2143,6 +2119,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_gate_that_read_part_of_its_input_rules_on_nothing_and_keeps_its_findings() {
+        fn unused(_ctx: &Ctx) -> Result<Outcome, String> {
+            Ok(Outcome::passed())
+        }
+        let gate = gate_of(Kind::Binary(unused));
+        let left = ["/t/a.profraw: invalid instrumentation profile data".to_string()];
+        let failed = || Outcome::failed(vec![Finding::at("src/lib.rs", "over its record")]);
+        let report = outcome_report(&gate, Ok(failed().read_in_part(&left)));
+        assert_eq!(report.verdict, Verdict::CannotRun);
+        assert_eq!(report.cannot_run_reason, Some(unread_of(&left)));
+        assert_eq!(report.findings[0].render(), "src/lib.rs: over its record");
+        let whole = outcome_report(&gate, Ok(failed().read_in_part(&[])));
+        assert_eq!(whole.verdict, Verdict::Tripped);
+    }
+
     fn scoped_measurement(_ctx: &Ctx) -> Result<Measurement, String> {
         let mut series = Series::new();
         series.set("src/a.rs#eq_op_invert", 1);
@@ -2227,7 +2219,10 @@ mod tests {
         let cases = [
             (&gates::tools::TEST, "features-v1:input"),
             (&gates::tools::IDEMPOTENT, "features-v1:input"),
-            (&gates::tools::proof::GATE, "proof-v2:input"),
+            (
+                &gates::tools::proof::GATE,
+                "proof-v3:scope-v2:lowers-v1:input",
+            ),
             (&gates::tools::binsize::GATE, "targets-v1:lowers-v1:input"),
             (&gates::tools::DOC, "targets-v1:input"),
             (
@@ -2327,6 +2322,45 @@ mod tests {
             assert_eq!(over.map(|it| it.file.as_str()), Some("src/a.rs"));
             assert!(report.findings.iter().any(|it| it.message == "a note"));
         }
+    }
+
+    /// Two rows on record; this run has one of them, at fault, and a new row at zero.
+    fn one_at_fault(_ctx: &Ctx) -> Result<Measurement, String> {
+        let mut read = Measurement::of(Series::new(), Vec::new());
+        read.series.set("kept", 1);
+        read.series.set("added", 0);
+        read.faults = vec![Finding::at("", "1 of 2 checks failed").item("kept")];
+        Ok(read)
+    }
+
+    /// The record holds `kept` at 1, as a record of a fault would, and the gate still trips.
+    #[test]
+    fn a_fault_trips_whatever_the_record_holds_and_is_never_recorded() {
+        let gate = annotated_of(one_at_fault, Keys::Census, "failed harness(es)");
+        let recorded = ctx_with("probe", &[("kept", 1), ("gone", 0)]);
+        let report = run_one(&gate, &recorded);
+        assert_eq!(
+            (report.verdict, &report.tightened),
+            (Verdict::Tripped, &None)
+        );
+        let said: Vec<String> = report.findings.iter().map(Finding::render).collect();
+        assert_eq!(
+            said,
+            [
+                "kept: 1 of 2 checks failed",
+                "gone: not measured this run; the baseline records 0 failed harness(es)",
+                "added: 0 failed harness(es), newly measured — `chock baseline probe` puts it on record",
+            ]
+        );
+        let first = run_one(&gate, &ctx_with("another", &[]));
+        assert_eq!((first.verdict, &first.tightened), (Verdict::Tripped, &None));
+        let said: Vec<String> = first.findings.iter().map(Finding::render).collect();
+        assert_eq!(said, ["kept: 1 of 2 checks failed"]);
+        let refused = measured(&gate, &recorded).unwrap_err();
+        assert!(
+            refused.starts_with("1 fault(s) trip this gate whatever its record holds"),
+            "{refused}"
+        );
     }
 
     #[test]
