@@ -225,9 +225,14 @@ pub struct Proof {
     /// The packages Kani lists and verifies, each as `-p`; the whole workspace when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub packages: Option<Vec<String>>,
-    /// Seconds the Kani run of every harness may take; chock's tool limit when left out.
+    /// Seconds the Kani run of every harness may take, and of each mutant; chock's tool limit
+    /// when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_s: Option<u64>,
+    /// The directory of mutant patches, each of which a harness must fail on;
+    /// `proofs/kani/mutants` when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutants: Option<String>,
 }
 
 /// What the `verus` gate verifies. A field left out keeps chock's default.
@@ -272,6 +277,10 @@ pub struct Tla {
     /// Steps of a bounded Apalache check from `Init` after the proof; none when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub length: Option<u32>,
+    /// The SMT encoding of Apalache, by the model's name, as `--smt-encoding` names it; Apalache's
+    /// own when left out. The `tla` gate refuses a name that Apalache does not take.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub smt_encoding: BTreeMap<String, String>,
 }
 
 /// What the `history` gate accepts as it reads every commit.

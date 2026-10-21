@@ -361,7 +361,9 @@ fn hashed(ctx: &Ctx, paths: Vec<String>) -> Option<BTreeMap<String, Option<u64>>
         let hash = hashes.get(&path).copied();
         (path, hash)
     });
-    Some(hashed.collect())
+    let mut map = BTreeMap::new();
+    map.extend(hashed);
+    Some(map)
 }
 
 /// A file that a run writes by design: the lockfile cargo settles, a report a gate asks for,
@@ -593,7 +595,7 @@ mod tests {
         let scope = |package: Option<&str>, filter: Option<&str>| Scope {
             package: package.map(str::to_string),
             filter: filter.map(str::to_string),
-            mutate: Vec::new(),
+            ..Scope::default()
         };
         let nextest = argv("cargo nextest run --workspace --no-fail-fast");
         let whole = Scope::default();

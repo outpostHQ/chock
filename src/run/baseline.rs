@@ -170,13 +170,17 @@ impl Series {
             ([new], Some([old])) => Some((new.to_string(), old.to_string())),
             _ => None,
         };
-        arrived.into_iter().filter_map(paired).collect()
+        let mut moved = BTreeMap::new();
+        moved.extend(arrived.into_iter().filter_map(paired));
+        moved
     }
 
     /// Every key this run measured, held at zero: the record a strict gate is compared against.
     #[must_use]
     pub fn zeroed(&self) -> Self {
-        Self(self.0.keys().map(|key| (key.clone(), 0)).collect())
+        let mut zeroed = self.0.clone();
+        zeroed.values_mut().for_each(|count| *count = 0);
+        Self(zeroed)
     }
 
     /// Every key that got worse, plus every key the baseline never saw carrying a number above

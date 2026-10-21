@@ -503,13 +503,7 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
         .dirs
         .clone()
         .unwrap_or_else(|| vec![DIR.to_string()]);
-    let (cfgs, mut findings) = discovered(&ctx.root, &dirs);
-    if cfgs.is_empty() && findings.is_empty() {
-        let dirs = dirs.join(", ");
-        return Err(format!(
-            "no .cfg file under {dirs}, so TLC would check nothing"
-        ));
-    }
+    let (cfgs, mut findings) = asked(ctx, &dirs)?;
     let java = java(ctx)?;
     let jar = crate::setup::downloads::located(
         &ctx.root,
@@ -528,6 +522,12 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
     let scratch = ctx.root.join(SCRATCH);
     let workers = settings.workers.unwrap_or(WORKERS).max(1);
     let theorems = tlaps::theorems(ctx, &dirs, workers)?;
+    if let Some(gone) = unknown(&ctx.scope.models, &cfgs, &theorems.modules) {
+        let dirs = dirs.join(", ");
+        return Err(format!(
+            "`--model` names {gone}, and no cfg and no theorem under {dirs} is of that model"
+        ));
+    }
     let limit = |cfg: &Cfg| limit_of(settings, &cfg.stem, &cfg.model);
     let mut jobs: Vec<Run> = cfgs
         .iter()
@@ -541,6 +541,8 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
     with_tmp(&mut jobs, &scratch)?;
     let lanes = lanes(exec::budget::cap(), workers);
     let outs = super::run_all(&ctx.tools, &java, &jobs, lanes);
+    let caches = scratch.join(tlaps::CACHES);
+    super::made(&caches).map_err(|e| format!("cannot make {}: {e}", caches.display()))?;
     let proved = super::run_all(&ctx.tools, &theorems.program, &theorems.runs, lanes);
     super::cleared(&scratch)?;
     let mut outs = outs.into_iter();
@@ -559,16 +561,31 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
     for (step, out) in steps.iter().zip(outs) {
         findings.extend(step.judged(out)?);
     }
-    // Each module has two runs in turn: its summary, then its proof.
-    let mut proved = proved.into_iter();
-    let pairs = std::iter::from_fn(|| proved.next().zip(proved.next()));
-    for (module, (summary, proof)) in theorems.modules.iter().zip(pairs) {
-        findings.extend(module.judged(summary, proof)?);
-    }
+    findings.extend(tlaps::judged_each(&theorems.modules, proved)?);
     Ok(match findings.is_empty() {
         true => Outcome::noted(notes.into_iter().chain(theorems.notes).collect()),
         false => Outcome::failed(findings),
     })
+}
+
+/// The cfgs under `dirs` that `--model` asks for, and what is wrong with the others found there.
+fn asked(ctx: &Ctx, dirs: &[String]) -> Result<(Vec<Cfg>, Vec<Finding>), String> {
+    let (cfgs, findings) = discovered(&ctx.root, dirs);
+    if cfgs.is_empty() && findings.is_empty() {
+        let dirs = dirs.join(", ");
+        return Err(format!(
+            "no .cfg file under {dirs}, so TLC would check nothing"
+        ));
+    }
+    let asks = |cfg: &Cfg| ctx.scope.asks_model(&cfg.model);
+    Ok((cfgs.into_iter().filter(asks).collect(), findings))
+}
+
+/// The first model `--model` names that no cfg checks and no module of that name proves.
+fn unknown<'a>(named: &'a [String], cfgs: &[Cfg], modules: &[tlaps::Module]) -> Option<&'a String> {
+    let checked = |model: &&String| cfgs.iter().any(|cfg| &cfg.model == *model);
+    let proved = |model: &&String| modules.iter().any(|it| &it.model == *model);
+    named.iter().find(|model| !checked(model) && !proved(model))
 }
 
 /// The runs that go at once: the run's budget `cap`, shared by the TLC workers each run starts.
@@ -994,6 +1011,28 @@ echo "Error: Invariant $name is violated."; exit 12
             ),
         ];
         assert_eq!(found, expected);
+        ctx.scope.models = vec!["Lone".to_string()];
+        let narrowed = check(&ctx).unwrap();
+        let models: BTreeSet<Option<&str>> = narrowed
+            .findings
+            .iter()
+            .filter(|it| it.file.starts_with("proofs/tla/Lone"))
+            .map(|it| it.item.as_deref())
+            .collect();
+        assert_eq!(models, BTreeSet::from([Some("Lone"), Some("Inv")]));
+        let others = narrowed
+            .findings
+            .iter()
+            .filter(|it| !it.file.starts_with("proofs/tla/Lone"));
+        let unread: Vec<&str> = others.map(|it| it.file.as_str()).collect();
+        assert_eq!(
+            unread,
+            ["proofs/tla/Nomodel.cfg", "proofs/tla/Spec_odd.cfg"]
+        );
+        ctx.scope.models = vec!["Lone".to_string(), "Gone".to_string()];
+        let gone =
+            "`--model` names Gone, and no cfg and no theorem under proofs/tla is of that model";
+        assert_eq!(check(&ctx).unwrap_err(), gone);
     }
 
     #[test]
@@ -1054,6 +1093,7 @@ echo "Error: Invariant $name is violated."; exit 12
         ctx.tla.dirs = Some(vec!["nowhere".into()]);
         let none = "no .cfg file under nowhere, so TLC would check nothing";
         assert_eq!(check(&ctx).unwrap_err(), none);
+        assert_eq!(asked(&ctx, &["nowhere".into()]).unwrap_err(), none);
     }
 
     #[test]

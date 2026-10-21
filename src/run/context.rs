@@ -387,13 +387,14 @@ pub fn coverage_for(config: Option<&crate::project::config::Config>) -> Coverage
     coverage
 }
 
-/// The part of the suite `--package=NAME` and `--filter=TEXT` narrow the `test` gate to, and the
-/// files `--mutate=FILE,...` narrow the `mutest` gate to; the default is all of it.
+/// What `--package=NAME` and `--filter=TEXT` narrow `test` to, `--mutate=FILE,...` narrows
+/// `mutest` to, and `--model=NAME,...` narrows `tla` to; the default is all of it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Scope {
     pub package: Option<String>,
     pub filter: Option<String>,
     pub mutate: Vec<String>,
+    pub models: Vec<String>,
 }
 
 impl Scope {
@@ -401,15 +402,23 @@ impl Scope {
     #[must_use]
     pub fn named(&self) -> Option<String> {
         let mutate = (!self.mutate.is_empty()).then(|| self.mutate.join(","));
+        let models = (!self.models.is_empty()).then(|| self.models.join(","));
         let parts: Vec<String> = [
             ("package", &self.package),
             ("filter", &self.filter),
             ("mutate", &mutate),
+            ("model", &models),
         ]
         .into_iter()
         .filter_map(|(name, value)| value.as_ref().map(|value| format!("{name}={value}")))
         .collect();
         (!parts.is_empty()).then(|| parts.join(":"))
+    }
+
+    /// Whether the `tla` gate checks `model`: every model when `--model` names none.
+    #[must_use]
+    pub fn asks_model(&self, model: &str) -> bool {
+        self.models.is_empty() || self.models.iter().any(|named| named == model)
     }
 }
 

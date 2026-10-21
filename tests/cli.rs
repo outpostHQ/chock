@@ -2170,32 +2170,37 @@ fn ci_cannot_silently_exclude_an_explicit_local_only_gate() {
     says(&result.err, "leaves out what you named");
 }
 
+/// A `cargo` that answers `--version` and the given `case` arms, and a `kani` for `chock doctor`.
+#[cfg(unix)]
+fn fake_kani(dir: &Path, arms: &str, config: &chock::project::config::Config) {
+    let cargo = format!(
+        "#!/bin/sh\ncase \"$*\" in\n  --version) printf 'cargo fixture\\n';;\n{arms}  \
+         *) printf 'unexpected invocation: %s\\n' \"$*\" >&2; exit 1;;\nesac\n"
+    );
+    put(dir, "bin/cargo", &cargo);
+    put(dir, "bin/kani", "#!/bin/sh\nprintf 'kani fixture\\n'\n");
+    make_runnable(&dir.join("bin/cargo"));
+    make_runnable(&dir.join("bin/kani"));
+    put_document(dir, chock::project::config::FILE, config);
+}
+
 #[cfg(unix)]
 #[test]
 fn proof_requires_every_listed_harness_even_after_an_exit_zero() {
     let dir = project("proof-census", &[("src/lib.rs", "pub fn f() {}\n")]);
-    put(
-        &dir,
-        "bin/cargo",
-        r#"#!/bin/sh
-case "$*" in
-  --version) printf 'cargo fixture\n';;
-  'kani --workspace --features testkit list --format json')
-    printf '%s\n' '{"standard-harnesses":{"src/lib.rs":["proofs::first","proofs::second"]},"contract-harnesses":{}}' > kani-list.json;;
-  'kani --workspace --features testkit')
-    printf 'Checking harness proofs::first...\n ** 0 of 2 failed\n';;
-  *) printf 'unexpected invocation: %s\n' "$*" >&2; exit 1;;
-esac
-"#,
-    );
-    put(&dir, "bin/kani", "#!/bin/sh\nprintf 'kani fixture\\n'\n");
-    make_runnable(&dir.join("bin/cargo"));
-    make_runnable(&dir.join("bin/kani"));
     let config = chock::project::config::Config {
         features: Some(vec!["testkit".to_string()]),
         ..chock::project::config::Config::of(["proof"])
     };
-    put_document(&dir, chock::project::config::FILE, &config);
+    fake_kani(
+        &dir,
+        r#"  'kani --workspace --features testkit list --format json')
+    printf '%s\n' '{"standard-harnesses":{"src/lib.rs":["proofs::first","proofs::second"]},"contract-harnesses":{}}' > kani-list.json;;
+  'kani --workspace --features testkit')
+    printf 'Checking harness proofs::first...\n ** 0 of 2 failed\n';;
+"#,
+        &config,
+    );
     let result = with_tools(&dir, &["run", "proof", "--json"], &[]);
     assert_eq!(result.code, 2, "{}{}", result.out, result.err);
     let report = parsed(&result.out);
@@ -2207,6 +2212,57 @@ esac
             .unwrap(),
         "proofs::second",
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn proof_runs_each_mutant_once_every_harness_verifies_and_trips_on_one_that_verifies() {
+    let mutant = "--- src/lib.rs\n+++ proofs::first\n@@ -1 +1 @@\n\
+                  -pub fn f() -> u8 { 1 }\n+pub fn f() -> u8 { 2 }\n";
+    let dir = project(
+        "proof-mutant",
+        &[
+            ("src/lib.rs", "pub fn f() -> u8 { 1 }\n"),
+            ("proofs/kani/mutants/f.patch", mutant),
+        ],
+    );
+    fake_kani(
+        &dir,
+        r#"  kani*' list --format json')
+    printf '%s\n' '{"standard-harnesses":{"src/lib.rs":["proofs::first"]},"contract-harnesses":{}}' > kani-list.json;;
+  kani*' --harness proofs::first --exact --output-format terse')
+    IFS= read -r first < src/lib.rs
+    printf '%s\n' "$first" >> ../../../../seen
+    if [ "$FIXTURE_SURVIVES" = yes ]; then
+      printf 'Checking harness proofs::first...\nSUMMARY:\n ** 0 of 2 failed\nVERIFICATION:- SUCCESSFUL\n'
+    else
+      printf 'Checking harness proofs::first...\nSUMMARY:\n ** 1 of 2 failed\nVERIFICATION:- FAILED\n'
+    fi;;
+  kani*' --output-format terse --jobs '*)
+    printf 'Checking harness proofs::first...\nSUMMARY:\n ** 0 of 2 failed\nVERIFICATION:- SUCCESSFUL\n';;
+"#,
+        &chock::project::config::Config::of(["proof"]),
+    );
+    let refuted = with_tools(&dir, &["run", "proof", "--json"], &[]);
+    assert_eq!(refuted.code, 0, "{}{}", refuted.out, refuted.err);
+    assert_eq!(
+        gate_of(&parsed(&refuted.out), "proof").verdict,
+        Verdict::Pass
+    );
+    let survives = [("FIXTURE_SURVIVES", "yes")];
+    let verified = with_tools(&dir, &["run", "proof", "--json", "--no-cache"], &survives);
+    let report = parsed(&verified.out);
+    let gate = gate_of(&report, "proof");
+    assert_eq!(
+        gate.verdict,
+        Verdict::Tripped,
+        "{}{}",
+        verified.out,
+        verified.err
+    );
+    says(&gate.findings[0].message, "the mutant verifies");
+    let seen = std::fs::read_to_string(dir.join("seen")).unwrap();
+    assert_eq!(seen, "pub fn f() -> u8 { 2 }\n".repeat(2));
 }
 
 #[cfg(unix)]

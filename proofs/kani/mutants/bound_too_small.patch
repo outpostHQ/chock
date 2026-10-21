@@ -1,0 +1,5 @@
+--- src/gates/metrics/duplication.rs
++++ gates::metrics::duplication::proofs::a_shape_past_the_bound_could_not_have_reached_the_threshold
+@@ -332 +332 @@
+-    usize::try_from(20_000_u64.saturating_sub(threshold).saturating_mul(size) / threshold)
++    usize::try_from(10_000_u64.saturating_sub(threshold).saturating_mul(size) / threshold)

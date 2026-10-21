@@ -42,7 +42,7 @@ Without the parent, the gate cannot run.
 | `mutest_exhaustive` | `true` runs every test on each mutation, so `mutest` names each test that detects no mutation |
 | `mutest_args` | flags `cargo mutest run` takes after chock's own, such as `--timings` |
 | `not_shipped` | members nobody receives (fuzz harnesses, benchmarks), held to test-code rules |
-| `miri` | which packages Miri runs over, and its flags |
+| `miri` | `packages` or `exclude` names the packages Miri runs over; `flags` replaces chock's `-Zmiri-disable-isolation -Zmiri-strict-provenance` |
 | `commands` | your own checks: a `name` and a `run` command; one that `counts` is ratcheted per item |
 | `forbidden` | phrases source must not contain, each with the reason its finding gives; `in` limits a phrase to some paths |
 | `seams` | Rust paths and crates only some files or packages may use; the `seams` gate holds them |

@@ -197,4 +197,32 @@ IndInv ==
 \* Reach: false once a run holds the lock while another run is dead. RunLock_reach.cfg lists
 \* it, so TLC must find that state, which shows Safe guards states that occur.
 HeldAfterCrash == ~\E a, b \in Runs : pc[a] = "dead" /\ pc[b] = "hold"
+
+----------------------------------------------------------------------------
+\* The proof, for any number of runs and of crashes: TLC checks three runs, and TLAPS proves
+\* that IndInv holds at the start, that each step of Next keeps it, and that it gives Safe.
+ASSUME Counts == NR \in Nat /\ MaxCrash \in Nat
+
+THEOREM InitHolds == Init => IndInv
+    BY Counts DEF Init, IndInv, TypeOK, Safe, OneHolder, NoDeadHolder, Runs, Files, None
+
+THEOREM StepKeeps == IndInv /\ [Next]_vars => IndInv'
+<1> SUFFICES ASSUME IndInv, [Next]_vars PROVE IndInv'
+    OBVIOUS
+<1> USE Counts DEF IndInv, TypeOK, Safe, OneHolder, NoDeadHolder, Runs, Files, None, Ended
+<1>1. ASSUME NEW r \in Runs, Open(r) PROVE IndInv'
+    BY <1>1 DEF Open
+<1>2. ASSUME NEW r \in Runs, Lock(r) PROVE IndInv'
+    BY <1>2 DEF Lock
+<1>3. ASSUME NEW r \in Runs, Release(r) PROVE IndInv'
+    BY <1>3 DEF Release
+<1>4. ASSUME NEW r \in Runs, Crash(r) PROVE IndInv'
+    BY <1>4 DEF Crash
+<1>5. CASE UNCHANGED vars
+    BY <1>5 DEF vars
+<1> QED
+    BY <1>1, <1>2, <1>3, <1>4, <1>5 DEF Next
+
+THEOREM GivesSafe == IndInv => Safe
+    BY DEF IndInv
 =============================================================================

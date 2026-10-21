@@ -1,5 +1,5 @@
-//! The `proof` gate: every kani harness in the workspace must verify, and a harness taken out
-//! trips until the record lets it go.
+//! The `proof` gate: every kani harness in the workspace must verify, a harness taken out trips
+//! until the record lets it go, and each mutant patch must make its harness fail.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -12,14 +12,16 @@ use crate::run::baseline::{Keys, Series};
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind};
 
+mod mutants;
+
 pub const GATE: Gate = Gate {
     name: "proof",
-    about: "every kani harness still verifies, per harness; a harness taken out trips until the \
-            record lets it go",
+    about: "every kani harness still verifies, per harness, and fails on each mutant patch; a \
+            harness taken out trips until the record lets it go",
     group: Group::OptIn,
     builds: true,
     // The verdict depends only on the tree and the cargo and kani versions, so it can be recalled.
-    reads: Some(crate::run::verdicts::Reads::tree_and(&["cargo", "kani"]).versioned("proof-v3")),
+    reads: Some(crate::run::verdicts::Reads::tree_and(&["cargo", "kani"]).versioned("proof-v4")),
     kind: Kind::AnnotatedRatchet {
         measure,
         // One row per harness, zero while it verifies. A failing harness is a fault, which trips
@@ -48,7 +50,19 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let argv = invocation(packages, &ctx.features, &verify(&jobs));
     let limit = limit(ctx.proof.timeout_s);
     let run = exec::run_paced("cargo", &argv, &ctx.root, &[], (|_| false, limit));
-    judged(run, &harnesses, limit.as_secs())
+    let mut read = judged(run, &harnesses, limit.as_secs())?;
+    // A mutant shows something only where every harness verifies without it.
+    if read.faults.is_empty() {
+        let kani = |argv: &[&str], dir: &std::path::Path, target: &std::path::Path| {
+            let target = target.to_string_lossy();
+            let env = [("CARGO_TARGET_DIR", &*target)];
+            exec::run_paced("cargo", argv, dir, &env, (|_| false, limit))
+        };
+        let refuted = mutants::refuted(ctx, &harnesses, limit.as_secs(), &kani)?;
+        read.faults.extend(refuted.faults);
+        read.findings.extend(refuted.notes);
+    }
+    Ok(read)
 }
 
 /// How long kani may run: `proof.timeout_s`, or chock's own deadline.

@@ -116,7 +116,8 @@ pub(super) fn filter(files: &[String]) -> String {
 
 /// The record for each file outside `files`, and what this run measured inside them.
 pub(super) fn within(measured: Measurement, was: &Series, files: &[String]) -> Measurement {
-    let mut series = Series(
+    let mut series = Series::new();
+    series.0.extend(
         was.0
             .iter()
             .filter(|(key, _)| {
@@ -124,8 +125,7 @@ pub(super) fn within(measured: Measurement, was: &Series, files: &[String]) -> M
                 let named = key.rsplit_once('#').map_or(key.as_str(), |(file, _)| file);
                 !files.iter().any(|file| file == named)
             })
-            .map(|(key, count)| (key.clone(), *count))
-            .collect(),
+            .map(|(key, count)| (key.clone(), *count)),
     );
     series.0.extend(measured.series.0);
     let mut findings = measured.findings;

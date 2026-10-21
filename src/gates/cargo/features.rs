@@ -73,10 +73,13 @@ type Tree = BTreeMap<String, String>;
 /// The gate's only filesystem read. A file that is not UTF-8 holds no `cfg` and is dropped; any
 /// other read failure stops the gate.
 fn read(root: &Path) -> Result<Tree, String> {
-    Ok(super::modcheck::read(root)?
-        .into_iter()
-        .filter_map(|(path, text)| Some((path, text?)))
-        .collect())
+    let mut tree = Tree::new();
+    tree.extend(
+        super::modcheck::read(root)?
+            .into_iter()
+            .filter_map(|(path, text)| Some((path, text?))),
+    );
+    Ok(tree)
 }
 
 /// One site where a `cfg` names a feature.

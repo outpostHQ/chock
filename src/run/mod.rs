@@ -2221,7 +2221,7 @@ mod tests {
             (&gates::tools::IDEMPOTENT, "features-v1:input"),
             (
                 &gates::tools::proof::GATE,
-                "proof-v3:scope-v2:lowers-v1:input",
+                "proof-v4:scope-v2:lowers-v1:input",
             ),
             (&gates::tools::binsize::GATE, "targets-v1:lowers-v1:input"),
             (&gates::tools::DOC, "targets-v1:input"),

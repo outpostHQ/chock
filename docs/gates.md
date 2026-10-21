@@ -77,7 +77,7 @@ records the reason under `left_off` in the config.
 | `dead` | | a private function nothing in the crate names |
 | `acl` | | a dependency reaches an API its `cackle.toml` entry does not grant |
 | `idempotent` | | the suite passes once and fails the second time |
-| `proof` | ✓ | a Kani harness does not verify, or a harness on record is gone |
+| `proof` | ✓ | a Kani harness does not verify, a mutant does not make its harness fail, or a harness on record is gone |
 | `miri` | | a test fails under Miri; the run lists every failing test |
 | `tla` | | TLC finds a fault in a model, a bad variant of a model passes, Apalache cannot prove the inductive invariant, or TLAPS does not prove a theorem |
 | `verus` | | Verus does not verify a proof file, or verifies a mutant, a patch that puts a fault in one function |
@@ -151,15 +151,20 @@ its parts fails in a variant.
 Apalache checks the inductive invariant `IndInv` of each model whose `M.cfg` lists it. It proves
 three things: `Init` makes `IndInv` true, one step keeps it true, and `IndInv` implies each
 invariant. `tla.inductive` names the models and their invariants yourself, and `{}` proves none.
-`tla.length` adds a bounded Apalache run of that many steps from `Init`.
+`tla.length` adds a bounded Apalache run of that many steps from `Init`. `tla.smt_encoding` sets
+the SMT encoding of Apalache for a model, such as `{"OpHeads": "arrays"}`: `oopsla19`, `arrays`
+or `funArrays`; the gate refuses another name.
+
+`chock run tla --model=M,...` checks only the cfgs of the named models, and proves only the
+theorems of their modules. A name with no cfg and no theorem stops the run with an error.
 
 TLAPS proves each module that states a `THEOREM`, `LEMMA`, `PROPOSITION` or `COROLLARY`. The gate
 trips on an obligation that no backend of tlapm proves, on an `OMITTED` proof, and on a step with
 no proof, and it names the file and the line of each. `BY OBVIOUS` is a proof, because a backend
-must prove it. The project pins tlapm itself, as `TLAPM` in `tool-versions.env`; chock ships no
-pin for it. Without that pin, the gate gives a note and proves no theorem. `tla.timeout_s` and
-`tla.timeouts`, by the module's name, limit the proof of each module, and `tla.workers` sets the
-threads of tlapm.
+must prove it. chock pins tlapm as `TLAPM` in `tool-versions.env`, for Linux x86_64 and macOS
+arm64. Where the pin has no file for the machine, or the project has no pin, the gate gives a note
+and proves no theorem. `tla.timeout_s` and `tla.timeouts`, by the module's name, limit the proof
+of each module, and `tla.workers` sets the threads of tlapm.
 
 TLC needs Java 11 or later, and Apalache needs Java 21 or later. The gate uses
 `$JAVA_HOME/bin/java`, else the `java` on `PATH`. TLC writes its states, and tlapm its cache,
@@ -376,6 +381,15 @@ chock keeps the files in `CHOCK_TOOLS`, else in `chock-tools` in cargo's home, s
   verifies. A harness that fails trips the gate whatever the record holds, and chock records
   nothing from that run. A harness that leaves the code trips the gate until `chock baseline proof`
   records that change. A run past `proof.timeout_s` trips with every harness unproven.
+- **How `proof` refutes a mutant.** A mutant is a patch in `proof.mutants`, `proofs/kani/mutants`
+  when left out, that puts a fault in one file. Line 1 names the file, as a path from the project
+  root. Line 2 names the harness that must fail, as Kani lists it, such as
+  `+++ proofs::put_keeps_len`. chock patches a copy of the project under
+  `target/test-scratch/chock/kani`, never your file, and Kani runs only that harness. The run
+  builds in the project's target directory, so it reuses the build of the dependencies. A mutant
+  that verifies, that stops Kani before it checks the harness, or that names a harness Kani does
+  not list trips the gate. The mutants run only when every harness verifies. A path dependency
+  outside the project root does not resolve in the copy.
 - **`unused` and `dead` give leads.** Neither sees a dependency used only in a doc example, or a
   function reached only through a name a macro builds; mark such a function `#[expect(dead_code)]`.
 

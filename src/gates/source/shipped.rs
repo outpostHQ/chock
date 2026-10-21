@@ -42,18 +42,17 @@ pub fn reached(metadata: &str, not_shipped: &[String]) -> Result<Reached, String
         }
     }
 
-    Ok(members
-        .iter()
-        .filter_map(|package| {
-            let manifest = crate::project::relative(root, Path::new(&package.manifest_path));
-            let dir = crate::project::crate_dir(&manifest)?;
-            let from = seeds
-                .get(package.name.as_str())
-                .cloned()
-                .unwrap_or_default();
-            Some((dir, closure(&from, &package.features)))
-        })
-        .collect())
+    let mut reached = Reached::new();
+    reached.extend(members.iter().filter_map(|package| {
+        let manifest = crate::project::relative(root, Path::new(&package.manifest_path));
+        let dir = crate::project::crate_dir(&manifest)?;
+        let from = seeds
+            .get(package.name.as_str())
+            .cloned()
+            .unwrap_or_default();
+        Some((dir, closure(&from, &package.features)))
+    }));
+    Ok(reached)
 }
 
 /// Everything the seeds reach through the package's own feature table. An entry naming another

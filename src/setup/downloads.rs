@@ -25,6 +25,9 @@ pub const CLAIMED: [(&str, &str); 4] = [
 /// The end of the reason a gate gives when the project pins no download it needs.
 pub const NOT_PINNED: &str = " is not pinned in tool-versions.env, so this gate has nothing to run";
 
+/// The end of the reason a gate gives when the project's pin has no file for this machine.
+pub const NO_FILE: &str = ", so it cannot run on this machine";
+
 /// One file of a download pin: for every system when `platform` is empty, else for those it names.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct File {
@@ -320,7 +323,7 @@ pub fn located(
     };
     let Some(file) = pin.here()? else {
         return Err(format!(
-            "the {stem} pin has no file for {} on {}",
+            "the {stem} pin has no file for {} on {}{NO_FILE}",
             std::env::consts::OS,
             std::env::consts::ARCH
         ));
@@ -680,7 +683,7 @@ mod tests {
             "no home directory holds chock's tools; set CHOCK_TOOLS"
         );
         let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
-        let elsewhere = format!("the E pin has no file for {os} on {arch}");
+        let elsewhere = format!("the E pin has no file for {os} on {arch}{NO_FILE}");
         assert_eq!(at("E", "e").unwrap_err(), elsewhere);
         std::fs::remove_file(dir.join(STAMP)).unwrap();
         let missing = crate::gates::fixes::not_fetched("tla-tools");

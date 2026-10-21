@@ -2,6 +2,7 @@
 //! Verus proofs and their mutants, and the links from a model back to the code it describes.
 
 pub mod links;
+pub(crate) mod patch;
 pub mod tla;
 pub mod verus;
 

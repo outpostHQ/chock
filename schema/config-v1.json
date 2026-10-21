@@ -193,10 +193,15 @@
       "minimum": 1
     },
     "proof": {
-      "description": "Settings of the opt-in `proof` gate, which records one row per Kani harness. A harness that fails trips the gate whatever the record holds. A harness taken out trips until `chock baseline proof` lets it go.",
+      "description": "Settings of the opt-in `proof` gate, which records one row per Kani harness. A harness that fails trips the gate whatever the record holds, and so does a mutant patch that its harness does not fail on. A harness taken out trips until `chock baseline proof` lets it go.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "mutants": {
+          "description": "The directory, from the project root, of the mutant `.patch` files. Line 1 of each names the file it patches, from the project root, and line 2 the harness that must fail. `proofs/kani/mutants` when left out.",
+          "type": "string",
+          "minLength": 1
+        },
         "packages": {
           "description": "The packages Kani lists and verifies, each passed as `-p`. The whole workspace when left out.",
           "type": "array",
@@ -208,7 +213,7 @@
           "uniqueItems": true
         },
         "timeout_s": {
-          "description": "Seconds the Kani run of every harness may take. chock's tool limit when left out: 1800, or `CHOCK_TIMEOUT`.",
+          "description": "Seconds the Kani run of every harness may take, and the run of each mutant. chock's tool limit when left out: 1800, or `CHOCK_TIMEOUT`.",
           "type": "integer",
           "minimum": 1
         }
@@ -575,6 +580,11 @@
           "description": "Steps of a bounded Apalache check from `Init`, after the proof. No bounded check when left out or 0.",
           "type": "integer",
           "minimum": 0
+        },
+        "smt_encoding": {
+          "description": "The SMT encoding Apalache uses for a model, by the model's name, such as `{\"OpHeads\": \"arrays\"}`. Apalache's own, `oopsla19`, when left out.",
+          "type": "object",
+          "additionalProperties": { "enum": ["oopsla19", "arrays", "funArrays"] }
         }
       }
     },

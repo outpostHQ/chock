@@ -5,6 +5,35 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-21
+
+- **`chock run tla --model=NAME,...`** checks only the cfgs of the named models, and proves only
+  the theorems of their modules. A name with no cfg and no theorem is an error.
+- **`tla.smt_encoding`** sets the SMT encoding of Apalache for each model, such as
+  `{"OpHeads": "arrays"}`: `oopsla19`, `arrays` or `funArrays`. The `tla` gate refuses another
+  name.
+- **chock proves its own models with TLAPS.** `RunLock.tla` and `BaselineWrite.tla` state that
+  `IndInv` holds at `Init`, that each step of `Next` keeps it, and that it gives `Safe`, for any
+  number of runs and of crashes. tlapm proves all 45 obligations.
+- **chock pins tlapm.** `tool-versions.env` pins `TLAPM` 1.6.0-pre for Linux x86_64 and macOS
+  arm64. On a machine the pin has no file for, such as Windows, `tla` gives a note and proves no
+  theorem, where before it could not run.
+- **Kani mutants in `proof`.** A patch in `proof.mutants`, `proofs/kani/mutants` when left out,
+  puts a fault in one file and names the harness that must fail on it. chock runs that harness on
+  a copy of the project that holds the fault. A mutant that verifies, that stops Kani before it
+  checks the harness, or that names a harness Kani does not list trips the gate. chock's own
+  mutant makes the size bound of `duplication` too small, and its harness must fail.
+- **TLAPS runs.** 0.12.0 gave tlapm a cache directory whose parent did not exist, so tlapm stopped
+  on each module that states a theorem. The gate now makes that parent. Where tlapm stops, the
+  gate gives tlapm's own error line.
+- **A smaller binary.** A `collect` into a `BTreeMap` adds its own copy of the sort code, so
+  chock builds such maps by insert. The release binary is 4,323,632 bytes, 26 KB smaller than
+  0.12.0.
+- **The configuration doc names `miri.packages`, `miri.exclude` and `miri.flags`,** and the
+  default flags that `flags` replaces.
+- **Newer tools.** cargo-binstall 1.26.0, cargo-nextest 0.9.149, cargo-crap 0.9.0 and Verus
+  0.2026.10.18.7d82994.
+
 ## [0.12.0] - 2026-10-21
 
 - **A profile the merge cannot read no longer stops `coverage` and `crap`.** chock runs the

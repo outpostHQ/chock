@@ -1,6 +1,6 @@
 [package]
 name = "chock"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 rust-version = "1.99.0"
 description = "Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers."
@@ -39,8 +39,8 @@ pkg-fmt = "zip"
 [dependencies]
 proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = { version = "1.0.151", features = ["raw_value"] }
-syn = { version = "3.0.6", features = ["full", "visit"] }
+serde_json = { version = "1.0.154", features = ["raw_value"] }
+syn = { version = "3.0.9", features = ["full", "visit"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 rustix = { version = "1.1.5", features = ["process"] }

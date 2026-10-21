@@ -10,8 +10,15 @@ use crate::gates::proofs::Run;
 use crate::run::Ctx;
 use crate::run::report::Finding;
 
+/// How tlapm starts the line that names the error it stopped on.
+const ABNORMAL: &str = "tlapm ending abnormally with ";
+
 /// The words that state what tlapm must prove.
 const STATED: [&str; 4] = ["THEOREM", "LEMMA", "PROPOSITION", "COROLLARY"];
+
+/// The directory under the gate's scratch that holds tlapm's caches. tlapm makes its cache
+/// directory, but not the directory that holds it.
+pub(super) const CACHES: &str = "tlaps";
 
 pub(super) const UNPINNED: &str = "TLAPM is not pinned in tool-versions.env, so no theorem was \
                                    proved; pin TLAPM_VERSION with its URL and SHA256 to prove them";
@@ -20,7 +27,7 @@ pub(super) const UNPINNED: &str = "TLAPM is not pinned in tool-versions.env, so 
 /// obligation that no backend proved.
 pub(super) struct Module {
     file: String,
-    model: String,
+    pub(super) model: String,
     limit: u64,
 }
 
@@ -44,7 +51,8 @@ pub(super) fn theorems(ctx: &Ctx, dirs: &[String], workers: u32) -> Result<Proof
     for dir in holders {
         for name in names_in(&dir) {
             let text = std::fs::read_to_string(dir.join(&name)).unwrap_or_default();
-            if let Some(stem) = name.strip_suffix(".tla").filter(|_| states(&text)) {
+            let asked = |stem: &&str| ctx.scope.asks_model(stem) && states(&text);
+            if let Some(stem) = name.strip_suffix(".tla").filter(asked) {
                 stating.push((dir.clone(), stem.to_string()));
             }
         }
@@ -56,15 +64,14 @@ pub(super) fn theorems(ctx: &Ctx, dirs: &[String], workers: u32) -> Result<Proof
     let program = match crate::setup::downloads::located(&ctx.root, home, "TLAPM", "tlapm") {
         Ok(program) => program.to_string_lossy().into_owned(),
         Err(why) if why.ends_with(crate::setup::downloads::NOT_PINNED) => {
-            let notes = vec![Finding::at(crate::project::PIN_FILE, UNPINNED)];
-            return Ok(Proofs {
-                notes,
-                ..Proofs::default()
-            });
+            return Ok(unrun(UNPINNED));
+        }
+        Err(why) if why.ends_with(crate::setup::downloads::NO_FILE) => {
+            return Ok(unrun(&format!("{why}; no theorem was proved")));
         }
         Err(why) => return Err(why),
     };
-    let scratch = ctx.root.join(SCRATCH).join("tlaps");
+    let scratch = ctx.root.join(SCRATCH).join(CACHES);
     let threads = workers.to_string();
     let mut proofs = Proofs {
         program,
@@ -106,6 +113,14 @@ pub(super) fn theorems(ctx: &Ctx, dirs: &[String], workers: u32) -> Result<Proof
     Ok(proofs)
 }
 
+/// No proof run, with the note on the pin file that says why.
+fn unrun(why: &str) -> Proofs {
+    Proofs {
+        notes: vec![Finding::at(crate::project::PIN_FILE, why)],
+        ..Proofs::default()
+    }
+}
+
 /// Whether TLA+ text states a theorem outside its comments.
 fn states(tla: &str) -> bool {
     let text = uncommented(tla);
@@ -117,6 +132,18 @@ type Out = Result<exec::Output, exec::ExecError>;
 
 /// Where a run went wrong, by line where tlapm names one, and how.
 type Wrong = (Option<u32>, String);
+
+/// What the runs of each module say is wrong: each module has two runs in turn, its summary, then
+/// its proof.
+pub(super) fn judged_each(modules: &[Module], proved: Vec<Out>) -> Result<Vec<Finding>, String> {
+    let mut proved = proved.into_iter();
+    let pairs = std::iter::from_fn(|| proved.next().zip(proved.next()));
+    let mut findings = Vec::new();
+    for (module, (summary, proof)) in modules.iter().zip(pairs) {
+        findings.extend(module.judged(summary, proof)?);
+    }
+    Ok(findings)
+}
 
 impl Module {
     /// What the summary and the proof run of this module say is wrong with its proofs.
@@ -144,7 +171,8 @@ impl Module {
         if out.code == Some(0) {
             return Ok(Ok(out));
         }
-        // tlapm names an error's place on one line and the error on the next; else its last line.
+        // tlapm names an error's place on one line and the error on the next, or ends with the
+        // error it stopped on; else its last line names it.
         let lines: Vec<&str> = out
             .stderr
             .lines()
@@ -158,6 +186,12 @@ impl Module {
         let line = placed.and_then(|pair| number_after(pair[0], ", line "));
         let said = placed
             .map(|pair| pair[1])
+            .or_else(|| {
+                lines
+                    .iter()
+                    .copied()
+                    .find(|line| line.starts_with(ABNORMAL))
+            })
             .or_else(|| lines.last().copied())
             .unwrap_or("no output");
         let exit = out
@@ -308,9 +342,8 @@ character 1 ----\n    missing_proof_2 at line 11, characters 1-11\n  ====\n====\
 
     #[test]
     fn each_unproved_obligation_and_each_proof_left_out_is_named_by_its_line() {
-        let found = module()
-            .judged(ran(0, SUMMARY, ""), ran(0, "", TOOLBOX))
-            .unwrap();
+        let runs = vec![ran(0, SUMMARY, ""), ran(0, "", TOOLBOX)];
+        let found = judged_each(&[module()], runs).unwrap();
         let said: Vec<String> = found.iter().map(Finding::render).collect();
         assert_eq!(
             said,
@@ -342,6 +375,11 @@ File \"<unknown>\":\nError: Could not parse \"./Probe.tla\" successfully.\n";
                 "proofs/tla/Probe.tla:2: Probe: tlapm could not check it: exit 3: incomplete expression"
             ]
         );
+        let stopped = "Could not create the cache directory\n tlapm ending abnormally with \
+Unix.Unix_error(Unix.ENOENT, \"mkdir\", \"c/P.tlaps\")\nCalled from Tlapm_lib.init\n";
+        let abnormal = "proofs/tla/Probe.tla: Probe: tlapm could not check it: exit 3: tlapm \
+ending abnormally with Unix.Unix_error(Unix.ENOENT, \"mkdir\", \"c/P.tlaps\")";
+        assert_eq!(reason(ran(3, "", stopped), ran(0, "", "")), [abnormal]);
         assert_eq!(
             reason(ran(0, SUMMARY, ""), ran(0, "", "no messages")),
             ["proofs/tla/Probe.tla: Probe: tlapm gave no verdict on its proofs"]
@@ -397,6 +435,17 @@ File \"<unknown>\":\nError: Could not parse \"./Probe.tla\" successfully.\n";
             .collect();
         assert_eq!(noted, [(crate::project::PIN_FILE, UNPINNED)]);
         let sha = "c".repeat(64);
+        let other = if cfg!(windows) { "linux" } else { "windows" };
+        let elsewhere = format!(
+            "TLAPM_VERSION=1\nTLAPM_URL_{other}=https://x/tlapm\nTLAPM_SHA256_{other}={sha}\n"
+        );
+        std::fs::write(ctx.root.join(crate::project::PIN_FILE), elsewhere).unwrap();
+        let unrun = theorems(&ctx, &dirs, 3).unwrap();
+        let why = &unrun.notes[0].message;
+        assert!(
+            why.ends_with("so it cannot run on this machine; no theorem was proved"),
+            "{why}"
+        );
         let unfetched = format!("TLAPM_VERSION=1\nTLAPM_URL=https://x/tlapm\nTLAPM_SHA256={sha}\n");
         std::fs::write(ctx.root.join(crate::project::PIN_FILE), unfetched).unwrap();
         let not_fetched = crate::gates::fixes::not_fetched("tlapm");
@@ -407,7 +456,7 @@ File \"<unknown>\":\nError: Could not parse \"./Probe.tla\" successfully.\n";
         let cache = |run: &str| {
             ctx.root
                 .join(SCRATCH)
-                .join("tlaps")
+                .join(CACHES)
                 .join(run)
                 .display()
                 .to_string()

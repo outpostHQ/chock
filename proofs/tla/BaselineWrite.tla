@@ -157,4 +157,34 @@ IndInv ==
 \* Reach: false once a writer died and each other writer wrote. BaselineWrite_reach.cfg lists
 \* it, so TLC must find that state, which shows Safe guards states that occur.
 AllWrittenAfterCrash == ~(crashes > 0 /\ \A w \in Writers : pc[w] = "dead" \/ w \in written)
+
+----------------------------------------------------------------------------
+\* The proof, for any number of writers and of crashes: TLC checks a few writers, and TLAPS
+\* proves that IndInv holds at the start, that each step of Next keeps it, and that it gives Safe.
+ASSUME Counts == NW \in Nat /\ MaxCrash \in Nat
+
+THEOREM InitHolds == Init => IndInv
+    BY Counts DEF Init, IndInv, TypeOK, Safe, NoLostRecord, NeverTorn, Writers, None
+
+THEOREM StepKeeps == IndInv /\ [Next]_vars => IndInv'
+<1> SUFFICES ASSUME IndInv, [Next]_vars PROVE IndInv'
+    OBVIOUS
+<1> USE Counts DEF IndInv, TypeOK, Safe, NoLostRecord, NeverTorn, Writers, None, Ended
+<1>1. ASSUME NEW w \in Writers, Take(w, "start", "held") PROVE IndInv'
+    BY <1>1 DEF Take
+<1>2. ASSUME NEW w \in Writers, Read(w, "held", "read") PROVE IndInv'
+    BY <1>2 DEF Read
+<1>3. ASSUME NEW w \in Writers, Write(w) PROVE IndInv'
+    BY <1>3 DEF Write
+<1>4. ASSUME NEW w \in Writers, Release(w) PROVE IndInv'
+    BY <1>4 DEF Release
+<1>5. ASSUME NEW w \in Writers, Crash(w) PROVE IndInv'
+    BY <1>5 DEF Crash
+<1>6. CASE UNCHANGED vars
+    BY <1>6 DEF vars
+<1> QED
+    BY <1>1, <1>2, <1>3, <1>4, <1>5, <1>6 DEF Next
+
+THEOREM GivesSafe == IndInv => Safe
+    BY DEF IndInv
 =============================================================================

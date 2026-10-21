@@ -21,7 +21,9 @@ impl Aliases {
         let named = used(file)
             .into_iter()
             .filter_map(|leaf| Some((leaf.called?, leaf.path)));
-        Self(named.collect())
+        let mut aliases = BTreeMap::new();
+        aliases.extend(named);
+        Self(aliases)
     }
 
     /// The full path a written path stands for, as segments. A path whose first name no `use`

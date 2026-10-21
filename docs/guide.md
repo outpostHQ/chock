@@ -232,7 +232,7 @@ follows [`schema/run-v1.json`](../schema/run-v1.json). For the project above,
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/run-v1.json",
   "version": 1,
-  "chock": "0.12.0",
+  "chock": "0.13.0",
   "gates": [
     {
       "gate": "complexity",
@@ -303,6 +303,7 @@ closest name: `` unknown command `doctr`; did you mean `chock doctor`? ``.
 | `chock run test --package=NAME` | runs the suite of one package only |
 | `chock run test --filter=TEXT` | runs only the tests whose name holds `TEXT` |
 | `chock run mutest --mutate=FILE,...` | mutates only the named files, and keeps the record of every other file |
+| `chock run tla --model=NAME,...` | checks only the cfgs of the named TLA+ models, and proves only their theorems |
 | `chock cache clear` | removes every kept verdict, so the next run judges every gate |
 | `chock explain GATE` | shows the findings of the last run, without a new run |
 | `chock explain` | lists all the debt in the record, largest first, with the fix for each kind |

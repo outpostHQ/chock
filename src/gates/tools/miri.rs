@@ -93,12 +93,8 @@ fn suite(ctx: &Ctx, asked: &[String], args: &[String], run: &Interpret) -> Resul
     // nextest would meet the same refusal, so the suite ends here rather than paying for it twice.
     let (failed, stopped) = groups::left(&grouped, &ended)?;
     let failed: Vec<&groups::Group> = failed.iter().collect();
-    let tests_ms: std::collections::BTreeMap<String, u64> = ended
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .flatten()
-        .collect();
+    let mut tests_ms = std::collections::BTreeMap::new();
+    tests_ms.extend(ended.into_iter().flatten().filter_map(Result::ok).flatten());
     // Where the time went, so a slow run shows whether the build, the cores or the tests cost it.
     eprintln!(
         "chock: miri built and listed in {} s, then ran {} groups, {at_once} at once, through {} s \

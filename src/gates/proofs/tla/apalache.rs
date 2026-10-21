@@ -49,14 +49,31 @@ pub(super) struct Proofs {
 pub(super) const UNPINNED: &str = "Apalache is not pinned in tool-versions.env, so no invariant \
                                    was proved inductive; run `chock init --local` to pin it";
 
+/// The encodings Apalache's `--smt-encoding` takes.
+const ENCODINGS: [&str; 3] = ["oopsla19", "arrays", "funArrays"];
+
+/// `Err` names the first model that `tla.smt_encoding` gives an encoding Apalache does not take.
+fn encodings_known(settings: &crate::project::config::Tla) -> Result<(), String> {
+    let known = |encoding: &String| ENCODINGS.contains(&encoding.as_str());
+    match settings.smt_encoding.iter().find(|(_, it)| !known(it)) {
+        Some((model, it)) => Err(format!(
+            "`tla.smt_encoding` gives {model} `{it}`, which Apalache does not take; it takes {}",
+            ENCODINGS.join(", ")
+        )),
+        None => Ok(()),
+    }
+}
+
 /// The Apalache checks of each model that has an inductive invariant: `Init` establishes it, one
 /// step keeps it, and it implies every invariant the cfg lists. `length` adds a bounded run.
 pub(super) fn proofs(ctx: &Ctx, cfgs: &[Cfg]) -> Result<Proofs, String> {
     let settings = &ctx.tla;
+    encodings_known(settings)?;
     let lists = |cfg: &&Cfg, name: &str| cfg.listed.invariants.iter().any(|held| held == name);
     let models: Vec<(&Cfg, String)> = match &settings.inductive {
         Some(map) => map
             .iter()
+            .filter(|(model, _)| ctx.scope.asks_model(model))
             .map(|(model, name)| {
                 let own = cfgs.iter().find(|cfg| cfg.is_own() && cfg.model == *model);
                 own.map(|cfg| (cfg, name.clone())).ok_or_else(|| {
@@ -137,6 +154,8 @@ pub(super) fn proofs(ctx: &Ctx, cfgs: &[Cfg]) -> Result<Proofs, String> {
                 format!("--config={}", cfg.file()),
                 format!("--out-dir={out}"),
             ]);
+            let encoding = settings.smt_encoding.get(&cfg.model);
+            argv.extend(encoding.map(|it| format!("--smt-encoding={it}")));
             argv.extend(args);
             argv.push(format!("{}.tla", cfg.model));
             jobs.push(Run {
@@ -180,6 +199,8 @@ fn apalache_error(text: &str, code: Option<i32>) -> String {
     reason = "a failed unwrap in a test is the test failing"
 )]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
@@ -209,5 +230,39 @@ mod tests {
             step.judged(Err(error(exec::Stage::Spawn))).unwrap_err(),
             lost
         );
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn each_check_of_a_model_uses_the_smt_encoding_set_for_it() {
+        let tree = [
+            ("proofs/tla/Spec.tla", "IndInv == TRUE\n"),
+            ("proofs/tla/Spec.cfg", "INVARIANT IndInv\n"),
+            ("proofs/tla/Other.tla", "IndInv == TRUE\n"),
+            ("proofs/tla/Other.cfg", "INVARIANT IndInv\n"),
+        ];
+        let mut ctx = crate::testdir::Held::tree("apalache-encoding", &tree);
+        let pin = crate::testdir::fetched(&ctx.root, "APALACHE", "apalache.jar");
+        std::fs::write(ctx.root.join(crate::project::PIN_FILE), pin).unwrap();
+        ctx.tools.home = Some(ctx.root.join("tools"));
+        let set = r#"{"smt_encoding": {"Spec": "funArrays"}}"#;
+        ctx.tla = serde_json::from_str(set).unwrap();
+        let (cfgs, _) = super::super::discovered(&ctx.root, &["proofs/tla".to_string()]);
+        let runs = proofs(&ctx, &cfgs).unwrap().runs;
+        let said: BTreeSet<(&str, Option<&str>)> = runs
+            .iter()
+            .map(|run| {
+                let flag = run.argv.iter().find(|it| it.starts_with("--smt-encoding="));
+                (run.argv.last().unwrap().as_str(), flag.map(String::as_str))
+            })
+            .collect();
+        let spec = ("Spec.tla", Some("--smt-encoding=funArrays"));
+        assert_eq!(said, BTreeSet::from([("Other.tla", None), spec]));
+        let unknown = r#"{"smt_encoding": {"Spec": "bitvectors"}}"#;
+        ctx.tla = serde_json::from_str(unknown).unwrap();
+        let refused = "`tla.smt_encoding` gives Spec `bitvectors`, which Apalache does not take; \
+                       it takes oopsla19, arrays, funArrays";
+        assert_eq!(encodings_known(&ctx.tla).unwrap_err(), refused);
+        assert_eq!(proofs(&ctx, &cfgs).err(), Some(refused.to_string()));
     }
 }
