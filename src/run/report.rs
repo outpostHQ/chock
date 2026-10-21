@@ -394,8 +394,17 @@ pub struct Settled {
     pub next: Vec<String>,
 }
 
-/// The keys the next commit lowers or drops, named in full up to this many.
-const NEXT_NAMED: usize = 10;
+/// Names said in full up to this many, such as the keys the next commit lowers or drops.
+const NAMED: usize = 10;
+
+/// The names in full up to `NAMED`, then how many more.
+#[must_use]
+pub fn some_of(names: &[String]) -> String {
+    match names.len().saturating_sub(NAMED) {
+        0 => names.join(", "),
+        more => format!("{} and {more} more", names[..NAMED].join(", ")),
+    }
+}
 
 /// Each key of `gate` that `now` holds lower than `was`, or not at all.
 fn lowering(gate: &str, was: &Series, now: &Series) -> Vec<String> {
@@ -485,10 +494,7 @@ impl Settled {
             };
             gates.iter().map(moved).collect()
         };
-        let next = match self.next.len().saturating_sub(NEXT_NAMED) {
-            0 => self.next.join(", "),
-            more => format!("{} and {more} more", self.next[..NEXT_NAMED].join(", ")),
-        };
+        let next = some_of(&self.next);
         let next = match next.is_empty() {
             true => next,
             false => format!(": {next}"),
@@ -546,13 +552,16 @@ fn settles(
 ) -> Vec<String> {
     // The run measured the work tree. A record that held a change the commit leaves out would be
     // wrong for the commit, so the record then moves as it does outside a commit.
-    let left_out = at_commit && leaves_out(root);
-    let committing = at_commit && !left_out;
+    let left = match at_commit {
+        true => crate::run::baseline::left_out(root),
+        false => Vec::new(),
+    };
+    let committing = at_commit && left.is_empty();
     let mut said = crate::gates::coverage::crap::relaid(root, committing);
     let file = crate::run::baseline::FILE;
     if let Some(settled) = forgets(root, held, locked_in(held, reports, committing), committing) {
-        if left_out && !settled.waiting.is_empty() {
-            said.push(LEFT_OUT.to_string());
+        if !left.is_empty() && !settled.waiting.is_empty() {
+            said.push(lowered_none(&left));
         }
         said.push(settled.written(root, chock_version, committing));
     } else if at_commit && crate::project::vcs::unstaged(root, file) {
@@ -564,20 +573,15 @@ fn settles(
     said
 }
 
-/// Whether the commit in progress leaves out a change or a file in the tree the run measured. The
-/// files that chock writes, its records among them, do not count.
-fn leaves_out(root: &std::path::Path) -> bool {
-    let crap = crate::gates::coverage::crap::baseline();
-    let own: Vec<&str> = crate::setup::init::IGNORES
-        .into_iter()
-        .chain([crate::run::baseline::FILE, crap.as_str()])
-        .collect();
-    crate::project::vcs::leaves_out(root, &own)
+/// Why a commit lowered no record: the tree it measured is not the tree it commits. CI then fails
+/// each record that stays above what the commit holds.
+fn lowered_none(paths: &[String]) -> String {
+    format!(
+        "this commit leaves out {}, so no record moved down, and CI fails each record above what \
+         the commit holds; stage those changes, or stash them with `git stash -k -u`",
+        some_of(paths)
+    )
 }
-
-/// Why a commit lowered no record: the tree it measured is not the tree it commits.
-const LEFT_OUT: &str = "this commit leaves out changes or files in the work tree, so no record \
-                        moved down; stage them, or stash them with `git stash -k -u`";
 
 /// `settled`, and at a commit, less each record of a file that neither the disk nor the repository
 /// holds any more: a file that comes back at the same path starts again from no record.
@@ -1840,20 +1844,21 @@ mod tests {
             |held: &Baseline| settles(&root, held, std::slice::from_ref(&gained), "0.1.0", true);
         // Outside a commit a gain waits, and the tree leaves nothing out.
         let outside = settles(&root, &held, std::slice::from_ref(&gained), "0.1.0", false);
-        assert!(
-            !outside.is_empty() && !outside.contains(&LEFT_OUT.to_string()),
-            "{outside:?}"
-        );
+        let names = |said: &[String], path: &str| {
+            let left = format!("this commit leaves out {path}");
+            said.iter().any(|line| line.starts_with(&left))
+        };
+        assert!(!outside.is_empty() && !names(&outside, ""), "{outside:?}");
         std::fs::write(root.join("src/a.rs"), "fn b() {}\n").unwrap();
-        assert!(settled(&held).contains(&LEFT_OUT.to_string()));
+        assert!(names(&settled(&held), "src/a.rs"));
         assert_eq!(std::fs::read_to_string(root.join(file)).unwrap(), "{}\n");
         assert_eq!(git(&["diff", "--cached", "--name-only"]), "");
         git(&["add", "src/a.rs"]);
         std::fs::write(root.join("src/b.rs"), "fn b() {}\n").unwrap();
-        assert!(settled(&held).contains(&LEFT_OUT.to_string()));
+        assert!(names(&settled(&held), "src/b.rs"));
         assert_eq!(git(&["diff", "--cached", "--name-only"]), "src/a.rs\n");
         std::fs::remove_file(root.join("src/b.rs")).unwrap();
-        assert!(!settled(&held).contains(&LEFT_OUT.to_string()));
+        assert!(!names(&settled(&held), ""));
         assert_eq!(
             git(&["diff", "--cached", "--name-only"]),
             format!("{file}\nsrc/a.rs\n")

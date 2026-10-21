@@ -21,6 +21,10 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   gate runs in a new CI job too.
 - **A test checks each gate count in README.md and docs/gates.md** against the registry and
   chock's own config.
+- **The pre-commit hook names what a commit leaves out.** Such a commit lowers no record, so CI
+  then fails each record above what the commit holds. The hook said only "changes or files"; now
+  it names them and says that CI fails. `chock baseline` names each change that it counted but
+  that is not staged, because CI measures the commit and not the work tree.
 
 ## [0.13.0] - 2026-10-21
 

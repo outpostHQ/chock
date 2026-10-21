@@ -541,10 +541,10 @@ pub fn git_on(root: &Path, index: Option<&Path>, args: &[&str]) -> bool {
     exec::run_env("git", args, root, &env).is_ok_and(|out| out.success())
 }
 
-/// Whether the work tree under the root, which a commit's hook measures, holds a change or a file
-/// that the commit in progress leaves out. `own` names, as `.gitignore` does, what chock writes.
+/// Each change and each file in the work tree under the root, which a commit's hook measures, that
+/// the commit in progress leaves out. `own` names, as `.gitignore` does, what chock writes.
 #[must_use]
-pub fn leaves_out(root: &Path, own: &[&str]) -> bool {
+pub fn leaves_out(root: &Path, own: &[&str]) -> Vec<String> {
     let excluded = excludes(root, own);
     let ours = |kind: &[&str]| {
         let mut args = vec!["ls-files", "-z"];
@@ -563,8 +563,12 @@ pub fn leaves_out(root: &Path, own: &[&str]) -> bool {
         root,
         &["diff", "--relative", "--name-only", "-z", "--", "."],
     );
-    changed.iter().any(|path| !mine.contains(path))
-        || !ours(&["--others", "--exclude-standard"]).is_empty()
+    let mut left: Vec<String> = changed
+        .into_iter()
+        .filter(|path| !mine.contains(path))
+        .collect();
+    left.extend(ours(&["--others", "--exclude-standard"]));
+    left
 }
 
 /// `own` for git's command line, which reads a pattern with a slash from the top of the repository.
@@ -1323,14 +1327,15 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_commit_leaves_out_an_unstaged_change_and_a_file_nobody_added() {
         let root = repo("vcs-leaves-out");
-        assert!(!leaves_out(&root, &[]));
+        assert!(leaves_out(&root, &[]).is_empty());
         std::fs::write(root.join("a.rs"), "fn f() -> u8 { 3 }\n").unwrap();
-        assert!(unstaged(&root, "a.rs") && leaves_out(&root, &[]));
+        assert!(unstaged(&root, "a.rs"));
+        assert_eq!(leaves_out(&root, &[]), ["a.rs"]);
         git(&root, &["add", "a.rs"]);
-        assert!(!unstaged(&root, "a.rs") && !leaves_out(&root, &[]));
+        assert!(!unstaged(&root, "a.rs") && leaves_out(&root, &[]).is_empty());
         std::fs::write(root.join("own.json"), "{}\n").unwrap();
-        assert!(leaves_out(&root, &[]));
-        assert!(!leaves_out(&root, &["own.json"]));
+        assert_eq!(leaves_out(&root, &[]), ["own.json"]);
+        assert!(leaves_out(&root, &["own.json"]).is_empty());
     }
 
     /// A change to a tracked file that chock writes is not left out, at the top or below it.
@@ -1347,9 +1352,10 @@ mod tests {
         git(&root, &["commit", "--quiet", "-m", "locks"]);
         let own = [".chock/run.lock"];
         std::fs::write(root.join(".chock/run.lock"), "2\n").unwrap();
-        assert!(leaves_out(&root, &[]) && !leaves_out(&root, &own));
+        assert_eq!(leaves_out(&root, &[]), [".chock/run.lock"]);
+        assert!(leaves_out(&root, &own).is_empty());
         std::fs::write(below.join(".chock/run.lock"), "2\n").unwrap();
-        assert!(leaves_out(&below, &[]) && !leaves_out(&below, &own));
+        assert!(!leaves_out(&below, &[]).is_empty() && leaves_out(&below, &own).is_empty());
     }
 
     fn repo(name: &str) -> crate::testdir::Scratch {

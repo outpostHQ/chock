@@ -497,7 +497,7 @@ lost, `1` when one was, and `2` when it could not read the revision.
 | `` `tla-tools` is not fetched, so this gate has nothing to run `` | the pinned download is not on this machine | run `chock init --downloads`; for a gate that is off, run `chock enable GATE` first |
 | `TLA_TOOLS_URL is missing; add the line chock ships: …` | the pin file has a version and a hash, but no URL | add the line that the message gives to `tool-versions.env` |
 | `no record … is committed` in CI | no commit holds the gate's first record | run `chock run GATE` on your machine and commit `.chock/baseline.json` |
-| `… where the record holds 12: a commit through the pre-commit hook lowers the record` in CI | a commit lowered a count but not its record, often with `--no-verify` | run `chock baseline --lower GATE` and commit `.chock/baseline.json` |
+| `… where the record holds 12: a commit through the pre-commit hook lowers the record` in CI | a commit lowered a count but not its record: it ran with `--no-verify`, or it left out a change, which the hook then names | commit again through the hook with nothing left out (stage the change, or `git stash -k -u`), or run `chock baseline --lower GATE` with nothing unstaged and commit `.chock/baseline.json` |
 | a renamed file trips a ratchet | a record is keyed by the path | run `chock baseline --moved OLD=NEW` |
 | `stopped … at the memory limit` | the tool's processes held too much memory | set `CHOCK_MEMORY`, or fewer build jobs with `CHOCK_JOBS` |
 | a tool `ran past its … limit` | one run took longer than its limit | raise the limit that the message names, or `CHOCK_TIMEOUT` |

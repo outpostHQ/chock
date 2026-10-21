@@ -814,7 +814,9 @@ fn record_baseline(asked: &[&str]) -> ExitCode {
         Err(e) => return cannot_run(&e),
     };
     let mut recorded = ctx.baseline.clone();
-    let failed = match keys::moves(asked) {
+    let moves = keys::moves(asked);
+    let measured = moves.is_none();
+    let failed = match moves {
         // A moved file takes its keys and measures nothing, so no total goes up.
         Some(moves) => {
             let config = config.as_ref();
@@ -841,6 +843,18 @@ fn record_baseline(asked: &[&str]) -> ExitCode {
         return cannot_run(&format!("cannot write {}: {e}", path.display()));
     }
     emit(&format!("wrote {}\n", crate::run::baseline::FILE));
+    // CI measures the commit, so a record that counted a change the commit leaves out fails there.
+    let left = match measured {
+        true => crate::run::baseline::left_out(&ctx.root),
+        false => Vec::new(),
+    };
+    if !left.is_empty() {
+        eprintln!(
+            "chock: the record counts changes that are not staged: {}; commit them with the \
+             record, or CI measures other numbers",
+            run::report::some_of(&left)
+        );
+    }
     if failed.is_empty() {
         ExitCode::SUCCESS
     } else {

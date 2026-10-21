@@ -933,6 +933,15 @@ fn a_fix_lowers_the_record_at_a_commit_and_ci_refuses_a_change_that_did_not_comm
     assert_eq!(lowered.code, 0, "{}", lowered.err);
     says(&lowered.out, "lowered   slop         1 item");
     assert_eq!(slop_record(&dir), Some(1));
+    // A record counts the work tree, and CI counts the commit.
+    assert!(!lowered.err.contains("not staged"), "{}", lowered.err);
+    put(&dir, "src/new.rs", "fn new() {}\n");
+    let counted = exits(&dir, &["baseline", "--lower", "slop"], 0);
+    says(
+        &counted.err,
+        "chock: the record counts changes that are not staged: src/new.rs; commit them",
+    );
+    std::fs::remove_file(dir.join("src/new.rs")).unwrap();
 
     // A record file with a change nobody staged stays out of the commit: it may hold a raise.
     put(&dir, ".chock/baseline.json", &held);

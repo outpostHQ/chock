@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/baseline-v1.json",
   "version": 1,
-  "chock": "0.14.0",
+  "chock": "0.13.0",
   "gates": {
     "admits": {},
     "assertions": {
@@ -36,9 +36,7 @@
       "mixed_directory_foreign_files_production": 35,
       "scattered_groups_production": 2
     },
-    "calls": {
-      "src/setup/downloads.rs#std::fs::rename in fetch": 1
-    },
+    "calls": {},
     "citations": {},
     "claims": {},
     "codeslop": {},
@@ -298,7 +296,7 @@
       "hazard_unordered_into_ordered": 0
     },
     "lines": {
-      "total": 90638
+      "total": 90686
     },
     "links": {},
     "manifest": {},
@@ -555,12 +553,7 @@
       "src/gates/source/testonly.rs#arguments": 1,
       "src/project/mod.rs#walk": 1
     },
-    "owners": {
-      "src/gates/proofs/tla.rs#std::env::var_os(\"JAVA_HOME\")": 1,
-      "src/run/verdicts.rs#std::env::var_os(\"PATH\")": 1,
-      "src/setup/doctor.rs#std::env::var_os(\"JAVA_HOME\")": 1,
-      "src/setup/doctor.rs#std::env::var_os(\"PATH\")": 1
-    },
+    "owners": {},
     "padding": {
       "src/gates/cargo/profile.rs#free_wins": 1,
       "src/gates/tools/mod.rs#all": 5,
@@ -602,10 +595,7 @@
       "src/setup/init.rs#rust-path-traversal": 4,
       "src/setup/version.rs#discarded-result": 1
     },
-    "seams": {
-      "src/oracle/side.rs#std::process::Command": 3,
-      "src/setup/init.rs#std::process::Command": 6
-    },
+    "seams": {},
     "slop": {},
     "sort": {},
     "source": {},

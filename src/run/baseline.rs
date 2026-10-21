@@ -487,6 +487,18 @@ pub fn held_at(root: &Path, name: &str) -> Vec<String> {
     })
 }
 
+/// Each change and each file in the work tree under the root that the commit in progress leaves
+/// out. The files that chock writes, its records among them, do not count.
+#[must_use]
+pub fn left_out(root: &Path) -> Vec<String> {
+    let crap = crate::gates::coverage::crap::baseline();
+    let own: Vec<&str> = crate::setup::init::IGNORES
+        .into_iter()
+        .chain([FILE, crap.as_str()])
+        .collect();
+    crate::project::vcs::leaves_out(root, &own)
+}
+
 /// What a check that keeps its own record holds there. `None` for a check on the shared baseline.
 fn own_held(root: &Path, name: &str) -> Option<Vec<String>> {
     let own = match crate::gates::own_debt(root, name) {
