@@ -1455,6 +1455,38 @@ fn ratchet_names(json: &str) -> Vec<String> {
         .1
 }
 
+/// The prose counts the gates by hand, so a gate added without an edit there leaves a wrong count.
+#[test]
+fn the_docs_count_the_gates_the_binary_has() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let read = |path: &str| std::fs::read_to_string(repo.join(path)).unwrap();
+    let config: serde_json::Value = serde_json::from_str(&read(".chock/config.json")).unwrap();
+    let enabled = config["enabled"].as_array().unwrap();
+    let left_out: Vec<&str> = chock::gates::registry()
+        .iter()
+        .map(|gate| gate.name)
+        .filter(|name| !enabled.iter().any(|on| on == name))
+        .collect();
+    assert_eq!(left_out, ["shellcheck"], "chock's own config");
+
+    let total = chock::gates::registry().len();
+    let on = chock::gates::enforced().len();
+    let off = total - on;
+    let local = config["local_only"].as_array().map_or(0, Vec::len);
+    // A rewrap moves the line breaks, so the docs are read as one line of words.
+    let docs = [read("README.md"), read(GATE_REFERENCE)].join("\n");
+    let words = docs.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sentence in [
+        format!("with {total} gates and gives one answer"),
+        format!("{total} gates: {on} are on by default and {off} are opt-in."),
+        format!("{total} gates, {on} on by default and {off} opt-in."),
+        "chock turns on every gate for itself but `shellcheck`".to_string(),
+        format!("leaves out the {local} gates that read Outpost's graph"),
+    ] {
+        assert!(words.contains(&sentence), "not in the docs: {sentence}");
+    }
+}
+
 /// CI once named its gates by hand and fell ten behind.
 #[test]
 fn ci_runs_every_gate_rather_than_a_list_that_goes_stale() {

@@ -19,6 +19,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`chock init --downloads` installs the Rust toolchain that the pinned Verus names.** The new
   `VERUS_SETUP` line runs `rustup toolchain install 1.99.1 --profile minimal`, so the `verus`
   gate runs in a new CI job too.
+- **A test checks each gate count in README.md and docs/gates.md** against the registry and
+  chock's own config.
 
 ## [0.13.0] - 2026-10-21
 
