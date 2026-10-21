@@ -41,23 +41,30 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     ctx.default_build("cargo kani")?;
     clear_listing(&ctx.root)?;
     let packages = ctx.proof.packages.as_deref().unwrap_or_default();
-    let listed = exec::run(
-        "cargo",
-        &invocation(packages, &ctx.features, &LIST),
-        &ctx.root,
-    )
-    .map_err(|e| e.to_string())?;
+    let listing = invocation(packages, &ctx.features, &LIST);
+    let listed = exec::run("cargo", &listing, &ctx.root).map_err(|e| e.to_string())?;
     let harnesses = read_harnesses(&listed, || read_listing(&ctx.root))?;
     let jobs = jobs(crate::exec::budget::cap(), ctx.proof_jobs).to_string();
-    let limit = ctx
-        .proof
-        .timeout_s
-        .unwrap_or_else(|| exec::deadline().as_secs());
-    let pace: exec::Pace = (|_| false, Duration::from_secs(limit));
     let argv = invocation(packages, &ctx.features, &verify(&jobs));
-    match exec::run_paced("cargo", &argv, &ctx.root, &[], pace) {
-        Ok(out) => read_verdict(&out, &harnesses),
-        Err(e) if e.hung() => Ok(timed_out(&harnesses, limit)),
+    let limit = limit(ctx.proof.timeout_s);
+    let run = exec::run_paced("cargo", &argv, &ctx.root, &[], (|_| false, limit));
+    judged(run, &harnesses, limit.as_secs())
+}
+
+/// How long kani may run: `proof.timeout_s`, or chock's own deadline.
+fn limit(asked: Option<u64>) -> Duration {
+    asked.map_or_else(exec::deadline, Duration::from_secs)
+}
+
+/// The verdict on a kani run. One stopped at its limit keeps each listed harness as a row.
+fn judged(
+    run: Result<exec::Output, exec::ExecError>,
+    listed: &BTreeSet<String>,
+    limit: u64,
+) -> Result<Measurement, String> {
+    match run {
+        Ok(out) => read_verdict(&out, listed),
+        Err(e) if e.hung() => Ok(timed_out(listed, limit)),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -1019,6 +1026,27 @@ VERIFICATION:- SUCCESSFUL
             ["kani: kani ran past its 3600 s limit; raise `proof.timeout_s` if it needs longer"]
         );
         assert_eq!(read.series, verified(&["one", "two"]).series);
+    }
+
+    #[test]
+    fn kani_runs_for_the_set_limit_or_else_for_chocks_deadline() {
+        assert_eq!(limit(Some(90)), Duration::from_secs(90));
+        assert_eq!(limit(None), exec::deadline());
+    }
+
+    #[test]
+    fn a_run_is_judged_by_its_output_and_one_that_did_not_start_is_an_error() {
+        let listed = expected(&["one"]);
+        let ran = Ok(exec::Output::of(Some(0), HONEST, ""));
+        let read = judged(ran, &listed, 60).map(|read| read.series);
+        assert_eq!(read, verdict_of(HONEST, 0).map(|read| read.series));
+        let hung = Err(exec::ExecError::of("cargo", exec::Stage::Hung, "gone"));
+        let said = |read: Measurement| read.faults.iter().map(Finding::render).collect::<Vec<_>>();
+        let read = judged(hung, &listed, 60).map(said);
+        assert_eq!(read, Ok(said(timed_out(&listed, 60))));
+        let gone = exec::ExecError::of("cargo", exec::Stage::Spawn, "gone");
+        let read = judged(Err(gone.clone()), &listed, 60).err();
+        assert_eq!(read, Some(gone.to_string()));
     }
 
     #[test]

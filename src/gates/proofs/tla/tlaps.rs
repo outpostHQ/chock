@@ -381,6 +381,7 @@ File \"<unknown>\":\nError: Could not parse \"./Probe.tla\" successfully.\n";
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_module_that_states_a_theorem_is_proved_where_tlapm_is_pinned() {
         let files = [
             ("proofs/tla/Probe.tla", "THEOREM T == TRUE\n"),
