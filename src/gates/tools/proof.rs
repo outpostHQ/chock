@@ -50,15 +50,35 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let argv = invocation(packages, &ctx.features, &verify(&jobs));
     let limit = limit(ctx.proof.timeout_s);
     let run = exec::run_paced("cargo", &argv, &ctx.root, &[], (|_| false, limit));
-    let mut read = judged(run, &harnesses, limit.as_secs())?;
-    // A mutant shows something only where every harness verifies without it.
+    let refute = || mutants::refuted(ctx, &harnesses, limit.as_secs(), &kani(limit));
+    mutated(judged(run, &harnesses, limit.as_secs()), refute)
+}
+
+/// A mutant's run of kani: `cargo` with its arguments, in the mutant's copy, building in `target`.
+fn kani(
+    limit: Duration,
+) -> impl Fn(&[&str], &std::path::Path, &std::path::Path) -> Result<exec::Output, exec::ExecError> {
+    move |argv, dir, target| {
+        let target = target.to_string_lossy();
+        exec::run_paced(
+            "cargo",
+            argv,
+            dir,
+            &[("CARGO_TARGET_DIR", &*target)],
+            (|_| false, limit),
+        )
+    }
+}
+
+/// The verdict with what the mutants show. A mutant shows something only where every harness
+/// verifies without it, so `refute` runs only then.
+fn mutated(
+    read: Result<Measurement, String>,
+    refute: impl FnOnce() -> Result<mutants::Refuted, String>,
+) -> Result<Measurement, String> {
+    let mut read = read?;
     if read.faults.is_empty() {
-        let kani = |argv: &[&str], dir: &std::path::Path, target: &std::path::Path| {
-            let target = target.to_string_lossy();
-            let env = [("CARGO_TARGET_DIR", &*target)];
-            exec::run_paced("cargo", argv, dir, &env, (|_| false, limit))
-        };
-        let refuted = mutants::refuted(ctx, &harnesses, limit.as_secs(), &kani)?;
+        let refuted = refute()?;
         read.faults.extend(refuted.faults);
         read.findings.extend(refuted.notes);
     }
@@ -590,6 +610,47 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
     /// What a run in which every listed harness verified reads: a row of zero for each.
     fn verified(names: &[&str]) -> Measurement {
         Measurement::of(rows(&expected(names), &BTreeSet::new()), Vec::new())
+    }
+
+    #[test]
+    fn the_mutants_are_asked_only_where_every_harness_verified() {
+        let fault = Finding::at("proofs/kani/mutants/put.patch", "kani verified the mutant");
+        let note = Finding::at("proofs/kani/mutants", "no mutant");
+        let refuted = || {
+            let (faults, notes) = (vec![fault.clone()], vec![note.clone()]);
+            Ok(mutants::Refuted { faults, notes })
+        };
+        let read = mutated(Ok(verified(&["put"])), refuted).unwrap();
+        assert_eq!(
+            (read.faults, read.findings),
+            (vec![fault.clone()], vec![note])
+        );
+
+        let never = || -> Result<mutants::Refuted, String> { panic!("no mutant runs here") };
+        let mut failed = verified(&["put"]);
+        failed.faults.push(fault);
+        assert_eq!(mutated(Ok(failed.clone()), never), Ok(failed));
+        assert_eq!(
+            mutated(Err("kani stopped".into()), never),
+            Err("kani stopped".into())
+        );
+        let broken = || Err("no copy".to_string());
+        assert_eq!(
+            mutated(Ok(verified(&["put"])), broken),
+            Err("no copy".into())
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_mutant_s_kani_runs_cargo_in_its_copy_and_builds_in_its_own_target_directory() {
+        let here = std::env::current_dir().unwrap();
+        let target = here.join("target/test-scratch/chock/kani-target");
+        let argv = ["metadata", "--no-deps", "--format-version", "1"];
+        let out = kani(Duration::from_secs(120))(&argv, &here, &target).unwrap();
+        let said: serde_json::Value = serde_json::from_str(&out.stdout).unwrap();
+        let built_in = said["target_directory"].as_str().map(std::path::Path::new);
+        assert_eq!(built_in, Some(target.as_path()));
     }
 
     /// The rows a run counts as failed harnesses.
