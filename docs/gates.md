@@ -108,8 +108,8 @@ whole tree.
 
 ## Proofs and models
 
-Three gates check the TLA+ models and the Verus proofs of a project. `links` is on by default, and
-it finds nothing where a project has no model. `tla` and `verus` are opt-in.
+Four gates check proofs: `tla` the TLA+ models, `verus` the Verus proofs, `proof` Kani harnesses,
+and `links` their ties to the code. Only `links` is on by default; it finds nothing with no model.
 
 ```
    proofs/tla/M.tla ──── tla ────► TLC: M.cfg passes, and each bad variant fails

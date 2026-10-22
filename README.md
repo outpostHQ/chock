@@ -8,7 +8,7 @@
 
 chock checks a Rust project with 68 gates and gives one answer with one exit code. The gates cover
 your tests, clippy, rustfmt, coverage, mutation testing, the supply chain, complexity, duplication,
-and proofs.
+and formal proofs: TLA+ models (TLC, Apalache, TLAPS), Kani and Verus.
 
 Most projects hold debt on the day they adopt chock. You do not have to fix it first. chock writes
 today's numbers into a file that you commit, and from then on:
@@ -198,8 +198,8 @@ and [docs/gates.md](docs/gates.md) says when each one trips.
 
 | topic | on by default | opt-in |
 |---|---|---|
-| Tests | `test`, `coverage`, `crap`, `assertions`, `testlint`, `admits` | `mutest`, `idempotent`, `miri`, `proof` |
-| Proofs and models | `links` | `tla`, `verus` |
+| Tests | `test`, `coverage`, `crap`, `assertions`, `testlint`, `admits` | `mutest`, `idempotent`, `miri` |
+| Proofs and models | `links` | `tla`, `proof`, `verus` |
 | Lints and format | `lint`, `codeslop`, `source`, `typos` | `fmt`, `shellcheck` |
 | Docs and comments | `doc`, `slop`, `citations`, `claims`, `pinned` | `phrases` |
 | Code shape | `complexity`, `nesting`, `bigfiles`, `splits`, `lean`, `duplication`, `unsafety`, `modcheck` | `duplicates`, `dead`, `lines` |
@@ -209,9 +209,10 @@ and [docs/gates.md](docs/gates.md) says when each one trips.
 | Your own checks | | `commands`, `commands-build`, `seams`, `owners`, `calls` |
 | [Outpost](https://github.com/outpostHQ) | | `padding`, `boundaries`, `scan`, `hazards`, `unreferenced`, `lenses`, `measures`, `unread` |
 
-A project with TLA+ models or Verus proofs gets three more checks. `tla` runs TLC and Apalache on
-each model, `verus` runs Verus on each proof, and `links` holds each `code:` comment in a model to
-the code that it names. [Proofs and models](docs/gates.md#proofs-and-models) shows how to start.
+Four gates do [formal verification](docs/gates.md#proofs-and-models). `tla` checks each TLA+ model
+with TLC, Apalache and TLAPS, `proof` each Kani harness, and `verus` each Verus proof; a planted
+fault must make each one fail. `links` holds each `code:` comment in a model or a proof to the item
+that it names. chock checks its own run lock, baseline writes and job counts this way.
 
 ## Documentation
 
@@ -226,8 +227,7 @@ the code that it names. [Proofs and models](docs/gates.md#proofs-and-models) sho
 
 ## Limits
 
-- **Rust only.** chock reads `.rs` files and `Cargo.toml`, and the TLA+ models and Verus proofs
-  next to them.
+- **Rust only.** chock reads `.rs` files, `Cargo.toml`, and the TLA+ and Verus files next to them.
 - **The baseline is trusted.** Anyone can raise a record with `chock baseline`; chock makes that
   visible in the diff, and reviewers have to look.
 - **A record is keyed by name.** Renaming a function, or splitting a file, drops the old record and
