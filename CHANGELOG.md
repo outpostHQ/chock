@@ -5,6 +5,13 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-10-23
+
+- **`chock doctor` counts a download pin as a pin.** A tool fetched from its URL, such as Verus
+  with `VERUS_VERSION`, `VERUS_URL` and `VERUS_SHA256`, got the row "BROKEN verus switched on and
+  run by verus, but tool-versions.env does not pin it" beside its ok row. The check read only the
+  crate pins. It now reads the download pins too.
+
 ## [0.16.0] - 2026-10-23
 
 - **`tla.engines` lets Apalache alone check a model, with no TLC run.** With

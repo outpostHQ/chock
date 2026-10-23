@@ -215,6 +215,13 @@ pub fn additional(text: &str) -> Result<AdditionalPins, ParseError> {
     Ok(found)
 }
 
+/// Whether a pin names `tool`: a crate pin by its command or its crate, a download pin by its name.
+#[must_use]
+pub fn pinned(tool: &str, pins: &[Pin], downloads: &[crate::setup::downloads::Download]) -> bool {
+    let named = |pin: &Pin| pin.command == tool || pin.crate_name == tool;
+    pins.iter().any(named) || downloads.iter().any(|download| download.name == tool)
+}
+
 /// Whether chock reads `key`: a version, a qualifier of one, or a part of a download pin.
 fn known_key(key: &str) -> bool {
     key.ends_with(VERSION_SUFFIX)
@@ -509,6 +516,51 @@ fn systems(list: &str) -> Vec<String> {
     list.split(',')
         .map(|system| system.trim().to_string())
         .collect()
+}
+
+/// Kani proofs over one crate pin and one download pin, each named from three tools; only
+/// `cargo kani` builds them.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+    use crate::setup::downloads::Download;
+
+    const TOOLS: [&str; 3] = ["kani", "verus", "tlapm"];
+
+    fn any_tool() -> usize {
+        usize::from(kani::any::<u8>()) % TOOLS.len()
+    }
+
+    /// A tool is pinned exactly when a crate pin names it by its command or its crate, or a
+    /// download pin names it.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn a_tool_is_pinned_exactly_when_a_pin_names_it() {
+        let (tool, command, crate_name, name) = (any_tool(), any_tool(), any_tool(), any_tool());
+        let crate_pin = Pin {
+            key: String::new(),
+            crate_name: TOOLS[crate_name].to_string(),
+            command: TOOLS[command].to_string(),
+            want: String::new(),
+            setup: None,
+            systems: None,
+            git: None,
+        };
+        let download = Download {
+            stem: String::new(),
+            name: TOOLS[name].to_string(),
+            want: String::new(),
+            files: Vec::new(),
+            setup: None,
+        };
+        let (with_crate, with_download): (bool, bool) = (kani::any(), kani::any());
+        let (crates, downloads) = ([crate_pin], [download]);
+        let pins = &crates[..usize::from(with_crate)];
+        let fetched = &downloads[..usize::from(with_download)];
+        let named = (with_crate && (tool == command || tool == crate_name))
+            || (with_download && tool == name);
+        assert_eq!(pinned(TOOLS[tool], pins, fetched), named);
+    }
 }
 
 /// A pin of `crate_name` at `want`, with no setup line and no systems line.

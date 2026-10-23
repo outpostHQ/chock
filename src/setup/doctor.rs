@@ -4,7 +4,8 @@
 use std::fmt::Write as _;
 
 use crate::run::report::{Finding, GateReport, Run, Verdict, plural};
-use crate::setup::pins::Pin;
+use crate::setup::downloads::Download;
+use crate::setup::pins::{Pin, pinned};
 use crate::setup::version;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,19 +177,19 @@ const UNDECLARED: [(&str, &str); 5] = [
     ("deps", "cargo-deny"),
 ];
 
-/// A switched-on gate whose tool no pin names, so doctor would check a tool nothing runs.
+/// A switched-on gate whose tool no crate pin and no download pin names, so doctor would check a
+/// tool nothing runs.
 #[must_use]
-pub fn unpinned(enabled: &dyn Fn(&str) -> bool, pins: &[Pin]) -> Vec<Row> {
-    let pinned = |tool: &str| {
-        pins.iter()
-            .any(|pin| pin.command == tool || pin.crate_name == tool)
-    };
+pub fn unpinned(enabled: &dyn Fn(&str) -> bool, pins: &[Pin], downloads: &[Download]) -> Vec<Row> {
     let mut needed = std::collections::BTreeMap::<&str, Vec<&str>>::new();
     for gate in crate::gates::registry()
         .iter()
         .filter(|gate| enabled(gate.name))
     {
-        for tool in tools_of(gate).into_iter().filter(|tool| !pinned(tool)) {
+        for tool in tools_of(gate)
+            .into_iter()
+            .filter(|tool| !pinned(tool, pins, downloads))
+        {
             needed.entry(tool).or_default().push(gate.name);
         }
     }
@@ -256,9 +257,10 @@ fn idle(rows: Vec<Row>, pins: &[Pin], enabled: &dyn Fn(&str) -> bool) -> Vec<Row
 pub fn unpinned_in(
     config: &Result<Option<crate::project::config::Config>, String>,
     pins: &[Pin],
+    downloads: &[Download],
 ) -> Vec<Row> {
     match config {
-        Ok(Some(config)) => unpinned(&|gate| config.is_on(gate), pins),
+        Ok(Some(config)) => unpinned(&|gate| config.is_on(gate), pins, downloads),
         Ok(None) => Vec::new(),
         Err(why) => vec![Row {
             command: crate::project::config::FILE.to_string(),
@@ -338,7 +340,7 @@ pub fn gathered(
     if let Ok(Some(held)) = &config {
         rows = idle(rows, pins, &|gate| held.is_on(gate));
     }
-    rows.extend(unpinned_in(&config, pins));
+    rows.extend(unpinned_in(&config, pins, &extra.downloads));
     rows.extend(undecided_in(&config));
     rows.extend(manual_in(&config));
     rows.extend(miri_in(&config, &|| {
@@ -474,11 +476,11 @@ pub fn machine_health(
 /// One a gate claims waits for that gate, so a project that leaves `tla` off fetches nothing.
 #[must_use]
 pub fn downloaded(
-    downloads: &[crate::setup::downloads::Download],
+    downloads: &[Download],
     home: Option<&std::path::Path>,
     on: &dyn Fn(&str) -> bool,
 ) -> Vec<Row> {
-    let status = |pin: &crate::setup::downloads::Download| {
+    let status = |pin: &Download| {
         if let Some(gate) = pin.gate().filter(|gate| !on(gate)) {
             return Status::available(format!("not needed while the `{gate}` gate is off"));
         }
@@ -1033,7 +1035,7 @@ mod tests {
         // Mutation testing on, and the other mutation engine pinned.
         let pins = crate::setup::pins::parse("CARGO_MUTANTS_VERSION=25.0.0\n").unwrap();
         let on = |gate: &str| matches!(gate, "mutest" | "scan" | "padding" | "lint");
-        let rows = unpinned(&on, &pins);
+        let rows = unpinned(&on, &pins, &[]);
         assert_eq!(
             rows,
             vec![
@@ -1061,8 +1063,8 @@ mod tests {
         )
         .unwrap();
         let on = |gate: &str| matches!(gate, "mutest" | "typos" | "lint" | "doc");
-        assert_eq!(unpinned(&on, &pins), Vec::new());
-        assert_eq!(unpinned(&|_| false, &[]), Vec::new());
+        assert_eq!(unpinned(&on, &pins, &[]), Vec::new());
+        assert_eq!(unpinned(&|_| false, &[], &[]), Vec::new());
     }
 
     /// The nightly ships miri, and a project may replace the coverage command, so neither is a
@@ -1070,9 +1072,25 @@ mod tests {
     #[test]
     fn a_gate_that_keeps_a_verdict_needs_a_pin_for_each_tool_no_toolchain_ships() {
         let on = |gate: &str| matches!(gate, "miri" | "crap" | "bsize" | "coverage");
-        let rows = unpinned(&on, &[]);
+        let rows = unpinned(&on, &[], &[]);
         let named: Vec<&str> = rows.iter().map(|row| row.command.as_str()).collect();
         assert_eq!(named, ["cargo-bsize", "cargo-crap", "cargo-nextest"]);
+    }
+
+    /// Verus is no crate: a download pin fetches it, so that pin is the one `unpinned` looks for.
+    #[test]
+    fn a_download_pin_pins_the_tool_it_names_and_no_other() {
+        let sha = "b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4";
+        let pin =
+            |stem: &str| format!("{stem}_VERSION=1\n{stem}_URL=https://x\n{stem}_SHA256={sha}\n");
+        let verus = crate::setup::downloads::parse(&pin("VERUS")).unwrap();
+        let tlapm = crate::setup::downloads::parse(&pin("TLAPM")).unwrap();
+        let named = |downloads: &[Download]| -> Vec<String> {
+            let rows = unpinned(&|gate| gate == "verus", &[], downloads);
+            rows.into_iter().map(|row| row.command).collect()
+        };
+        assert!(named(&verus).is_empty());
+        assert_eq!(named(&tlapm), ["verus"]);
     }
 
     /// A manual gate is the project's choice, so its row passes; naming it keeps it in sight.
@@ -1121,9 +1139,9 @@ mod tests {
 
     #[test]
     fn an_unreadable_config_is_reported_and_an_absent_one_switches_nothing_on() {
-        assert_eq!(unpinned_in(&Ok(None), &[]), Vec::new());
+        assert_eq!(unpinned_in(&Ok(None), &[], &[]), Vec::new());
         assert_eq!(
-            unpinned_in(&Err("line 3: expected `,`".into()), &[]),
+            unpinned_in(&Err("line 3: expected `,`".into()), &[], &[]),
             vec![Row {
                 command: ".chock/config.json".into(),
                 status: Status::unreadable(

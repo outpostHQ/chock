@@ -1,0 +1,5 @@
+--- src/setup/pins.rs
++++ setup::pins::proofs::a_tool_is_pinned_exactly_when_a_pin_names_it
+@@ -222 +222 @@
+-    pins.iter().any(named) || downloads.iter().any(|download| download.name == tool)
++    pins.iter().any(named)
