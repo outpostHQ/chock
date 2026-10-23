@@ -1,0 +1,5 @@
+--- src/gates/proofs/tla/engines.rs
++++ gates::proofs::tla::engines::proofs::no_cfg_goes_to_an_engine_that_cannot_decide_it
+@@ -66 +66 @@
+-    let property = first(&|shape| shape.property).map(|at| (Refusal::Property, at));
++    let property = first(&|shape| shape.property && shape.own).map(|at| (Refusal::Property, at));

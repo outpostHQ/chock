@@ -284,6 +284,10 @@ pub struct Tla {
     /// own when left out. The `tla` gate refuses a name that Apalache does not take.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub smt_encoding: BTreeMap<String, String>,
+    /// The engines that check a model's cfgs, `tlc` and `apalache`, by the model's name; both when
+    /// left out. Apalache alone proves the own cfg and refutes each variant by a bounded run.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub engines: BTreeMap<String, Vec<String>>,
 }
 
 /// What the `history` gate accepts as it reads every commit.

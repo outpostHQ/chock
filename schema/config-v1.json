@@ -589,6 +589,16 @@
           "description": "The SMT encoding Apalache uses for a model, by the model's name, such as `{\"OpHeads\": \"arrays\"}`. Apalache's own, `oopsla19`, when left out.",
           "type": "object",
           "additionalProperties": { "enum": ["oopsla19", "arrays", "funArrays"] }
+        },
+        "engines": {
+          "description": "The engines that check a model's cfgs, by the model's name, such as `{\"Spec\": [\"apalache\"]}`. Both when left out. Apalache alone proves the own cfg by the inductive proof and refutes each other cfg by a bounded run; the gate refuses it for a model with no inductive invariant, and for a cfg with a `PROPERTY`, a deadlock check or a verdict Apalache cannot show.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "enum": ["tlc", "apalache"] },
+            "minItems": 1,
+            "uniqueItems": true
+          }
         }
       }
     },

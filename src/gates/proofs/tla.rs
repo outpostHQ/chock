@@ -2,6 +2,8 @@
 //! refuted by a bad variant, Apalache proves each inductive invariant, and TLAPS each theorem.
 
 mod apalache;
+mod check;
+mod engines;
 pub(crate) mod text;
 mod tlaps;
 
@@ -11,7 +13,7 @@ use std::path::{Path, PathBuf};
 use super::Run;
 use crate::exec;
 use crate::run::report::Finding;
-use crate::run::{Ctx, Gate, Group, Kind, Outcome};
+use crate::run::{Ctx, Gate, Group, Kind};
 use text::uncommented;
 
 pub const GATE: Gate = Gate {
@@ -21,7 +23,7 @@ pub const GATE: Gate = Gate {
     builds: true,
     // The tree holds the models and the pins of both jars; Java is the one thing outside it.
     reads: Some(crate::run::verdicts::Reads::tree_and(&["java"]).versioned("tla-v2")),
-    kind: Kind::Binary(check),
+    kind: Kind::Binary(check::check),
 };
 
 const DIR: &str = "proofs/tla";
@@ -32,6 +34,7 @@ const INDUCTIVE: &str = "IndInv";
 
 /// What a cfg must do under TLC: from its `\* expect:` comment, else from its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 enum Expect {
     Pass,
     Deadlock,
@@ -43,6 +46,8 @@ enum Expect {
 struct Listed {
     invariants: Vec<String>,
     properties: Vec<String>,
+    /// `CHECK_DEADLOCK FALSE`: TLC does not check the cfg for a deadlock.
+    no_deadlock: bool,
 }
 
 /// One cfg, the directory that holds it, and the model it checks.
@@ -90,17 +95,40 @@ impl Said {
         }
     }
 
-    fn describe(&self) -> String {
-        match self {
-            Self::Passed => "TLC finds no violation".into(),
-            Self::Deadlock => "TLC reaches a deadlock".into(),
-            Self::Violated(Some(name)) => format!("TLC finds {name} violated"),
-            Self::Violated(None) => "TLC finds a safety property violated".into(),
-            Self::Temporal => "TLC finds a temporal property violated".into(),
-            Self::TimedOut(secs) => format!(
-                "TLC ran past its {secs} s limit; raise `tla.timeouts` for it or shrink its constants"
+    fn describe(&self, by: Engine) -> String {
+        let engine = by.name();
+        match (self, by) {
+            (Self::Passed, Engine::Apalache) => {
+                "Apalache finds no violation within `tla.length` steps of Init".into()
+            }
+            (Self::Violated(None), Engine::Apalache) => {
+                "Apalache finds an invariant violated, and its log does not name it".into()
+            }
+            (Self::Passed, _) => format!("{engine} finds no violation"),
+            (Self::Deadlock, _) => format!("{engine} reaches a deadlock"),
+            (Self::Violated(Some(name)), _) => format!("{engine} finds {name} violated"),
+            (Self::Violated(None), _) => format!("{engine} finds a safety property violated"),
+            (Self::Temporal, _) => format!("{engine} finds a temporal property violated"),
+            (Self::TimedOut(secs), _) => format!(
+                "{engine} ran past its {secs} s limit; raise `tla.timeouts` for it or shrink its constants"
             ),
-            Self::Broken(line) => format!("TLC could not check it: {line}"),
+            (Self::Broken(line), _) => format!("{engine} could not check it: {line}"),
+        }
+    }
+}
+
+/// The engine that gives a cfg its verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Engine {
+    Tlc,
+    Apalache,
+}
+
+impl Engine {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Tlc => "TLC",
+            Self::Apalache => "Apalache",
         }
     }
 }
@@ -136,6 +164,8 @@ fn listed(cfg: &str) -> Listed {
             found.invariants.push(word.to_string());
         } else if matches!(section, "PROPERTY" | "PROPERTIES") {
             found.properties.push(word.to_string());
+        } else if section == "CHECK_DEADLOCK" {
+            found.no_deadlock = word == "FALSE";
         }
     }
     found
@@ -295,8 +325,8 @@ pub(super) fn first_error(text: &str, code: Option<i32>) -> String {
     format!("{exit}: {said}")
 }
 
-/// Whether TLC's verdict is the one the cfg expects; `Some` says why not.
-fn judged(cfg: &Cfg, said: &Said) -> Option<String> {
+/// Whether the engine's verdict is the one the cfg expects; `Some` says why not.
+fn judged(by: Engine, cfg: &Cfg, said: &Said) -> Option<String> {
     let type_only = |name: &str| name.starts_with("Type");
     match (cfg.expect, said) {
         (Expect::Pass, Said::Passed) | (Expect::Deadlock, Said::Deadlock) => None,
@@ -306,11 +336,11 @@ fn judged(cfg: &Cfg, said: &Said) -> Option<String> {
             None
         }
         (Expect::Violation, Said::Temporal) if !cfg.listed.properties.is_empty() => None,
-        (_, Said::TimedOut(_) | Said::Broken(_)) => Some(said.describe()),
-        (Expect::Pass, _) => Some(format!("must pass, and {}", said.describe())),
+        (_, Said::TimedOut(_) | Said::Broken(_)) => Some(said.describe(by)),
+        (Expect::Pass, _) => Some(format!("must pass, and {}", said.describe(by))),
         (Expect::Deadlock, _) => Some(format!(
             "must deadlock, as its `expect: deadlock` says, and {}",
-            said.describe()
+            said.describe(by)
         )),
         (Expect::Violation, Said::Violated(Some(name))) if type_only(name) => Some(format!(
             "only {name} is violated: the variant is ill-typed, which refutes nothing"
@@ -320,15 +350,19 @@ fn judged(cfg: &Cfg, said: &Said) -> Option<String> {
              write `\\* expect: deadlock` in it"
                 .into(),
         ),
-        (Expect::Violation, Said::Passed) => Some(format!(
-            "is a bad variant of {}, so TLC must refute it, and {}; if it is a good model, \
-             write `\\* expect: pass` in it",
-            cfg.model,
-            said.describe()
-        )),
+        (Expect::Violation, Said::Passed) => {
+            let hint = match by {
+                Engine::Tlc => "; if it is a good model, write `\\* expect: pass` in it",
+                Engine::Apalache => "",
+            };
+            let (model, engine, why) = (&cfg.model, by.name(), said.describe(by));
+            Some(format!(
+                "is a bad variant of {model}, so {engine} must refute it, and {why}{hint}"
+            ))
+        }
         (Expect::Violation, _) => Some(format!(
             "must violate an invariant or property it lists, and {}",
-            said.describe()
+            said.describe(by)
         )),
     }
 }
@@ -394,39 +428,30 @@ fn unrefuted(
 }
 
 /// Each model needs a `_reach` cfg, and each invariant its own cfg lists, but its type and its
-/// inductive invariant, must be violated by some variant: else nothing shows the check can fail.
+/// inductive invariant, must be violated by a variant, as `said` or `also` (runs alone) names.
 fn uncovered(
     root: &Path,
     cfgs: &[Cfg],
     said: &[Said],
+    also: &[Ask],
     inductive: &dyn Fn(&str) -> String,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     for own in cfgs.iter().filter(|cfg| cfg.is_own()) {
         let file = relative(root, &own.dir.join(own.file()));
-        let kin = || cfgs.iter().zip(said).filter(|(cfg, _)| cfg.dir == own.dir);
         let reach = format!("{}_reach", own.model);
-        if !kin().any(|(cfg, _)| cfg.stem == reach) {
+        let reached = cfgs
+            .iter()
+            .any(|cfg| cfg.dir == own.dir && cfg.stem == reach);
+        if !reached {
             let why = format!(
                 "has no {reach}.cfg, so nothing shows that the states it guards are ever reached"
             );
             findings.push(Finding::at(&file, &why).item(&own.model));
         }
-        let hits: BTreeSet<String> = kin()
-            .filter(|(cfg, _)| cfg.model == own.model && cfg.expect == Expect::Violation)
-            .filter_map(|(_, said)| match said {
-                Said::Violated(Some(name)) => Some(name.clone()),
-                _ => None,
-            })
-            .collect();
-        let text = std::fs::read_to_string(own.dir.join(format!("{}.tla", own.model)));
-        let parts = conjunctions(&text.unwrap_or_default());
         let skip = inductive(&own.model);
-        let mut missing = BTreeSet::new();
-        for name in own.listed.invariants.iter().filter(|name| **name != skip) {
-            missing.extend(unrefuted(name, &hits, &parts, &mut Vec::new()));
-        }
-        for name in missing {
+        let hits = refuted_of(own, cfgs, said, also);
+        for name in missing(own, &hits, &parts_of(own), &skip) {
             let why = format!(
                 "lists {name}, and no bad variant of {} violates it",
                 own.model
@@ -435,6 +460,132 @@ fn uncovered(
         }
     }
     findings
+}
+
+/// Whether `cfg` is a bad variant of the model whose own cfg is `own`.
+fn bad_of(own: &Cfg, cfg: &Cfg) -> bool {
+    cfg.dir == own.dir && cfg.model == own.model && cfg.expect == Expect::Violation
+}
+
+/// Each conjunction of the module of `own`, by its parts.
+fn parts_of(own: &Cfg) -> BTreeMap<String, Vec<String>> {
+    let text = std::fs::read_to_string(own.dir.join(format!("{}.tla", own.model)));
+    conjunctions(&text.unwrap_or_default())
+}
+
+/// The invariants the bad variants of `own` violate: one that `said` names for each variant, and
+/// each that `also` gives one.
+fn refuted_of(own: &Cfg, cfgs: &[Cfg], said: &[Said], also: &[Ask]) -> BTreeSet<String> {
+    let named = cfgs.iter().zip(said).filter(|(cfg, _)| bad_of(own, cfg));
+    let named = named.filter_map(|(_, said)| match said {
+        Said::Violated(Some(name)) => Some(name.clone()),
+        _ => None,
+    });
+    let probed = also.iter().filter(|(cfg, _)| bad_of(own, cfg));
+    named.chain(probed.map(|(_, name)| name.clone())).collect()
+}
+
+/// The invariants of `own`, but `skip`, that are not in `hits`, a conjunction read as its `parts`.
+fn missing(
+    own: &Cfg,
+    hits: &BTreeSet<String>,
+    parts: &BTreeMap<String, Vec<String>>,
+    skip: &str,
+) -> BTreeSet<String> {
+    let listed = own.listed.invariants.iter().filter(|name| *name != skip);
+    listed
+        .flat_map(|name| unrefuted(name, hits, parts, &mut Vec::new()))
+        .collect()
+}
+
+/// A cfg and an invariant: one to check alone on it, or one it violates.
+type Ask<'a> = (&'a Cfg, String);
+
+/// Apalache names only the first invariant that a variant violates. So for each model it checks
+/// alone, each invariant that no variant named goes alone to each violated variant that checks it.
+fn unnamed<'a>(
+    cfgs: &'a [Cfg],
+    said: &[Said],
+    split: &engines::Split,
+    inductive: &dyn Fn(&str) -> String,
+) -> Vec<Ask<'a>> {
+    let mut asks = Vec::new();
+    let only_apalache = |cfg: &&Cfg| cfg.is_own() && split.engine(cfg) == Engine::Apalache;
+    for own in cfgs.iter().filter(only_apalache) {
+        let parts = parts_of(own);
+        let hits = refuted_of(own, cfgs, said, &[]);
+        for name in missing(own, &hits, &parts, &inductive(&own.model)) {
+            let checks = |cfg: &Cfg| {
+                let mut listed = cfg.listed.invariants.iter();
+                listed.any(|held| reaches(held, &name, &parts, &mut Vec::new()))
+            };
+            let violated = |said: &Said| matches!(said, Said::Violated(_));
+            let variants = cfgs.iter().zip(said);
+            let variants =
+                variants.filter(|(cfg, said)| bad_of(own, cfg) && violated(said) && checks(cfg));
+            asks.extend(variants.map(|(cfg, _)| (cfg, name.clone())));
+        }
+    }
+    asks
+}
+
+/// Whether a check of `held` checks `name`: `held` is `name`, or a conjunction with it in its parts.
+fn reaches(
+    held: &str,
+    name: &str,
+    parts: &BTreeMap<String, Vec<String>>,
+    seen: &mut Vec<String>,
+) -> bool {
+    if held == name {
+        return true;
+    }
+    if seen.iter().any(|it| it == held) {
+        return false;
+    }
+    seen.push(held.to_string());
+    let each = parts.get(held).map(Vec::as_slice).unwrap_or_default();
+    each.iter().any(|part| reaches(part, name, parts, seen))
+}
+
+/// Runs each (cfg index, invariant) of `asks` alone under Apalache, within `tla.length` steps of
+/// `Init`. Gives those it finds violated, and a finding for each run that cannot decide.
+fn alone<'a>(
+    ctx: &Ctx,
+    java: &str,
+    asks: Vec<Ask<'a>>,
+    lanes: usize,
+) -> Result<(Vec<Ask<'a>>, Vec<Finding>), String> {
+    let (mut also, mut findings) = (Vec::new(), Vec::new());
+    if asks.is_empty() {
+        return Ok((also, findings));
+    }
+    let jar = apalache::jar(ctx)?;
+    let scratch = ctx.root.join(SCRATCH);
+    let length = format!("--length={}", ctx.tla.length.unwrap_or(0));
+    let runs = asks.iter().enumerate().map(|(at, (cfg, name))| {
+        let out = scratch.join("apalache").join(format!("alone-{at}"));
+        let args = vec![length.clone(), format!("--inv={name}")];
+        apalache::checking(&jar, &ctx.tla, cfg, &out, args)
+    });
+    let mut runs: Vec<Run> = runs.collect();
+    with_tmp(&mut runs, &scratch)?;
+    let outs = super::run_all(&ctx.tools, java, &runs, lanes);
+    super::cleared(&scratch)?;
+    for (((cfg, name), run), out) in asks.into_iter().zip(&runs).zip(outs) {
+        match apalache::said(out, run.limit)? {
+            Said::Violated(_) => also.push((cfg, name)),
+            Said::Passed => {}
+            other => {
+                let file = relative(&ctx.root, &cfg.dir.join(cfg.file()));
+                let why = format!(
+                    "checks {name} alone, and {}",
+                    other.describe(Engine::Apalache)
+                );
+                findings.push(Finding::at(&file, &why).item(&cfg.model));
+            }
+        }
+    }
+    Ok((also, findings))
 }
 
 /// A Java runtime: `JAVA_HOME`'s, else the one on `PATH`. Both TLC and Apalache run on it.
@@ -479,77 +630,6 @@ fn with_tmp(runs: &mut [Run], scratch: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn check(ctx: &Ctx) -> Result<Outcome, String> {
-    let settings = &ctx.tla;
-    let dirs = settings
-        .dirs
-        .clone()
-        .unwrap_or_else(|| vec![DIR.to_string()]);
-    let (cfgs, mut findings) = asked(ctx, &dirs)?;
-    let java = java(ctx)?;
-    let jar = crate::setup::downloads::located(
-        &ctx.root,
-        ctx.tools.home.as_deref(),
-        "TLA_TOOLS",
-        "tla2tools*.jar",
-    )?;
-    let version = crate::setup::downloads::version(&ctx.root, "TLA_TOOLS");
-    let traces = version.as_deref().and_then(no_trace_spec);
-    let tool = Tlc { jar: &jar, traces };
-    let apalache::Proofs {
-        steps,
-        runs: proofs,
-        notes,
-    } = apalache::proofs(ctx, &cfgs)?;
-    let scratch = ctx.root.join(SCRATCH);
-    let workers = settings.workers.unwrap_or(WORKERS).max(1);
-    let theorems = tlaps::theorems(ctx, &dirs, workers)?;
-    if let Some(gone) = unknown(&ctx.scope.models, &cfgs, &theorems.modules) {
-        let dirs = dirs.join(", ");
-        return Err(format!(
-            "`--model` names {gone}, and no cfg and no theorem under {dirs} is of that model"
-        ));
-    }
-    let limit = |cfg: &Cfg| limit_of(settings, &cfg.stem, &cfg.model);
-    let mut jobs: Vec<Run> = cfgs
-        .iter()
-        .enumerate()
-        .map(|(n, cfg)| {
-            let meta = scratch.join(format!("{n}-{}", cfg.stem));
-            tlc(&tool, cfg, &meta, workers, limit(cfg))
-        })
-        .collect();
-    jobs.extend(proofs);
-    with_tmp(&mut jobs, &scratch)?;
-    let lanes = lanes(exec::budget::cap(), workers);
-    let outs = super::run_all(&ctx.tools, &java, &jobs, lanes);
-    let caches = scratch.join(tlaps::CACHES);
-    super::made(&caches).map_err(|e| format!("cannot make {}: {e}", caches.display()))?;
-    let proved = super::run_all(&ctx.tools, &theorems.program, &theorems.runs, lanes);
-    super::cleared(&scratch)?;
-    let mut outs = outs.into_iter();
-    let said: Vec<Said> = cfgs
-        .iter()
-        .zip(outs.by_ref())
-        .map(|(cfg, out)| read_tlc(out, limit(cfg)))
-        .collect::<Result<_, _>>()?;
-    for (cfg, said) in cfgs.iter().zip(&said) {
-        let file = relative(&ctx.root, &cfg.dir.join(cfg.file()));
-        let wrong = judged(cfg, said);
-        findings.extend(wrong.map(|why| Finding::at(&file, &why).item(&cfg.model)));
-    }
-    let inductive = |model: &str| inductive_of(settings, model);
-    findings.extend(uncovered(&ctx.root, &cfgs, &said, &inductive));
-    for (step, out) in steps.iter().zip(outs) {
-        findings.extend(step.judged(out)?);
-    }
-    findings.extend(tlaps::judged_each(&theorems.modules, proved)?);
-    Ok(match findings.is_empty() {
-        true => Outcome::noted(notes.into_iter().chain(theorems.notes).collect()),
-        false => Outcome::failed(findings),
-    })
-}
-
 /// The cfgs under `dirs` that `--model` asks for, and what is wrong with the others found there.
 fn asked(ctx: &Ctx, dirs: &[String]) -> Result<(Vec<Cfg>, Vec<Finding>), String> {
     let (cfgs, findings) = discovered(&ctx.root, dirs);
@@ -563,18 +643,6 @@ fn asked(ctx: &Ctx, dirs: &[String]) -> Result<(Vec<Cfg>, Vec<Finding>), String>
     Ok((cfgs.into_iter().filter(asks).collect(), findings))
 }
 
-/// The first model `--model` names that no cfg checks and no module of that name proves.
-fn unknown<'a>(named: &'a [String], cfgs: &[Cfg], modules: &[tlaps::Module]) -> Option<&'a String> {
-    let checked = |model: &&String| cfgs.iter().any(|cfg| &cfg.model == *model);
-    let proved = |model: &&String| modules.iter().any(|it| &it.model == *model);
-    named.iter().find(|model| !checked(model) && !proved(model))
-}
-
-/// The runs that go at once: the run's budget `cap`, shared by the TLC workers each run starts.
-fn lanes(cap: usize, workers: u32) -> usize {
-    cap / usize::try_from(workers).unwrap_or(1)
-}
-
 fn limit_of(settings: &crate::project::config::Tla, stem: &str, model: &str) -> u64 {
     let named = settings
         .timeouts
@@ -583,11 +651,6 @@ fn limit_of(settings: &crate::project::config::Tla, stem: &str, model: &str) -> 
     named
         .copied()
         .unwrap_or(settings.timeout_s.unwrap_or(TIMEOUT_S))
-}
-
-fn inductive_of(settings: &crate::project::config::Tla, model: &str) -> String {
-    let named = settings.inductive.as_ref().and_then(|map| map.get(model));
-    named.map_or(INDUCTIVE, String::as_str).to_string()
 }
 
 /// The flag that stops TLC 1.8 and later from writing a trace spec next to the model at each
@@ -650,9 +713,11 @@ fn read_tlc(out: Result<exec::Output, exec::ExecError>, limit: u64) -> Result<Sa
     reason = "a failed unwrap in a test is the test failing"
 )]
 mod tests {
+    use super::check::{check, lanes};
     use super::*;
+    use crate::run::Outcome;
 
-    fn cfg(stem: &str, model: &str, text: &str) -> Cfg {
+    pub(super) fn cfg(stem: &str, model: &str, text: &str) -> Cfg {
         Cfg {
             dir: PathBuf::from("m"),
             stem: stem.into(),
@@ -669,6 +734,8 @@ mod tests {
         let held = listed(text);
         assert_eq!(held.invariants, ["TypeOK", "Safe", "IndInv"]);
         assert_eq!(held.properties, ["Live"]);
+        assert!(held.no_deadlock);
+        assert!(!listed("CHECK_DEADLOCK TRUE\n").no_deadlock);
     }
 
     #[test]
@@ -702,36 +769,43 @@ mod tests {
     #[test]
     fn only_a_listed_invariant_that_is_not_a_type_refutes_a_variant() {
         let bad = cfg("M_bad", "M", "INVARIANT TypeOK Safe\n");
-        assert_eq!(judged(&bad, &Said::Violated(Some("Safe".into()))), None);
+        assert_eq!(
+            judged(Engine::Tlc, &bad, &Said::Violated(Some("Safe".into()))),
+            None
+        );
         assert!(
-            judged(&bad, &Said::Violated(Some("TypeOK".into())))
+            judged(Engine::Tlc, &bad, &Said::Violated(Some("TypeOK".into())))
                 .unwrap()
                 .contains("ill-typed")
         );
         assert!(
-            judged(&bad, &Said::Passed)
+            judged(Engine::Tlc, &bad, &Said::Passed)
                 .unwrap()
                 .contains("expect: pass")
         );
         assert!(
-            judged(&bad, &Said::Deadlock)
+            judged(Engine::Tlc, &bad, &Said::Deadlock)
                 .unwrap()
                 .contains("expect: deadlock")
         );
-        assert!(judged(&bad, &Said::Temporal).is_some());
+        assert!(judged(Engine::Tlc, &bad, &Said::Temporal).is_some());
         let broken = Said::Broken("exit 150: ***Parse Error***".into());
-        assert!(judged(&bad, &broken).unwrap().contains("could not check"));
-        let live = cfg("M_stall", "M", "PROPERTY Live\n");
-        assert_eq!(judged(&live, &Said::Temporal), None);
-        let good = cfg("M", "M", "INVARIANT Safe\n");
-        assert_eq!(judged(&good, &Said::Passed), None);
         assert!(
-            judged(&good, &Said::Violated(Some("Safe".into())))
+            judged(Engine::Tlc, &bad, &broken)
+                .unwrap()
+                .contains("could not check")
+        );
+        let live = cfg("M_stall", "M", "PROPERTY Live\n");
+        assert_eq!(judged(Engine::Tlc, &live, &Said::Temporal), None);
+        let good = cfg("M", "M", "INVARIANT Safe\n");
+        assert_eq!(judged(Engine::Tlc, &good, &Said::Passed), None);
+        assert!(
+            judged(Engine::Tlc, &good, &Said::Violated(Some("Safe".into())))
                 .unwrap()
                 .starts_with("must pass")
         );
         let stuck = cfg("M_end", "M", "\\* expect: deadlock\n");
-        assert_eq!(judged(&stuck, &Said::Deadlock), None);
+        assert_eq!(judged(Engine::Tlc, &stuck, &Said::Deadlock), None);
     }
 
     #[test]
@@ -806,19 +880,82 @@ mod tests {
     }
 
     #[test]
+    fn an_invariant_apalache_left_unnamed_runs_alone_on_each_variant_that_checks_it() {
+        let cfgs = [
+            cfg("M", "M", "INVARIANT Safe Fresh\n"),
+            cfg("M_a", "M", "INVARIANT Safe Fresh\n"),
+            cfg("M_b", "M", "INVARIANT Safe Fresh\n"),
+            cfg("M_reach", "M", "INVARIANT Reach\n"),
+            cfg("M_c", "M", "INVARIANT Safe Fresh\n"),
+        ];
+        let safe = || Said::Violated(Some("Safe".into()));
+        let reach = Said::Violated(Some("Reach".into()));
+        let said = [Said::Passed, safe(), safe(), reach, Said::Passed];
+        let inductive = |_: &str| INDUCTIVE.to_string();
+        let alone = engines::Split {
+            apalache: BTreeSet::from(["M".to_string()]),
+            ..engines::Split::default()
+        };
+        let asks = unnamed(&cfgs, &said, &alone, &inductive);
+        let asks: Vec<_> = asks
+            .iter()
+            .map(|(cfg, name)| (cfg.stem.as_str(), name.as_str()))
+            .collect();
+        assert_eq!(asks, [("M_a", "Fresh"), ("M_b", "Fresh")]);
+        let both = engines::Split::default();
+        assert!(unnamed(&cfgs, &said, &both, &inductive).is_empty());
+        let named = |also: &[Ask]| {
+            let found = uncovered(Path::new(""), &cfgs, &said, also, &inductive);
+            found.into_iter().map(|it| it.message).collect::<Vec<_>>()
+        };
+        let left = "lists Fresh, and no bad variant of M violates it";
+        assert_eq!(named(&[]), [left]);
+        let [own, _, variant, ..] = &cfgs;
+        assert!(named(&[(variant, "Fresh".into())]).is_empty());
+        assert_eq!(named(&[(own, "Fresh".into())]), [left]);
+        let pair = |name: &str, parts: &[&str]| {
+            (
+                name.to_string(),
+                parts.iter().map(|it| it.to_string()).collect(),
+            )
+        };
+        let parts = BTreeMap::from([pair("Safe", &["A", "B"]), pair("A", &["Safe"])]);
+        assert!(reaches("Safe", "B", &parts, &mut Vec::new()));
+        assert!(!reaches("Safe", "C", &parts, &mut Vec::new()));
+    }
+
+    #[test]
     fn a_model_without_a_reach_cfg_or_with_an_unrefuted_invariant_is_named() {
         let cfgs = vec![
             cfg("M", "M", "INVARIANT TypeOK Safe Other IndInv\n"),
             cfg("M_bad", "M", "INVARIANT Safe\n"),
+            cfg("N_bad", "N", "INVARIANT Other\n"),
         ];
-        let said = [Said::Passed, Said::Violated(Some("Safe".into()))];
-        let found = uncovered(Path::new(""), &cfgs, &said, &|_| INDUCTIVE.to_string());
+        let other = Said::Violated(Some("Other".into()));
+        let said = [Said::Passed, Said::Violated(Some("Safe".into())), other];
+        let found = uncovered(Path::new(""), &cfgs, &said, &[], &|_| INDUCTIVE.to_string());
         let items: Vec<_> = found
             .iter()
             .map(|finding| finding.item.clone().unwrap())
             .collect();
         assert_eq!(items, ["M", "Other"]);
         assert!(found[0].message.contains("M_reach.cfg"));
+    }
+
+    #[test]
+    fn a_bad_variant_shares_the_directory_and_the_model_of_the_own_cfg() {
+        let own = cfg("M", "M", "");
+        let moved = Cfg {
+            dir: PathBuf::from("n"),
+            ..cfg("M_bad", "M", "")
+        };
+        assert!(bad_of(&own, &cfg("M_bad", "M", "")));
+        assert!(!bad_of(&own, &moved), "a variant in another directory");
+        assert!(
+            !bad_of(&own, &cfg("N_bad", "N", "")),
+            "a variant of another model"
+        );
+        assert!(!bad_of(&own, &own), "the own cfg");
     }
 
     #[test]
@@ -929,20 +1066,12 @@ echo "Error: Invariant $name is violated."; exit 12
             ("proofs/tla/.hidden/Y.cfg", ""),
             ("proofs/tla/a/b/c/d/e/Far.cfg", ""),
         ];
-        let mut ctx = crate::testdir::Held::tree("gate-tla-run", &tree);
-        ctx.tools = crate::testdir::faked(&ctx.root, FAKE);
-        let pins = [("TLA_TOOLS", "tla2tools.jar"), ("APALACHE", "apalache.jar")];
-        let pins = pins.map(|(stem, file)| crate::testdir::fetched(&ctx.root, stem, file));
-        std::fs::write(ctx.root.join(crate::project::PIN_FILE), pins.concat()).unwrap();
+        let mut ctx = pinned("gate-tla-run", &tree, FAKE);
         ctx.tla.length = Some(5);
         let outcome = check(&ctx).unwrap();
         assert!(!outcome.passed);
         assert!(!ctx.root.join(SCRATCH).exists(), "the scratch stayed");
-        let found: Vec<(&str, Option<&str>, &str)> = outcome
-            .findings
-            .iter()
-            .map(|it| (it.file.as_str(), it.item.as_deref(), it.message.as_str()))
-            .collect();
+        let found = told(&outcome);
         let (lone, spec) = ("proofs/tla/Lone.cfg", "proofs/tla/Spec.cfg");
         let reach =
             "has no Lone_reach.cfg, so nothing shows that the states it guards are ever reached";
@@ -1008,6 +1137,87 @@ echo "Error: Invariant $name is violated."; exit 12
         let gone =
             "`--model` names Gone, and no cfg and no theorem under proofs/tla is of that model";
         assert_eq!(check(&ctx).unwrap_err(), gone);
+    }
+
+    /// A project of `tree` whose Java runs `fake`, with TLC and Apalache pinned.
+    fn pinned(name: &str, tree: &[(&str, &str)], fake: &str) -> crate::testdir::Held {
+        let mut ctx = crate::testdir::Held::tree(name, tree);
+        ctx.tools = crate::testdir::faked(&ctx.root, fake);
+        let pins = [("TLA_TOOLS", "tla2tools.jar"), ("APALACHE", "apalache.jar")];
+        let pins = pins.map(|(stem, file)| crate::testdir::fetched(&ctx.root, stem, file));
+        std::fs::write(ctx.root.join(crate::project::PIN_FILE), pins.concat()).unwrap();
+        ctx
+    }
+
+    /// Each finding of `outcome` as its file, its item and its message.
+    fn told(outcome: &Outcome) -> Vec<(&str, Option<&str>, &str)> {
+        let each = outcome.findings.iter();
+        each.map(|it| (it.file.as_str(), it.item.as_deref(), it.message.as_str()))
+            .collect()
+    }
+
+    const FAKE_APALACHE: &str = r#"shift
+case "$*" in
+  -version) exit 0 ;;
+  *--init=*|*--inv=IndInv*|*Duo_loss.cfg*--inv=NoTear*|*Duo_lax.cfg*) exit 0 ;;
+  *Duo_stale.cfg*--inv=Fresh*) echo 'Bad Fresh   E@12:00:01.1'; exit 1 ;;
+  *--inv=*|*Duo_mute.cfg*) exit 12 ;;
+  *Duo_reach.cfg*) name=Reach ;;
+  *) name=NoLoss ;;
+esac
+echo "verification conditions from the invariant $name"
+printf 'VCGen produced 1\nState 0: state invariant 0 violated.\n'
+exit 12
+"#;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn apalache_alone_refutes_each_variant_and_checks_alone_each_invariant_it_left_unnamed() {
+        let cfgs = [
+            ("Duo", "TypeOK Safe Fresh IndInv"),
+            ("Duo_lax", "NoTear"),
+            ("Duo_loss", "NoLoss NoTear"),
+            ("Duo_mute", "NoLoss"),
+            ("Duo_reach", "Reach"),
+            ("Duo_stale", "NoLoss Fresh"),
+            ("Duo_tear", "NoLoss Safe"),
+        ];
+        let cfgs = cfgs.map(|(stem, names)| {
+            let text = format!("INVARIANT {names}\nCHECK_DEADLOCK FALSE\n");
+            (format!("proofs/tla/{stem}.cfg"), text)
+        });
+        let module = "Safe == NoLoss /\\ NoTear\nIndInv == TypeOK /\\ Safe\n";
+        let mut tree = vec![("proofs/tla/Duo.tla", module)];
+        tree.extend(
+            cfgs.iter()
+                .map(|(path, text)| (path.as_str(), text.as_str())),
+        );
+        let mut ctx = pinned("gate-tla-apalache", &tree, FAKE_APALACHE);
+        ctx.tla = serde_json::from_str(r#"{"engines": {"Duo": ["apalache"]}}"#).unwrap();
+        let outcome = check(&ctx).unwrap();
+        assert!(!ctx.root.join(SCRATCH).exists(), "the scratch stayed");
+        let lax = "is a bad variant of Duo, so Apalache must refute it, and Apalache finds no \
+                   violation within `tla.length` steps of Init";
+        let expected = [
+            ("proofs/tla/Duo_lax.cfg", Some("Duo"), lax),
+            (
+                "proofs/tla/Duo_mute.cfg",
+                Some("Duo"),
+                "must violate an invariant or property it lists, and Apalache finds an invariant \
+                 violated, and its log does not name it",
+            ),
+            (
+                "proofs/tla/Duo_stale.cfg",
+                Some("Duo"),
+                "checks Fresh alone, and Apalache could not check it: exit 1: Bad Fresh",
+            ),
+            (
+                "proofs/tla/Duo.cfg",
+                Some("Fresh"),
+                "lists Fresh, and no bad variant of Duo violates it",
+            ),
+        ];
+        assert_eq!(told(&outcome), expected);
     }
 
     #[test]
@@ -1078,9 +1288,9 @@ echo "Error: Invariant $name is violated."; exit 12
             read_tlc(Err(error(exec::Stage::Hung)), 7),
             Ok(Said::TimedOut(7))
         );
-        let timed = Said::TimedOut(7).describe();
+        let timed = Said::TimedOut(7).describe(Engine::Tlc);
         assert!(timed.starts_with("TLC ran past its 7 s limit; "), "{timed}");
-        let unnamed = Said::Violated(None).describe();
+        let unnamed = Said::Violated(None).describe(Engine::Tlc);
         assert_eq!(unnamed, "TLC finds a safety property violated");
         let lost = error(exec::Stage::Spawn).to_string();
         assert_eq!(read_tlc(Err(error(exec::Stage::Spawn)), 7), Err(lost));

@@ -160,6 +160,15 @@ invariant. `tla.inductive` names the models and their invariants yourself, and `
 the SMT encoding of Apalache for a model, such as `{"OpHeads": "arrays"}`: `oopsla19`, `arrays`
 or `funArrays`; the gate refuses another name.
 
+`tla.engines` gives a model the engines that check its cfgs, such as `{"M": ["apalache"]}`:
+`tlc`, `apalache` or both, and both when the model is left out. Apalache alone runs no TLC. The
+inductive proof judges `M.cfg`, and one Apalache run of `tla.length` steps from `Init` must find
+each other cfg violated. Apalache names only the first invariant in a cfg that a run violates, so
+the gate then runs each invariant that no variant named alone, on each variant that checks it. The
+gate refuses Apalache alone for a model with no inductive invariant, for a cfg that lists a
+`PROPERTY` or checks for a deadlock (write `CHECK_DEADLOCK FALSE`), for a variant that must pass,
+and for an `M.cfg` that must fail.
+
 `chock run tla --model=M,...` checks only the cfgs of the named models, and proves only the
 theorems of their modules. A name with no cfg and no theorem stops the run with an error.
 

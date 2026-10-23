@@ -5,6 +5,16 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-23
+
+- **`tla.engines` lets Apalache alone check a model, with no TLC run.** With
+  `{"Spec": ["apalache"]}`, the inductive proof judges `Spec.cfg`, and one bounded Apalache run must
+  find each other cfg violated. Apalache names only the first invariant that a run violates, so the
+  gate runs each invariant that no variant named alone, on each variant that checks it. The gate
+  refuses Apalache alone for a model with no inductive invariant, and for a cfg with a `PROPERTY`,
+  a deadlock check, or a verdict that Apalache cannot show. A model that `tla.engines` leaves out
+  keeps TLC and Apalache, so a project without the setting sees no change.
+
 ## [0.15.0] - 2026-10-23
 
 - **`admits` counts every proof step that nothing checks, not only Lean's.** It counts
