@@ -7,6 +7,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::exec;
+use crate::project::config::Proof;
 use crate::run::Measurement;
 use crate::run::baseline::{Keys, Series};
 use crate::run::report::Finding;
@@ -51,8 +52,7 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let limit = limit(ctx.proof.timeout_s);
     let run = exec::run_paced("cargo", &argv, &ctx.root, &[], (|_| false, limit));
     let refute = || mutants::refuted(ctx, &harnesses, limit.as_secs(), &kani(limit));
-    let covered = ctx.proof.require_cover.unwrap_or_default();
-    mutated(judged(run, &harnesses, limit.as_secs(), covered), refute)
+    mutated(judged(run, &harnesses, &ctx.proof), refute)
 }
 
 /// A mutant's run of kani: `cargo` with its arguments, in the mutant's copy, building in `target`.
@@ -95,12 +95,11 @@ fn limit(asked: Option<u64>) -> Duration {
 fn judged(
     run: Result<exec::Output, exec::ExecError>,
     listed: &BTreeSet<String>,
-    limit: u64,
-    covered: bool,
+    proof: &Proof,
 ) -> Result<Measurement, String> {
     match run {
-        Ok(out) => read_verdict(&out, listed, covered),
-        Err(e) if e.hung() => Ok(timed_out(listed, limit)),
+        Ok(out) => read_verdict(&out, listed, proof.require_cover.unwrap_or_default()),
+        Err(e) if e.hung() => Ok(timed_out(listed, limit(proof.timeout_s).as_secs())),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -1165,15 +1164,16 @@ VERIFICATION:- SUCCESSFUL
     #[test]
     fn a_run_is_judged_by_its_output_and_one_that_did_not_start_is_an_error() {
         let listed = expected(&["one"]);
+        let proof = Proof::default();
         let ran = Ok(exec::Output::of(Some(0), HONEST, ""));
-        let read = judged(ran, &listed, 60, false).map(|read| read.series);
+        let read = judged(ran, &listed, &proof).map(|read| read.series);
         assert_eq!(read, verdict_of(HONEST, 0).map(|read| read.series));
         let hung = Err(exec::ExecError::of("cargo", exec::Stage::Hung, "gone"));
         let said = |read: Measurement| read.faults.iter().map(Finding::render).collect::<Vec<_>>();
-        let read = judged(hung, &listed, 60, false).map(said);
-        assert_eq!(read, Ok(said(timed_out(&listed, 60))));
+        let read = judged(hung, &listed, &proof).map(said);
+        assert_eq!(read, Ok(said(timed_out(&listed, limit(None).as_secs()))));
         let gone = exec::ExecError::of("cargo", exec::Stage::Spawn, "gone");
-        let read = judged(Err(gone.clone()), &listed, 60, false).err();
+        let read = judged(Err(gone.clone()), &listed, &proof).err();
         assert_eq!(read, Some(gone.to_string()));
     }
 
