@@ -101,7 +101,7 @@ fn installing(tool: &str) -> &'static str {
     found.map_or(PINNED, |(_, repair)| repair)
 }
 
-const FIXES: [(&str, &str); 68] = [
+const FIXES: [(&str, &str); 69] = [
     (
         "test",
         "run the rerun command, read each failing test's output, and fix the code or the test; a crate with no tests needs one",
@@ -238,6 +238,10 @@ const FIXES: [(&str, &str); 68] = [
         "write each `code:` link as `file.rs::Type::fn` or `Type::fn` that names one item; for a drifted item, read the model against the code, then commit the model",
     ),
     (
+        "laws",
+        "restore the text of the law, or, when the new law is meant, ask a person to run `chock baseline laws` so a reviewer sees it",
+    ),
+    (
         "deps",
         "upgrade the crate the advisory names, add its licence to `deny.toml` deliberately, or replace the unknown source",
     ),
@@ -310,7 +314,8 @@ const FIXES: [(&str, &str); 68] = [
     ),
     (
         "admits",
-        "prove the step, or make the assumption a hypothesis of the theorem that needs it",
+        "prove the step, make it a hypothesis of the theorem that needs it, or list its line in \
+         `.chock/escapes.json` with the reason it stays",
     ),
     (
         "lines",

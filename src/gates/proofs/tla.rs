@@ -2,6 +2,7 @@
 //! refuted by a bad variant, Apalache proves each inductive invariant, and TLAPS each theorem.
 
 mod apalache;
+pub(crate) mod text;
 mod tlaps;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,6 +12,7 @@ use super::Run;
 use crate::exec;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
+use text::uncommented;
 
 pub const GATE: Gate = Gate {
     name: "tla",
@@ -137,32 +139,6 @@ fn listed(cfg: &str) -> Listed {
         }
     }
     found
-}
-
-/// TLA+ text with its `\*` and `(* *)` comments blanked out.
-fn uncommented(text: &str) -> String {
-    let mut out = String::new();
-    let mut rest = text;
-    while let Some(at) = [rest.find("\\*"), rest.find("(*")]
-        .into_iter()
-        .flatten()
-        .min()
-    {
-        let (kept, comment) = rest.split_at(at);
-        out.push_str(kept);
-        out.push(' ');
-        let (close, skip) = match comment.starts_with("\\*") {
-            true => ("\n", 0),
-            false => ("*)", 2),
-        };
-        let body = comment.get(2..).unwrap_or_default();
-        rest = body
-            .find(close)
-            .and_then(|end| body.get(end + skip..))
-            .unwrap_or_default();
-    }
-    out.push_str(rest);
-    out
 }
 
 /// The `\* expect: <result>` comment of a cfg, on a line of its own or at the end of one.
@@ -843,13 +819,6 @@ mod tests {
             .collect();
         assert_eq!(items, ["M", "Other"]);
         assert!(found[0].message.contains("M_reach.cfg"));
-    }
-
-    #[test]
-    fn comments_are_blanked_whichever_kind_comes_first() {
-        assert_eq!(uncommented("a \\* (* b\nc"), "a  \nc");
-        assert_eq!(uncommented("a (* \\* b *) c"), "a   c");
-        assert_eq!(uncommented("a (* open"), "a  ");
     }
 
     #[test]

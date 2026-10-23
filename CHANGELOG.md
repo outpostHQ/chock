@@ -5,6 +5,22 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-23
+
+- **`admits` counts every proof step that nothing checks, not only Lean's.** It counts
+  `kani::assume` in any Rust file, the Verus escapes as before, and a TLA+ `ASSUME`, `ASSUMPTION`
+  or `AXIOM` that names no constant of its module. A project with such a line trips the gate
+  after the upgrade. List each step that stays in `.chock/escapes.json` with its reason, or run
+  `chock baseline admits`. An entry that keeps no step trips the gate.
+- **The new opt-in `laws` gate pins the text of each law.** A law is a TLA+ theorem with the
+  definitions it reaches, a Verus `requires` or `ensures` with the spec functions it reaches, or a
+  Kani harness's attributes and checks. Each is keyed by its file, its name and the hash of its
+  text, so a weaker law trips the gate until `chock baseline laws` records it.
+- **`proof.require_cover`** makes a Kani harness with no `kani::cover!` trip the `proof` gate.
+- **chock keeps its 13 `kani::assume` lines** in `.chock/escapes.json`, each with its reason,
+  and turns `laws` on for its 6 TLA+ theorems, 6 Verus contracts and 5 Kani harnesses.
+- **The README and docs/gates.md name the proof tools** and say what each proof gate checks.
+
 ## [0.14.0] - 2026-10-21
 
 - **chock runs every gate on itself but `shellcheck`,** which has no shell script to read. Five

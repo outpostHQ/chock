@@ -51,7 +51,8 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let limit = limit(ctx.proof.timeout_s);
     let run = exec::run_paced("cargo", &argv, &ctx.root, &[], (|_| false, limit));
     let refute = || mutants::refuted(ctx, &harnesses, limit.as_secs(), &kani(limit));
-    mutated(judged(run, &harnesses, limit.as_secs()), refute)
+    let covered = ctx.proof.require_cover.unwrap_or_default();
+    mutated(judged(run, &harnesses, limit.as_secs(), covered), refute)
 }
 
 /// A mutant's run of kani: `cargo` with its arguments, in the mutant's copy, building in `target`.
@@ -95,9 +96,10 @@ fn judged(
     run: Result<exec::Output, exec::ExecError>,
     listed: &BTreeSet<String>,
     limit: u64,
+    covered: bool,
 ) -> Result<Measurement, String> {
     match run {
-        Ok(out) => read_verdict(&out, listed),
+        Ok(out) => read_verdict(&out, listed, covered),
         Err(e) if e.hung() => Ok(timed_out(listed, limit)),
         Err(e) => Err(e.to_string()),
     }
@@ -169,9 +171,13 @@ fn listed_harnesses(text: &str) -> Result<BTreeSet<String>, String> {
 
 /// Judges the run as a row per listed harness, one where it is at fault. Exit zero counts only with
 /// a complete summary for every listed harness.
-fn read_verdict(out: &exec::Output, expected: &BTreeSet<String>) -> Result<Measurement, String> {
+fn read_verdict(
+    out: &exec::Output,
+    expected: &BTreeSet<String>,
+    covered: bool,
+) -> Result<Measurement, String> {
     let harnesses = verified_summaries(out, expected)?;
-    let judged = findings(&harnesses);
+    let judged = findings(&harnesses, covered);
     finished_unless_failed(out, &judged)?;
     let failed = judged
         .iter()
@@ -220,10 +226,13 @@ fn verified_summaries(
     Ok(harnesses)
 }
 
-/// Each harness at fault. If no harness is at fault, each failed check, except the panic that a
-/// `should_panic` harness expects.
-fn findings(harnesses: &[Harness]) -> Vec<Finding> {
-    let judged: Vec<Finding> = harnesses.iter().filter_map(Harness::fault).collect();
+/// Each harness at fault, and with `covered` each with no cover. If none is, each failed check,
+/// except the panic that a `should_panic` harness expects.
+fn findings(harnesses: &[Harness], covered: bool) -> Vec<Finding> {
+    let judged: Vec<Finding> = harnesses
+        .iter()
+        .filter_map(|held| held.fault(covered))
+        .collect();
     if !judged.is_empty() {
         return judged;
     }
@@ -302,12 +311,13 @@ impl Checks {
 }
 
 impl Harness {
-    fn fault(&self) -> Option<Finding> {
+    fn fault(&self, covered: bool) -> Option<Finding> {
         let summary = self.summary.as_ref()?;
         summary
             .failure(self.panicked_as_expected())
             .or_else(|| self.refused())
             .or_else(|| self.uncovered())
+            .or_else(|| self.coverless(covered))
             .or_else(|| summary.empty())
             .map(|message| Finding::at("", &message).item(&self.name))
     }
@@ -331,6 +341,16 @@ impl Harness {
             "{} of {declared} cover properties never satisfied, so a declared case is unreachable",
             declared - satisfied
         ))
+    }
+
+    /// With `proof.require_cover`, a harness with no cover property: nothing shows that its
+    /// assumptions leave a case to check.
+    fn coverless(&self, covered: bool) -> Option<String> {
+        (covered && self.covers.is_none_or(|(_, declared)| declared == 0)).then(|| {
+            "no `kani::cover!` shows that a case gets past its assumptions, and \
+             `proof.require_cover` asks each harness for one"
+                .to_string()
+        })
     }
 
     fn read(&mut self, said: &str) -> Result<(), String> {
@@ -604,6 +624,7 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
         read_verdict(
             &exec::Output::of(Some(code), stdout, ""),
             &expected(&["one"]),
+            false,
         )
     }
 
@@ -671,7 +692,8 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
             "proofs::vacuous_by_a_false_assumption",
             "proofs::doubling_never_exceeds_the_range",
         ]);
-        let outcome = read_verdict(&exec::Output::of(Some(0), MEASURED, ""), &names).unwrap();
+        let outcome =
+            read_verdict(&exec::Output::of(Some(0), MEASURED, ""), &names, false).unwrap();
         let faulted: BTreeSet<&str> = outcome
             .faults
             .iter()
@@ -695,6 +717,7 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
         let why = read_verdict(
             &exec::Output::of(Some(0), HONEST, ""),
             &expected(&["one", "two"]),
+            false,
         )
         .unwrap_err();
         assert!(why.contains("missing: [two]"), "{why}");
@@ -707,7 +730,7 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
     fn no_output_is_not_proof_even_when_kani_exits_zero() {
         let why = verdict_of("", 0).unwrap_err();
         assert!(why.contains("missing: [one]"), "{why}");
-        assert!(read_verdict(&exec::Output::of(Some(0), "", ""), &BTreeSet::new()).is_err());
+        assert!(read_verdict(&exec::Output::of(Some(0), "", ""), &BTreeSet::new(), false).is_err());
     }
 
     #[test]
@@ -753,7 +776,8 @@ Complete - 2 successfully verified harnesses, 2 failures, 4 total.
             "proofs::never_panics",
             "proofs::panics_as_expected",
         ]);
-        let outcome = read_verdict(&exec::Output::of(Some(1), SHOULD_PANIC, ""), &names).unwrap();
+        let outcome =
+            read_verdict(&exec::Output::of(Some(1), SHOULD_PANIC, ""), &names, false).unwrap();
         let unexpected =
             "kani's verdict is FAILED (encountered no panics, but at least one was expected)";
         assert_eq!(
@@ -776,7 +800,8 @@ Complete - 2 successfully verified harnesses, 2 failures, 4 total.
             .unwrap();
         let passing = format!("{HONEST}{}", &SHOULD_PANIC[witness..]);
         let names = expected(&["one", "proofs::panics_as_expected"]);
-        let outcome = read_verdict(&exec::Output::of(Some(0), &passing, ""), &names).unwrap();
+        let outcome =
+            read_verdict(&exec::Output::of(Some(0), &passing, ""), &names, false).unwrap();
         assert_eq!(outcome, verified(&["one", "proofs::panics_as_expected"]));
     }
 
@@ -801,7 +826,7 @@ Complete - 2 successfully verified harnesses, 2 failures, 4 total.
             .noted(&format!("VERIFICATION:- {EXPECTED_PANIC}"))
             .unwrap();
         assert!(witness.panicked_as_expected());
-        assert_eq!(witness.fault(), None);
+        assert_eq!(witness.fault(false), None);
         assert!(
             witness
                 .noted("VERIFICATION:- SUCCESSFUL")
@@ -816,7 +841,7 @@ Complete - 2 successfully verified harnesses, 2 failures, 4 total.
         plain.noted("VERIFICATION:- SUCCESSFUL").unwrap();
         assert!(!plain.panicked_as_expected());
         assert_eq!(
-            plain.fault(),
+            plain.fault(false),
             Some(Finding::at("", "1 of 2 checks failed").item("p"))
         );
     }
@@ -843,7 +868,8 @@ VERIFICATION:- SUCCESSFUL
     #[test]
     fn a_result_verified_side_by_side_belongs_to_the_harness_its_thread_started() {
         let names = expected(&["fails", "holds", "later"]);
-        let outcome = read_verdict(&exec::Output::of(Some(1), SIDE_BY_SIDE, ""), &names).unwrap();
+        let outcome =
+            read_verdict(&exec::Output::of(Some(1), SIDE_BY_SIDE, ""), &names, false).unwrap();
         assert_eq!(
             outcome.faults,
             [Finding::at("", "1 of 2 checks failed").item("fails")]
@@ -927,13 +953,14 @@ VERIFICATION:- SUCCESSFUL
         let mut out = exec::Output::of(Some(0), HONEST, "");
         out.truncated = true;
         assert!(
-            read_verdict(&out, &expected(&["one"]))
+            read_verdict(&out, &expected(&["one"]), false)
                 .unwrap_err()
                 .contains("truncated")
         );
         let why = read_verdict(
             &exec::Output::of(None, HONEST, "solver stopped"),
             &expected(&["one"]),
+            false,
         )
         .unwrap_err();
         assert!(why.contains("solver stopped"), "{why}");
@@ -960,10 +987,36 @@ VERIFICATION:- SUCCESSFUL
     }
 
     #[test]
+    fn with_require_cover_a_harness_that_declares_no_cover_is_at_fault() {
+        let checks = Checks {
+            failed: 0,
+            total: 2,
+            unreachable: 0,
+        };
+        let mut held = Harness {
+            name: "one".to_string(),
+            summary: Some(checks),
+            ..Harness::default()
+        };
+        let said = "no `kani::cover!` shows that a case gets past its assumptions, and \
+                    `proof.require_cover` asks each harness for one";
+        let coverless = Some(Finding::at("", said).item("one"));
+        assert_eq!(held.fault(false), None);
+        assert_eq!(held.fault(true), coverless);
+        held.covers = Some((0, 0));
+        assert_eq!(held.fault(true), coverless);
+        held.covers = Some((1, 1));
+        assert_eq!(held.fault(true), None);
+        let names = expected(&["one"]);
+        let read = read_verdict(&exec::Output::of(Some(0), HONEST, ""), &names, true).unwrap();
+        assert_eq!(read.series.get("one"), Some(1));
+    }
+
+    #[test]
     fn progress_before_the_first_harness_and_satisfied_covers_are_not_failures() {
         let text = format!("Compiling fixture\n{HONEST} ** 1 of 1 cover properties satisfied\n");
         assert_eq!(verdict_of(&text, 0).unwrap(), verified(&["one"]));
-        assert_eq!(Harness::default().fault(), None);
+        assert_eq!(Harness::default().fault(false), None);
     }
 
     #[test]
@@ -1113,14 +1166,14 @@ VERIFICATION:- SUCCESSFUL
     fn a_run_is_judged_by_its_output_and_one_that_did_not_start_is_an_error() {
         let listed = expected(&["one"]);
         let ran = Ok(exec::Output::of(Some(0), HONEST, ""));
-        let read = judged(ran, &listed, 60).map(|read| read.series);
+        let read = judged(ran, &listed, 60, false).map(|read| read.series);
         assert_eq!(read, verdict_of(HONEST, 0).map(|read| read.series));
         let hung = Err(exec::ExecError::of("cargo", exec::Stage::Hung, "gone"));
         let said = |read: Measurement| read.faults.iter().map(Finding::render).collect::<Vec<_>>();
-        let read = judged(hung, &listed, 60).map(said);
+        let read = judged(hung, &listed, 60, false).map(said);
         assert_eq!(read, Ok(said(timed_out(&listed, 60))));
         let gone = exec::ExecError::of("cargo", exec::Stage::Spawn, "gone");
-        let read = judged(Err(gone.clone()), &listed, 60).err();
+        let read = judged(Err(gone.clone()), &listed, 60, false).err();
         assert_eq!(read, Some(gone.to_string()));
     }
 

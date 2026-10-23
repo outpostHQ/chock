@@ -1,6 +1,7 @@
 //! Gates over the proofs that stand beside the code: TLA+ models, which TLC and Apalache check,
 //! Verus proofs and their mutants, and the links from a model back to the code it describes.
 
+pub mod laws;
 pub mod links;
 pub(crate) mod patch;
 pub mod tla;

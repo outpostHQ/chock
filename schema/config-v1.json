@@ -212,6 +212,10 @@
           "minItems": 1,
           "uniqueItems": true
         },
+        "require_cover": {
+          "description": "When true, a harness that declares no `kani::cover!` trips the gate. A satisfied cover shows that some case gets past the harness's `kani::assume` calls, so the harness checks more than nothing. Off when left out.",
+          "type": "boolean"
+        },
         "timeout_s": {
           "description": "Seconds the Kani run of every harness may take, and the run of each mutant. chock's tool limit when left out: 1800, or `CHOCK_TIMEOUT`.",
           "type": "integer",

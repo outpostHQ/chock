@@ -53,6 +53,7 @@ static REGISTRY: &[Gate] = &[
     proofs::tla::GATE,
     proofs::verus::GATE,
     proofs::links::GATE,
+    proofs::laws::GATE,
     tools::DEPS,
     tools::SORT,
     tools::dupdeps::GATE,

@@ -513,12 +513,7 @@ mod tests {
         ]
         .concat();
         let read = uncovered(&lcov, &root).unwrap();
-        let counts: Vec<(&str, u64)> = read
-            .series
-            .0
-            .iter()
-            .map(|(k, v)| (k.as_str(), *v))
-            .collect();
+        let counts = crate::testdir::rows(&read.series);
         assert_eq!(counts, [("src/a.rs", 1), ("src/only.rs", 0)]);
         assert_eq!(read.lines.get("src/a.rs"), Some(&vec![1]));
     }

@@ -127,7 +127,7 @@ mod tests {
         let mut ctx = Ctx::for_root(dir.to_path_buf(), baseline);
         ctx.vcs = Some(crate::project::vcs::Kind::Git);
         let series = measure(&ctx).unwrap();
-        let keys: Vec<(&str, u64)> = series.0.iter().map(|(k, n)| (k.as_str(), *n)).collect();
+        let keys = crate::testdir::rows(&series);
         assert_eq!(keys, [("total", 4)]);
         ctx.vcs = None;
         assert!(measure(&ctx).unwrap_err().contains("no repository"));

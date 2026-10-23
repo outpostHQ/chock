@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/baseline-v1.json",
   "version": 1,
-  "chock": "0.13.0",
+  "chock": "0.15.0",
   "gates": {
     "admits": {},
     "assertions": {
@@ -24,7 +24,7 @@
     },
     "bigfiles": {},
     "binsize": {
-      "chock": 4100576
+      "chock": 4382624
     },
     "binsize@macos": {
       "chock": 3021136
@@ -283,6 +283,25 @@
     "duplication": {},
     "features": {},
     "hazards": {},
+    "laws": {
+      "proofs/tla/BaselineWrite.tla#THEOREM GivesSafe@9f8ec159f25b27c7": 1,
+      "proofs/tla/BaselineWrite.tla#THEOREM InitHolds@25914b2f35d332e3": 1,
+      "proofs/tla/BaselineWrite.tla#THEOREM StepKeeps@afe2cdfbe9b84b34": 1,
+      "proofs/tla/RunLock.tla#THEOREM GivesSafe@17ec8954e8746f07": 1,
+      "proofs/tla/RunLock.tla#THEOREM InitHolds@276047856427725f": 1,
+      "proofs/tla/RunLock.tla#THEOREM StepKeeps@6a717a715945eab5": 1,
+      "proofs/verus/jobs.rs#fn jobs@7c90fd0b55d1ab2e": 1,
+      "proofs/verus/jobs.rs#fn kani_jobs@482818544d4d64dd": 1,
+      "proofs/verus/jobs.rs#fn shared@d45ed012cf70c822": 1,
+      "proofs/verus/jobs.rs#fn shares@ba31ccd925661463": 1,
+      "proofs/verus/jobs.rs#fn tightest@da89958830314e97": 1,
+      "proofs/verus/jobs.rs#fn within@63b9f6b86a9de2d0": 1,
+      "src/gates/metrics/duplication.rs#a_shape_past_the_bound_could_not_have_reached_the_threshold@e8b9b1941837e79d": 1,
+      "src/gates/metrics/duplication.rs#the_bound_itself_is_never_ruled_out@8ef718e5bc181ae3": 1,
+      "src/setup/version.rs#no_text_up_to_six_bytes_makes_from_version_output_panic@274b35c5664c0a53": 1,
+      "src/setup/version.rs#semver_end_consumes_only_single_byte_characters@c601574964277423": 1,
+      "src/setup/version.rs#semver_end_never_points_past_the_bytes_it_read@9691085be7b0f474": 1
+    },
     "lean": {},
     "lenses": {
       "hazard_expensive_call_in_loop": 0,
@@ -296,7 +315,7 @@
       "hazard_unordered_into_ordered": 0
     },
     "lines": {
-      "total": 90682
+      "total": 91672
     },
     "links": {},
     "manifest": {},
@@ -354,8 +373,8 @@
       "scattered_imports": 2,
       "scattered_imports_production": 2,
       "scattered_imports_test": 0,
-      "shared_files_split": 73,
-      "shared_files_split_production": 73,
+      "shared_files_split": 74,
+      "shared_files_split_production": 74,
       "shared_files_split_test": 0,
       "shell_modules": 0,
       "single_caller": 154,
@@ -641,6 +660,7 @@
     "duplicates": "duplicated line(s)",
     "features": "feature declaration issue(s)",
     "hazards": "hazard(s)",
+    "laws": "law(s)",
     "lean": "removable line(s)",
     "lines": "line(s)",
     "links": "stale link(s)",

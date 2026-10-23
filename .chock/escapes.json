@@ -1,0 +1,67 @@
+[
+  {
+    "path": "src/gates/metrics/duplication.rs",
+    "text": "kani::assume(smaller <= SIZE_BOUND);",
+    "reason": "Bounds the node count so the solver ends; the proof claims nothing past SIZE_BOUND"
+  },
+  {
+    "path": "src/gates/metrics/duplication.rs",
+    "text": "kani::assume(larger <= SIZE_BOUND);",
+    "reason": "Bounds the node count so the solver ends; the proof claims nothing past SIZE_BOUND"
+  },
+  {
+    "path": "src/gates/metrics/duplication.rs",
+    "text": "kani::assume(smaller <= larger);",
+    "reason": "link_near meets the forms in size order, so the later shape is never the smaller"
+  },
+  {
+    "path": "src/gates/metrics/duplication.rs",
+    "text": "kani::assume(threshold > 0 && threshold <= 10_000);",
+    "reason": "A similarity threshold is in basis points, from 1 to 10,000"
+  },
+  {
+    "path": "src/gates/metrics/duplication.rs",
+    "text": "kani::assume(larger > largest_comparable(smaller, threshold));",
+    "reason": "States the case under proof: a shape past the bound that link_near stops at"
+  },
+  {
+    "path": "src/gates/metrics/duplication.rs",
+    "text": "kani::assume(smaller > 0 && smaller <= SIZE_BOUND);",
+    "reason": "Bounds the node count so the solver ends; an empty shape has no copy to find"
+  },
+  {
+    "path": "src/gates/metrics/duplication.rs",
+    "text": "kani::assume(threshold > 0 && threshold <= 10_000);",
+    "reason": "A similarity threshold is in basis points, from 1 to 10,000"
+  },
+  {
+    "path": "src/gates/metrics/duplication.rs",
+    "text": "kani::assume(bound <= SIZE_BOUND && bound >= smaller);",
+    "reason": "States the case under proof: a bound inside SIZE_BOUND that the larger shape can reach"
+  },
+  {
+    "path": "src/setup/version.rs",
+    "text": "kani::assume(len <= INDEX_BOUND);",
+    "reason": "Bounds the text so the solver ends; proof cost grows steeply with length"
+  },
+  {
+    "path": "src/setup/version.rs",
+    "text": "kani::assume(start < len);",
+    "reason": "from_version_output calls semver_end only with a start inside the bytes"
+  },
+  {
+    "path": "src/setup/version.rs",
+    "text": "kani::assume(len <= INDEX_BOUND);",
+    "reason": "Bounds the text so the solver ends; proof cost grows steeply with length"
+  },
+  {
+    "path": "src/setup/version.rs",
+    "text": "kani::assume(start < len);",
+    "reason": "from_version_output calls semver_end only with a start inside the bytes"
+  },
+  {
+    "path": "src/setup/version.rs",
+    "text": "kani::assume(len <= TEXT_BOUND);",
+    "reason": "Bounds the text so the solver ends; the end-to-end proof covers up to six bytes"
+  }
+]

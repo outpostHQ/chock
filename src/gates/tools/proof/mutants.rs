@@ -129,7 +129,8 @@ fn verdict(
     let summaries = super::summarised(&out.stdout).unwrap_or_default();
     let held = summaries.iter().find(|held| held.name == harness);
     Ok(match held {
-        Some(held) if !super::findings(std::slice::from_ref(held)).is_empty() => None,
+        // A mutant asks only whether a harness fails, so a missing cover answers nothing.
+        Some(held) if !super::findings(std::slice::from_ref(held), false).is_empty() => None,
         Some(_) => Some(VERIFIES.into()),
         None => Some(format!(
             "the mutant stops kani before it checks {harness}, which refutes nothing: {}",

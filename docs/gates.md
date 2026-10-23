@@ -1,6 +1,6 @@
 # The gates
 
-`chock gates` prints this list from the binary: 68 gates, 39 on by default and 29 opt-in.
+`chock gates` prints this list from the binary: 69 gates, 39 on by default and 30 opt-in.
 `chock gates --json` gives the same list to a program.
 
 A gate is one of two kinds.
@@ -50,7 +50,7 @@ A gate is one of two kinds.
 | `coverage` | ✓ | a file gains lines no test executes; the run names every line of that file no test ran |
 | `binsize` | ✓ | a release binary grows by more than 1% or 256 KiB, whichever is larger |
 | `unsafety` | ✓ | a file gains an `unsafe` block, function, trait, impl or `extern` |
-| `admits` | ✓ | a Lean file gains a `sorry`, `admit`, `native_decide` or `axiom` outside its comments and strings; Lake's `.lake` and `lakefile.lean` do not count, and a tree with no Lean file passes |
+| `admits` | ✓ | a proof gains a step that nothing checks: `sorry`, `admit`, `native_decide` or `axiom` in Lean code; `assume(`, `admit(`, `assume_specification` or `verifier::external` in a Verus file; `kani::assume`; or a TLA+ `ASSUME`, `ASSUMPTION` or `AXIOM` that names no constant. `.chock/escapes.json` keeps one with its reason. Lake's `.lake` and `lakefile.lean` do not count, and a tree with no proof passes |
 | `citations` | ✓ | a doc comment names one more path the repository does not have |
 | `assertions` | ✓ | a test gains an assertion about *how many* instead of *what* |
 | `testlint` | ✓ | a file gains a test that asserts nothing, cannot fail, returns before it checks, is skipped with no reason or has a name that states no claim |
@@ -78,6 +78,7 @@ records the reason under `left_off` in the config.
 | `acl` | | a dependency reaches an API its `cackle.toml` entry does not grant |
 | `idempotent` | | the suite passes once and fails the second time |
 | `proof` | ✓ | a Kani harness does not verify, a mutant does not make its harness fail, or a harness on record is gone |
+| `laws` | ✓ | the text of a law changes or goes: a TLA+ theorem, a Verus `requires` or `ensures`, or a Kani harness's attributes and checks |
 | `miri` | | a test fails under Miri; the run lists every failing test |
 | `tla` | | TLC finds a fault in a model, a bad variant of a model passes, Apalache cannot prove the inductive invariant, or TLAPS does not prove a theorem |
 | `verus` | | Verus does not verify a proof file, or verifies a mutant, a patch that puts a fault in one function |
@@ -108,8 +109,10 @@ whole tree.
 
 ## Proofs and models
 
-Four gates check proofs: `tla` the TLA+ models, `verus` the Verus proofs, `proof` Kani harnesses,
-and `links` their ties to the code. Only `links` is on by default; it finds nothing with no model.
+Five gates check proofs: `tla` the TLA+ models, `verus` the Verus proofs, `proof` Kani harnesses,
+`links` their ties to the code, and `laws` the text of each law. Only `links` is on by default; it
+finds nothing with no model. `admits`, on by default too, counts the proof steps that nothing
+checks.
 
 ```
    proofs/tla/M.tla ──── tla ────► TLC: M.cfg passes, and each bad variant fails
@@ -118,8 +121,10 @@ and `links` their ties to the code. Only `links` is on by default; it finds noth
           │
    proofs/verus/*.rs ─── verus ──► Verus: each proof verifies, and each mutant fails
           │
-          └───────────── links ──► each `code:` comment names one item of the code,
-                                   and the item did not change after the model's last commit
+          ├───────────── links ──► each `code:` comment names one item of the code,
+          │                        and the item did not change after the model's last commit
+          │
+          └───────────── laws ───► each theorem, contract and harness keeps its text on record
 ```
 
 To start, switch the gates on, pin the tools, fetch them, then run the gates:
@@ -228,6 +233,27 @@ The gate counts a stale link for each of these:
   model where it is wrong, then commit the model. Only a git repository shows this.
 
 `links` is a ratchet: its first run records the stale links that the tree has.
+
+### `laws`
+
+`laws` pins the text of each law, so a weaker law cannot pass as the same one. A law is one of
+these:
+
+| law | its text |
+|---|---|
+| a `THEOREM`, `LEMMA`, `PROPOSITION` or `COROLLARY` at column 0 of a `.tla` file | the statement before its proof, and each definition at column 0 that the statement reaches |
+| a function with `requires` or `ensures` in a Rust file with a `verus!` block | its signature, and each `spec fn` that the signature reaches |
+| a function with `#[kani::proof]` or `#[kani::proof_for_contract]` | its `kani::` attributes, and each `assert!`, `kani::assert` and `kani::assume` in it |
+
+chock takes out the comments and the blank lines and hashes the text. In TLA+, the indent of a line
+stays, because a conjunction list reads by its indent. The key of a law is its file, its name and
+its hash, such as `proofs/tla/M.tla#THEOREM Safe@9f…`. A change to a proof, or to the code that a
+harness runs, keeps the key.
+
+A law that changes gets a new key, so the gate trips twice: the new key is not on record, and the
+old key is not measured. To accept the new law, a person runs `chock baseline laws`, and the
+reviewer sees the change in `.chock/baseline.json`. The first run records the laws that the tree
+has.
 
 ### Pins and downloads
 
@@ -377,11 +403,24 @@ chock keeps the files in `CHOCK_TOOLS`, else in `chock-tools` in cargo's home, s
   until `chock baseline pinned` records it. A recorded pin that leaves the documents trips the gate
   until `chock baseline pinned` records that change. So a commit that deletes a test and its pin
   also changes `.chock/baseline.json`, and a reviewer sees it.
+- **`.chock/escapes.json` keeps a step that `admits` counts.** Each entry names a file, the
+  line of the step and the reason it stays:
+
+  ```json
+  [{"path": "src/lib.rs", "text": "kani::assume(n < 9);", "reason": "bounds the loop"}]
+  ```
+
+  `text` is the whole line; chock trims its spaces. An entry keeps one step, so two equal lines in
+  one file need two entries. An entry that keeps no step trips the gate, so a reason cannot outlive
+  its line. An entry with a blank reason stops the gate.
 - **How `proof` keeps each harness.** Kani lists the harnesses of `proof.packages`, or of the whole
   workspace, and verifies them in one run. Each harness is one row of the record, 0 when it
   verifies. A harness that fails trips the gate whatever the record holds, and chock records
   nothing from that run. A harness that leaves the code trips the gate until `chock baseline proof`
   records that change. A run past `proof.timeout_s` trips with every harness unproven.
+- **`proof.require_cover` asks each harness for a cover.** When it is true, a harness with no
+  `kani::cover!` trips the gate. A satisfied cover shows that some case gets past the harness's
+  `kani::assume` calls. A cover that no case satisfies trips the gate whatever the setting.
 - **How `proof` refutes a mutant.** A mutant is a patch in `proof.mutants`, `proofs/kani/mutants`
   when left out, that puts a fault in one file. Line 1 names the file, as a path from the project
   root. Line 2 names the harness that must fail, as Kani lists it, such as

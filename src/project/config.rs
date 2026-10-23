@@ -233,6 +233,9 @@ pub struct Proof {
     /// `proofs/kani/mutants` when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mutants: Option<String>,
+    /// Whether each harness must declare a `kani::cover!`; not when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_cover: Option<bool>,
 }
 
 /// What the `verus` gate verifies. A field left out keeps chock's default.

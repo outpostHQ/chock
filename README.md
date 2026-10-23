@@ -6,7 +6,7 @@
 
 **Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers.**
 
-chock checks a Rust project with 68 gates and gives one answer with one exit code. The gates cover
+chock checks a Rust project with 69 gates and gives one answer with one exit code. The gates cover
 your tests, clippy, rustfmt, coverage, mutation testing, the supply chain, complexity, duplication,
 and formal proofs: TLA+ models (TLC, Apalache, TLAPS), Kani and Verus.
 
@@ -193,13 +193,13 @@ with each field explained.
 
 ## The gates
 
-68 gates: 39 are on by default and 29 are opt-in. `chock gates` prints the list from the binary,
+69 gates: 39 are on by default and 30 are opt-in. `chock gates` prints the list from the binary,
 and [docs/gates.md](docs/gates.md) says when each one trips.
 
 | topic | on by default | opt-in |
 |---|---|---|
 | Tests | `test`, `coverage`, `crap`, `assertions`, `testlint`, `admits` | `mutest`, `idempotent`, `miri` |
-| Proofs and models | `links` | `tla`, `proof`, `verus` |
+| Proofs and models | `links` | `tla`, `proof`, `verus`, `laws` |
 | Lints and format | `lint`, `codeslop`, `source`, `typos` | `fmt`, `shellcheck` |
 | Docs and comments | `doc`, `slop`, `citations`, `claims`, `pinned` | `phrases` |
 | Code shape | `complexity`, `nesting`, `bigfiles`, `splits`, `lean`, `duplication`, `unsafety`, `modcheck` | `duplicates`, `dead`, `lines` |
@@ -209,10 +209,12 @@ and [docs/gates.md](docs/gates.md) says when each one trips.
 | Your own checks | | `commands`, `commands-build`, `seams`, `owners`, `calls` |
 | [Outpost](https://github.com/outpostHQ) | | `padding`, `boundaries`, `scan`, `hazards`, `unreferenced`, `lenses`, `measures`, `unread` |
 
-Four gates do [formal verification](docs/gates.md#proofs-and-models). `tla` checks each TLA+ model
+Five gates do [formal verification](docs/gates.md#proofs-and-models). `tla` checks each TLA+ model
 with TLC, Apalache and TLAPS, `proof` each Kani harness, and `verus` each Verus proof; a planted
 fault must make each one fail. `links` holds each `code:` comment in a model or a proof to the item
-that it names. chock checks its own run lock, baseline writes and job counts this way.
+that it names. `laws` pins the text of each theorem, contract and harness, so a weaker law cannot
+pass as the same one. `admits` counts each proof step that nothing checks. chock checks its own run
+lock, baseline writes and job counts this way.
 
 ## Documentation
 

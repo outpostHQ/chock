@@ -269,12 +269,7 @@ mod tests {
             ],
         );
         let measured = measure(&ctx).unwrap();
-        let rows: Vec<(&str, u64)> = measured
-            .series
-            .0
-            .iter()
-            .map(|(key, n)| (key.as_str(), *n))
-            .collect();
+        let rows = crate::testdir::rows(&measured.series);
         assert_eq!(
             rows,
             [

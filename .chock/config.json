@@ -32,6 +32,7 @@
     "hygiene",
     "idempotent",
     "lean",
+    "laws",
     "lenses",
     "lines",
     "links",

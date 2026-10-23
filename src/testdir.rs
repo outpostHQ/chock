@@ -167,6 +167,11 @@ pub fn fetched(dir: &Path, stem: &str, file: &str) -> String {
     pin
 }
 
+/// Each row of a series as its key and its count, in key order, for an `assert_eq!`.
+pub fn rows(series: &crate::run::baseline::Series) -> Vec<(&str, u64)> {
+    series.0.iter().map(|(key, n)| (key.as_str(), *n)).collect()
+}
+
 #[allow(
     clippy::panic,
     clippy::unwrap_used,
