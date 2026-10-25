@@ -44,7 +44,8 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     ctx.default_build("cargo kani")?;
     clear_listing(&ctx.root)?;
     let packages = ctx.proof.packages.as_deref().unwrap_or_default();
-    let listing = invocation(packages, &ctx.features, &LIST);
+    let unstable = unstable(&crate::project::metadata(&ctx.root)?)?;
+    let listing = invocation(packages, &ctx.features, &list_with(&unstable));
     let listed = exec::run("cargo", &listing, &ctx.root).map_err(|e| e.to_string())?;
     let harnesses = read_harnesses(&listed, || read_listing(&ctx.root))?;
     let jobs = jobs(crate::exec::budget::cap(), ctx.proof_jobs).to_string();
@@ -106,6 +107,34 @@ fn judged(
 
 const LIST: [&str; 3] = ["list", "--format", "json"];
 
+/// `LIST` with each unstable feature the manifests turn on. Unlike a verification, `cargo kani
+/// list` reads no `metadata.kani.unstable`, so without them it refuses a contract's harness.
+fn list_with(unstable: &[String]) -> Vec<&str> {
+    let (verb, format) = LIST.split_at(1);
+    let named = unstable.iter().flat_map(|feature| ["-Z", feature.as_str()]);
+    verb.iter()
+        .copied()
+        .chain(named)
+        .chain(format.iter().copied())
+        .collect()
+}
+
+/// Each unstable Kani feature that `[workspace.metadata.kani.unstable]` or a package's table
+/// turns on, from `cargo metadata`.
+fn unstable(metadata: &str) -> Result<Vec<String>, String> {
+    let read: serde_json::Value = serde_json::from_str(metadata)
+        .map_err(|e| format!("cargo metadata wrote what chock cannot read: {e}"))?;
+    let packages = read["packages"].as_array().into_iter().flatten();
+    let tables = std::iter::once(&read["metadata"]).chain(packages.map(|one| &one["metadata"]));
+    let on: BTreeSet<String> = tables
+        .filter_map(|table| table["kani"]["unstable"].as_object())
+        .flatten()
+        .filter(|(_, set)| set.as_bool() == Some(true))
+        .map(|(feature, _)| feature.clone())
+        .collect();
+    Ok(on.into_iter().collect())
+}
+
 /// Each harness is one solver on one core: eight at most, within this lane's share of the cores,
 /// and never more than `proof_jobs`.
 fn jobs(share: usize, asked: Option<u32>) -> usize {
@@ -151,7 +180,7 @@ fn read_harnesses(
     if !listed.success() || listed.truncated {
         return Err(format!(
             "cargo kani could not completely list harnesses: {}",
-            listed.why_it_failed()
+            listed.why_it_stopped()
         ));
     }
     listed_harnesses(&listing()?)
@@ -249,7 +278,7 @@ fn finished(out: &exec::Output) -> Result<(), String> {
     }
     Err(format!(
         "kani did not finish successfully: {}",
-        out.why_it_failed()
+        out.why_it_stopped()
     ))
 }
 
@@ -1067,6 +1096,31 @@ VERIFICATION:- SUCCESSFUL
         let why =
             read_harnesses(&exec::Output::of(Some(0), "", ""), || Ok("{}".into())).unwrap_err();
         assert!(why.contains("no #[kani::proof] harnesses"), "{why}");
+    }
+
+    #[test]
+    fn a_listing_turns_on_each_unstable_feature_a_manifest_turns_on() {
+        let metadata = r#"{"metadata":{"kani":{"unstable":{"stubbing":true,"off":false}}},
+            "packages":[{"metadata":{"kani":{"unstable":{"function-contracts":true,
+            "stubbing":true}}}},{"metadata":null}]}"#;
+        let on = unstable(metadata).unwrap();
+        assert_eq!(on, ["function-contracts", "stubbing"]);
+        let listed = [
+            "list",
+            "-Z",
+            "function-contracts",
+            "-Z",
+            "stubbing",
+            "--format",
+            "json",
+        ];
+        assert_eq!(list_with(&on), listed);
+        assert_eq!(list_with(&[]), LIST);
+        assert_eq!(
+            unstable(r#"{"packages":[]}"#).unwrap(),
+            Vec::<String>::new()
+        );
+        assert!(unstable("not json").is_err());
     }
 
     #[test]

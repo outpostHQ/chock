@@ -3,12 +3,16 @@
 
 pub mod budget;
 pub mod fixed;
+mod marked;
 pub(crate) mod peak;
 
 use std::fmt;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
+
+use marked::last_line;
+pub(crate) use marked::{marked, marked_at};
 
 /// The most output kept per stream. The rest is drained and dropped, since a full pipe would block
 /// the child.
@@ -147,6 +151,15 @@ impl Output {
             .unwrap_or("no reason given")
     }
 
+    /// The first error a compiler marked and its place, from stderr, then from stdout, where Kani
+    /// writes it while stderr holds cargo's summary; else `why_it_failed`.
+    #[must_use]
+    pub fn why_it_stopped(&self) -> String {
+        marked_at(&self.stderr)
+            .or_else(|| marked_at(&self.stdout))
+            .unwrap_or_else(|| self.why_it_failed().to_string())
+    }
+
     /// What a signal that ended a process says: the kernel ends one with SIGKILL (exit 137) when
     /// memory runs out, which the tool's own words do not say.
     fn signal_note(&self) -> &'static str {
@@ -167,10 +180,12 @@ impl Output {
         } else {
             ""
         };
+        // A marked error gets its place, which the tails may have lost.
+        let why = marked_at(&self.stderr).unwrap_or_else(|| self.why_it_failed().to_string());
         format!(
             "{}{}{cut}{}{}",
             self.signal_note(),
-            text_tail(self.why_it_failed(), 1024),
+            text_tail(&why, 1024),
             diagnostic("stdout", &self.stdout),
             diagnostic("stderr", &self.stderr)
         )
@@ -200,36 +215,6 @@ fn diagnostic(stream: &str, text: &str) -> String {
         "\n{stream} (bounded output{clipped}):\n{}",
         text_tail(text, DIAGNOSTIC_BYTES)
     )
-}
-
-/// The first line a compiler or linker marked as an error, preferring a rustc diagnostic with a
-/// code over cargo's closing summary.
-pub(crate) fn marked(text: &str) -> Option<&str> {
-    let lines = || text.lines().map(str::trim_start);
-    lines()
-        .find(|line| line.starts_with("error["))
-        .or_else(|| lines().find(|line| line.starts_with("error:") && !a_summary(line)))
-        .or_else(|| lines().find_map(|line| named_its_own_error(line)))
-        .or_else(|| lines().find(|line| line.starts_with("fatal:")))
-}
-
-/// A `tool: error: …` line, as a linker such as `wild` prints.
-fn named_its_own_error(line: &str) -> Option<&str> {
-    let (before, _) = line.split_once("error: ")?;
-    let tool = before.strip_suffix(": ")?;
-    let named = !tool.is_empty() && !tool.contains(char::is_whitespace);
-    (named && !a_summary(line)).then_some(line)
-}
-
-/// cargo's closing `could not compile … previous error` line, which names the crate, not the line.
-fn a_summary(line: &str) -> bool {
-    line.contains("could not compile") || line.contains("previous error")
-}
-
-fn last_line(text: &str) -> Option<&str> {
-    text.lines()
-        .map(str::trim_end)
-        .rfind(|line| !line.is_empty())
 }
 
 /// The text with terminal colour escapes removed, each from `\x1b` to the next letter.
@@ -833,7 +818,7 @@ fn run_full(
         .envs(crash_report(std::env::var_os("RUSTC_ICE").as_deref()))
         .envs(env.iter().copied())
         .env(DEPTH, (depth() + 1).to_string())
-        .envs(crate::exec::budget::caps())
+        .envs(crate::exec::budget::caps(env))
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1077,6 +1062,33 @@ mod tests {
             said("", "fatal: not a git repository\n").why_it_failed(),
             "fatal: not a git repository"
         );
+    }
+
+    #[test]
+    fn a_tool_that_marks_its_error_on_stdout_stops_with_that_error_and_its_place() {
+        let kani =
+            "Compiling a v0.1.0\nerror[E0308]: mismatched types\n  --> src/a.rs:4:20\n   |\n";
+        let summary = "error: could not compile `a` (lib) due to 1 previous error\n";
+        assert_eq!(
+            said(kani, summary).why_it_stopped(),
+            "error[E0308]: mismatched types at src/a.rs:4:20"
+        );
+        // stderr's own marked error comes first, and a run that marks none keeps `why_it_failed`.
+        let both = said(kani, "error[E0432]: unresolved import `x`\n");
+        assert_eq!(both.why_it_stopped(), "error[E0432]: unresolved import `x`");
+        assert_eq!(said("done\n", summary).why_it_stopped(), summary.trim_end());
+    }
+
+    #[test]
+    fn the_failure_details_give_a_marked_error_the_place_the_tails_may_have_lost() {
+        let warnings = "warning: unused\n".repeat(400);
+        let stderr = format!("error[E0252]: `r` is defined twice\n --> tests/a.rs:3:5\n{warnings}");
+        let details = said("", &stderr).failure_details();
+        assert!(
+            details.starts_with("error[E0252]: `r` is defined twice at tests/a.rs:3:5"),
+            "{details}"
+        );
+        assert!(!details[40..].contains("tests/a.rs"), "{details}");
     }
 
     #[test]

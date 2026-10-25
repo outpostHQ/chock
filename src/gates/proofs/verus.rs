@@ -48,7 +48,7 @@ enum Said {
     Verified,
     /// The results line, and the first error above it.
     Failed(String),
-    /// No results line: Verus stopped at a parse or a type error before it verified anything.
+    /// No results line, a clean one with nothing verified, or a clean one and a failed exit.
     Stopped(String),
     TimedOut,
 }
@@ -76,12 +76,28 @@ impl Said {
                 .map(str::trim)
                 .find(|line| line.contains(RESULTS))
             {
-                Some(line) if line.contains(CLEAN) => Self::Verified,
+                Some(line) if line.contains(CLEAN) => Self::clean(line, out, &error),
                 Some(line) => Self::Failed(format!("{line}; {error}")),
                 None => Self::Stopped(error),
             },
         )
     }
+
+    /// A clean results line verifies only when Verus checked a function and exited 0.
+    fn clean(line: &str, out: &exec::Output, error: &str) -> Self {
+        match (counted(line), out.success()) {
+            (Some(1..), true) => Self::Verified,
+            (_, true) => Self::Stopped(format!("{line}, so the run proves no function")),
+            (_, false) => Self::Stopped(format!("{line}, yet {error}")),
+        }
+    }
+}
+
+/// The count before ` verified` on the results line.
+fn counted(line: &str) -> Option<u64> {
+    let (_, rest) = line.split_once(RESULTS)?;
+    let (count, _) = rest.split_once(" verified")?;
+    count.trim().parse().ok()
 }
 
 /// The toolchain Verus asked for, from `required rust toolchain 1.98.1-x86_64-… not found`.
@@ -98,14 +114,14 @@ fn judged(mutant: bool, said: &Said, limit: u64) -> Option<String> {
             "Verus ran past its {limit} s limit; raise `verus.timeout_s` if it needs longer"
         )),
         (false, Said::Failed(why)) => Some(format!("does not verify: {why}")),
-        (false, Said::Stopped(why)) => Some(format!("Verus stopped before it verified: {why}")),
+        (false, Said::Stopped(why)) => Some(format!("Verus gave no verdict: {why}")),
         (true, Said::Verified) => Some(
             "the mutant verifies, so no proof sees the fault it puts in; make the proof \
              stronger, or the mutant break what the proof states"
                 .into(),
         ),
         (true, Said::Stopped(why)) => Some(format!(
-            "the mutant stops Verus before it verifies, which refutes nothing: {why}"
+            "the mutant gets no verdict from Verus, which refutes nothing: {why}"
         )),
     }
 }
@@ -342,7 +358,7 @@ mod tests {
     fn verus_s_last_line_is_its_verdict_and_a_missing_toolchain_is_no_verdict() {
         let said = |text: &str| Said::of(&output(1, text));
         let clean = "\u{1b}[1mverification results:: 4 verified, 0 errors\u{1b}[0m\n";
-        assert_eq!(said(clean), Ok(Said::Verified));
+        assert_eq!(Said::of(&output(0, clean)), Ok(Said::Verified));
         let failed = said(
             "error: postcondition not satisfied\n --> a.rs:3:5\nverification results:: 3 verified, 10 errors\n",
         );
@@ -367,6 +383,20 @@ mod tests {
                 .unwrap_err()
                 .ends_with("run `rustup install 1.98.1-x86_64-unknown-linux-gnu`")
         );
+    }
+
+    #[test]
+    fn a_clean_results_line_verifies_only_after_a_function_was_checked_and_verus_exited_0() {
+        let none = Said::of(&output(0, "verification results:: 0 verified, 0 errors\n"));
+        assert!(matches!(none, Ok(Said::Stopped(why)) if why.ends_with("proves no function")));
+        let failed = "verification results:: 2 verified, 0 errors\nerror: aborting\n";
+        let failed = Said::of(&output(101, failed));
+        assert!(matches!(failed, Ok(Said::Stopped(why)) if why.contains(", yet exit 101")));
+        assert_eq!(
+            counted("verification results:: 12 verified, 0 errors"),
+            Some(12)
+        );
+        assert_eq!(counted("verification results:: verified, 0 errors"), None);
     }
 
     #[test]
@@ -534,11 +564,11 @@ esac
         let patches = ["away", "gone", "noname", "raw", "halt", "same"].map(at);
         let stopped = "exit 1: error: expected one of";
         let halted =
-            format!("the mutant stops Verus before it verifies, which refutes nothing: {stopped}");
+            format!("the mutant gets no verdict from Verus, which refutes nothing: {stopped}");
         let failed = "verification results:: 0 verified, 1 errors; exit 1: error: postcondition not satisfied";
         let (failed, stopped) = (
             format!("does not verify: {failed}"),
-            format!("Verus stopped before it verified: {stopped}"),
+            format!("Verus gave no verdict: {stopped}"),
         );
         let verifies = judged(true, &Said::Verified, 0).unwrap();
         let expected: [(&str, Option<&str>, &str); 8] = [

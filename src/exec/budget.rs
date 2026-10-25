@@ -13,6 +13,10 @@ pub const ASKED: &str = "CHOCK_JOBS";
 /// less than a build job. At 2 GB each, a 7 GB Mac ran its tests one at a time.
 pub const PER_TEST_MB: u64 = 512;
 
+/// What one build job of a mutation driver may need at its peak: it compiles each mutant into
+/// the crate. On a large workspace, 11 jobs peaked near 2.1 GB each.
+pub const PER_DRIVER_JOB_MB: u64 = 3072;
+
 /// What one Miri interpreter may need at its peak. Chock's own suite, its groups at once on 32
 /// cores, peaked at 5968 MB in all.
 pub const PER_INTERPRETER_MB: u64 = 512;
@@ -264,6 +268,14 @@ pub fn machine() -> usize {
     *CAP.get_or_init(|| of_this_machine(PER_JOB_MB))
 }
 
+/// The cargo job cap for a mutation driver: the lane's share of what memory allows at
+/// `PER_DRIVER_JOB_MB` each, never above the run's own cap.
+#[must_use]
+pub fn driver_jobs() -> (&'static str, String) {
+    let jobs = of_this_machine(PER_DRIVER_JOB_MB).min(machine());
+    (CARGO_JOBS, shared(jobs).to_string())
+}
+
 /// Miri interpreters to run at once: the lane's share of the cores, with memory counted at what
 /// one interpreter needs, not a build job. At 2 GB each, a 7 GB Mac cannot use its 3 cores.
 #[must_use]
@@ -311,13 +323,20 @@ impl Drop for Lane {
     }
 }
 
-/// The cap variables to set on a spawn: the lane's share, never above a value already set.
+/// The cap variables to set on a spawn: the lane's share, never above a value chock's own
+/// environment or the spawn's `env` already set.
 #[must_use]
-pub fn caps() -> Vec<(&'static str, String)> {
+pub fn caps(env: &[(&str, &str)]) -> Vec<(&'static str, String)> {
     [(CARGO_JOBS, cap()), (NEXTEST_THREADS, tests())]
         .into_iter()
-        .map(|(key, jobs)| (key, within(jobs, std::env::var(key).ok().as_deref())))
-        .map(|(key, jobs)| (key, jobs.to_string()))
+        .map(|(key, jobs)| {
+            let own = within(jobs, std::env::var(key).ok().as_deref());
+            let given = env
+                .iter()
+                .rfind(|(name, _)| *name == key)
+                .map(|(_, set)| *set);
+            (key, within(own, given).to_string())
+        })
         .collect()
 }
 
@@ -634,8 +653,19 @@ mod tests {
 
     #[test]
     fn every_spawn_carries_a_cap_for_cargo_and_for_the_test_runner() {
-        let carried: Vec<&str> = caps().into_iter().map(|(key, _)| key).collect();
+        let carried: Vec<&str> = caps(&[]).into_iter().map(|(key, _)| key).collect();
         assert_eq!(carried, [CARGO_JOBS, NEXTEST_THREADS]);
+    }
+
+    #[test]
+    fn a_spawn_that_sets_a_lower_job_cap_keeps_it_and_a_higher_one_is_lowered() {
+        // Other tests hold lanes at once, so a share is checked against the machine's cap.
+        let jobs = |env: &[(&str, &str)]| caps(env)[0].1.parse::<usize>().unwrap();
+        assert_eq!(jobs(&[(CARGO_JOBS, "1")]), 1);
+        assert!((1..=machine()).contains(&jobs(&[(CARGO_JOBS, "99999")])));
+        let (key, driver) = driver_jobs();
+        assert_eq!(key, CARGO_JOBS);
+        assert!((1..=machine()).contains(&driver.parse::<usize>().unwrap()));
     }
 
     #[test]

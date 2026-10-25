@@ -134,7 +134,7 @@ fn verdict(
         Some(_) => Some(VERIFIES.into()),
         None => Some(format!(
             "the mutant stops kani before it checks {harness}, which refutes nothing: {}",
-            out.why_it_failed()
+            out.why_it_stopped()
         )),
     })
 }

@@ -12,6 +12,8 @@ use crate::project;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Inspection, Kind};
 
+mod expand;
+
 pub const GATE: Gate = Gate {
     name: "modcheck",
     about: "every `mod` declaration names a file, and every module file is declared",
@@ -367,6 +369,7 @@ fn reaches(src: &str, base: &str, file_dir: &str) -> Result<Reaches, String> {
     let mut walk = Walk {
         file_dir,
         found: Reaches::default(),
+        macros: BTreeMap::new(),
     };
     walk.items(&file.items, base, file_dir);
     Ok(walk.found)
@@ -405,6 +408,8 @@ struct Site {
 struct Walk<'a> {
     file_dir: &'a str,
     found: Reaches,
+    /// The arms of each `macro_rules!` seen so far, by name, for the calls after it.
+    macros: BTreeMap<String, Vec<expand::Arm>>,
 }
 
 impl Walk<'_> {
@@ -417,6 +422,7 @@ impl Walk<'_> {
                 syn::Item::Macro(item) => {
                     self.splice(&item.mac, dir);
                     self.guess(&item.mac, dir);
+                    self.expand(item, dir);
                 }
                 _ => {}
             }
@@ -445,8 +451,36 @@ impl Walk<'_> {
         if mac.path.is_ident("include") {
             return;
         }
+        self.guessed(modules_in(&mac.tokens), mac, dir);
+    }
+
+    /// Keeps each `macro_rules!` for the calls after it, and records the modules each call to one
+    /// declares, which resolve from the call.
+    fn expand(&mut self, item: &syn::ItemMacro, dir: &str) {
+        let mac = &item.mac;
+        if let Some(name) = item
+            .ident
+            .as_ref()
+            .filter(|_| mac.path.is_ident("macro_rules"))
+        {
+            self.macros
+                .insert(name.to_string(), expand::arms(&mac.tokens));
+            return;
+        }
+        let Some(arms) = mac
+            .path
+            .get_ident()
+            .and_then(|name| self.macros.get(&name.to_string()))
+        else {
+            return;
+        };
+        let names = expand::modules(arms, &mac.tokens);
+        self.guessed(names, mac, dir);
+    }
+
+    fn guessed(&mut self, names: Vec<String>, mac: &syn::Macro, dir: &str) {
         let line = u32::try_from(mac.path.span().start().line).unwrap_or(u32::MAX);
-        for name in modules_in(&mac.tokens) {
+        for name in names {
             self.found.guessed.push(Decl {
                 name,
                 dir: dir.to_string(),
@@ -506,22 +540,24 @@ fn literal(value: &syn::Expr) -> Option<String> {
 /// Every `path = "…"` in a `cfg_attr`'s arguments, at any depth. Read from tokens because
 /// `syn::Meta` holds those arguments as one opaque list.
 fn redirects_in(tokens: &proc_macro2::TokenStream) -> Vec<String> {
-    scanned(tokens, &assigned_path, &redirects_in)
+    scanned(tokens, 3, &assigned_path, &redirects_in)
 }
 
 /// Every `mod x;` in a token stream, at any depth.
 fn modules_in(tokens: &proc_macro2::TokenStream) -> Vec<String> {
-    scanned(tokens, &declared_module, &modules_in)
+    scanned(tokens, 3, &declared_module, &modules_in)
 }
 
-/// Matches `shape` against every three-token window, then recurses into each group with `deeper`.
+/// Matches `shape` against every window of `width` tokens, then recurses into each group with
+/// `deeper`.
 fn scanned(
     tokens: &proc_macro2::TokenStream,
+    width: usize,
     shape: &dyn Fn(&[proc_macro2::TokenTree]) -> Option<String>,
     deeper: &dyn Fn(&proc_macro2::TokenStream) -> Vec<String>,
 ) -> Vec<String> {
     let trees: Vec<proc_macro2::TokenTree> = tokens.clone().into_iter().collect();
-    let mut found: Vec<String> = trees.windows(3).filter_map(shape).collect();
+    let mut found: Vec<String> = trees.windows(width).filter_map(shape).collect();
     for tree in &trees {
         if let proc_macro2::TokenTree::Group(group) = tree {
             found.extend(deeper(&group.stream()));
@@ -716,6 +752,65 @@ mod tests {
                 ("Cargo.toml", ""),
                 ("src/lib.rs", "build_me! { mod never_written; }\n"),
             ]),
+            Vec::<String>::new()
+        );
+    }
+
+    /// The findings for a crate whose root holds `lib`, beside the `nested` files and an empty file
+    /// at each of `paths`.
+    fn rooted(lib: &str, nested: &[(&str, &str)], paths: &[&str]) -> Vec<String> {
+        let root = [("Cargo.toml", ""), ("src/lib.rs", lib)];
+        let empty = paths.iter().map(|path| (*path, ""));
+        rendered(
+            &root
+                .into_iter()
+                .chain(nested.iter().copied())
+                .chain(empty)
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn orphan(path: &str) -> String {
+        format!("{path}: {ORPHAN}")
+    }
+
+    #[test]
+    fn a_local_macro_declares_one_module_for_each_name_its_call_passes() {
+        let lib = "macro_rules! shapes {\n    ($($m:ident $label:literal,)*) => {\n        \
+                   $(pub mod $m;)*\n        pub const LABELS: &[&str] = &[$($label),*];\n    \
+                   };\n}\n\nshapes! {\n    circle \"Circle\",\n    square \"Square\",\n}\n";
+        let paths = ["src/circle/edge.rs", "src/square.rs", "src/triangle.rs"];
+        assert_eq!(
+            rooted(lib, &[("src/circle/mod.rs", "mod edge;\n")], &paths),
+            [orphan("src/triangle.rs")]
+        );
+    }
+
+    #[test]
+    fn only_the_names_bound_to_the_declared_variable_become_modules() {
+        let lib = "macro_rules! routes {\n    ($($m:ident => $handler:ident),* $(,)?) => \
+                   { $(mod $m;)* };\n}\nroutes!(users => list, posts => show,);\n";
+        let paths = ["src/users.rs", "src/posts.rs", "src/list.rs", "src/show.rs"];
+        assert_eq!(
+            rooted(lib, &[], &paths),
+            [orphan("src/list.rs"), orphan("src/show.rs")]
+        );
+    }
+
+    #[test]
+    fn the_first_arm_that_matches_a_call_declares_its_modules() {
+        let lib = "macro_rules! pick {\n    (only $m:ident) => { mod $m; };\n    \
+                   ($($m:ident)*) => { $(mod $m;)* };\n}\npick!(only a);\npick!(b c);\n";
+        let paths = ["src/a.rs", "src/b.rs", "src/c.rs", "src/only.rs"];
+        assert_eq!(rooted(lib, &[], &paths), [orphan("src/only.rs")]);
+    }
+
+    #[test]
+    fn a_module_a_macro_call_declares_resolves_from_the_call() {
+        let lib = "macro_rules! one {\n    ($m:ident) => { mod $m; };\n}\nmod outer {\n    \
+                   one!(inner);\n}\n";
+        assert_eq!(
+            rooted(lib, &[], &["src/outer/inner.rs"]),
             Vec::<String>::new()
         );
     }

@@ -79,6 +79,7 @@ fn mutated<T>(
     let measured = ran(ctx, ctx.wrapped("cargo", &argv), &|output| {
         judge(output, &|| results.survivors(), was)
             .and_then(|measured| accounted(ctx, output, &results).map(|()| measured))
+            .map_err(|error| results.with_stderr(output, &error))
     })
     .map_err(|error| format!("{error}{}", results.retained()))?;
     results.accept()?;
@@ -126,10 +127,11 @@ fn ran<T>(ctx: &Ctx, (program, args): (&str, Vec<&str>), check: Check<'_, T>) ->
         .environment()?
         .map(|(name, value)| (name.to_string(), value.to_string()));
     let (threads, share) = exec::budget::test_threads();
+    let (jobs, driver) = exec::budget::driver_jobs();
     let env: Vec<_> = values
         .iter()
         .map(|(name, value)| (name.as_str(), value.as_str()))
-        .chain([(threads, share.as_str())])
+        .chain([(threads, share.as_str()), (jobs, driver.as_str())])
         .collect();
     let output = exec::run_watched(program, &args, &ctx.root, &env, &mut watch, moving)
         .map_err(|error| format!("{error}{}", watch.retained()))?;
@@ -142,7 +144,8 @@ fn ran<T>(ctx: &Ctx, (program, args): (&str, Vec<&str>), check: Check<'_, T>) ->
 #[cfg(not(target_os = "linux"))]
 fn ran<T>(ctx: &Ctx, (program, args): (&str, Vec<&str>), check: Check<'_, T>) -> Result<T, String> {
     let (threads, share) = exec::budget::test_threads();
-    let env = [(threads, share.as_str())];
+    let (jobs, driver) = exec::budget::driver_jobs();
+    let env = [(threads, share.as_str()), (jobs, driver.as_str())];
     let output = exec::run_paced(program, &args, &ctx.root, &env, (moving, exec::deadline()))
         .map_err(|error| error.to_string())?;
     check(&output)

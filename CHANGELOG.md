@@ -5,6 +5,34 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.2] - 2026-10-25
+
+- **A Kani error that stops a run gives its place.** Kani writes the compiler's error to stdout,
+  and stderr holds only cargo's summary, so the `proof` gate said "could not compile". The gate now
+  reads the first marked error from stderr, then from stdout, with the `-->` place under it, as in
+  `error[E0308]: mismatched types at src/lib.rs:13:25`. The failure details of every tool give the
+  place too.
+- **The Kani listing turns on each unstable feature the manifest turns on.** A crate that turns on
+  a feature in `[package.metadata.kani.unstable]` or the workspace's table could not list a
+  contract's harness, since `cargo kani list` reads neither table. The listing now passes
+  `-Z <feature>` for each one.
+- **The `verus` gate passes a proof file only when Verus verified a function and exited 0.** A file
+  with no function in `verus!` gave `0 verified, 0 errors` and passed, so it proved nothing. Such a
+  run, and a run that exits nonzero after a clean results line, now give no verdict: a proof file
+  trips, and a mutant refutes nothing.
+- **A failed mutest run keeps mutest's stderr.** The gate writes it to `stderr.txt` in the retained
+  results directory and names that path in the finding, since the finding quotes only the tail.
+- **A spawn keeps a lower cargo job cap that its caller sets.** Each spawn set `CARGO_BUILD_JOBS`
+  after the caller's own value, so the caller could not lower it. The mutest gate now plans its
+  driver at 3072 MB a job: on a large workspace, 11 jobs peaked near 2.1 GB each.
+- **`modcheck` reads the modules a file's own `macro_rules!` declares.** A call such as
+  `shapes! { circle "Circle", square "Square", }` to a macro with `$($m:ident $label:literal,)*`
+  and `$(pub mod $m;)*` declares `circle` and `square`, but modcheck reported their files as
+  orphans. It now matches each call against the arms of a `macro_rules!` earlier in the same file,
+  and each identifier the first matching arm binds to a `mod $m;` variable declares a module. An
+  arm with a fragment such as `expr` stops the search, so modcheck guesses nothing it cannot read.
+  A macro from another file or crate is not read.
+
 ## [0.16.1] - 2026-10-23
 
 - **`chock doctor` counts a download pin as a pin.** A tool fetched from its URL, such as Verus

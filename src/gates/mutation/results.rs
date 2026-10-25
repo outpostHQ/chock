@@ -111,6 +111,16 @@ impl Results {
             .map_err(|error| format!("cannot remove mutest's results: {error}"))
     }
 
+    /// `error`, once mutest's captured stderr is kept in the results, since a finding quotes
+    /// only its tail.
+    pub(super) fn with_stderr(&self, out: &crate::exec::Output, error: &str) -> String {
+        let kept = self.directory.join("stderr.txt");
+        match crate::project::document::write(&kept, &out.stderr) {
+            Ok(()) => format!("{error}; mutest's stderr is at {}", kept.display()),
+            Err(cannot) => format!("{error}; cannot keep mutest's stderr: {cannot}"),
+        }
+    }
+
     pub(super) fn retained(&self) -> String {
         format!("; mutest results retained at {}", self.directory.display())
     }
@@ -484,6 +494,32 @@ mod tests {
             "results kept for the project's flags were removed"
         );
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_failed_run_keeps_mutest_s_stderr_beside_its_results() {
+        let root = crate::testdir::make("mutest-results-stderr");
+        let results = Results::create(&root).unwrap();
+        let out = crate::exec::Output {
+            code: Some(4),
+            stdout: String::new(),
+            stderr: "error[E0252]: the name `f` is defined multiple times\n".into(),
+            truncated: false,
+        };
+        let said = results.with_stderr(&out, "mutest did not finish");
+        let kept = results.directory.join("stderr.txt");
+        assert_eq!(
+            said,
+            format!(
+                "mutest did not finish; mutest's stderr is at {}",
+                kept.display()
+            )
+        );
+        assert_eq!(std::fs::read_to_string(kept).unwrap(), out.stderr);
+        std::fs::remove_dir_all(&results.directory).unwrap();
+        let lost = results.with_stderr(&out, "mutest did not finish");
+        let prefix = "mutest did not finish; cannot keep mutest's stderr: ";
+        assert!(lost.starts_with(prefix), "{lost}");
     }
 
     #[test]

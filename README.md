@@ -167,9 +167,12 @@ and for the special tools.
 ## For agents
 
 `chock init` writes `.chock/agents.md`, the contract for an agent; it is
-[`docs/agents.md`](docs/agents.md) in this repository. It also adds one line that points to that
-file in each of `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md` and
-`.cursor/rules/chock.mdc` that the project already has.
+[`docs/agents.md`](docs/agents.md) in this repository.
+
+<!-- doc-check: foreign -->
+It also adds one line that points to that file in each of `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`,
+`.github/copilot-instructions.md` and `.cursor/rules/chock.mdc` that the project already has.
+<!-- doc-check: ours -->
 
 1. Run `chock run --json`, or `chock run --fast --json` for an answer in seconds.
 2. Read `verdict` in each entry of `gates`.

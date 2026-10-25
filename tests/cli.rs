@@ -2211,11 +2211,13 @@ fn ci_cannot_silently_exclude_an_explicit_local_only_gate() {
     says(&result.err, "leaves out what you named");
 }
 
-/// A `cargo` that answers `--version` and the given `case` arms, and a `kani` for `chock doctor`.
+/// A `cargo` that answers `--version`, `metadata` for a manifest with no Kani table, and the given
+/// `case` arms, and a `kani` for `chock doctor`.
 #[cfg(unix)]
 fn fake_kani(dir: &Path, arms: &str, config: &chock::project::config::Config) {
     let cargo = format!(
-        "#!/bin/sh\ncase \"$*\" in\n  --version) printf 'cargo fixture\\n';;\n{arms}  \
+        "#!/bin/sh\ncase \"$*\" in\n  --version) printf 'cargo fixture\\n';;\n  \
+         'metadata --no-deps --format-version 1') printf '{{\"packages\":[]}}\\n';;\n{arms}  \
          *) printf 'unexpected invocation: %s\\n' \"$*\" >&2; exit 1;;\nesac\n"
     );
     put(dir, "bin/cargo", &cargo);
