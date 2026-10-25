@@ -1,6 +1,6 @@
 # The gates
 
-`chock gates` prints this list from the binary: 69 gates, 39 on by default and 30 opt-in.
+`chock gates` prints this list from the binary: 70 gates, 40 on by default and 30 opt-in.
 `chock gates --json` gives the same list to a program.
 
 A gate is one of two kinds.
@@ -28,6 +28,7 @@ A gate is one of two kinds.
 | `profile` | | the release profile skips a free win or silences a compiler check |
 | `toolchain` | | a `rust-toolchain` file names a channel that moves, such as `stable` or `nightly`, not a release or a dated nightly |
 | `hygiene` | | the repository tracks a secret, a credential or build output |
+| `workflows` | | a GitHub Actions workflow or action runs an action by a tag, a branch or a short SHA, or an image without its `sha256` digest |
 | `wiring` | | a gate passes on this tree but is switched off, and is not opt-in |
 | `modcheck` | ✓ | a `mod` names no file, or more files are reached by no `mod` |
 | `manifest` | ✓ | more dependency declarations are unpinned |
@@ -596,6 +597,7 @@ A gate leaves these out on purpose. Each one has a place that shows it.
 | `pinned` | a fenced block; the text after `doc-check: foreign`; a `test:` span whose file does not end in `.rs` | the document |
 | `modcheck` | the directory of a file that holds the text `chock:modcheck-exempt` | the comment in that file |
 | `modcheck` | a `mod` name that a macro builds and no file has; a `.rs` file that does not parse and is outside `src/` or read by `include!` | the compiler, where a build uses it |
+| `workflows` | the actions and images that a pinned action runs in its own files; an image or a version that a step passes in `with:`; the runner that `runs-on` names | the `action.yml` at the pinned commit, and the step's `with:` |
 
 A tool can print more than the 16 MiB that chock keeps. A list that chock reads from such an output
 ends with a finding that says the list is not complete. A count is not read from such an output:

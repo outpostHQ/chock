@@ -41,8 +41,8 @@
   },
   {
     "path": "src/setup/version.rs",
-    "text": "kani::assume(len <= INDEX_BOUND);",
-    "reason": "Bounds the text so the solver ends; proof cost grows steeply with length"
+    "text": "kani::assume(start < len);",
+    "reason": "from_version_output calls semver_end only with a start inside the bytes"
   },
   {
     "path": "src/setup/version.rs",
@@ -50,18 +50,28 @@
     "reason": "from_version_output calls semver_end only with a start inside the bytes"
   },
   {
-    "path": "src/setup/version.rs",
-    "text": "kani::assume(len <= INDEX_BOUND);",
-    "reason": "Bounds the text so the solver ends; proof cost grows steeply with length"
+    "path": "src/gates/repo/workflows/pin.rs",
+    "text": "kani::assume(name_len >= 1 && name_len <= ACTION_BOUND - 41);",
+    "reason": "States the case under proof: a name of one byte or more, with room for `@` and 40 digits"
   },
   {
-    "path": "src/setup/version.rs",
-    "text": "kani::assume(start < len);",
-    "reason": "from_version_output calls semver_end only with a start inside the bytes"
+    "path": "src/gates/repo/workflows/pin.rs",
+    "text": "kani::assume(bytes[i] != b'@');",
+    "reason": "States the case under proof: the name holds no `@`, so the `@` before the digits is the last"
   },
   {
-    "path": "src/setup/version.rs",
-    "text": "kani::assume(len <= TEXT_BOUND);",
-    "reason": "Bounds the text so the solver ends; the end-to-end proof covers up to six bytes"
+    "path": "src/gates/repo/workflows/pin.rs",
+    "text": "kani::assume(bytes[i].is_ascii_hexdigit());",
+    "reason": "States the case under proof: the 40 bytes after the `@` are hexadecimal digits"
+  },
+  {
+    "path": "src/gates/repo/workflows/pin.rs",
+    "text": "kani::assume(!(bytes[1] == b'/' && (bytes[0] == b'.' || bytes[0] == b'$')));",
+    "reason": "States the case under proof: a `./` or `$/` path is local, and the harness on local pins covers it"
+  },
+  {
+    "path": "src/bounded.rs",
+    "text": "kani::assume(len <= N);",
+    "reason": "Bounds the input so the solver ends; each proof claims nothing past the N it names"
   }
 ]

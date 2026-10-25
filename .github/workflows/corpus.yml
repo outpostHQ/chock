@@ -41,14 +41,14 @@ jobs:
         working-directory: project
     steps:
       - name: Checkout chock
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: chock
           persist-credentials: false
 
       # Two commits, because `mutation` reads the change since the parent commit.
       - name: Checkout the project at its pin
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ matrix.repo }}
           ref: ${{ matrix.at }}
@@ -148,7 +148,7 @@ jobs:
 
       - name: Keep both run records
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: corpus-${{ matrix.name }}
           path: |

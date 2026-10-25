@@ -14,5 +14,7 @@ pub mod sweep;
 pub mod tokens;
 mod usage;
 
+#[cfg(kani)]
+mod bounded;
 #[cfg(test)]
 pub mod testdir;

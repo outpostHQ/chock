@@ -1,6 +1,6 @@
 [package]
 name = "chock"
-version = "0.16.2"
+version = "0.17.0"
 edition = "2024"
 rust-version = "1.99.0"
 description = "Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers."
@@ -38,6 +38,7 @@ pkg-fmt = "zip"
 
 [dependencies]
 proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+saphyr-parser = "0.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["raw_value"] }
 syn = { version = "3.0.9", features = ["full", "visit"] }

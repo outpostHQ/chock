@@ -69,7 +69,8 @@
     "unused",
     "unused-deep",
     "verus",
-    "wiring"
+    "wiring",
+    "workflows"
   ],
   "vcs": "git",
   "local_only": [

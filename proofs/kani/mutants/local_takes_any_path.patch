@@ -1,0 +1,5 @@
+--- src/gates/repo/workflows/pin.rs
++++ gates::repo::workflows::pin::proofs::a_local_pin_starts_with_dot_slash_or_dollar_slash
+@@ -19 +19 @@
+-    if uses.starts_with(b"./") || uses.starts_with(b"$/") {
++    if uses.get(1) == Some(&b'/') {

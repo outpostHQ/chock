@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/baseline-v1.json",
   "version": 1,
-  "chock": "0.16.2",
+  "chock": "0.17.0",
   "gates": {
     "admits": {},
     "assertions": {
@@ -269,6 +269,7 @@
     },
     "dupdeps": {
       "proc-macro2": 2,
+      "quote": 2,
       "syn": 2
     },
     "duplicates": {
@@ -300,10 +301,14 @@
       "src/gates/metrics/duplication.rs#the_bound_itself_is_never_ruled_out@8ef718e5bc181ae3": 1,
       "src/gates/proofs/tla/engines.rs#a_model_apalache_decides_whole_is_not_refused@a442c39a862d0e59": 1,
       "src/gates/proofs/tla/engines.rs#no_cfg_goes_to_an_engine_that_cannot_decide_it@7a4693d615ff2763": 1,
+      "src/gates/repo/workflows/pin.rs#a_commit_pin_is_forty_hex_digits_after_a_named_action@93930ce2dd136c97": 1,
+      "src/gates/repo/workflows/pin.rs#a_digest_pin_is_sixty_four_hex_digits_after_sha256@44cab682d3f26cec": 1,
+      "src/gates/repo/workflows/pin.rs#a_local_pin_starts_with_dot_slash_or_dollar_slash@9a4d8d750ee8c45a": 1,
+      "src/gates/repo/workflows/pin.rs#forty_hex_digits_after_a_name_always_pin_a_commit@6b9d2857620d4b14": 1,
       "src/setup/pins.rs#a_tool_is_pinned_exactly_when_a_pin_names_it@26e510bf9235a32e": 1,
-      "src/setup/version.rs#no_text_up_to_six_bytes_makes_from_version_output_panic@274b35c5664c0a53": 1,
-      "src/setup/version.rs#semver_end_consumes_only_single_byte_characters@c601574964277423": 1,
-      "src/setup/version.rs#semver_end_never_points_past_the_bytes_it_read@9691085be7b0f474": 1
+      "src/setup/version.rs#no_text_up_to_six_bytes_makes_from_version_output_panic@252f23cc53ec2399": 1,
+      "src/setup/version.rs#semver_end_consumes_only_single_byte_characters@4c0532f127f8fab2": 1,
+      "src/setup/version.rs#semver_end_never_points_past_the_bytes_it_read@621385b465df475d": 1
     },
     "lean": {},
     "lenses": {
@@ -318,7 +323,7 @@
       "hazard_unordered_into_ordered": 0
     },
     "lines": {
-      "total": 93241
+      "total": 94066
     },
     "links": {},
     "manifest": {},
@@ -387,8 +392,8 @@
       "scattered_imports_test": 0,
       "scattered_imports_unknown": 0,
       "shell_modules": 0,
-      "single_caller": 197,
-      "single_caller_production": 197,
+      "single_caller": 201,
+      "single_caller_production": 201,
       "single_caller_test": 7,
       "single_caller_unknown": 0,
       "sparse": 165,
@@ -605,6 +610,10 @@
       "gates::metrics::duplication::proofs::the_bound_itself_is_never_ruled_out": 0,
       "gates::proofs::tla::engines::proofs::a_model_apalache_decides_whole_is_not_refused": 0,
       "gates::proofs::tla::engines::proofs::no_cfg_goes_to_an_engine_that_cannot_decide_it": 0,
+      "gates::repo::workflows::pin::proofs::a_commit_pin_is_forty_hex_digits_after_a_named_action": 0,
+      "gates::repo::workflows::pin::proofs::a_digest_pin_is_sixty_four_hex_digits_after_sha256": 0,
+      "gates::repo::workflows::pin::proofs::a_local_pin_starts_with_dot_slash_or_dollar_slash": 0,
+      "gates::repo::workflows::pin::proofs::forty_hex_digits_after_a_name_always_pin_a_commit": 0,
       "setup::pins::proofs::a_tool_is_pinned_exactly_when_a_pin_names_it": 0,
       "setup::version::proofs::no_text_up_to_six_bytes_makes_from_version_output_panic": 0,
       "setup::version::proofs::semver_end_consumes_only_single_byte_characters": 0,
@@ -656,6 +665,8 @@
       "serde_core#build-script": 1,
       "serde_derive#proc-macro": 1,
       "serde_json#build-script": 1,
+      "thiserror#build-script": 1,
+      "thiserror-impl#proc-macro": 1,
       "zmij#build-script": 1
     },
     "testlint": {},
@@ -698,6 +709,7 @@
     "slop": "over-long comment block(s)",
     "sort": "unsorted manifest(s)",
     "splits": "movable parts",
+    "supply": "crate(s) running code at build time",
     "testlint": "test defect(s)",
     "unreferenced": "line(s) no shipped path reaches",
     "unused": "unused dependency(ies)"

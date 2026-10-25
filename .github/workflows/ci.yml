@@ -15,17 +15,17 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # No `toolchain:` input: the action reads rust-toolchain.toml, so CI and a laptop compile the
       # same tree with the same rustc. Its own cache is off because the next step is the cache.
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v2
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           cache: false
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: fast
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -33,7 +33,7 @@ jobs:
       # Downloads prebuilt binaries rather than compiling each tool, which is minutes against tens
       # of minutes. It falls back to `cargo install` for anything with no release to fetch.
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
+        uses: cargo-bins/cargo-binstall@81df5c23b0dc775b009efdfc9895c5965b7a4e40 # v1.26.1
 
       - name: Install the pinned tools these gates need
         run: |
@@ -71,12 +71,12 @@ jobs:
     steps:
       # `mutation` diffs against HEAD~1, which a shallow clone does not have.
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v2
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           components: clippy, rustfmt, llvm-tools-preview
           cache: false
@@ -87,13 +87,13 @@ jobs:
         run: for attempt in 1 2 3; do rustup toolchain install nightly --profile minimal && break; [ "$attempt" = 3 ] && exit 1; sleep 30; done
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: everything
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
+        uses: cargo-bins/cargo-binstall@81df5c23b0dc775b009efdfc9895c5965b7a4e40 # v1.26.1
 
       # A tool whose KEY_OS leaves out this system is not installed; `chock run` names its gate.
       - name: Install the pinned tools
@@ -133,7 +133,7 @@ jobs:
 
       # The `tla` gate runs TLC and Apalache on Java 21, from the jars that `--downloads` fetches.
       - name: Setup Java
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: '21'
@@ -172,12 +172,12 @@ jobs:
     steps:
       # `mutation` diffs against HEAD~1, which a shallow clone does not have.
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v2
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           cache: false
 
@@ -193,7 +193,7 @@ jobs:
           done
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: mutest
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -209,7 +209,7 @@ jobs:
 
       - name: Restore mutest built from that commit
         id: built
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/cargo-mutest*
@@ -239,7 +239,7 @@ jobs:
       # Saved at once, so a later gate failure does not lose the build.
       - name: Keep that build for the next run
         if: steps.built.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/cargo-mutest*
@@ -248,7 +248,7 @@ jobs:
 
       # One test runs cargo-crap, so each job that runs the tests installs the pinned one.
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
+        uses: cargo-bins/cargo-binstall@81df5c23b0dc775b009efdfc9895c5965b7a4e40 # v1.26.1
 
       - name: Install cargo-crap
         run: |
@@ -290,7 +290,7 @@ jobs:
           done
       - name: Keep mutest's results
         if: failure() || cancelled()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutest-results-${{ matrix.system }}
           path: |
@@ -315,10 +315,10 @@ jobs:
         shell: bash
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v2
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           cache: false
 
@@ -326,13 +326,13 @@ jobs:
         run: for attempt in 1 2 3; do rustup toolchain install nightly --profile minimal --component miri --component rust-src && break; [ "$attempt" = 3 ] && exit 1; sleep 30; done
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: miri
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
+        uses: cargo-bins/cargo-binstall@81df5c23b0dc775b009efdfc9895c5965b7a4e40 # v1.26.1
 
       - name: Install cargo-nextest
         run: |

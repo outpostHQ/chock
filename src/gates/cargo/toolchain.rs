@@ -1,7 +1,6 @@
 //! The `toolchain` gate: each rust-toolchain file pins one exact compiler, so every machine and
 //! every CI run builds with the same one, and a new release cannot change a result unseen.
 
-use crate::project;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
 
@@ -19,9 +18,7 @@ pub const GATE: Gate = Gate {
 const FILES: [&str; 2] = ["rust-toolchain.toml", "rust-toolchain"];
 
 fn check(ctx: &Ctx) -> Result<Outcome, String> {
-    let entered = |dir: &str| !project::SKIPPED.contains(&dir);
-    let named = |name: &str, _: &std::path::Path| FILES.contains(&name);
-    let files = project::walked(&ctx.listing, &ctx.root, &entered, &named)?;
+    let files = ctx.texts(&|name, _| FILES.contains(&name))?;
     if files.is_empty() {
         return Err(
             "no `rust-toolchain.toml` or `rust-toolchain` file here, so nothing pins the toolchain"
@@ -29,10 +26,7 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
         );
     }
     let mut found = Vec::new();
-    for path in files {
-        let shown = project::relative(&ctx.root, &path);
-        let text =
-            std::fs::read_to_string(&path).map_err(|e| format!("could not read {shown}: {e}"))?;
+    for (shown, text) in files {
         if let Some(message) = said(&text) {
             found.push(Finding::at(&shown, &message));
         }

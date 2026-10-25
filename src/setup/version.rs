@@ -235,9 +235,7 @@ mod proofs {
     #[kani::proof]
     #[kani::unwind(18)]
     fn semver_end_never_points_past_the_bytes_it_read() {
-        let len: usize = kani::any();
-        kani::assume(len <= INDEX_BOUND);
-        let bytes: [u8; INDEX_BOUND] = kani::any();
+        let (bytes, len) = crate::bounded::bytes::<INDEX_BOUND>();
         let start: usize = kani::any();
         kani::assume(start < len);
         if let Some(end) = semver_end(&bytes[..len], start) {
@@ -250,9 +248,7 @@ mod proofs {
     #[kani::proof]
     #[kani::unwind(18)]
     fn semver_end_consumes_only_single_byte_characters() {
-        let len: usize = kani::any();
-        kani::assume(len <= INDEX_BOUND);
-        let bytes: [u8; INDEX_BOUND] = kani::any();
+        let (bytes, len) = crate::bounded::bytes::<INDEX_BOUND>();
         let start: usize = kani::any();
         kani::assume(start < len);
         if let Some(end) = semver_end(&bytes[..len], start) {
@@ -268,9 +264,7 @@ mod proofs {
     #[kani::proof]
     #[kani::unwind(8)]
     fn no_text_up_to_six_bytes_makes_from_version_output_panic() {
-        let len: usize = kani::any();
-        kani::assume(len <= TEXT_BOUND);
-        let bytes: [u8; TEXT_BOUND] = kani::any();
+        let (bytes, len) = crate::bounded::bytes::<TEXT_BOUND>();
         if let Ok(text) = core::str::from_utf8(&bytes[..len]) {
             let _ = from_version_output(text);
         }

@@ -5,6 +5,29 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-26
+
+- **New gate `workflows`, on by default: each GitHub Actions workflow and action pins the code it
+  runs.** A `uses:` must name a full 40-character commit SHA, and a container, service or
+  `docker://` image must name its `sha256` digest. A tag, a branch or a short SHA trips the gate,
+  because the owner of the action, or an attacker who takes the owner's account, can point it at
+  new code. A path in the same repository, `./` or `$/`, passes. An image named by an expression,
+  and a file that is not YAML 1.2, trip the gate, because chock cannot check their pins. The gate
+  reads each `.yml` or `.yaml` file directly in `.github/workflows`, and each `action.yml` or
+  `action.yaml`. It resolves YAML anchors and aliases, and each finding names the line of its
+  value.
+- **A project with unpinned uses keeps the gate off after the upgrade.** `wiring` asks only for a
+  gate that would pass. `chock run workflows` lists each use to pin, and `chock init` switches the
+  gate on when it passes.
+- **Kani proves the pin rules** for each value up to 44 bytes for an action and 74 bytes for an
+  image. Three mutants show that the proofs catch a short SHA, a digest without `sha256:`, and a
+  local path that does not start with `./` or `$/`.
+- **chock pins its own 28 uses** to the commit of each release tag, with the tag in a comment.
+- **The gate reads YAML with `saphyr-parser` 0.2.** A file that makes more than 100000 nodes once
+  its aliases are copied trips the gate, so a few nested aliases cannot fill the memory.
+  `cackle.toml` grants the new crates only what they use: unsafe code to `arraydeque`, file and
+  process access to the build script of `thiserror`, and a proc macro to `thiserror-impl`.
+
 ## [0.16.2] - 2026-10-25
 
 - **A Kani error that stops a run gives its place.** Kani writes the compiler's error to stdout,

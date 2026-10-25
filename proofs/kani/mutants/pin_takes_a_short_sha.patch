@@ -1,0 +1,5 @@
+--- src/gates/repo/workflows/pin.rs
++++ gates::repo::workflows::pin::proofs::a_commit_pin_is_forty_hex_digits_after_a_named_action
+@@ -30 +30 @@
+-        Some(version) if hex(version, 40) => Pin::Commit,
++        Some(version) if hex(version, 7) => Pin::Commit,

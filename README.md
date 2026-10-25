@@ -6,7 +6,7 @@
 
 **Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers.**
 
-chock checks a Rust project with 69 gates and gives one answer with one exit code. The gates cover
+chock checks a Rust project with 70 gates and gives one answer with one exit code. The gates cover
 your tests, clippy, rustfmt, coverage, mutation testing, the supply chain, complexity, duplication,
 and formal proofs: TLA+ models (TLC, Apalache, TLAPS), Kani and Verus.
 
@@ -196,7 +196,7 @@ with each field explained.
 
 ## The gates
 
-69 gates: 39 are on by default and 30 are opt-in. `chock gates` prints the list from the binary,
+70 gates: 40 are on by default and 30 are opt-in. `chock gates` prints the list from the binary,
 and [docs/gates.md](docs/gates.md) says when each one trips.
 
 | topic | on by default | opt-in |
@@ -208,7 +208,7 @@ and [docs/gates.md](docs/gates.md) says when each one trips.
 | Code shape | `complexity`, `nesting`, `bigfiles`, `splits`, `lean`, `duplication`, `unsafety`, `modcheck` | `duplicates`, `dead`, `lines` |
 | Dependencies | `deps`, `manifest`, `placement`, `features`, `sort`, `dupdeps`, `unused`, `supply` | `unused-deep`, `acl` |
 | Build and release | `msrv`, `profile`, `toolchain`, `binsize` | `bsize` |
-| Repository | `commits`, `hygiene`, `wiring` | `history` |
+| Repository | `commits`, `hygiene`, `wiring`, `workflows` | `history` |
 | Your own checks | | `commands`, `commands-build`, `seams`, `owners`, `calls` |
 | [Outpost](https://github.com/outpostHQ) | | `padding`, `boundaries`, `scan`, `hazards`, `unreferenced`, `lenses`, `measures`, `unread` |
 

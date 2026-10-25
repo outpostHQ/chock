@@ -36,6 +36,7 @@ static REGISTRY: &[Gate] = &[
     cargo::toolchain::GATE,
     cargo::features::GATE,
     repo::hygiene::GATE,
+    repo::workflows::GATE,
     source::GATE,
     metrics::duplication::GATE,
     outpost::duplicates::GATE,

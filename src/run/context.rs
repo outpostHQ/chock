@@ -219,6 +219,22 @@ impl Ctx {
         held
     }
 
+    /// The name and text of each file outside the skipped directories that `keep` takes.
+    pub fn texts(
+        &self,
+        keep: &dyn Fn(&str, &std::path::Path) -> bool,
+    ) -> Result<Vec<(String, String)>, String> {
+        let entered = |dir: &str| !crate::project::SKIPPED.contains(&dir);
+        let files = crate::project::walked(&self.listing, &self.root, &entered, keep)?;
+        let read = |path: PathBuf| {
+            let shown = crate::project::relative(&self.root, &path);
+            let text = std::fs::read_to_string(&path);
+            text.map(|text| (shown.clone(), text))
+                .map_err(|e| format!("could not read {shown}: {e}"))
+        };
+        files.into_iter().map(read).collect()
+    }
+
     /// The files the change touched, from the repository that holds the tree.
     pub fn changed(&self) -> Result<&[String], String> {
         self.changed

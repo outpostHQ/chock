@@ -101,7 +101,7 @@ fn installing(tool: &str) -> &'static str {
     found.map_or(PINNED, |(_, repair)| repair)
 }
 
-const FIXES: [(&str, &str); 69] = [
+const FIXES: [(&str, &str); 70] = [
     (
         "test",
         "run the rerun command, read each failing test's output, and fix the code or the test; a crate with no tests needs one",
@@ -168,6 +168,10 @@ const FIXES: [(&str, &str); 69] = [
     (
         "hygiene",
         "stop tracking the file, rotate any credential it held, and add it to the ignore file",
+    ),
+    (
+        "workflows",
+        "pin each action to the full commit SHA that its tag names now, with the tag in a comment, and each image by its sha256 digest",
     ),
     (
         "source",

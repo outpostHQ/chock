@@ -63,6 +63,16 @@ allow_unsafe = true
 [pkg.serde_json]
 allow_unsafe = true
 
+# The workflows gate's YAML reader, saphyr-parser, and what it pulls in.
+[pkg.arraydeque]
+allow_unsafe = true
+
+[pkg.thiserror]
+build.allow_apis = ["fs", "process"]
+
+[pkg.thiserror-impl]
+allow_proc_macro = true
+
 # Reviewed syscall dependencies; chock itself still denies unsafe Rust.
 [pkg.bitflags]
 allow_unsafe = true

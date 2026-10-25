@@ -1,0 +1,5 @@
+--- src/gates/repo/workflows/pin.rs
++++ gates::repo::workflows::pin::proofs::a_digest_pin_is_sixty_four_hex_digits_after_sha256
+@@ -38 +38 @@
+-        .and_then(|version| version.strip_prefix(b"sha256:"))
++        .and_then(|version| version.get(7..))
