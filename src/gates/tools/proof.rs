@@ -42,9 +42,8 @@ struct Listing {
 
 fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     ctx.default_build("cargo kani")?;
-    clear_listing(&ctx.root)?;
+    let unstable = listing_features(&ctx.root)?;
     let packages = ctx.proof.packages.as_deref().unwrap_or_default();
-    let unstable = unstable(&crate::project::metadata(&ctx.root)?)?;
     let listing = invocation(packages, &ctx.features, &list_with(&unstable));
     let listed = exec::run("cargo", &listing, &ctx.root).map_err(|e| e.to_string())?;
     let harnesses = read_harnesses(&listed, || read_listing(&ctx.root))?;
@@ -117,6 +116,12 @@ fn list_with(unstable: &[String]) -> Vec<&str> {
         .chain(named)
         .chain(format.iter().copied())
         .collect()
+}
+
+/// Removes the old listing, then reads each unstable feature that `cargo kani list` must turn on.
+fn listing_features(root: &std::path::Path) -> Result<Vec<String>, String> {
+    clear_listing(root)?;
+    unstable(&crate::project::metadata(root)?)
 }
 
 /// Each unstable Kani feature that `[workspace.metadata.kani.unstable]` or a package's table
@@ -1121,6 +1126,20 @@ VERIFICATION:- SUCCESSFUL
             Vec::<String>::new()
         );
         assert!(unstable("not json").is_err());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_listing_clears_the_old_file_and_reads_the_unstable_features_of_a_real_manifest() {
+        let manifest = "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+                        [package.metadata.kani.unstable]\nfunction-contracts = true\n\n\
+                        [workspace]\n";
+        let root = crate::testdir::tree(
+            "proof-listing-features",
+            &[("Cargo.toml", manifest), ("src/lib.rs", ""), (LISTING, ONE)],
+        );
+        assert_eq!(listing_features(&root).unwrap(), ["function-contracts"]);
+        assert!(!root.join(LISTING).exists());
     }
 
     #[test]

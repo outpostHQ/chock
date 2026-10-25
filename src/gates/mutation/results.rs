@@ -497,6 +497,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_failed_run_keeps_mutest_s_stderr_beside_its_results() {
         let root = crate::testdir::make("mutest-results-stderr");
         let results = Results::create(&root).unwrap();
