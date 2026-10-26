@@ -1,0 +1,5 @@
+--- src/gates/mutation/proved/splice.rs
++++ gates::mutation::proved::splice::proofs::an_offset_is_the_byte_at_its_place
+@@ -89 +89 @@
+-        if !starts_char(byte) {
++        if false {

@@ -41,6 +41,7 @@ Without the parent, the gate cannot run.
 | `test_wrapper` | a command your suite runs under, such as a script that starts a service; the suite, coverage and `mutest` commands follow it |
 | `mutest_exhaustive` | `true` runs every test on each mutation, so `mutest` names each test that detects no mutation |
 | `mutest_args` | flags `cargo mutest run` takes after chock's own, such as `--timings` |
+| `mutest_proofs` | `true` lets a Kani harness that fails on a mutation no test detects kill it |
 | `not_shipped` | members nobody receives (fuzz harnesses, benchmarks), held to test-code rules |
 | `miri` | `packages` or `exclude` names the packages Miri runs over; `flags` replaces chock's `-Zmiri-disable-isolation -Zmiri-strict-provenance` |
 | `commands` | your own checks: a `name` and a `run` command; one that `counts` is ratcheted per item |
@@ -81,6 +82,23 @@ A candidate never trips the gate.
 `mutest_args` adds flags after chock's own, such as `["--timings"]`. Do not put `--exhaustive` there;
 use `mutest_exhaustive`. After such a run the results stay in
 `target/test-scratch/mutest-results-<process>-<time>/`. Delete the directory when you are done.
+
+`"mutest_proofs": true` lets Kani kill a mutation that no test detects. chock rebuilds the mutated
+file in a copy of the project under `target/test-scratch/`. It runs the harnesses that the file
+defines, and the harnesses that check the contracts of its functions. A harness counts only where it
+verifies on the file as it is. Kani runs one job at a time, so `mutest` then runs in the suite's
+lane. Each mutation builds the crate again, so a run takes longer.
+
+mutest writes each type in its code with a full path, such as
+`::alloc::vec::Vec<u8, ::alloc::alloc::Global>`. Where the code of a mutation names `::alloc`, the
+copy adds `extern crate alloc;` to each crate root of its package, and `#![feature(allocator_api)]`
+where the code names the allocator. A root that has them gets nothing, and no line of a root moves.
+
+The report names each mutation that a proof killed, with the harness. One lead sums up what the
+tests and the proofs killed, and why each survivor stays. A harness in another file never tries a
+mutation: a proof in `b.rs` of a function in `a.rs` kills nothing in `a.rs`, unless it checks a
+contract. mutest mutates only functions that a test calls, so keep a test that calls the code under
+proof.
 
 ## Forbidden phrases
 

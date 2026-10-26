@@ -82,6 +82,9 @@ pub struct Config {
     /// Flags mutest takes after chock's own, such as `--timings`; the results directory then stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mutest_args: Option<Vec<String>>,
+    /// Whether a Kani harness that fails on a mutation no test detects kills it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutest_proofs: Option<bool>,
     /// The most Kani harnesses `proof` verifies at once; each solver can hold several GB.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proof_jobs: Option<u32>,
@@ -415,6 +418,7 @@ impl Config {
             test_wrapper: None,
             mutest_exhaustive: None,
             mutest_args: None,
+            mutest_proofs: None,
             proof_jobs: None,
             proof: None,
             local_only: None,

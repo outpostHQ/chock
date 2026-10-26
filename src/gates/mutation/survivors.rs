@@ -3,6 +3,8 @@
 
 use std::collections::BTreeMap;
 
+use serde::Deserialize;
+
 use crate::run::baseline::Series;
 use crate::run::report::Finding;
 
@@ -47,6 +49,38 @@ pub struct Survivor {
     pub file: String,
     pub line: u32,
     pub what: String,
+    /// What the mutation changes, from which a proof's copy of the file is rebuilt.
+    pub edits: Vec<Edit>,
+}
+
+/// One change a mutation makes, as mutest writes it: where it goes, and the code it puts there.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Edit {
+    pub location: Location,
+    pub substitute: Substitute,
+}
+
+/// Where an edit goes: `kind` is `replace`, `insert_before` or `insert_after`, of `span`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Location {
+    pub kind: String,
+    pub span: Span,
+}
+
+/// The code an edit puts in: `kind` is `expr`, `stmt` or `local`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Substitute {
+    pub kind: String,
+    pub replacement: String,
+}
+
+/// A span of a file from the workspace root: its first place and the place just past it, each a
+/// line and a column in characters, counted from 1.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Span {
+    pub path: String,
+    pub begin: (u32, u32),
+    pub end: (u32, u32),
 }
 
 impl Survivor {
@@ -123,6 +157,7 @@ mod tests {
             file: "src/a.rs".to_string(),
             line,
             what: "does a thing".to_string(),
+            edits: Vec::new(),
         }
     }
 
@@ -146,6 +181,7 @@ mod tests {
             file: "src/a.rs".to_string(),
             line: 42,
             what: String::new(),
+            edits: Vec::new(),
         };
         assert_eq!(survivor.key(), "src/a.rs#eq_op_invert");
     }

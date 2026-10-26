@@ -15,6 +15,8 @@ use crate::run::{Ctx, Gate, Group, Kind};
 
 mod mutants;
 
+pub(in crate::gates) use mutants::target_dir;
+
 pub const GATE: Gate = Gate {
     name: "proof",
     about: "every kani harness still verifies, per harness, and fails on each mutant patch; a \
@@ -38,6 +40,15 @@ struct Listing {
     standard: serde_json::Value,
     #[serde(default, rename = "contract-harnesses")]
     contract: serde_json::Value,
+    #[serde(default)]
+    contracts: Vec<Contract>,
+}
+
+/// A function under contract: the file it is in, and the harnesses that check its contract.
+#[derive(Debug, Deserialize)]
+struct Contract {
+    file: String,
+    harnesses: Vec<String>,
 }
 
 fn measure(ctx: &Ctx) -> Result<Measurement, String> {
@@ -55,8 +66,12 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     mutated(judged(run, &harnesses, &ctx.proof), refute)
 }
 
+/// One run of kani: its arguments, the directory it runs in, and the target directory it uses.
+pub(in crate::gates) type Kani<'a> = dyn Fn(&[&str], &std::path::Path, &std::path::Path) -> Result<exec::Output, exec::ExecError>
+    + 'a;
+
 /// A mutant's run of kani: `cargo` with its arguments, in the mutant's copy, building in `target`.
-fn kani(
+pub(in crate::gates) fn kani(
     limit: Duration,
 ) -> impl Fn(&[&str], &std::path::Path, &std::path::Path) -> Result<exec::Output, exec::ExecError> {
     move |argv, dir, target| {
@@ -87,7 +102,7 @@ fn mutated(
 }
 
 /// How long kani may run: `proof.timeout_s`, or chock's own deadline.
-fn limit(asked: Option<u64>) -> Duration {
+pub(in crate::gates) fn limit(asked: Option<u64>) -> Duration {
     asked.map_or_else(exec::deadline, Duration::from_secs)
 }
 
@@ -108,7 +123,7 @@ const LIST: [&str; 3] = ["list", "--format", "json"];
 
 /// `LIST` with each unstable feature the manifests turn on. Unlike a verification, `cargo kani
 /// list` reads no `metadata.kani.unstable`, so without them it refuses a contract's harness.
-fn list_with(unstable: &[String]) -> Vec<&str> {
+pub(in crate::gates) fn list_with(unstable: &[String]) -> Vec<&str> {
     let (verb, format) = LIST.split_at(1);
     let named = unstable.iter().flat_map(|feature| ["-Z", feature.as_str()]);
     verb.iter()
@@ -126,7 +141,7 @@ fn listing_features(root: &std::path::Path) -> Result<Vec<String>, String> {
 
 /// Each unstable Kani feature that `[workspace.metadata.kani.unstable]` or a package's table
 /// turns on, from `cargo metadata`.
-fn unstable(metadata: &str) -> Result<Vec<String>, String> {
+pub(in crate::gates) fn unstable(metadata: &str) -> Result<Vec<String>, String> {
     let read: serde_json::Value = serde_json::from_str(metadata)
         .map_err(|e| format!("cargo metadata wrote what chock cannot read: {e}"))?;
     let packages = read["packages"].as_array().into_iter().flatten();
@@ -142,7 +157,7 @@ fn unstable(metadata: &str) -> Result<Vec<String>, String> {
 
 /// Each harness is one solver on one core: eight at most, within this lane's share of the cores,
 /// and never more than `proof_jobs`.
-fn jobs(share: usize, asked: Option<u32>) -> usize {
+pub(in crate::gates) fn jobs(share: usize, asked: Option<u32>) -> usize {
     let asked = asked.map_or(usize::MAX, |asked| {
         usize::try_from(asked).unwrap_or(usize::MAX)
     });
@@ -155,7 +170,7 @@ fn verify(jobs: &str) -> [&str; 4] {
 }
 
 /// The listing and the verification build the same packages and features.
-fn invocation<'a>(
+pub(in crate::gates) fn invocation<'a>(
     packages: &'a [String],
     features: &'a [String],
     then: &[&'a str],
@@ -261,7 +276,7 @@ fn verified_summaries(
 
 /// Each harness at fault, and with `covered` each with no cover. If none is, each failed check,
 /// except the panic that a `should_panic` harness expects.
-fn findings(harnesses: &[Harness], covered: bool) -> Vec<Finding> {
+pub(in crate::gates) fn findings(harnesses: &[Harness], covered: bool) -> Vec<Finding> {
     let judged: Vec<Finding> = harnesses
         .iter()
         .filter_map(|held| held.fault(covered))
@@ -305,8 +320,8 @@ fn complete(harnesses: &[Harness], expected: &BTreeSet<String>) -> Result<(), St
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-struct Harness {
-    name: String,
+pub(in crate::gates) struct Harness {
+    pub(in crate::gates) name: String,
     summary: Option<Checks>,
     covers: Option<(u64, u64)>,
     /// What kani concluded after `VERIFICATION:- `, with the note it adds for a `should_panic`.
@@ -428,7 +443,7 @@ impl Harness {
     }
 }
 
-fn summarised(stdout: &str) -> Result<Vec<Harness>, String> {
+pub(in crate::gates) fn summarised(stdout: &str) -> Result<Vec<Harness>, String> {
     let mut reading = Reading::default();
     for line in stdout.lines().map(exec::strip_colour) {
         reading.line(line.trim())?;
@@ -534,7 +549,7 @@ fn checks(rest: &str) -> Option<Checks> {
 
 const LISTING: &str = "kani-list.json";
 
-fn read_listing(root: &std::path::Path) -> Result<String, String> {
+pub(in crate::gates) fn read_listing(root: &std::path::Path) -> Result<String, String> {
     std::fs::read_to_string(root.join(LISTING))
         .map_err(|e| format!("cargo kani wrote no {LISTING}: {e}"))
 }
@@ -549,6 +564,27 @@ fn harness_names(listing_json: &str) -> Result<BTreeSet<String>, String> {
         }
     }
     Ok(names)
+}
+
+/// Each file's harnesses: those it defines, and those that check the contracts of its functions.
+pub(in crate::gates) fn by_file(
+    listing_json: &str,
+) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+    let listing: Listing = serde_json::from_str(listing_json)
+        .map_err(|e| format!("cargo kani listed harnesses unreadably: {e}"))?;
+    let mut found: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for section in [&listing.standard, &listing.contract] {
+        for (file, names) in section.as_object().into_iter().flatten() {
+            let mut held = BTreeSet::new();
+            names_in(names, &mut held)?;
+            found.entry(file.clone()).or_default().extend(held);
+        }
+    }
+    for contract in listing.contracts {
+        let held = found.entry(contract.file).or_default();
+        held.extend(contract.harnesses);
+    }
+    Ok(found)
 }
 
 /// Kani's maps locate harnesses by source file; every array element is a harness identity.
@@ -1248,6 +1284,23 @@ VERIFICATION:- SUCCESSFUL
         let gone = exec::ExecError::of("cargo", exec::Stage::Spawn, "gone");
         let read = judged(Err(gone.clone()), &listed, &proof).err();
         assert_eq!(read, Some(gone.to_string()));
+    }
+
+    #[test]
+    fn a_file_holds_its_own_harnesses_and_those_that_check_its_contracts() {
+        let listing = r#"{"standard-harnesses":{"src/a.rs":["a::one"]},
+            "contract-harnesses":{"src/a.rs":["a::two"],"src/b.rs":["b::three"]},
+            "contracts":[{"function":"c::f","file":"src/c.rs","harnesses":["a::two"]}]}"#;
+        let found = by_file(listing).unwrap();
+        let wanted = BTreeMap::from([
+            ("src/a.rs".to_string(), expected(&["a::one", "a::two"])),
+            ("src/b.rs".to_string(), expected(&["b::three"])),
+            ("src/c.rs".to_string(), expected(&["a::two"])),
+        ]);
+        assert_eq!(found, wanted);
+        assert_eq!(by_file(ONE).unwrap()["src/a.rs"], expected(&["one"]));
+        assert!(by_file(r#"{"standard-harnesses":{"src/a.rs":[1]}}"#).is_err());
+        assert!(by_file("not json").is_err());
     }
 
     #[test]

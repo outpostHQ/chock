@@ -2227,7 +2227,7 @@ mod tests {
             (&gates::tools::DOC, "targets-v1:input"),
             (
                 &gates::tools::MUTEST,
-                "watchdog-v1:isolated-v1:results-v1:scoped-v1:scope-v2:lowers-v1:input",
+                "watchdog-v1:isolated-v1:results-v1:scoped-v1:proofs-v1:scope-v2:lowers-v1:input",
             ),
         ];
         for (gate, expected) in cases {

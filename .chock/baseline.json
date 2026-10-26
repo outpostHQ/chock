@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/baseline-v1.json",
   "version": 1,
-  "chock": "0.17.0",
+  "chock": "0.18.0",
   "gates": {
     "admits": {},
     "assertions": {
@@ -299,6 +299,9 @@
       "proofs/verus/jobs.rs#fn within@63b9f6b86a9de2d0": 1,
       "src/gates/metrics/duplication.rs#a_shape_past_the_bound_could_not_have_reached_the_threshold@e8b9b1941837e79d": 1,
       "src/gates/metrics/duplication.rs#the_bound_itself_is_never_ruled_out@8ef718e5bc181ae3": 1,
+      "src/gates/mutation/proved/splice.rs#an_offset_is_the_byte_at_its_place@aba5c4d360f3fbf7": 1,
+      "src/gates/mutation/proved/splice.rs#one_cut_puts_its_text_in_place_of_its_span@ad19e3fd8126c7e5": 1,
+      "src/gates/mutation/proved/splice.rs#two_cuts_rebuild_one_file_in_either_order@46e8ff5679d2b1d7": 1,
       "src/gates/proofs/tla/engines.rs#a_model_apalache_decides_whole_is_not_refused@a442c39a862d0e59": 1,
       "src/gates/proofs/tla/engines.rs#no_cfg_goes_to_an_engine_that_cannot_decide_it@7a4693d615ff2763": 1,
       "src/gates/repo/workflows/pin.rs#a_commit_pin_is_forty_hex_digits_after_a_named_action@93930ce2dd136c97": 1,
@@ -323,13 +326,13 @@
       "hazard_unordered_into_ordered": 0
     },
     "lines": {
-      "total": 94066
+      "total": 95577
     },
     "links": {},
     "manifest": {},
     "measures": {
       "commit_message_faults": 0,
-      "count_only_assertions": 21,
+      "count_only_assertions": 22,
       "deep_nesting": 14,
       "deep_nesting_production": 13,
       "deep_nesting_test": 1,
@@ -392,8 +395,8 @@
       "scattered_imports_test": 0,
       "scattered_imports_unknown": 0,
       "shell_modules": 0,
-      "single_caller": 201,
-      "single_caller_production": 201,
+      "single_caller": 210,
+      "single_caller_production": 210,
       "single_caller_test": 7,
       "single_caller_unknown": 0,
       "sparse": 165,

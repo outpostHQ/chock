@@ -1,0 +1,5 @@
+--- src/gates/mutation/proved/splice.rs
++++ gates::mutation::proved::splice::proofs::two_cuts_rebuild_one_file_in_either_order
+@@ -106 +106 @@
+-    cuts.sort_by_key(|cut| (cut.start, cut.end));
++    let _ = cuts.len();

@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use super::Kani;
 use crate::exec;
 use crate::gates::proofs::{cleared, patch};
 use crate::project;
@@ -27,10 +28,6 @@ pub(super) struct Refuted {
     pub(super) faults: Vec<Finding>,
     pub(super) notes: Vec<Finding>,
 }
-
-/// One run of kani: its arguments, the directory it runs in, and the target directory it uses.
-pub(super) type Kani<'a> =
-    dyn Fn(&[&str], &Path, &Path) -> Result<exec::Output, exec::ExecError> + 'a;
 
 /// Runs the harness of each mutant on a copy of the project that holds the mutant's fault. Each
 /// run builds in the project's target directory, so it reuses the build of the dependencies.
@@ -105,7 +102,7 @@ fn tried(
 }
 
 /// The project's target directory: `CARGO_TARGET_DIR` from the project root, else `target`.
-fn target_dir(root: &Path) -> PathBuf {
+pub(in crate::gates) fn target_dir(root: &Path) -> PathBuf {
     let set = std::env::var_os("CARGO_TARGET_DIR").filter(|dir| !dir.is_empty());
     root.join(set.map_or_else(|| PathBuf::from("target"), PathBuf::from))
 }

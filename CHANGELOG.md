@@ -5,6 +5,17 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-26
+
+- **`mutest_proofs` lets a Kani proof kill a mutation.** With `"mutest_proofs": true`, `mutest`
+  tries each mutation that no test detects against the Kani harnesses of its file, and against
+  those that check the contracts of its functions. A harness that verifies on the file as it is,
+  and fails on the mutation, kills it. The report names the harness of each kill, and one lead sums
+  up what the tests and the proofs killed. Kani runs one job at a time, in a copy of the project
+  under `target/test-scratch/`, so `mutest` then runs in the suite's lane. A mutation builds as in
+  mutest's own build: a replaced expression keeps the old one for its type, and the crate roots get
+  `extern crate alloc;` and `#![feature(allocator_api)]` where mutest's code names them.
+
 ## [0.17.0] - 2026-10-26
 
 - **New gate `workflows`, on by default: each GitHub Actions workflow and action pins the code it

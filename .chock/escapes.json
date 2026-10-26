@@ -73,5 +73,10 @@
     "path": "src/bounded.rs",
     "text": "kani::assume(len <= N);",
     "reason": "Bounds the input so the solver ends; each proof claims nothing past the N it names"
+  },
+  {
+    "path": "src/gates/mutation/proved/splice.rs",
+    "text": "kani::assume((first.start, first.end) < (second.start, second.end));",
+    "reason": "Names the two cuts in sorted order; the proof then checks both orders, so no case is lost"
   }
 ]

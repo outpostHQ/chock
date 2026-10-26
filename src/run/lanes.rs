@@ -45,7 +45,7 @@ pub(super) fn lanes_of(
     let alone = alone(
         &beside,
         &apart,
-        &|at| crate::gates::BUILDS_ALONE.contains(&gates[at].name),
+        &|at| crate::gates::builds_alone(gates[at].name, ctx.mutest_proofs),
         &peak,
         room,
     );

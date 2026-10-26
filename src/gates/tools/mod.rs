@@ -136,10 +136,10 @@ pub const MUTEST: Gate = Gate {
     group: Group::OptIn,
     builds: true,
     // Both halves are in the tree: the code it mutates and the tests that fail to notice. A local
-    // run mutates only the files the change touched.
+    // run mutates only the files the change touched. The config says whether proofs kill too.
     reads: Some(
         Reads::tree_and(&["cargo", "cargo-mutest"])
-            .versioned("watchdog-v1:isolated-v1:results-v1:scoped-v1")
+            .versioned("watchdog-v1:isolated-v1:results-v1:scoped-v1:proofs-v1")
             .and_change_set(),
     ),
     kind: Kind::AnnotatedRatchet {

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::survivors::{Survivor, Totals};
+use super::survivors::{Edit, Span, Survivor, Totals};
 use crate::run::report::{Finding, plural};
 
 /// Where one run writes its results: a directory made for that run, so no earlier run's are read.
@@ -168,13 +168,9 @@ struct Mutation {
     mutation_op: String,
     display_name: String,
     origin_span: Span,
-}
-
-#[derive(Deserialize)]
-struct Span {
-    path: String,
-    begin: (u32, u32),
-    end: (u32, u32),
+    /// What the mutation changes; a mutest that writes none leaves nothing to rebuild.
+    #[serde(default)]
+    substs: Vec<Edit>,
 }
 
 /// The same change in every target that reaches it, since mutest numbers mutations per target.
@@ -194,6 +190,7 @@ impl Mutation {
             file: self.origin_span.path.replace('\\', "/"),
             line: self.origin_span.begin.0,
             what: self.display_name,
+            edits: self.substs,
         }
     }
 }
@@ -540,6 +537,7 @@ mod tests {
             file: "src/a.rs".into(),
             line,
             what: format!("change {line}"),
+            edits: Vec::new(),
         }
     }
 

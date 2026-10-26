@@ -187,6 +187,10 @@
       "description": "Whether `mutest` runs every test on each mutation, rather than stopping at the first test that detects it. The run is slower, and `mutest` then names each test that detects no mutation, or only mutations another test detects too, as a candidate.",
       "type": "boolean"
     },
+    "mutest_proofs": {
+      "description": "Whether `mutest` counts a mutation that no test detects as killed when a Kani harness fails on it. chock rebuilds the mutated file in a copy of the project, and runs the harnesses in that file and those of the contracts of its functions, one Kani job at a time. A harness counts only where it verifies on the file as it is. Each mutation builds the crate once more, so a run takes longer.",
+      "type": "boolean"
+    },
     "proof_jobs": {
       "description": "The most Kani harnesses `proof` verifies at once. Each harness runs one solver, which can hold several GB, so a lower number uses less memory. The default is this machine's share of the cores, eight at most; a larger number here does not raise it.",
       "type": "integer",

@@ -188,6 +188,12 @@ pub fn builds_apart(gate: &str, build: &[String]) -> bool {
 /// own beside the suite's once its recorded memory fits. A coverage build is instrumented.
 pub(crate) const BUILDS_ALONE: [&str; 3] = ["mutest", "miri", "coverage"];
 
+/// Whether `gate` may take a lane of its own. mutest's proofs build in the suite's target
+/// directory, so with them on it runs in the suite's lane, and never beside the `proof` gate.
+pub(crate) fn builds_alone(gate: &str, mutest_proofs: bool) -> bool {
+    BUILDS_ALONE.contains(&gate) && !(mutest_proofs && gate == tools::MUTEST.name)
+}
+
 /// A gate that reads what another writes, and that gate: it runs in that gate's lane when it has one.
 pub(crate) const FOLLOWS: [(&str, &str); 1] = [("crap", "coverage")];
 
@@ -316,6 +322,14 @@ mod tests {
                 "{varies} measures differently by machine"
             );
         }
+    }
+
+    #[test]
+    fn mutest_with_proofs_runs_in_the_suite_lane_so_two_kani_jobs_never_meet() {
+        assert!(builds_alone("mutest", false));
+        assert!(!builds_alone("mutest", true));
+        assert!(builds_alone("miri", true) && builds_alone("coverage", true));
+        assert!(!builds_alone("proof", false) && !builds_alone("proof", true));
     }
 
     #[test]

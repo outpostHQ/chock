@@ -1,0 +1,5 @@
+--- src/gates/mutation/proved/splice.rs
++++ gates::mutation::proved::splice::proofs::one_cut_puts_its_text_in_place_of_its_span
+@@ -116 +116 @@
+-        cursor = cut.end;
++        cursor = cut.start;

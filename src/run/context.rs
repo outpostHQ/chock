@@ -77,6 +77,9 @@ pub struct Ctx {
     pub mutest_args: Vec<String>,
     /// Whether a whole-crate mutest run gives every test a verdict, from `mutest_exhaustive`.
     pub exhaustive: bool,
+    /// Whether a Kani harness that fails on a mutation no test detects kills it, from
+    /// `mutest_proofs`.
+    pub mutest_proofs: bool,
     /// The most Kani harnesses `proof` verifies at once, from `proof_jobs`.
     pub proof_jobs: Option<u32>,
     /// Which packages `proof` verifies and how long Kani may take, from `proof`.
@@ -129,6 +132,7 @@ impl Ctx {
             test_wrapper: Vec::new(),
             mutest_args: Vec::new(),
             exhaustive: false,
+            mutest_proofs: false,
             proof_jobs: None,
             proof: crate::project::config::Proof::default(),
             tla: crate::project::config::Tla::default(),
@@ -187,6 +191,7 @@ impl Ctx {
                 .and_then(|set| set.mutest_args.clone())
                 .unwrap_or_default(),
             exhaustive: config.and_then(|set| set.mutest_exhaustive) == Some(true),
+            mutest_proofs: config.and_then(|set| set.mutest_proofs) == Some(true),
             proof_jobs: config.and_then(|set| set.proof_jobs),
             proof: config.and_then(|set| set.proof.clone()).unwrap_or_default(),
             tla: config.and_then(|set| set.tla.clone()).unwrap_or_default(),
@@ -555,6 +560,21 @@ mod tests {
             plain.wrapped("cargo", &["mutest"]),
             ("cargo", vec!["mutest"])
         );
+    }
+
+    #[test]
+    fn mutest_lets_proofs_kill_its_survivors_only_where_the_config_turns_it_on() {
+        let on = Config {
+            mutest_proofs: Some(true),
+            ..Config::of(["mutest"])
+        };
+        assert!(Ctx::from_config(Some(&on)).mutest_proofs);
+        let off = Config {
+            mutest_proofs: Some(false),
+            ..on
+        };
+        assert!(!Ctx::from_config(Some(&off)).mutest_proofs);
+        assert!(!Ctx::from_config(None).mutest_proofs);
     }
 
     #[test]

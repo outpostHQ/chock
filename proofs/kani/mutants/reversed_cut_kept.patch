@@ -1,0 +1,5 @@
+--- src/gates/mutation/proved/splice.rs
++++ gates::mutation::proved::splice::proofs::one_cut_puts_its_text_in_place_of_its_span
+@@ -110 +110 @@
+-        if cut.end < cut.start {
++        if false {
