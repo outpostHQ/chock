@@ -30,7 +30,7 @@
       "chock": 3297056
     },
     "binsize@windows": {
-      "chock": 4911616
+      "chock": 5223424
     },
     "boundaries": {
       "mixed_directory_foreign_files_production": 35,
@@ -301,7 +301,7 @@
       "src/gates/metrics/duplication.rs#the_bound_itself_is_never_ruled_out@8ef718e5bc181ae3": 1,
       "src/gates/mutation/proved/splice.rs#an_offset_is_the_byte_at_its_place@aba5c4d360f3fbf7": 1,
       "src/gates/mutation/proved/splice.rs#one_cut_puts_its_text_in_place_of_its_span@ad19e3fd8126c7e5": 1,
-      "src/gates/mutation/proved/splice.rs#two_cuts_rebuild_one_file_in_either_order@46e8ff5679d2b1d7": 1,
+      "src/gates/mutation/proved/splice.rs#two_cuts_rebuild_one_file_in_either_order@bb025b903f1c3e59": 1,
       "src/gates/proofs/tla/engines.rs#a_model_apalache_decides_whole_is_not_refused@a442c39a862d0e59": 1,
       "src/gates/proofs/tla/engines.rs#no_cfg_goes_to_an_engine_that_cannot_decide_it@7a4693d615ff2763": 1,
       "src/gates/repo/workflows/pin.rs#a_commit_pin_is_forty_hex_digits_after_a_named_action@93930ce2dd136c97": 1,
@@ -326,7 +326,7 @@
       "hazard_unordered_into_ordered": 0
     },
     "lines": {
-      "total": 95577
+      "total": 95590
     },
     "links": {},
     "manifest": {},
