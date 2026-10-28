@@ -1,6 +1,7 @@
 //! The processes under a started command, read from `/proc` on Linux: for the memory they hold,
 //! and to stop each one, also one in a process group of its own.
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::collections::BTreeSet;
 
 /// `root` and every process under it.

@@ -306,14 +306,21 @@ pub fn rerun(name: &str) -> String {
     format!("chock run {name}")
 }
 
-/// The first tool a gate declared that answers no version. The gate already declares these for the
-/// recall key, so there is no second list.
+/// The first tool a gate declared that is not a fetched pinned download and answers no version.
+/// The gate already declares these for the recall key, so there is no second list.
 fn absent_tool(gate: &Gate, ctx: &Ctx) -> Option<&'static str> {
-    gate.reads?
-        .tools
-        .iter()
-        .copied()
-        .find(|tool| crate::run::verdicts::installed(&ctx.root, tool).is_none())
+    gate.reads?.tools.iter().copied().find(|tool| {
+        !fetched(ctx, tool) && crate::run::verdicts::installed(&ctx.root, tool).is_none()
+    })
+}
+
+/// Whether the project pins `tool` as a download, such as `VERUS` for `verus`, and it is fetched.
+/// `chock init --downloads` puts it under the tools home, not on `PATH`.
+fn fetched(ctx: &Ctx, tool: &str) -> bool {
+    let stem = tool.to_uppercase().replace('-', "_");
+    let program = format!("{tool}{}", std::env::consts::EXE_SUFFIX);
+    let home = ctx.tools.home.as_deref();
+    crate::setup::downloads::located(&ctx.root, home, &stem, &program).is_ok()
 }
 
 /// What this gate's verdict would be about, or `None` where it declares no inputs or one of them
@@ -1358,6 +1365,25 @@ mod tests {
         let why = report.cannot_run_reason.unwrap_or_default();
         assert!(why.contains("a-tool-nothing-installs"), "{why}");
         assert!(!why.contains("baseline"), "{why}");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_ratchet_whose_tool_is_a_fetched_download_of_the_pins_runs() {
+        let dir = crate::testdir::make("fetched-tool");
+        let mut ctx = ctx_with("probe", &[("src/a.rs", 10), ("src/b.rs", 5)]);
+        ctx.root = dir.to_path_buf();
+        ctx.tools.home = Some(dir.join("tools"));
+        let program = format!("a-tool-nothing-installs{}", std::env::consts::EXE_SUFFIX);
+        let pin = crate::testdir::fetched(&dir, "A_TOOL_NOTHING_INSTALLS", &program);
+        std::fs::write(dir.join(crate::project::PIN_FILE), pin).unwrap();
+        let report = run_one(&gate_without_its_tool(), &ctx);
+        assert_eq!(
+            report.verdict,
+            Verdict::Pass,
+            "{:?}",
+            report.cannot_run_reason
+        );
     }
 
     /// A baseline from before chock kept units must still compare, or every upgrading project

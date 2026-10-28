@@ -1756,7 +1756,7 @@ mod tests {
         assert!(child.finish().is_err());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn externally_reaped() -> Process {
         let child = Process::spawn(Command::new("sh").args(["-c", "exit 0"])).unwrap();
         rustix::process::waitpid(
@@ -1767,7 +1767,7 @@ mod tests {
         child
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn an_external_reaper_invalidates_ownership_before_any_signal() {
@@ -1784,7 +1784,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn finalization_refuses_a_child_reaped_elsewhere_and_does_not_retry() {
@@ -1817,6 +1817,39 @@ mod tests {
             "child did not exit within the cleanup deadline"
         );
         assert!(stopped);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_finished_owner_is_final_and_a_second_finish_is_refused() {
+        let mut child = Process::spawn(Command::new("sleep").arg("600")).unwrap();
+        let first = child.finish();
+        assert!(first.is_ok(), "{first:?}");
+        assert!(child.finalized);
+        assert_eq!(
+            child.finish().unwrap_err(),
+            "child ownership is no longer available for cleanup"
+        );
+        assert!(child.finalized);
+    }
+
+    /// The pipe ends only when the tool does, so the reader sees its end only after a drop kills it.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn dropping_an_unfinished_owner_ends_its_tool() {
+        let mut command = Command::new("sleep");
+        command.arg("600").stdout(Stdio::piped());
+        let mut child = Process::spawn(&mut command).unwrap();
+        let mut out = child.child.stdout.take().unwrap();
+        let (ended, seen) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = ended.send(std::io::Read::read_to_end(&mut out, &mut Vec::new()).is_ok());
+        });
+        drop(child);
+        assert_eq!(
+            seen.recv_timeout(std::time::Duration::from_secs(20)),
+            Ok(true)
+        );
     }
 
     /// A clock never lands on the limit, so only this catches `>=` narrowed to `>`.

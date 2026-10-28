@@ -7,6 +7,14 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.19.0] - 2026-10-27
 
+- **On a CI runner, only `CHOCK_MEMORY` stops a tool for its memory.** With no limit set, chock
+  stopped a tool whose processes held more than half of all memory while less than a tenth stayed
+  free. A CI runner serves one job, and on a 16 GB runner the rule stopped `mutest` at 13,576 MB.
+  Now, where the `CI` variable is set and is not empty, `0` or `false`, only a `CHOCK_MEMORY`
+  limit stops a tool. Elsewhere the rule stays.
+- **A ratchet gate finds its tool in the project's pinned downloads.** A gate that keeps a record
+  looked for each tool it reads on `PATH` only, so after `chock init --downloads` the `verus` gate
+  said CANNOT RUN. Now a fetched download that the project pins, such as `VERUS`, counts.
 - **A `deps` finding on `Cargo.lock` gives the real line of its crate.** cargo-deny numbers the
   lines of a list of crates that it makes, and prints that number beside the path of
   `Cargo.lock`. chock copied the number, so `Cargo.lock:21` for a duplicate `base64` showed

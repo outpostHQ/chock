@@ -132,7 +132,9 @@ Three environment variables change how a run uses the machine:
 chock reads the free memory from `/proc/meminfo` and from each cgroup that holds the run, so the
 limit of a container or of a job runner's scope counts. With no `CHOCK_MEMORY`, chock stops a tool
 whose processes hold more than half of all memory while less than a tenth stays free. The gate then
-says `stopped … at the memory limit` with the size, and does not pass.
+says `stopped … at the memory limit` with the size, and does not pass. On a CI service's runner,
+where the `CI` variable is set and is not empty, `0` or `false`, only `CHOCK_MEMORY` stops a tool:
+the runner serves one job, and the service ends a job that runs out of memory.
 
 `chock init --global` installs [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) first,
 then every other tool from its own prebuilt release, in minutes; a tool with no release for the

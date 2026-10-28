@@ -86,6 +86,13 @@ jobs:
       - name: Install a nightly toolchain
         run: for attempt in 1 2 3; do rustup toolchain install nightly --profile minimal && break; [ "$attempt" = 3 ] && exit 1; sleep 30; done
 
+      # The `msrv` gate checks the build on the release that `rust-version` promises. `chock init
+      # --global` installs it; this job installs its tools itself, so it installs this one too.
+      - name: Install the promised Rust release
+        run: |
+          promised=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          for attempt in 1 2 3; do rustup toolchain install "$promised" --profile minimal --no-self-update && break; [ "$attempt" = 3 ] && exit 1; sleep 30; done
+
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:

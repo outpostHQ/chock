@@ -412,33 +412,62 @@ fn total_mb() -> Option<u64> {
 /// Why a tool whose processes hold `held` MB must stop now, or `None` while it may go on.
 #[must_use]
 pub fn over_limit(held: u64) -> Option<String> {
-    stopped(held, asked_memory(), total_mb, free_mb)
+    let limit = limit(asked_memory(), std::env::var("CI").ok().as_deref());
+    stopped(held, limit, total_mb, free_mb)
 }
 
-/// Why a tool that holds `held` MB stops: past `asked` MB when a limit is set; else past half of
-/// all memory while less than a tenth of it stays free, where a machine starts to stall.
+/// When a tool stops for the memory its processes hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Limit {
+    /// Past the MB that `MEMORY` sets.
+    Asked(u64),
+    /// Past half of all memory while less than a tenth of it stays free, where a machine starts
+    /// to stall.
+    Stall,
+    /// Never: a CI service's runner serves this one job, and the service ends a job that runs out.
+    Unset,
+}
+
+/// The limit of a run: the MB that `MEMORY` sets, on any machine; else the stall rule, unless the
+/// `ci` variable says that a CI service runs chock.
+fn limit(asked: Option<u64>, ci: Option<&str>) -> Limit {
+    match asked {
+        Some(mb) => Limit::Asked(mb),
+        None if on_ci(ci) => Limit::Unset,
+        None => Limit::Stall,
+    }
+}
+
+/// Whether the `CI` variable says that a CI service runs chock. Each service sets it; empty, `0`
+/// or `false` says no.
+fn on_ci(value: Option<&str>) -> bool {
+    value.map(str::trim).is_some_and(|value| {
+        !(value.is_empty() || value == "0" || value.eq_ignore_ascii_case("false"))
+    })
+}
+
+/// Why a tool that holds `held` MB stops at `limit`, or `None` while it may go on.
 fn stopped(
     held: u64,
-    asked: Option<u64>,
+    limit: Limit,
     total: fn() -> Option<u64>,
     free: fn() -> Option<u64>,
 ) -> Option<String> {
-    if let Some(limit) = asked {
-        return (held > limit).then(|| {
+    match limit {
+        Limit::Asked(limit) => (held > limit).then(|| {
             format!("at the memory limit: its processes held {held} MB, past the {limit} MB `{MEMORY}` sets")
-        });
+        }),
+        Limit::Stall => total()
+            .zip(free())
+            .filter(|&(total, free)| held > total / 2 && free < total / 10)
+            .map(|(total, free)| {
+                format!(
+                    "at the memory limit: its processes held {held} MB of {total} MB, and {free} \
+                     MB stayed free; `{MEMORY}` sets a limit"
+                )
+            }),
+        Limit::Unset => None,
     }
-    let total = total()?;
-    if held <= total / 2 {
-        return None;
-    }
-    let free = free()?;
-    (free < total / 10).then(|| {
-        format!(
-            "at the memory limit: its processes held {held} MB of {total} MB, and {free} MB stayed \
-             free; `{MEMORY}` sets a limit"
-        )
-    })
 }
 
 #[cfg(test)]
@@ -637,18 +666,53 @@ mod tests {
     fn a_tool_stops_past_the_set_limit_or_past_half_while_a_tenth_is_not_free() {
         let (total, free) = (|| Some(1000), || Some(99));
         let roomy = || Some(100);
-        assert!(stopped(11, Some(10), total, free).is_some_and(|why| why.contains("10 MB")));
-        assert_eq!(stopped(10, Some(10), total, free), None);
+        let asked = Limit::Asked(10);
+        assert!(stopped(11, asked, total, free).is_some_and(|why| why.contains("10 MB")));
+        assert_eq!(stopped(10, asked, total, free), None);
         assert_eq!(
-            stopped(600, Some(700), total, free),
+            stopped(600, Limit::Asked(700), total, free),
             None,
             "a set limit decides alone"
         );
-        assert!(stopped(501, None, total, free).is_some_and(|why| why.contains("99 MB")));
-        assert_eq!(stopped(500, None, total, free), None, "half may run");
-        assert_eq!(stopped(501, None, total, roomy), None, "a tenth still free");
-        assert_eq!(stopped(501, None, || None, free), None);
-        assert_eq!(stopped(501, None, total, || None), None);
+        assert!(stopped(501, Limit::Stall, total, free).is_some_and(|why| why.contains("99 MB")));
+        assert_eq!(
+            stopped(500, Limit::Stall, total, free),
+            None,
+            "half may run"
+        );
+        assert_eq!(
+            stopped(501, Limit::Stall, total, roomy),
+            None,
+            "a tenth still free"
+        );
+        assert_eq!(stopped(501, Limit::Stall, || None, free), None);
+        assert_eq!(stopped(501, Limit::Stall, total, || None), None);
+        assert_eq!(
+            stopped(999, Limit::Unset, total, || Some(0)),
+            None,
+            "a CI runner"
+        );
+    }
+
+    #[test]
+    fn a_ci_runner_keeps_a_set_limit_and_drops_the_stall_rule() {
+        assert_eq!(limit(Some(10), Some("true")), Limit::Asked(10));
+        assert_eq!(limit(Some(10), None), Limit::Asked(10));
+        assert_eq!(limit(None, Some("true")), Limit::Unset);
+        assert_eq!(limit(None, None), Limit::Stall);
+        for no in [
+            None,
+            Some(""),
+            Some(" "),
+            Some("0"),
+            Some("false"),
+            Some("FALSE"),
+        ] {
+            assert!(!on_ci(no), "{no:?}");
+        }
+        for yes in [Some("true"), Some("1"), Some("yes")] {
+            assert!(on_ci(yes), "{yes:?}");
+        }
     }
 
     #[test]
