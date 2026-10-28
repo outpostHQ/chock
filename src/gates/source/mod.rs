@@ -16,6 +16,7 @@ use syn::visit::Visit;
 use syn::{AttrStyle, Attribute, Expr, ExprLit, Lit, Meta, Token};
 
 use crate::project;
+use crate::project::release::{LINT_REASONS, Release};
 use crate::run::baseline::{Keys, Series};
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind};
@@ -70,11 +71,7 @@ fn measure(ctx: &Ctx) -> Result<Series, String> {
 
 fn found_in(ctx: &Ctx) -> Result<Vec<Finding>, String> {
     let (sources, crates) = sources(ctx)?;
-    let judge = Judge {
-        reached: shipped::reached(&project::metadata(&ctx.root)?, &ctx.not_shipped)?,
-        crates: &crates,
-        not_shipped: &ctx.not_shipped,
-    };
+    let judge = Judge::for_tree(ctx, &crates)?;
     let mut texts = texts_of(&ctx.root, &sources)?;
     texts.extend(declared_beyond(&ctx.root, &crates, &texts)?);
     let mut findings = Vec::new();
@@ -117,7 +114,8 @@ fn texts_of(root: &Path, sources: &[PathBuf]) -> Result<Vec<(String, String)>, S
     Ok(texts)
 }
 
-fn readable(path: &Path, shown: &str) -> Result<Option<String>, String> {
+/// The text of the file at `path`, shown as `shown`; none for bytes that are not text.
+pub(crate) fn readable(path: &Path, shown: &str) -> Result<Option<String>, String> {
     match fs::read_to_string(path) {
         Ok(src) => Ok(Some(src)),
         Err(e) if e.kind() == std::io::ErrorKind::InvalidData => Ok(None),
@@ -195,9 +193,24 @@ struct Judge<'a> {
     reached: shipped::Reached,
     crates: &'a [String],
     not_shipped: &'a [String],
+    /// The `rust-version` of each crate that sets one, keyed by its directory.
+    promises: BTreeMap<String, Release>,
 }
 
-impl Judge<'_> {
+impl<'a> Judge<'a> {
+    /// The judge of the tree whose crates are `crates`, from what `cargo metadata` says of it.
+    fn for_tree(ctx: &'a Ctx, crates: &'a [String]) -> Result<Self, String> {
+        let metadata = project::metadata(&ctx.root)?;
+        let read: project::workspace::Metadata = serde_json::from_str(&metadata)
+            .map_err(|e| format!("cargo metadata produced something unreadable: {e}"))?;
+        Ok(Judge {
+            reached: shipped::reached(&metadata, &ctx.not_shipped)?,
+            crates,
+            not_shipped: &ctx.not_shipped,
+            promises: project::release::promises(&read),
+        })
+    }
+
     /// Whether a feature of this file's crate is test-only; in a crate the manifests miss, none is.
     fn test_only(&self, path: &str) -> impl Fn(&str) -> bool + use<'_> {
         let held = self.reached.get(&owning_crate(path, self.crates));
@@ -206,7 +219,11 @@ impl Judge<'_> {
 
     fn of(&self, path: &str, src: &str, gated: bool) -> Result<Vec<Finding>, String> {
         let ships = project::ships(path, self.not_shipped);
-        judged_with(path, src, ships, &self.test_only(path), gated)
+        let owner = Owner {
+            test_only: &self.test_only(path),
+            promise: self.promises.get(&owning_crate(path, self.crates)).copied(),
+        };
+        judged_with(path, src, ships, gated, &owner)
     }
 
     fn test_modules(&self, path: &str, src: &str) -> Vec<String> {
@@ -224,24 +241,41 @@ fn owning_crate(path: &str, crates: &[String]) -> String {
         .unwrap_or_default()
 }
 
-/// The findings in one file's source. `ships` is false for code nobody receives, such as a fuzz
-/// target, which reports by panicking; the shipped-code rule then does not apply.
-pub fn judged(path: &str, src: &str, ships: bool) -> Result<Vec<Finding>, String> {
-    judged_with(path, src, ships, &|_| false, false)
+/// The findings in one file's source, whose crate promises `promise` as its `rust-version`.
+/// `ships` is false for code nobody receives, such as a fuzz target: no shipped-code rule applies.
+pub fn judged(
+    path: &str,
+    src: &str,
+    ships: bool,
+    promise: Option<Release>,
+) -> Result<Vec<Finding>, String> {
+    let owner = Owner {
+        test_only: &|_| false,
+        promise,
+    };
+    judged_with(path, src, ships, false, &owner)
 }
 
-/// `judged`, given which features are test-only and whether a parent's `mod x;` already made this
-/// file test code (`gated`).
+/// What the crate that owns a file tells the rules: which features are test-only, and the
+/// `rust-version` it promises.
+pub struct Owner<'a> {
+    pub test_only: &'a dyn Fn(&str) -> bool,
+    pub promise: Option<Release>,
+}
+
+/// `judged`, given whether a parent's `mod x;` already made this file test code (`gated`), and what
+/// its `owner` tells.
 pub fn judged_with(
     path: &str,
     src: &str,
     ships: bool,
-    test_only: &dyn Fn(&str) -> bool,
     gated: bool,
+    owner: &Owner<'_>,
 ) -> Result<Vec<Finding>, String> {
     let file = syn::parse_file(src).map_err(|e| format!("line {}: {e}", e.span().start().line))?;
-    let mut scan = Scan::new(path, src, Imports::of(&file), ships, test_only);
-    scan.test_file |= gated || test_gate(&file.attrs, test_only);
+    let mut scan = Scan::new(path, src, Imports::of(&file), ships, owner.test_only);
+    scan.test_file |= gated || test_gate(&file.attrs, owner.test_only);
+    scan.promise = owner.promise;
     scan.visit_file(&file);
     Ok(scan.into_findings())
 }
@@ -280,6 +314,8 @@ struct Scan<'a> {
     /// Whether anybody receives this file; see `judged`.
     ships: bool,
     test_only: TestOnly<'a>,
+    /// The `rust-version` of the file's crate, which decides how an `allow` gives its reason.
+    promise: Option<Release>,
     findings: Vec<Finding>,
 }
 
@@ -300,6 +336,7 @@ impl<'a> Scan<'a> {
             test_file: test_path(path),
             ships,
             test_only: only,
+            promise: None,
             findings: Vec::new(),
         }
     }
@@ -307,7 +344,7 @@ impl<'a> Scan<'a> {
     fn into_findings(mut self) -> Vec<Finding> {
         self.attrs.sort_by_key(|seen| seen.from);
         let mut found = self.findings;
-        found.extend(unreasoned(self.path, &self.attrs));
+        found.extend(unreasoned(self.path, self.src, &self.attrs, self.promise));
         if self.ships {
             found.extend(shipped(self.path, &self.attrs));
         }
@@ -466,19 +503,44 @@ impl<'ast> Visit<'ast> for Scan<'_> {
     }
 }
 
-/// Every `#[allow]` that switches a lint off without a `reason`.
-fn unreasoned(path: &str, attrs: &[Seen]) -> Vec<Finding> {
+/// Every `#[allow]` that switches a lint off without a `reason`. A crate whose `rust-version`
+/// cannot build `reason = "…"` gives the reason in a `//` comment beside the attribute instead.
+fn unreasoned(path: &str, src: &str, attrs: &[Seen], promise: Option<Release>) -> Vec<Finding> {
+    let below = promise.filter(|promise| !LINT_REASONS.open_to(Some(*promise)));
     attrs
         .iter()
         .filter_map(|seen| {
             let reading = seen.allow.as_ref().filter(|reading| !reading.reasoned)?;
+            if below.is_some() && commented(src, seen) {
+                return None;
+            }
             let bang = if seen.inner { "!" } else { "" };
             let lints = reading.lints.join(", ");
-            let message =
+            let mut message =
                 format!("#{bang}[allow({lints})] switches a lint off with no stated reason");
+            if let Some(promise) = below {
+                message.push_str(&format!(
+                    "; rust-version {promise} cannot build `reason = \"…\"`, so write the reason in a \
+                     `//` comment on the line above"
+                ));
+            }
             Some(Finding::at(path, &message).line(seen.line).item(UNREASONED))
         })
         .collect()
+}
+
+/// Whether a `//` comment of `LEAST_REASON` characters or more fills the line above the attribute
+/// or follows it on its last line. A doc comment documents the item, so it is no reason.
+fn commented(src: &str, seen: &Seen) -> bool {
+    let above = src
+        .get(..seen.from)
+        .and_then(|before| before.rsplit('\n').nth(1));
+    let after = src.get(seen.to..).and_then(|rest| rest.split('\n').next());
+    [above, after].into_iter().flatten().any(|line| {
+        let text = line.trim_start().strip_prefix("//");
+        text.filter(|rest| !rest.starts_with(['/', '!']))
+            .is_some_and(|rest| rest.trim().chars().count() >= LEAST_REASON)
+    })
 }
 
 /// The lints that keep panics and `unsafe` out of shipped code. Allowing one outside test code is a
@@ -937,7 +999,7 @@ mod tests {
     use super::*;
 
     fn faults(path: &str, src: &str) -> Result<Vec<Finding>, String> {
-        judged(path, src, true)
+        judged(path, src, true, None)
     }
 
     fn rendered(src: &str) -> Vec<String> {
@@ -1731,15 +1793,31 @@ mod tests {
                    #[allow(clippy::unwrap_used, reason = \"a helper for tests\")]\n\
                    pub fn helper() {}\n";
         // Nothing shipped turns `test-utils` on: the never-shipped rule is not about this.
-        let excused = judged_with("src/lib.rs", src, true, &|f| f == "test-utils", false).unwrap();
+        let excused = judged_with(
+            "src/lib.rs",
+            src,
+            true,
+            false,
+            &features(&|f| f == "test-utils"),
+        );
+        let excused = excused.unwrap();
         assert_eq!(excused, Vec::new());
         // The same feature, reachable from something shipped: it is a suppression that ships.
-        let reported: Vec<String> = judged_with("src/lib.rs", src, true, &|_| false, false)
-            .unwrap()
-            .iter()
-            .filter_map(|f| f.item.clone())
-            .collect();
+        let reported: Vec<String> =
+            judged_with("src/lib.rs", src, true, false, &features(&|_| false))
+                .unwrap()
+                .iter()
+                .filter_map(|f| f.item.clone())
+                .collect();
         assert_eq!(reported, vec![SHIPPED_SAFETY.to_string()]);
+    }
+
+    /// An owner whose `test_only` features are given, with no `rust-version`.
+    fn features(test_only: &dyn Fn(&str) -> bool) -> Owner<'_> {
+        Owner {
+            test_only,
+            promise: None,
+        }
     }
 
     /// Whether a `clippy::panic` allow under `cfg(<cfg>)` is excused as test code.
@@ -1747,7 +1825,7 @@ mod tests {
         let src = format!(
             "#[cfg({cfg})]\n#[allow(clippy::panic, reason = \"deliberate\")]\nfn f() {{}}\n"
         );
-        judged_with("src/lib.rs", &src, true, test_only, false)
+        judged_with("src/lib.rs", &src, true, false, &features(test_only))
             .unwrap()
             .is_empty()
     }
@@ -1895,9 +1973,42 @@ mod tests {
     }
 
     #[test]
+    fn below_rust_1_81_a_line_comment_beside_an_allow_is_its_reason() {
+        let src = "// the parser reads each byte, so the cast is exact\n\
+                   #[allow(clippy::cast_possible_truncation)]\nfn a() {}\n\
+                   #[allow(clippy::too_many_lines)] // one match holds the whole table\nfn b() {}\n\
+                   /// Docs, which say what `c` does and not why it may be dead.\n\
+                   #[allow(dead_code)]\nfn c() {}\n\
+                   // short\n#[allow(unused)]\nfn d() {}\n";
+        let unreasoned = |promise| {
+            let found = judged("src/lib.rs", src, true, Release::parse(promise)).unwrap();
+            let lines = found
+                .iter()
+                .filter(|f| f.item.as_deref() == Some(UNREASONED));
+            lines.filter_map(|f| f.line).collect::<Vec<u32>>()
+        };
+        assert_eq!(unreasoned("1.70"), [7, 10]);
+        assert_eq!(unreasoned("1.81"), [2, 4, 7, 10]);
+        let newest = judged("src/lib.rs", src, true, None).unwrap();
+        assert_eq!(
+            newest.iter().filter_map(|f| f.line).collect::<Vec<u32>>(),
+            [2, 4, 7, 10]
+        );
+        let below = judged("src/lib.rs", src, true, Release::parse("1.70")).unwrap();
+        assert!(
+            below[0].message.ends_with(
+                "; rust-version 1.70 cannot build `reason = \"…\"`, so write the reason in a `//` \
+                 comment on the line above"
+            ),
+            "{below:?}"
+        );
+        assert!(!newest[0].message.contains("rust-version"), "{newest:?}");
+    }
+
+    #[test]
     fn a_member_nobody_receives_still_has_to_say_why_it_suppresses() {
         let src = "#[allow(clippy::unwrap_used)]\nfn f() {}\n";
-        let unshipped: Vec<String> = judged("benchmark/src/lib.rs", src, false)
+        let unshipped: Vec<String> = judged("benchmark/src/lib.rs", src, false, None)
             .unwrap()
             .iter()
             .filter_map(|f| f.item.clone())
@@ -1905,7 +2016,7 @@ mod tests {
         assert_eq!(unshipped, vec![UNREASONED.to_string()]);
         let reasoned = "#[allow(clippy::unwrap_used, reason = \"a bench panics\")]\nfn f() {}\n";
         assert_eq!(
-            judged("benchmark/src/lib.rs", reasoned, false).unwrap(),
+            judged("benchmark/src/lib.rs", reasoned, false, None).unwrap(),
             Vec::new()
         );
     }

@@ -6,6 +6,8 @@ pub mod report;
 mod shapes;
 mod walk;
 
+pub(crate) use walk::forwarded;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 

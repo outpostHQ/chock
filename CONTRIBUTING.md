@@ -5,7 +5,7 @@
 - rustup, git, a C linker (`build-essential` on Debian or Ubuntu) and
   [just](https://github.com/casey/just).
 
-`just setup`, from the root of a clone, does the rest: the Rust 1.99.0 that `rust-toolchain.toml`
+`just setup`, from the root of a clone, does the rest: the Rust 1.99.1 that `rust-toolchain.toml`
 pins with `llvm-tools-preview` for the coverage checks, a nightly for `unused-deep`, this chock,
 every tool a gate runs at its version in `tool-versions.env`, and the hooks. The table
 [What a gate needs](docs/gates.md#what-a-gate-needs) says what each gate needs.

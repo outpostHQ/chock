@@ -46,7 +46,8 @@ because the edit touches the file.
 
 The hook answers on stderr with exit 2, which is how Claude Code hands a hook's answer back to the
 model. Other editors can call `chock edited <path>`, or pipe a path or the editor's JSON to
-`chock edited --hook`. Only `--hook` reads stdin.
+`chock edited --hook`. Only `--hook` reads stdin. A file that is not text, such as a font, holds
+nothing that a rule reads, so `chock edited` skips it.
 
 ## The git hooks
 
@@ -194,6 +195,7 @@ chock run              # a newer tool can count differently
 ```
 
 Commit `tool-versions.env` with any baseline that changes. `chock init` sets each pin that chock
-sets to the new chock's version, and keeps each key chock does not set. chock does not move a file
+sets to the new chock's version, and keeps each key chock does not set. A version that the project
+raised past chock's pin also stays, since `init` never lowers a tool. chock does not move a file
 that names a newer chock than itself, and `chock init --global` does not replace a newer chock with
 an older pin. A tool already at its pin stays, so only the pins that moved are installed.

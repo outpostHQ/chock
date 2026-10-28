@@ -926,10 +926,14 @@ fn run_edited(args: &[&str]) -> ExitCode {
             crate::edited::note_firing(root);
         }
         let rules = crate::edited::rules_for(root.as_deref(), path);
-        match std::fs::read_to_string(path) {
-            Ok(src) => found.extend(crate::edited::faults(path, &src, &rules)),
+        // Bytes that are not text, such as a font, hold nothing a rule reads, as in the gates.
+        match crate::gates::source::readable(std::path::Path::new(path), path) {
+            Ok(src) => found.extend(
+                src.iter()
+                    .flat_map(|src| crate::edited::faults(path, src, &rules)),
+            ),
             // A file the hook named and chock cannot open is the hook's problem, not the file's.
-            Err(e) => return cannot_run(&format!("cannot read {path}: {e}")),
+            Err(why) => return cannot_run(&format!("cannot read {why}")),
         }
     }
     answered(&found, json, hook)

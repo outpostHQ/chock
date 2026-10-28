@@ -25,34 +25,39 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
                 .into(),
         );
     }
-    let mut found = Vec::new();
+    let (mut found, mut notes) = (Vec::new(), Vec::new());
     for (shown, text) in files {
         if let Some(message) = said(&text) {
             found.push(Finding::at(&shown, &message));
         }
+        if let Some(message) = channel(&meant(&text)).as_deref().and_then(faulted) {
+            notes.push(Finding::at(&shown, &message).item("advisory, cargo security fix"));
+        }
     }
-    Ok(if found.is_empty() {
-        Outcome::passed()
-    } else {
-        Outcome::failed(found)
+    Ok(Outcome {
+        passed: found.is_empty(),
+        ..Outcome::noted([found, notes].concat())
     })
 }
 
+/// The Cargo security faults of 2026, each with the first release that fixes it.
+const CARGO_FAULTS: [(&str, [u32; 3]); 3] = [
+    ("CVE-2026-33056", [1, 94, 1]),
+    ("CVE-2026-5222", [1, 96, 0]),
+    ("CVE-2026-5223", [1, 96, 0]),
+];
+
 /// What is wrong with the pin a toolchain file holds, or `None` when it pins one compiler.
 fn said(text: &str) -> Option<String> {
-    let lines: Vec<&str> = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .collect();
-    // The file without `.toml` may hold the bare channel on its only line.
-    let channel = match lines.as_slice() {
-        [only] if !only.contains('=') && !only.starts_with('[') => Some((*only).to_string()),
-        // A toolchain at a local path is whatever that directory holds, which the file names.
-        _ if lines.iter().any(|line| value(line, "path").is_some()) => return None,
-        _ => lines.iter().find_map(|line| value(line, "channel")),
-    };
-    match channel {
+    let lines = meant(text);
+    if lines.iter().any(|line| value(line, "path").is_some()) {
+        return Some(
+            "names a toolchain at a local path, which holds whatever each machine put there and \
+             runs on each cargo command: name a release such as `1.98.1`"
+                .into(),
+        );
+    }
+    match channel(&lines) {
         Some(channel) if exact(&channel) => None,
         Some(channel) => Some(format!(
             "names `{channel}`, which moves: name a release such as `1.98.1` or a dated nightly \
@@ -64,6 +69,44 @@ fn said(text: &str) -> Option<String> {
                 .into(),
         ),
     }
+}
+
+/// The lines of a toolchain file that say something: no blank line and no comment.
+fn meant(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect()
+}
+
+/// The channel a toolchain file names. The file without `.toml` may hold it bare on its only line.
+fn channel(lines: &[&str]) -> Option<String> {
+    match lines {
+        [only] if !only.contains('=') && !only.starts_with('[') => Some((*only).to_string()),
+        _ => lines.iter().find_map(|line| value(line, "channel")),
+    }
+}
+
+/// The Cargo security faults a numbered release still has, and the release that fixes them all.
+fn faulted(channel: &str) -> Option<String> {
+    let release = channel.split('-').next().unwrap_or_default();
+    let numbers: Vec<u32> = release
+        .split('.')
+        .map_while(|part| part.parse().ok())
+        .collect();
+    let open: Vec<&(&str, [u32; 3])> = CARGO_FAULTS
+        .iter()
+        .filter(|(_, fixed)| numbers.len() == 3 && numbers.as_slice() < fixed.as_slice())
+        .collect();
+    let fixed = open.iter().map(|(_, fixed)| fixed).max()?;
+    let names: Vec<&str> = open.iter().map(|(name, _)| *name).collect();
+    Some(format!(
+        "names `{channel}`, whose Cargo still has {}: name `{}.{}.{}` or later",
+        names.join(", "),
+        fixed[0],
+        fixed[1],
+        fixed[2]
+    ))
 }
 
 /// The value of `key = "value"` on this line, quoted either way, less a trailing comment.
@@ -127,7 +170,11 @@ mod tests {
         assert_eq!(said(pinned), None);
         assert_eq!(said("[toolchain]\nchannel = '1.99.0'\n"), None);
         assert_eq!(said("# pinned\nnightly-2026-09-17\n"), None);
-        assert_eq!(said("[toolchain]\npath = \"/opt/rust\"\n"), None);
+        let path = said("[toolchain]\npath = \"/opt/rust\"\n").unwrap();
+        assert!(
+            path.starts_with("names a toolchain at a local path"),
+            "{path}"
+        );
         let moving = said("[toolchain]\nchannel = \"nightly\"\n").unwrap();
         assert!(
             moving.starts_with("names `nightly`, which moves"),
@@ -138,6 +185,20 @@ mod tests {
         assert!(missing.starts_with("names no channel"), "{missing}");
         let header = said("[toolchain]\n").unwrap();
         assert!(header.starts_with("names no channel"), "{header}");
+    }
+
+    #[test]
+    fn a_release_before_a_cargo_security_fix_names_each_fault_it_still_has() {
+        let faults = |channel| faulted(channel).unwrap_or_default();
+        let oldest = "names `1.94.0-x86_64-unknown-linux-gnu`, whose Cargo still has \
+                      CVE-2026-33056, CVE-2026-5222, CVE-2026-5223: name `1.96.0` or later";
+        assert_eq!(faults("1.94.0-x86_64-unknown-linux-gnu"), oldest);
+        let newer = faults("1.95.0");
+        assert!(newer.starts_with("names `1.95.0`, whose Cargo still has CVE-2026-5222"));
+        let fixed = "1.96.0 1.99.1 1.100.0 nightly-2026-09-17 stable 1.95";
+        for channel in fixed.split(' ') {
+            assert_eq!(faulted(channel), None, "{channel}");
+        }
     }
 
     #[test]
@@ -161,6 +222,12 @@ mod tests {
         let pinned =
             crate::testdir::Held::tree("gate-toolchain-pinned", &[("rust-toolchain", "1.99.0\n")]);
         assert!(check(&pinned).unwrap().passed);
+        let old =
+            crate::testdir::Held::tree("gate-toolchain-old", &[("rust-toolchain", "1.95.0\n")]);
+        let noted = check(&old).unwrap();
+        assert!(noted.passed);
+        let items: Vec<_> = noted.findings.iter().map(|it| it.item.as_deref()).collect();
+        assert_eq!(items, [Some("advisory, cargo security fix")]);
         let bare = crate::testdir::Held::tree("gate-toolchain-none", &[("Cargo.toml", "")]);
         assert!(
             check(&bare)

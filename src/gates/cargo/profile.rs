@@ -1,5 +1,5 @@
-//! The `profile` gate: the release profile takes the wins that cost only compile time, and no
-//! manifest or cargo-config setting silences a check for the whole build.
+//! The `profile` gate: the release profile takes the wins that cost only compile time, no manifest
+//! or cargo-config setting silences a check for the whole build, and lint tables meet the floor.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -9,13 +9,19 @@ use crate::project::workspace::{Metadata, Package};
 
 use crate::gates::source::NEVER_SHIPPED;
 use crate::project;
+use crate::project::release::{self, Release};
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
 
+mod floor;
+
+pub use floor::Floor;
+
 pub const GATE: Gate = Gate {
     name: "profile",
-    about: "the release profile takes the wins that cost only compile time, and nothing in the \
-            manifest or the cargo config silences a check for the whole build",
+    about: "the release profile takes the wins that cost only compile time, nothing in the \
+            manifest or the cargo config silences a check for the whole build, and each lint \
+            table meets the lint floor",
     group: Group::Quality,
     builds: false,
     reads: None,
@@ -33,9 +39,7 @@ const DEV: &str = "profile.dev";
 fn check(ctx: &Ctx) -> Result<Outcome, String> {
     let review = review(&read(ctx)?)?;
     let passed = review.failures.is_empty();
-    let mut findings = review.failures;
-    findings.extend(review.notes);
-    findings.extend(review.dev);
+    let findings = [review.failures, review.notes, review.dev, review.floor].concat();
     Ok(Outcome {
         passed,
         ..Outcome::noted(findings)
@@ -49,6 +53,8 @@ pub struct Review {
     pub notes: Vec<Finding>,
     /// Advisory notes on the dev profile, kept apart from the release `notes`.
     pub dev: Vec<Finding>,
+    /// Advisory gaps in the lint floor, kept apart so the release `notes` read as before.
+    pub floor: Vec<Finding>,
 }
 
 impl Review {
@@ -56,12 +62,15 @@ impl Review {
         self.failures.push(finding);
     }
 
-    /// Records an advisory, its item prefixed `advisory, ` so no reader takes it for a failure.
     fn note(&mut self, finding: Finding) {
-        let setting = finding.item.clone().unwrap_or_default();
-        self.notes
-            .push(finding.item(&format!("advisory, {setting}")));
+        self.notes.push(advisory(finding));
     }
+}
+
+/// The finding with its item prefixed `advisory, `, so no reader takes it for a failure.
+fn advisory(finding: Finding) -> Finding {
+    let setting = finding.item.clone().unwrap_or_default();
+    finding.item(&format!("advisory, {setting}"))
 }
 
 /// The text of every file the gate reads; `members` is keyed by the path a finding prints.
@@ -74,6 +83,12 @@ pub struct Sources {
     /// Whether the workspace ships an executable; a library's consumers compile it with their own
     /// release profile.
     pub binary: bool,
+    /// Clippy's own configuration at the root: the name it was found under, then its text.
+    pub clippy: Option<(String, String)>,
+    /// How `lint_floor` holds each lint table to the floor.
+    pub floor: Floor,
+    /// The `rust-version` of each member that sets one, keyed by its directory.
+    pub promises: BTreeMap<String, Release>,
 }
 
 /// Applies every rule to the gathered text. A file that does not parse is an error, never a pass.
@@ -81,10 +96,16 @@ pub fn review(sources: &Sources) -> Result<Review, String> {
     let root = parse(&sources.root).map_err(|e| format!("{MANIFEST}: {e}"))?;
     let mut review = Review::default();
     release_profile(&root, sources.binary, &mut review);
-    lint_tables(sources, &root, &mut review)?;
+    lints(sources, &root, &mut review)?;
     rustflags(sources, &mut review)?;
     review.dev = dev_profile(&root);
     Ok(review)
+}
+
+/// The lint rules: no table silences a check for the whole build, and each meets the lint floor.
+fn lints(sources: &Sources, root: &Doc, review: &mut Review) -> Result<(), String> {
+    lint_tables(sources, root, review)?;
+    floor::clippy_config(sources, review)
 }
 
 fn release_profile(doc: &Doc, binary: bool, review: &mut Review) {
@@ -305,20 +326,36 @@ impl Tool {
     }
 }
 
-/// Judges each member's `[lints]`. A member setting `workspace = true` inherits the root's
-/// `[workspace.lints]`, which is judged once, against the root.
+/// Judges each member's `[lints]` against the catalogue and the floor. A member setting
+/// `workspace = true` inherits the root's `[workspace.lints]`, which is judged once, at the root.
 fn lint_tables(sources: &Sources, root: &Doc, review: &mut Review) -> Result<(), String> {
-    let mut inherited = false;
+    // The promise of each member that inherits the workspace lints.
+    let mut inheriting = Vec::new();
     for (path, text) in &sources.members {
         let doc = parse(text).map_err(|e| format!("{path}: {e}"))?;
+        let promise = project::crate_dir(path).and_then(|dir| sources.promises.get(&dir).copied());
         if doc.get("lints.workspace") == Some(&Value::Bool(true)) {
-            inherited = true;
+            inheriting.push(promise);
             continue;
         }
         permissive(&doc, "lints", path, review);
+        let table = floor::Table {
+            doc: &doc,
+            key: "lints",
+            file: path,
+        };
+        floor::hold(&table, sources.floor, promise, review);
     }
-    if inherited {
+    if !inheriting.is_empty() {
+        // A member with no promise builds on the newest Rust, so only the others can lower it.
+        let lowest = inheriting.into_iter().flatten().min();
         permissive(root, "workspace.lints", MANIFEST, review);
+        let table = floor::Table {
+            doc: root,
+            key: "workspace.lints",
+            file: MANIFEST,
+        };
+        floor::hold(&table, sources.floor, lowest, review);
     }
     Ok(())
 }
@@ -473,16 +510,12 @@ fn ships_a_binary(package: &Package) -> bool {
 fn read(ctx: &Ctx) -> Result<Sources, String> {
     let metadata: Metadata = serde_json::from_str(&project::metadata(&ctx.root)?)
         .map_err(|e| format!("cargo metadata produced something unreadable: {e}"))?;
-    collect(&metadata)
+    collect(&metadata, Floor::of(ctx.lint_floor))
 }
 
-fn collect(metadata: &Metadata) -> Result<Sources, String> {
+fn collect(metadata: &Metadata, floor: Floor) -> Result<Sources, String> {
     let root = Path::new(&metadata.workspace_root);
-    let mut sources = Sources {
-        root: slurp(&root.join(MANIFEST))?,
-        config: cargo_config(root)?,
-        ..Sources::default()
-    };
+    let mut sources = at_root(root, floor)?;
     for package in metadata
         .packages
         .iter()
@@ -494,7 +527,19 @@ fn collect(metadata: &Metadata) -> Result<Sources, String> {
             .insert(project::relative(root, manifest), slurp(manifest)?);
         sources.binary |= ships_a_binary(package);
     }
+    sources.promises = release::promises(metadata);
     Ok(sources)
+}
+
+/// The files at the workspace root: its manifest, cargo's config and clippy's.
+fn at_root(root: &Path, floor: Floor) -> Result<Sources, String> {
+    Ok(Sources {
+        root: slurp(&root.join(MANIFEST))?,
+        config: cargo_config(root)?,
+        clippy: floor::clippy_file(root)?,
+        floor,
+        ..Sources::default()
+    })
 }
 
 /// The root's cargo config: `config.toml` first, then the older name without an extension.

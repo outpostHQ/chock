@@ -6,7 +6,7 @@
 
 **Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers.**
 
-chock checks a Rust project with 70 gates and gives one answer with one exit code. The gates cover
+chock checks a Rust project with 72 gates and gives one answer with one exit code. The gates cover
 your tests, clippy, rustfmt, coverage, mutation testing, the supply chain, complexity, duplication,
 and formal proofs: TLA+ models (TLC, Apalache, TLAPS), Kani and Verus.
 
@@ -196,7 +196,7 @@ with each field explained.
 
 ## The gates
 
-70 gates: 40 are on by default and 30 are opt-in. `chock gates` prints the list from the binary,
+72 gates: 41 are on by default and 31 are opt-in. `chock gates` prints the list from the binary,
 and [docs/gates.md](docs/gates.md) says when each one trips.
 
 | topic | on by default | opt-in |
@@ -204,13 +204,13 @@ and [docs/gates.md](docs/gates.md) says when each one trips.
 | Tests | `test`, `coverage`, `crap`, `assertions`, `testlint`, `admits` | `mutest`, `idempotent`, `miri` |
 | Proofs and models | `links` | `tla`, `proof`, `verus`, `laws` |
 | Lints and format | `lint`, `codeslop`, `source`, `typos` | `fmt`, `shellcheck` |
-| Docs and comments | `doc`, `slop`, `citations`, `claims`, `pinned` | `phrases` |
+| Docs and comments | `doc`, `slop`, `echoes`, `citations`, `claims`, `pinned` | `phrases` |
 | Code shape | `complexity`, `nesting`, `bigfiles`, `splits`, `lean`, `duplication`, `unsafety`, `modcheck` | `duplicates`, `dead`, `lines` |
 | Dependencies | `deps`, `manifest`, `placement`, `features`, `sort`, `dupdeps`, `unused`, `supply` | `unused-deep`, `acl` |
 | Build and release | `msrv`, `profile`, `toolchain`, `binsize` | `bsize` |
 | Repository | `commits`, `hygiene`, `wiring`, `workflows` | `history` |
 | Your own checks | | `commands`, `commands-build`, `seams`, `owners`, `calls` |
-| [Outpost](https://github.com/outpostHQ) | | `padding`, `boundaries`, `scan`, `hazards`, `unreferenced`, `lenses`, `measures`, `unread` |
+| [Outpost](https://github.com/outpostHQ) | | `padding`, `boundaries`, `scan`, `hazards`, `unreferenced`, `wrappers`, `lenses`, `measures`, `unread` |
 
 Five gates do [formal verification](docs/gates.md#proofs-and-models). `tla` checks each TLA+ model
 with TLC, Apalache and TLAPS, `proof` each Kani harness, and `verus` each Verus proof; a planted
@@ -249,7 +249,7 @@ installs the pinned Rust, builds this chock, installs every tool that a gate run
 version, and wires the hooks. chock's own CI also runs the commit set first, on Linux only.
 
 chock turns on every gate for itself but `shellcheck`, because it has no shell script. `--ci`
-leaves out the 10 gates that read Outpost's graph; `chock run` without it runs them too.
+leaves out the 11 gates that read Outpost's graph; `chock run` without it runs them too.
 
 ## Licence
 

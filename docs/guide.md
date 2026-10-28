@@ -110,12 +110,15 @@ file `verdicts.json` in `.chock`, under a key of everything the gate reads:
 
 ```
    the files ──┐
-   the tools ──┼─► key ─┬─ a kept verdict has it ──► the row says `recalled`
+   the tools ──┤
+   chock ──────┼─► key ─┬─ a kept verdict has it ──► the row says `recalled`
    the config ─┤        └─ none has it ────────────► the gate runs; its verdict is kept
    the record ─┘
 ```
 
 - A commit hook, a push hook and a run by hand share the kept verdicts.
+- A tool or chock is known by its version and the size and mtime of its binary, so a new build
+  judges each gate again, even at the same version.
 - `CANNOT RUN` is never kept, and a run that wrote a record judges that gate once more.
 - Not every gate keeps a verdict. `deps` asks the network and `commands` runs your own program,
   so each run judges them again, as it does the gates that chock computes itself.

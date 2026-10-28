@@ -1,6 +1,6 @@
 # The gates
 
-`chock gates` prints this list from the binary: 70 gates, 40 on by default and 30 opt-in.
+`chock gates` prints this list from the binary: 72 gates, 41 on by default and 31 opt-in.
 `chock gates --json` gives the same list to a program.
 
 A gate is one of two kinds.
@@ -25,9 +25,9 @@ A gate is one of two kinds.
 | `msrv` | | the crate stops building on the oldest Rust it declares |
 | `crap` | | a function's complexity-times-uncoverage score goes up, or a new function scores over 30 |
 | `commits` | | an unpushed commit's subject or a body line is too wide, its body repeats the diff, or a tool is credited as author |
-| `profile` | | the release profile skips a free win or silences a compiler check |
-| `toolchain` | | a `rust-toolchain` file names a channel that moves, such as `stable` or `nightly`, not a release or a dated nightly |
-| `hygiene` | | the repository tracks a secret, a credential or build output |
+| `profile` | | the release profile skips a free win or silences a compiler check, or, under `"lint_floor": true`, a lint table is below the [lint floor](#the-lint-floor) |
+| `toolchain` | | a `rust-toolchain` file names a channel that moves, such as `stable` or `nightly`, not a release or a dated nightly, or names a toolchain at a local `path`; a release before `1.96.0` gets an advisory for its Cargo security faults |
+| `hygiene` | | the repository tracks a secret, a credential or build output, a character that no reader sees, a `.gitmodules` value that git reads as an option or another path, or a link into `.git` |
 | `workflows` | | a GitHub Actions workflow or action runs an action by a tag, a branch or a short SHA, or an image without its `sha256` digest |
 | `wiring` | | a gate passes on this tree but is switched off, and is not opt-in |
 | `modcheck` | ✓ | a `mod` names no file, or more files are reached by no `mod` |
@@ -41,6 +41,7 @@ A gate is one of two kinds.
 | `typos` | ✓ | one more misspelling in code, comments or docs; a hex id of 7 characters or more, such as a commit id, is no word |
 | `source` | ✓ | one more lint is allowed crate-wide or suppressed without a reason |
 | `slop` | ✓ | one more comment block runs past two lines |
+| `echoes` | ✓ | one more comment says only what the code line under it says |
 | `bigfiles` | ✓ | a file over 1000 production lines grows, or another one crosses 1000 |
 | `splits` | ✓ | a file gains a part of 100 lines or more that only one private item uses |
 | `lean` | ✓ | a file gains lines that one function, one table, one call or one loop over test cases would remove: code repeated in one shape, tests included, or a function that only passes its parameters on |
@@ -82,7 +83,7 @@ records the reason under `left_off` in the config.
 | `laws` | ✓ | the text of a law changes or goes: a TLA+ theorem, a Verus `requires` or `ensures`, or a Kani harness's attributes and checks |
 | `miri` | | a test fails under Miri; the run lists every failing test |
 | `tla` | | TLC finds a fault in a model, a bad variant of a model passes, Apalache cannot prove the inductive invariant, or TLAPS does not prove a theorem |
-| `verus` | | Verus does not verify a proof file, or verifies a mutant, a patch that puts a fault in one function |
+| `verus` | ✓ | Verus does not verify a proof file, verifies a mutant, a patch that puts a fault in one function, or no longer verifies a function on record |
 | `unused-deep` | | a real (nightly) compile shows an unused dependency |
 | `fmt` | | rustfmt would change a file; needs no compiler, so a commit can run it |
 | `shellcheck` | ✓ | shellcheck has one more thing to say about a shell script the repository tracks, per file and check |
@@ -105,6 +106,7 @@ whole tree.
 | `scan` | ✓ | known defect pattern appears, or untrusted input reaches a sink |
 | `hazards` | ✓ | spot of syntax is about to be wrong, such as a value spliced into a command |
 | `unreferenced` | ✓ | piece of shipped code is reached by nothing, or only by tests |
+| `wrappers` | ✓ | line of shipped Rust is in a private function that is one call and has one caller in its file |
 | `lenses` | ✓ | hazard lens stops reporting, or lens with no record reports a hazard |
 | `measures` | ✓ | Outpost measure grows, stops arriving, or arrives above zero with no record |
 
@@ -190,6 +192,12 @@ under `target/test-scratch/chock/tla`.
 The gate runs Verus on each file of `verus.files`, `proofs/verus/*.rs` when left out, and each file
 must verify. A crate's `lib.rs` verifies its modules with it.
 
+The gate records each function that a proof file's crate holds, one row each, such as
+`proofs/verus/jobs.rs#shares` for `shares` in the crate root. A run that no longer verifies a
+recorded function trips the gate, as when a proof is deleted or renamed. When the change is meant,
+`chock baseline verus` writes the new list. A file that does not verify trips the gate whatever the
+record holds.
+
 A mutant is a patch in `proofs/verus/mutants` that puts a fault in one function. Verus must fail
 on each mutant. A mutant that verifies shows that the proof does not say what the function must
 do.
@@ -239,6 +247,8 @@ The gate counts a stale link for each of these:
 
 - a comment that names no code: `unlinked`
 - a link to no item, or to more than one item
+- a link to a file outside the project: `outside`. The gate reads only the project's code, and a
+  record read on another machine cannot hold a path out of the project.
 - an item that changed after the model's last commit. Read the model against the code, change the
   model where it is wrong, then commit the model. Only a git repository shows this.
 
@@ -293,6 +303,27 @@ chock keeps the files in `CHOCK_TOOLS`, else in `chock-tools` in cargo's home, s
   lints. `unused` and `unused-deep` each find dependencies the other misses. `unreferenced` counts
   only what Outpost is certain nothing reaches; `measures` holds `dead_items_production`, a wider
   analysis, so a new public function with no caller trips `measures` and not `unreferenced`.
+  `echoes` reads what a comment says, and `slop` only its length. `lean` counts a function that
+  passes its parameters on unchanged; `wrappers` counts one that changes them, such as `g(&x)`.
+- **What `echoes` counts.** A comment block counts when every word it says stands in the code line
+  under it, past attributes. Filler words such as `the`, `returns` and `get` say nothing, a word in
+  a string is not said, a name splits where its case turns, and a plural reads as its singular. So
+  `/// The config path.` above `fn config_path()` counts. A block that opens with a tag such as
+  `SAFETY:` or `TODO`, holds a heading or a code fence, or has a blank line under it never counts.
+  The record holds a count per file.
+- **What `wrappers` counts.** It reads `outpost graph export` from a file under
+  `target/test-scratch/chock`, and removes the file. A wrapper is a shipped Rust
+  function, outside a trait and its impls, whose body is one call that passes names, fields,
+  borrows or dereferences, and nothing else: no literal, constant, variant, arithmetic, test,
+  closure or built value. Only one other function calls it, and that caller is no test. The
+  record counts its lines when the tree names it only at its definition and its one call, the
+  caller is in its file, and it is not `pub`. Any other wrapper is a note that says which of these
+  fails. A caller that only names the wrapper as a value, such as a handler passed to a router,
+  makes no wrapper. The fix makes the call in the caller and removes the wrapper.
+- **What `unreferenced` needs.** Outpost sets apart the entities whose callers it cannot know, such
+  as an impl of a trait from another crate, or a name that stands where the graph has no link.
+  `unreferenced` counts only the rest. An Outpost that does not print `unknown_callers` may mix
+  them in, so the gate refuses its answer.
 - **`test` reads the failures of a runner's own stage.** A `runner` can check cases that are no
   Rust test, such as a ledger of scenarios. Where no test failed, each line `FAIL <case> <why>` in
   its output is a finding at that case. A nextest line `FAIL [ 0.005s] ...` is a test, not a case.
@@ -440,8 +471,130 @@ chock keeps the files in `CHOCK_TOOLS`, else in `chock-tools` in cargo's home, s
   that verifies, that stops Kani before it checks the harness, or that names a harness Kani does
   not list trips the gate. The mutants run only when every harness verifies. A path dependency
   outside the project root does not resolve in the copy.
+- **Where a mutant hunk applies.** A hunk of a `proof` or `verus` mutant applies at its line. When
+  an edit above it moved the code, the hunk applies at the one place where its old lines match.
+  A hunk that matches at no place, or at more than one place, trips the gate with `make the mutant
+  again`, since the fault could go into the wrong function. A later hunk moves as far as the one
+  before it.
 - **`unused` and `dead` give leads.** Neither sees a dependency used only in a doc example, or a
   function reached only through a name a macro builds; mark such a function `#[expect(dead_code)]`.
+- **What `hygiene` reads.** It names a tracked file by its name alone, such as `.env`, a `.pem`,
+  `.git-credentials` or `.cargo/credentials.toml`. It reads each configuration file, such as
+  `.toml`, `.json`, `.yml`, `.npmrc` or `.pypirc`, for a token of AWS, GitHub, Slack, crates.io,
+  npm or PyPI. It reads every tracked file for a character that no reader sees: a Unicode tag
+  character, two different variation selectors in a row, or a bidirectional control. It reads
+  `.gitmodules` for a value that begins with `-` or holds a control character, and each tracked
+  link for a target in `.git`. It skips test material and templates, as it has no way to suppress
+  a finding. The example key that AWS or GitHub prints in its documentation is not a finding.
+- **`deps` reads `Cargo.lock`.** cargo-deny checks the crates that `Cargo.lock` holds. A finding
+  on a crate gives the line of `Cargo.lock` that names the crate at its version, as
+  `name = "<crate>"`. cargo-deny prints a line of its own list of crates, and chock finds the
+  crate of that line in the real file. A duplicate crate is a note in `deps` only where
+  `deny.toml` sets `[bans] multiple-versions` to `warn`, the default of cargo-deny. The `dupdeps`
+  gate counts duplicates against a record, so the `deny.toml` of `chock init` sets `allow`.
+
+## The lint floor
+
+`profile` holds each lint table that a crate builds with to the lint floor: each lint below is
+set to `warn`, `deny` or `forbid`. A member with `[lints] workspace = true` is judged once, at the
+root's `[workspace.lints]`. `lint_floor` in `.chock/config.json` decides what a gap does: absent,
+it is an advisory; `true`, it fails the gate; `false`, the floor is not checked.
+`chock init --local` writes `true` when it creates the config.
+
+A finding names the manifest, the line of the table header (1 when the table is absent), the lint,
+and the line to write, such as `add unwrap_used = "deny" under [lints.clippy]`. A group gets
+`priority = -1`, so a single lint that the table sets still overrides it. A level is a string or a
+table with `level` and `priority`, and `-` and `_` are the same in a lint name. An `allow` that the
+gate already fails, such as `unwrap_used = "allow"`, gets that one finding and no second one.
+
+Under `[lints.rust]`:
+
+| lint | what it keeps out |
+|---|---|
+| `missing_docs` | a public item with no documentation for the people who call it |
+| `missing_debug_implementations` | a public type that a caller cannot print when they look for a fault |
+| `unreachable_pub` | an item marked `pub` that no other crate can reach, so its visibility says the wrong thing |
+| `unsafe_op_in_unsafe_fn` | an unsafe operation in an `unsafe fn` with no `unsafe` block around it |
+| `rust_2018_idioms` | old forms, such as a trait object without `dyn` or a lifetime that a path hides |
+
+Under `[lints.clippy]`:
+
+| lint | what it keeps out |
+|---|---|
+| `all` | clippy's default checks for faults, slow code and code that is hard to read |
+| `pedantic` | the stricter checks, which hold the six pedantic lints at the end of this table |
+| `unwrap_used` | a panic on a `None` or an `Err` that the code does not handle |
+| `allow_attributes` | an `#[allow]` that stays after its lint stops firing, where `#[expect]` would tell |
+| `allow_attributes_without_reason` | a silenced lint with no written reason |
+| `undocumented_unsafe_blocks` | an `unsafe` block with no `// SAFETY:` comment that says why it is sound |
+| `multiple_unsafe_ops_per_block` | an `unsafe` block that holds more than one unsafe operation under one reason |
+| `clone_on_ref_ptr` | a `.clone()` on an `Rc` or an `Arc` that a reader takes for a deep copy |
+| `dbg_macro` | a `dbg!` left behind after debugging |
+| `todo` | a `todo!` that panics when the unfinished path runs |
+| `print_stdout` | a `print!` or `println!` that writes to standard output where the program did not mean to |
+| `print_stderr` | an `eprint!` or `eprintln!` in place of an error that the caller gets |
+| `missing_panics_doc` | a public function that can panic, with no `# Panics` section that says when |
+| `missing_errors_doc` | a public function that returns a `Result`, with no `# Errors` section that says which |
+| `fn_params_excessive_bools` | a function whose `bool` parameters a call site cannot read |
+| `struct_excessive_bools` | a struct of many `bool` fields, where an enum would name each state |
+| `cast_possible_truncation` | a cast that drops the high bits of a number |
+| `cast_sign_loss` | a cast that turns a negative number into a large positive one |
+
+The `pedantic` group meets each of its six lints at the end of the table, unless the table sets
+that lint to `allow`. An `allow` on another pedantic lint, such as `module_name_repetitions` or
+`must_use_candidate`, is not a gap.
+
+The floor leaves out two lints. `as_conversions` names each `as`, and the pedantic `cast_*` lints
+already name each `as` that can lose a value. `panic_in_result_fn` names each test that returns a
+`Result` and asserts, and clippy has no setting that keeps it out of tests.
+
+Clippy reads `unwrap_used` in tests too. Its gap says so, and names the fix: `allow-unwrap-in-tests
+= true` and `allow-expect-in-tests = true` in `clippy.toml`.
+
+Clippy checks `allow_attributes` and `allow_attributes_without_reason` only in a crate whose
+`rust-version` is 1.81 or later. Below that, the gap of each one says so and names the promise.
+See [Rust versions](#rust-versions).
+
+`clippy.toml` (or `.clippy.toml`, which clippy reads first) at the workspace root sets
+`max-fn-params-bools = 0`. Then `fn_params_excessive_bools` names each function that takes a `bool`
+parameter at all. With no such file, the finding is at line 1 of the root `Cargo.toml`.
+
+`slop` allows the sections that `missing_errors_doc` and `missing_panics_doc` ask for. A
+`/// # Errors`, `/// # Panics` or `/// # Safety` line ends a comment block and is not counted, so
+each section is a block of its own, of at most two lines:
+
+```rust
+/// Reads the config file, or the defaults when there is none.
+/// # Errors
+/// The file is unreadable, or its text is not a JSON object.
+pub fn read(root: &Path) -> Result<Config, String> {
+```
+
+## Rust versions
+
+chock reads `rust-version` from each package, as `cargo metadata` gives it, so a value that a
+member inherits with `rust-version.workspace = true` counts. chock never asks a crate for code that
+the Rust it promises cannot build. A crate with no `rust-version` builds on the Rust that it pins,
+and chock takes that as the newest.
+
+| feature | from Rust | what chock does for an older `rust-version` |
+|---|---|---|
+| the `[lints]` table | 1.74 | Cargo before 1.74 warns of an unused key and builds with no lints; `profile` still asks for the table, which the `msrv` gate then builds |
+| `#[expect(…)]` and `reason = "…"` | 1.81 | `profile` notes that clippy skips `allow_attributes` and `allow_attributes_without_reason`; `source` takes a `//` comment of 8 or more characters on the line above an `#[allow]`, or after it on its line, as its reason |
+
+A workspace `[workspace.lints]` table takes the lowest promise among the members that inherit it.
+A file that `chock edited` names takes the promise of the nearest `Cargo.toml` above it.
+
+The `msrv` gate builds each crate on the release that its `rust-version` names. chock itself
+builds on Rust 1.99, which `rust-toolchain.toml` pins and its own `rust-version` promises. The
+`toolchain` gate gives an advisory for a pin before `1.96.0`, as each such Cargo has a security
+fault that a later release fixes:
+
+| fault | fixed in | what it lets an attacker do |
+|---|---|---|
+| CVE-2026-33056 | 1.94.1 | change the permissions of any directory, through a crafted crate archive |
+| CVE-2026-5222 | 1.96.0 | get the token of one third-party sparse registry, as Cargo can send it to another whose URL differs by `.git` |
+| CVE-2026-5223 | 1.96.0 | replace a cached crate of a third-party registry, through a symbolic link |
 
 ## Why each gate starts its own compiler
 

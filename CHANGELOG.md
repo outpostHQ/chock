@@ -5,6 +5,98 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-27
+
+- **A `deps` finding on `Cargo.lock` gives the real line of its crate.** cargo-deny numbers the
+  lines of a list of crates that it makes, and prints that number beside the path of
+  `Cargo.lock`. chock copied the number, so `Cargo.lock:21` for a duplicate `base64` showed
+  another crate. Now the finding gives the line `name = "base64"` of the version that cargo-deny
+  named, or no line where `Cargo.lock` has no such entry.
+- **`init --local` never lowers a tool pin.** Where a project's `tool-versions.env` holds a newer
+  version than this chock's pin, such as `CARGO_BINSTALL_VERSION=1.26.1` against `1.26.0`, the
+  project's version stays, and `init` prints `kept CARGO_BINSTALL_VERSION=1.26.1, newer than this
+  chock's 1.26.0`. Before, `init` wrote chock's older version over it.
+- **`links` counts a link to a file outside the project.** A `code:` link such as
+  `../other/src/lib.rs::f` is a stale link with the key `outside`. Before, its path went into the
+  record's key, and the whole gate stopped with CANNOT RUN.
+- **`profile` holds each lint table to a lint floor.** Each effective `[lints]` table, or the
+  root's `[workspace.lints]` that members inherit, sets a fixed set of rustc and clippy lints to
+  `warn`, `deny` or `forbid`, among them `missing_docs`, `unwrap_used` and the `all` and
+  `pedantic` groups. The gap for `unwrap_used` names `allow-unwrap-in-tests = true` in
+  `clippy.toml`, which keeps it out of tests. The root `clippy.toml` sets `max-fn-params-bools = 0`. Each gap is a
+  finding at the table header, such as `add unwrap_used = "deny" under [lints.clippy]`. The new
+  `lint_floor` key decides what a gap does: absent, it is an advisory and the gate still passes;
+  `true` fails the gate; `false` does not check the floor. `chock init --local` writes
+  `"lint_floor": true` when it creates a config, and leaves a config that a project has alone. A
+  project that upgrades sees advisories only. docs/gates.md lists each floor lint and what it
+  keeps out.
+- **`slop` allows the doc sections that the floor asks for.** A `/// # Errors`, `/// # Panics`
+  or `/// # Safety` line ends a comment block and is not counted. A summary of two lines and each
+  section of two lines then pass, so `missing_errors_doc` and `slop` no longer conflict.
+- **`verus` records the functions each proof file verifies.** Verus now reports each run as JSON,
+  and the gate keeps one row for each function of a proof file's crate, such as
+  `proofs/verus/jobs.rs#shares`. A run that no longer verifies a recorded function trips the gate,
+  so a deleted or renamed proof no longer passes quietly. `chock baseline verus` writes a new list.
+  The first run writes the record. A mutant's run adds no row, and a file that does not verify trips
+  the gate whatever the record holds.
+- **A stopped command takes every process under it.** When chock stops a command at its deadline
+  or at the memory limit, it first stops each process under the command, then kills them all.
+  Before, chock killed only the command's process group, so a process in a group of its own lived
+  on: mutest starts each test so, and the test of a looping mutant ran for hours after the gate
+  ended. The walk reads `/proc`, so it runs on Linux; elsewhere the group kill stays.
+- **chock reads the Rust release each crate promises.** It takes `rust-version` from `cargo
+  metadata`, with an inherited value too, and asks no crate for code its release cannot build.
+  Below Rust 1.81, `profile` notes that clippy skips `allow_attributes` and
+  `allow_attributes_without_reason`, and `source` and `chock edited` take a `//` comment on the
+  line above an `#[allow]`, or after it on its line, as its reason. docs/gates.md has a new
+  section, "Rust versions", with each feature, the release that brought it, and what chock does.
+- **`hygiene` finds more ways into a repository.** It names a character that no reader sees in
+  any tracked file outside tests: a Unicode tag character, two different variation selectors in a
+  row (GlassWorm), or a bidirectional control (CVE-2021-42574). It names a `.gitmodules` value
+  that holds a control character or begins with `-` (CVE-2025-48384, CVE-2017-1000117), and a
+  tracked link into `.git` (CVE-2024-32002). It knows the tokens of GitHub OAuth and apps,
+  crates.io, npm and PyPI, reads `.npmrc` and `.pypirc`, and names a tracked `.git-credentials` or
+  a `credentials.toml` under `.cargo`. The example key that AWS or GitHub prints in its documentation is no
+  longer a finding.
+- **`toolchain` refuses a toolchain at a local `path`**, which runs whatever each machine put
+  there, and gives an advisory for a release before `1.96.0`, whose Cargo has a known security
+  fault (CVE-2026-33056, CVE-2026-5222, CVE-2026-5223).
+- **`echoes` counts a comment that only says its code line.** The new gate is on by default. A
+  comment block counts when every word it says, other than filler such as `the` or `get`, stands
+  in the code line under it, such as `/// The config path.` above `fn config_path()`. A tag such
+  as `SAFETY:` or `TODO`, a heading or a code fence keeps a block out. The record holds a count
+  per file, so only a new echo trips. The `missing_docs` floor of `profile` asks for a doc on each
+  public item, and `echoes` keeps that doc from only repeating the name.
+- **`wrappers` counts a function that is one call and has one caller.** The new gate is opt-in and
+  needs `outpost`. It reads `outpost graph export` and counts the lines of each private function
+  whose body only passes names, fields or borrows to one call, and whose one caller is in its file
+  and is no test. A wrapper that is `pub`, has its caller in another file, or that the tree names
+  again is a note that says which. docs/gates.md holds the rule whole.
+- **`unreferenced` counts what Outpost is sure nothing calls.** Before, chock kept back a dead
+  function when its name stood anywhere else in the tree, such as in a test or a string, so a
+  common name hid dead code. Now Outpost's `unknown_callers` sets apart the code whose callers it
+  cannot know, and chock counts the rest. A record can rise where the old rule hid dead code. An
+  Outpost that does not print `unknown_callers` stops the gate with `update outpost`.
+- **`scan` leaves out the files only tests build.** A finding under a `tests` directory, such as a
+  crate's integration tests, or in a file such as `parse_tests.rs` or a module's `tests.rs`, no
+  longer counts. Before, `unwrap-in-production` fired on integration tests and on unit test files.
+- **A gate refuses an Outpost answer longer than chock keeps.** chock keeps 16 MiB of a command's
+  output. A larger answer now stops the gate with `outpost printed more than chock keeps`, not a
+  parse error on half an answer. `wrappers` reads the call graph through a file in
+  `target/test-scratch/chock`, so it has no cap.
+- **A new build of chock judges the tree again.** A kept verdict was keyed on chock's version
+  only. So a build from the main branch, at the same version as an older build, answered with the
+  older build's verdicts. Now the key holds the size and mtime of chock's own binary too, as it
+  does for every other tool.
+- **A mutant hunk that moved applies only where it is sure.** A hunk of a `proof` or `verus`
+  mutant applies at its line. When the code moved, it applies at the one place where its old lines
+  match. Before, it applied at the nearest match, so a line that the file holds twice could take
+  the fault in the wrong function. Now such a hunk trips the gate with `make the mutant again`.
+  A later hunk of the same patch moves as far as the hunk before it.
+- **`chock edited` passes over a file that is not text.** Before, a font or an image among the
+  named paths stopped the command with `stream did not contain valid UTF-8`, and no other file
+  was checked. Now chock skips such a file, as the gates do, and checks the text files.
+
 ## [0.18.0] - 2026-10-26
 
 - **`mutest_proofs` lets a Kani proof kill a mutation.** With `"mutest_proofs": true`, `mutest`

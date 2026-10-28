@@ -1,5 +1,9 @@
-//! Secret-bearing files, credential literals and build output among the files the repository
-//! tracks.
+//! Secret-bearing files, credential literals, build output, hidden characters and files that
+//! steer git, among the files the repository tracks.
+
+mod git;
+mod hidden;
+mod tree;
 
 use std::path::Path;
 
@@ -9,10 +13,12 @@ use crate::project::config::Secret;
 use crate::exec;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
+use tree::{Tree, faults_of};
 
 pub const GATE: Gate = Gate {
     name: "hygiene",
-    about: "the repository tracks a secret-bearing file, a credential literal or build output",
+    about: "the repository tracks a secret-bearing file, a credential literal, build output, a \
+            character no reader sees, or a file that steers git",
     group: Group::Quality,
     builds: false,
     reads: None,
@@ -22,19 +28,15 @@ pub const GATE: Gate = Gate {
 /// The largest file scanned for credentials; anything bigger is data, not configuration.
 const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Cargo's default build directory; a `build.target-dir` override is not read.
-const BUILD_DIR: &str = "target";
-
 fn check(ctx: &Ctx) -> Result<Outcome, String> {
     let declared = declared(&ctx.secrets)?;
     let paths = crate::project::vcs::tracked(&ctx.root, ctx.vcs)?;
-    let findings = faults_of(
-        &paths,
-        &|path| read_text(&ctx.root, path),
-        &|path| ctx.root.join(path).exists(),
-        ctx.vcs,
-        &declared,
-    );
+    let tree = Tree {
+        read: &|path| read_text(&ctx.root, path),
+        present: &|path| ctx.root.join(path).exists(),
+        link: &|path| std::fs::read_link(ctx.root.join(path)).ok(),
+    };
+    let findings = faults_of(&paths, &tree, ctx.vcs, &declared);
     if findings.is_empty() {
         Ok(Outcome::passed())
     } else {
@@ -45,93 +47,12 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
 /// Every rule over a list of tracked paths, with file reading injected so tests need no repository.
 #[must_use]
 pub fn faults(paths: &[String], read: &dyn Fn(&str) -> Option<String>) -> Vec<Finding> {
-    faults_of(
-        paths,
+    let tree = Tree {
         read,
-        &|_| true,
-        Some(crate::project::vcs::Kind::Git),
-        &[],
-    )
-}
-
-/// `faults`, also told which paths are still on disk (a missing one is being removed) and which
-/// system holds the tree (so a fix names its command).
-#[must_use]
-pub(crate) fn faults_of(
-    paths: &[String],
-    read: &dyn Fn(&str) -> Option<String>,
-    present: &dyn Fn(&str) -> bool,
-    held: Option<crate::project::vcs::Kind>,
-    declared: &[Credential<'_>],
-) -> Vec<Finding> {
-    let mut found = Vec::new();
-    for path in paths {
-        // A file reported by name is not also scanned: the fix is the same whatever it holds.
-        if let Some(finding) = secret_file(path, held) {
-            found.push(finding);
-            continue;
-        }
-        found.extend(credentials_in(path, read, declared));
-    }
-    found.extend(build_output(paths, present, held));
-    found
-}
-
-/// A file whose name marks it as secret-bearing, reported by name without reading it.
-fn secret_file(path: &str, held: Option<crate::project::vcs::Kind>) -> Option<Finding> {
-    if non_production(path) || !is_secret_name(file_name(path)) {
-        return None;
-    }
-    Some(Finding::at(
-        path,
-        &format!(
-            "tracked, and the name marks it as secret-bearing: {}, \
-             rotate what it holds, and ignore the name",
-            untrack_secret(held)
-        ),
-    ))
-}
-
-/// The untrack step for the system holding the tree. `outpost rm` deletes the file, unlike
-/// `git rm --cached`, so the secret is copied out first.
-fn untrack_secret(held: Option<crate::project::vcs::Kind>) -> &'static str {
-    match held {
-        Some(crate::project::vcs::Kind::Outpost) => "copy it out, then `outpost rm` it",
-        _ => "`git rm --cached` it",
-    }
-}
-
-/// Whether a file name is on a closed list of secret-bearing names; there is no heuristic.
-fn is_secret_name(name: &str) -> bool {
-    if is_template(name) {
-        return false;
-    }
-    name == ".env"
-        || name.starts_with(".env.")
-        || name.ends_with(".pem")
-        || name.ends_with(".key")
-        || name == "id_rsa"
-        || name == "credentials.json"
-}
-
-/// Whether the name marks a committed placeholder: an `example`, `template` or `sample` part.
-fn is_template(name: &str) -> bool {
-    name.split('.')
-        .any(|part| matches!(part, "example" | "template" | "sample"))
-}
-
-/// Whether the path is under a test, fixture, example or bench directory, where a key is a fixture.
-fn non_production(path: &str) -> bool {
-    path.split('/').any(|segment| {
-        matches!(
-            segment,
-            "tests" | "fixtures" | "testdata" | "examples" | "benches"
-        )
-    })
-}
-
-fn file_name(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
+        present: &|_| true,
+        link: &|_| None,
+    };
+    faults_of(paths, &tree, Some(crate::project::vcs::Kind::Git), &[])
 }
 
 /// One credential shape: a fixed prefix, a minimum run of admissible bytes after it, and a name.
@@ -187,7 +108,7 @@ impl Credential<'_> {
 
 /// Prefixes with a long fixed tail. `sk-` and the PEM header are left out: both match ordinary
 /// source too often.
-const CREDENTIALS: [Credential<'static>; 4] = [
+const CREDENTIALS: [Credential<'static>; 11] = [
     Credential {
         name: "AWS access key id",
         prefix: "AKIA",
@@ -212,52 +133,48 @@ const CREDENTIALS: [Credential<'static>; 4] = [
         tail: 10,
         admits: |byte| byte.is_ascii_alphanumeric() || byte == b'-',
     },
-];
-
-/// Credential literals: a known shape in a configuration file, a declared shape in any file. Test
-/// material and templates are skipped, as this gate has no way to suppress a match.
-fn credentials_in(
-    path: &str,
-    read: &dyn Fn(&str) -> Option<String>,
-    declared: &[Credential<'_>],
-) -> Vec<Finding> {
-    let name = file_name(path);
-    let extension = name.rsplit_once('.').map(|(_, extension)| extension);
-    let configuration = extension.is_some_and(|extension| CONFIGURATION.contains(&extension));
-    if non_production(path) || is_template(name) || !configuration && declared.is_empty() {
-        return Vec::new();
-    }
-    let Some(text) = read(path) else {
-        return Vec::new();
-    };
-    let shape = |line: &str| {
-        let known: Option<&str> = credential_in(line).filter(|_| configuration);
-        let own = || declared.iter().find(|credential| holds(line, credential));
-        known.or_else(|| own().map(|credential| credential.name))
-    };
-    text.lines()
-        .enumerate()
-        .filter_map(|(index, line)| shape(line).map(|found| (index, found)))
-        .map(|(index, found)| {
-            Finding::at(path, "a credential literal: remove it and rotate the key")
-                .line(u32::try_from(index + 1).unwrap_or(u32::MAX))
-                .item(found)
-        })
-        .collect()
-}
-
-/// Configuration file extensions, where a key-shaped string is a key rather than an identifier.
-const CONFIGURATION: [&str; 10] = [
-    "json",
-    "yaml",
-    "yml",
-    "toml",
-    "ini",
-    "conf",
-    "cfg",
-    "properties",
-    "tfvars",
-    "sh",
+    Credential {
+        name: "GitHub OAuth token",
+        prefix: "gho_",
+        tail: 36,
+        admits: |byte| byte.is_ascii_alphanumeric(),
+    },
+    Credential {
+        name: "GitHub app user token",
+        prefix: "ghu_",
+        tail: 36,
+        admits: |byte| byte.is_ascii_alphanumeric(),
+    },
+    Credential {
+        name: "GitHub app installation token",
+        prefix: "ghs_",
+        tail: 36,
+        admits: |byte| byte.is_ascii_alphanumeric(),
+    },
+    Credential {
+        name: "GitHub refresh token",
+        prefix: "ghr_",
+        tail: 36,
+        admits: |byte| byte.is_ascii_alphanumeric(),
+    },
+    Credential {
+        name: "crates.io API token",
+        prefix: "cio",
+        tail: 32,
+        admits: |byte| byte.is_ascii_alphanumeric(),
+    },
+    Credential {
+        name: "npm access token",
+        prefix: "npm_",
+        tail: 36,
+        admits: |byte| byte.is_ascii_alphanumeric(),
+    },
+    Credential {
+        name: "PyPI API token",
+        prefix: "pypi-AgEIcHlwaS5vcmc",
+        tail: 50,
+        admits: |byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_',
+    },
 ];
 
 /// The first credential a line holds, by name. The value is never carried out of here.
@@ -268,6 +185,10 @@ fn credential_in(line: &str) -> Option<&'static str> {
         .map(|credential| credential.name)
 }
 
+/// The tails that vendors print in their own documentation, which no account holds: that of AWS's
+/// example key id, and the one GitHub's API description gives each kind of token.
+const DOCUMENTED: [&str; 2] = ["IOSFODNN7EXAMPLE", "16C7e42F292c6912E7710c838347Ae178B4a"];
+
 /// Whether the line holds this credential: its prefix at a word boundary, with a long enough tail.
 pub(crate) fn holds(line: &str, credential: &Credential) -> bool {
     let bytes = line.as_bytes();
@@ -277,11 +198,8 @@ pub(crate) fn holds(line: &str, credential: &Credential) -> bool {
         let after_boundary =
             start == 0 || !(bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
         let tail_start = start + credential.prefix.len();
-        let tail = bytes[tail_start..]
-            .iter()
-            .take_while(|byte| (credential.admits)(**byte))
-            .count();
-        if after_boundary && tail >= credential.tail {
+        if after_boundary && undocumented_tail(&bytes[tail_start..], credential) >= credential.tail
+        {
             return true;
         }
         from = tail_start;
@@ -289,45 +207,16 @@ pub(crate) fn holds(line: &str, credential: &Credential) -> bool {
     false
 }
 
-/// Tracked build output still on disk, as one finding for the whole directory. A tracked path gone
-/// from disk is being removed.
-fn build_output(
-    paths: &[String],
-    present: &dyn Fn(&str) -> bool,
-    held: Option<crate::project::vcs::Kind>,
-) -> Option<Finding> {
-    let prefix = format!("{BUILD_DIR}/");
-    let count = paths
+/// The length of the credential's tail at the start of `bytes`; 0 for a tail a vendor documents.
+fn undocumented_tail(bytes: &[u8], credential: &Credential) -> usize {
+    let tail = bytes
         .iter()
-        .filter(|path| path.starts_with(&prefix) && present(path))
+        .take_while(|byte| (credential.admits)(**byte))
         .count();
-    (count > 0).then(|| {
-        Finding::at(
-            BUILD_DIR,
-            &format!(
-                "{} tracks {count} file(s) under the directory cargo builds into: \
-                 `{}` and ignore it",
-                named(held),
-                untracks(held)
-            ),
-        )
-    })
-}
-
-/// The system holding the tree, so a finding does not name git in a repository git does not hold.
-fn named(held: Option<crate::project::vcs::Kind>) -> &'static str {
-    match held {
-        Some(crate::project::vcs::Kind::Outpost) => "outpost",
-        _ => "git",
-    }
-}
-
-/// The command that removes build output, for the system holding the tree.
-fn untracks(held: Option<crate::project::vcs::Kind>) -> String {
-    match held {
-        Some(crate::project::vcs::Kind::Outpost) => format!("outpost rm -r {BUILD_DIR}"),
-        _ => format!("git rm -r --cached {BUILD_DIR}"),
-    }
+    let documented = DOCUMENTED
+        .iter()
+        .any(|example| &bytes[..tail] == example.as_bytes());
+    if documented { 0 } else { tail }
 }
 
 /// The text of a regular UTF-8 file within the size limit; a symlink could leave the tree.
@@ -343,6 +232,7 @@ fn read_text(root: &Path, path: &str) -> Option<String> {
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
+    clippy::panic,
     reason = "a failed unwrap in a test is the test failing"
 )]
 mod tests {
@@ -373,6 +263,16 @@ mod tests {
         findings.iter().map(Finding::render).collect()
     }
 
+    /// The findings over paths whose files hold nothing, each `present` or not, in a tree `held`.
+    fn unread(paths: &[String], present: bool, held: crate::project::vcs::Kind) -> Vec<Finding> {
+        let tree = Tree {
+            read: &|_| None,
+            present: &|_| present,
+            link: &|_| None,
+        };
+        faults_of(paths, &tree, Some(held), &[])
+    }
+
     #[test]
     fn a_private_key_committed_to_the_tree_is_reported() {
         let found = faults(&tracked_paths(&["certs/server.pem"]), &|_| None);
@@ -387,20 +287,12 @@ mod tests {
 
     #[test]
     fn every_name_on_the_closed_list_is_reported() {
-        for name in [
-            ".env",
-            ".env.local",
-            ".env.production",
-            "deploy.key",
-            "id_rsa",
-            "credentials.json",
-            "src/server.pem",
-        ] {
+        let names = ".env .env.local .env.production deploy.key id_rsa credentials.json \
+                     src/server.pem .git-credentials .cargo/credentials .cargo/credentials.toml";
+        for name in names.split_whitespace() {
             let found = faults(&tracked_paths(&[name]), &|_| None);
-            assert_eq!(
-                found.iter().map(|f| f.file.as_str()).collect::<Vec<_>>(),
-                [name]
-            );
+            let files: Vec<&str> = found.iter().map(|f| f.file.as_str()).collect();
+            assert_eq!(files, [name]);
         }
     }
 
@@ -510,6 +402,19 @@ mod tests {
                 "GitHub fine-grained token",
             ),
             (format!("xoxb-{}", "1".repeat(10)), "Slack bot token"),
+            (format!("gho_{}", "c".repeat(36)), "GitHub OAuth token"),
+            (format!("ghu_{}", "d".repeat(36)), "GitHub app user token"),
+            (
+                format!("ghs_{}", "e".repeat(36)),
+                "GitHub app installation token",
+            ),
+            (format!("ghr_{}", "f".repeat(36)), "GitHub refresh token"),
+            (format!("cio{}", "g1".repeat(16)), "crates.io API token"),
+            (format!("npm_{}", "h2".repeat(18)), "npm access token"),
+            (
+                format!("pypi-AgEIcHlwaS5vcmc{}", "i-_".repeat(17)),
+                "PyPI API token",
+            ),
         ];
         for (value, name) in cases {
             assert_eq!(
@@ -524,6 +429,19 @@ mod tests {
     fn a_prefix_inside_a_longer_identifier_is_not_a_credential() {
         assert_eq!(credential_in(&format!("S{}", aws_key())), None);
         assert_eq!(credential_in(&format!("doughp_{}", "a".repeat(36))), None);
+    }
+
+    #[test]
+    fn the_example_a_vendor_documents_is_not_a_credential() {
+        // Assembled at run time, as `aws_key` is, so no secret scanner reads a token in this file.
+        let token = |end: char| format!("ghu_{}{end}", "16C7e42F292c6912E7710c838347Ae178B4");
+        let lines = [
+            "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE".to_string(),
+            format!("\"token\": \"{}\"", token('a')),
+            token('b'),
+        ];
+        let found: Vec<_> = lines.iter().map(|line| credential_in(line)).collect();
+        assert_eq!(found, [None, None, Some("GitHub app user token")]);
     }
 
     #[test]
@@ -599,23 +517,12 @@ mod tests {
     #[test]
     fn build_output_the_tree_no_longer_holds_is_a_removal_rather_than_debt() {
         let paths = tracked_paths(&["target/debug/a", "target/debug/b"]);
-        let gone = faults_of(
-            &paths,
-            &|_| None,
-            &|_| false,
-            Some(crate::project::vcs::Kind::Git),
-            &[],
-        );
-        assert_eq!(gone, vec![]);
-        let carried = faults_of(
-            &paths,
-            &|_| None,
-            &|_| true,
-            Some(crate::project::vcs::Kind::Git),
-            &[],
+        assert_eq!(
+            unread(&paths, false, crate::project::vcs::Kind::Git),
+            vec![]
         );
         assert_eq!(
-            rendered(&carried),
+            rendered(&unread(&paths, true, crate::project::vcs::Kind::Git)),
             vec![
                 "target: git tracks 2 file(s) under the directory cargo builds into: \
                  `git rm -r --cached target` and ignore it"
@@ -626,13 +533,7 @@ mod tests {
     #[test]
     fn the_command_a_finding_names_is_the_one_holding_this_tree() {
         let paths = tracked_paths(&["target/debug/a"]);
-        let said = rendered(&faults_of(
-            &paths,
-            &|_| None,
-            &|_| true,
-            Some(crate::project::vcs::Kind::Outpost),
-            &[],
-        ));
+        let said = rendered(&unread(&paths, true, crate::project::vcs::Kind::Outpost));
         assert_eq!(
             said,
             vec![
@@ -644,26 +545,96 @@ mod tests {
 
     #[test]
     fn a_secret_file_finding_names_the_command_of_the_system_holding_the_tree() {
-        let said = rendered(&faults_of(
-            &tracked_paths(&[".env"]),
-            &|_| None,
-            &|_| true,
-            Some(crate::project::vcs::Kind::Outpost),
-            &[],
-        ));
-        assert_eq!(
-            said,
-            vec![
-                ".env: tracked, and the name marks it as secret-bearing: copy it out, then \
-                 `outpost rm` it, rotate what it holds, and ignore the name"
-            ]
-        );
+        let held = crate::project::vcs::Kind::Outpost;
+        let said = rendered(&unread(&tracked_paths(&[".env"]), true, held));
+        let fix = "copy it out, then `outpost rm` it, rotate what it holds, and ignore the name";
+        let want = format!(".env: tracked, and the name marks it as secret-bearing: {fix}");
+        assert_eq!(said, [want]);
     }
 
     #[test]
     fn a_source_path_that_merely_contains_target_is_not_build_output() {
         let paths = tracked_paths(&["src/target/mod.rs", "src/target.rs", "crates/a/target/x.rs"]);
         assert_eq!(faults(&paths, &|_| None), vec![]);
+    }
+
+    #[test]
+    fn a_cargo_file_named_credentials_elsewhere_is_left_alone() {
+        let paths = tracked_paths(&["src/credentials.rs", "docs/cargo/credentials"]);
+        assert_eq!(faults(&paths, &|_| None), vec![]);
+    }
+
+    #[test]
+    fn a_token_in_the_file_npm_or_pip_reads_is_reported() {
+        let text = format!("//registry.npmjs.org/:_authToken=npm_{}\n", "a1".repeat(18));
+        let found = faults(&tracked_paths(&[".npmrc", "web/.pypirc"]), &reads(&text));
+        assert_eq!(
+            rendered(&found),
+            [
+                ".npmrc:1: npm access token: a credential literal: remove it and rotate the key",
+                "web/.pypirc:1: npm access token: a credential literal: remove it and rotate the key"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hidden_character_is_reported_in_any_tracked_file_but_test_material() {
+        let paths = tracked_paths(&["tests/bidi.rs", "src/lib.rs", "AGENTS.md"]);
+        let found = faults(&paths, &reads("ok\nlet a\u{202E} = 1;\n"));
+        let at: Vec<_> = found
+            .iter()
+            .map(|f| (f.file.as_str(), f.line, f.item.as_deref()))
+            .collect();
+        assert_eq!(
+            at,
+            [
+                ("src/lib.rs", Some(2), Some(hidden::RULE)),
+                ("AGENTS.md", Some(2), Some(hidden::RULE))
+            ]
+        );
+    }
+
+    #[test]
+    fn only_the_gitmodules_git_reads_is_held_to_its_values() {
+        let text = "[submodule \"a\"]\n\turl = --upload-pack=touch\n";
+        let found = faults(
+            &tracked_paths(&[".gitmodules", "docs/.gitmodules"]),
+            &reads(text),
+        );
+        let at: Vec<_> = found
+            .iter()
+            .map(|f| (f.file.as_str(), f.line, f.item.as_deref()))
+            .collect();
+        assert_eq!(at, [(".gitmodules", Some(2), Some(git::MODULES))]);
+    }
+
+    #[test]
+    fn a_tracked_link_into_git_is_reported_and_never_read() {
+        let paths = tracked_paths(&["docs", "hooks"]);
+        let link = |path: &str| {
+            let target = if path == "hooks" {
+                "../.git/hooks"
+            } else {
+                "../README.md"
+            };
+            Some(std::path::PathBuf::from(target))
+        };
+        let read = |_: &str| -> Option<String> { panic!("a link is never read") };
+        let found = faults_of(
+            &paths,
+            &Tree {
+                read: &read,
+                present: &|_| true,
+                link: &link,
+            },
+            None,
+            &[],
+        );
+        let at: Vec<_> = found
+            .iter()
+            .map(|f| (f.file.as_str(), f.item.as_deref()))
+            .collect();
+        assert_eq!(at, [("hooks", Some(git::LINK))]);
     }
 
     #[test]
@@ -804,7 +775,12 @@ mod tests {
         let text = "let k = \"acme_ABCdef-123_xyz\";\nxacme_ABCdef123456 and acme_abc\n";
         let paths = tracked_paths(&["src/main.rs", "tests/a.rs", "conf.example.toml"]);
         let git = Some(crate::project::vcs::Kind::Git);
-        let said = rendered(&faults_of(&paths, &reads(text), &|_| true, git, &declared));
+        let tree = Tree {
+            read: &reads(text),
+            present: &|_| true,
+            link: &|_| None,
+        };
+        let said = rendered(&faults_of(&paths, &tree, git, &declared));
         assert_eq!(
             said,
             ["src/main.rs:1: Acme API key: a credential literal: remove it and rotate the key"]
@@ -813,7 +789,7 @@ mod tests {
             (declared[0].name(), declared[0].prefix()),
             ("Acme API key", "acme_")
         );
-        assert!(faults_of(&paths, &reads(text), &|_| true, git, &[]).is_empty());
+        assert!(faults_of(&paths, &tree, git, &[]).is_empty());
     }
 
     #[test]

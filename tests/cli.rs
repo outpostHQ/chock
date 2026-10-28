@@ -1547,6 +1547,11 @@ fn edited_reports_a_file_at_its_line_and_says_nothing_about_a_clean_one() {
     assert!(bad.out.contains("src/bad.rs:1"), "{}", bad.out);
     let good = exits(&dir, &["edited", "src/good.rs"], 0);
     assert_eq!(good.out, "");
+    // A font is no text, so no rule reads it, and the files named after it are still checked.
+    std::fs::write(dir.join("src/font.woff2"), b"wOF2\0\x01\xff\xfe").unwrap();
+    let font = exits(&dir, &["edited", "src/font.woff2", "src/bad.rs"], 1);
+    assert!(font.out.contains("src/bad.rs:1"), "{}", font.out);
+    assert_eq!(exits(&dir, &["edited", "src/font.woff2"], 0).out, "");
 }
 
 #[test]

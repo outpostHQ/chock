@@ -100,6 +100,9 @@ pub struct Config {
     /// Ratchets held to zero in each file the change touched, so debt goes when its file is edited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clean_when_touched: Option<Vec<String>>,
+    /// Whether `profile` fails a lint table below the lint floor: absent advises, `false` skips it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lint_floor: Option<bool>,
     /// The project's own checks, run as gates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commands: Option<Vec<Command>>,
@@ -424,6 +427,7 @@ impl Config {
             local_only: None,
             strict: None,
             clean_when_touched: None,
+            lint_floor: None,
             commands: None,
             forbidden: None,
             not_mutated: None,

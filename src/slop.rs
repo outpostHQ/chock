@@ -27,6 +27,10 @@ pub(crate) fn skipped(name: &str) -> bool {
     SKIP_DIRS.contains(&name) || crate::project::SKIPPED.contains(&name)
 }
 
+/// The rustdoc sections that clippy's doc lints ask for. Each heading ends a block and is not
+/// counted, so each section is a block of its own.
+const SECTIONS: [&str; 3] = ["/// # Errors", "/// # Panics", "/// # Safety"];
+
 /// A block over the limit: its first line and its length.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
@@ -69,12 +73,18 @@ pub fn is_exempt(text: &str) -> bool {
     })
 }
 
-/// The marker a line opens with. A compiletest directive (`//@`) or a shebang is not a comment.
+/// The marker a line opens with, where the line counts toward a block.
 fn marker<'a>(line: &str, marks: &[&'a str]) -> Option<&'a str> {
-    if line.starts_with("//@") || line.starts_with("#!") {
+    if !counted(line) {
         return None;
     }
     marks.iter().find(|m| line.starts_with(**m)).copied()
+}
+
+/// Whether a line can count toward a block. A compiletest directive (`//@`) or a shebang is not a
+/// comment, and a doc section heading such as `/// # Errors` ends a block.
+fn counted(line: &str) -> bool {
+    !(line.starts_with("//@") || line.starts_with("#!") || SECTIONS.contains(&line.trim_end()))
 }
 
 /// Every block over the limit, as (first line, length). A block is a run of one marker, so a `///`
@@ -134,27 +144,33 @@ pub fn scan(root: &Path) -> Result<Vec<Block>, String> {
     Ok(hits)
 }
 
-/// One file's over-length blocks; none for an unknown language, a non-text file or an exempt one.
+/// One file's over-length blocks.
 fn blocks_in(path: &Path) -> Result<Vec<Block>, String> {
-    let Some(marks) = markers_for(&path.to_string_lossy()) else {
+    let Some((text, marks)) = commented(path)? else {
         return Ok(Vec::new());
     };
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Ok(Vec::new()),
-        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    let block = |(line, length)| Block {
+        file: path.to_path_buf(),
+        line,
+        length,
     };
-    if is_exempt(&text) {
-        return Ok(Vec::new());
-    }
     Ok(over_length_blocks(&text, marks)
         .into_iter()
-        .map(|(line, length)| Block {
-            file: path.to_path_buf(),
-            line,
-            length,
-        })
+        .map(block)
         .collect())
+}
+
+/// A file's text and comment markers; none for an unknown language, a non-text file or an exempt
+/// one.
+pub fn commented(path: &Path) -> Result<Option<(String, &'static [&'static str])>, String> {
+    let Some(marks) = markers_for(&path.to_string_lossy()) else {
+        return Ok(None);
+    };
+    match fs::read_to_string(path) {
+        Ok(text) => Ok((!is_exempt(&text)).then_some((text, marks))),
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => Ok(None),
+        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+    }
 }
 
 #[must_use]
@@ -294,6 +310,22 @@ mod tests {
     fn a_doc_comment_is_read_as_itself_and_not_as_a_line_comment() {
         assert_eq!(
             over_length_blocks("/// a\n/// b\n/// c\n", RUST),
+            vec![(1, 3)]
+        );
+    }
+
+    #[test]
+    fn an_errors_panics_or_safety_heading_ends_a_doc_block_and_is_not_counted() {
+        let sections = "/// Reads.\n/// # Errors\n/// No file.\n/// # Panics\n/// None.\n";
+        assert_eq!(over_length_blocks(sections, RUST), vec![]);
+        let long = "/// a\n    /// # Safety \n/// b\n/// c\n/// d\n";
+        assert_eq!(over_length_blocks(long, RUST), vec![(3, 3)]);
+        assert_eq!(
+            over_length_blocks("/// a\n/// # Examples\n/// b\n", RUST),
+            vec![(1, 3)]
+        );
+        assert_eq!(
+            over_length_blocks("// a\n// # Errors\n// b\n", RUST),
             vec![(1, 3)]
         );
     }

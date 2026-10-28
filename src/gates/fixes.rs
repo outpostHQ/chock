@@ -101,7 +101,7 @@ fn installing(tool: &str) -> &'static str {
     found.map_or(PINNED, |(_, repair)| repair)
 }
 
-const FIXES: [(&str, &str); 70] = [
+const FIXES: [(&str, &str); 72] = [
     (
         "test",
         "run the rerun command, read each failing test's output, and fix the code or the test; a crate with no tests needs one",
@@ -155,11 +155,11 @@ const FIXES: [(&str, &str); 70] = [
     ),
     (
         "profile",
-        "set what the finding names in `[profile.release]`, or remove the override that silences a check for the whole build",
+        "set what the finding names in `[profile.release]`, add the lint or the `clippy.toml` key a floor finding names, or remove the override that silences a check for the whole build",
     ),
     (
         "toolchain",
-        "set `channel` in `rust-toolchain.toml` to a release such as `1.98.1`, or to a dated nightly such as `nightly-2026-09-17`",
+        "set `channel` in `rust-toolchain.toml` to a release such as `1.98.1`, or to a dated nightly such as `nightly-2026-09-17`, and name no `path`; a release before `1.96.0` has a Cargo with a known security fault",
     ),
     (
         "features",
@@ -167,7 +167,7 @@ const FIXES: [(&str, &str); 70] = [
     ),
     (
         "hygiene",
-        "stop tracking the file, rotate any credential it held, and add it to the ignore file",
+        "stop tracking the file, rotate any credential it held, and add it to the ignore file; delete a hidden character, a `.gitmodules` value that begins with `-` or holds a control character, and a tracked link into `.git`",
     ),
     (
         "workflows",
@@ -175,7 +175,7 @@ const FIXES: [(&str, &str); 70] = [
     ),
     (
         "source",
-        "allow the lint at the one site that needs it, with `reason = \"…\"`, rather than for the whole crate",
+        "allow the lint at the one site that needs it, rather than for the whole crate, and give the reason: `reason = \"…\"` from Rust 1.81, a `//` comment on the line above where `rust-version` is older",
     ),
     (
         "duplication",
@@ -187,7 +187,7 @@ const FIXES: [(&str, &str); 70] = [
     ),
     (
         "dead",
-        "delete the function or call it; mark one reached only through a macro `#[expect(dead_code)]`",
+        "delete the function or call it; mark one reached only through a macro `#[expect(dead_code)]`, or `#[allow(dead_code)]` with a `//` reason where `rust-version` is older than 1.81",
     ),
     (
         "history",
@@ -214,6 +214,10 @@ const FIXES: [(&str, &str); 70] = [
         "delete the code nothing reaches, or reach it from shipped code",
     ),
     (
+        "wrappers",
+        "make the call at the one caller and delete the function that only passes it on",
+    ),
+    (
         "lenses",
         "fix the hazard at each site the finding names; a lens that stopped reporting is a tool change, not a fix: read why before re-recording",
     ),
@@ -235,7 +239,7 @@ const FIXES: [(&str, &str); 70] = [
     ),
     (
         "verus",
-        "run `verus <file> --crate-type=lib` and fix the proof it names; for a mutant that verifies, make the proof state what the mutant breaks",
+        "run `verus <file> --crate-type=lib` and fix the proof it names; for a mutant that verifies, make the proof state what the mutant breaks; for a recorded function the run no longer verifies, restore it, or, when the change is meant, ask a person to run `chock baseline verus`",
     ),
     (
         "links",
@@ -282,6 +286,10 @@ const FIXES: [(&str, &str); 70] = [
     (
         "slop",
         "cut the comment to two lines; the rest of the reasoning belongs in the commit message",
+    ),
+    (
+        "echoes",
+        "delete the comment, or make it say why the line is there rather than what it does",
     ),
     (
         "bigfiles",

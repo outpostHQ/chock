@@ -320,6 +320,7 @@ fn absent_tool(gate: &Gate, ctx: &Ctx) -> Option<&'static str> {
 /// could not be read. Either way there is then nothing to answer from, so the gate runs.
 fn keyed(gate: &Gate, ctx: &Ctx) -> Option<String> {
     let reads = gate.reads?;
+    let chock = crate::run::verdicts::this_build();
     let held = crate::run::verdicts::Held {
         root: &ctx.root,
         listed: &ctx.listing,
@@ -327,6 +328,7 @@ fn keyed(gate: &Gate, ctx: &Ctx) -> Option<String> {
         runner_tools: &ctx.runner.tools,
         coverage_tools: &ctx.coverage.tools,
         record: own_record(gate, ctx),
+        chock: &chock,
     };
     let key = crate::run::verdicts::key(reads, gate.name, &held);
     key.map(|key| key_format(gate, reads.reader, ctx.ci, &key))

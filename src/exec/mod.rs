@@ -5,6 +5,8 @@ pub mod budget;
 pub mod fixed;
 mod marked;
 pub(crate) mod peak;
+mod process;
+mod tree;
 
 use std::fmt;
 use std::io::Read;
@@ -13,6 +15,7 @@ use std::process::{Command, Stdio};
 
 use marked::last_line;
 pub(crate) use marked::{marked, marked_at};
+use process::Process;
 
 /// The most output kept per stream. The rest is drained and dropped, since a full pipe would block
 /// the child.
@@ -577,130 +580,6 @@ fn drained(
         .and_then(|result| {
             result.map_err(|why| (Stage::Capture, format!("cannot read {which}: {why}")))
         })
-}
-
-/// What a group of only zombies answers the final signal: Darwin says EPERM where Linux says ESRCH.
-/// The group is chock's own, so a live member would have taken it.
-#[cfg(target_os = "macos")]
-const SETTLED: [rustix::io::Errno; 2] = [rustix::io::Errno::SRCH, rustix::io::Errno::PERM];
-#[cfg(target_os = "linux")]
-const SETTLED: [rustix::io::Errno; 1] = [rustix::io::Errno::SRCH];
-
-/// Whether the final signal leaves nothing running; the leader is kept unreaped on purpose.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn nothing_left(signalled: Result<(), rustix::io::Errno>) -> Result<(), String> {
-    match signalled {
-        Err(error) if !SETTLED.contains(&error) => {
-            Err(format!("cannot signal owned process group: {error}"))
-        }
-        _ => Ok(()),
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn observed_child_exit(result: Result<bool, rustix::io::Errno>) -> std::io::Result<bool> {
-    match result {
-        Err(rustix::io::Errno::INTR) => Ok(false),
-        result => result.map_err(Into::into),
-    }
-}
-
-struct Process {
-    child: std::process::Child,
-    owned: bool,
-    finalized: bool,
-}
-
-impl Process {
-    fn spawn(command: &mut Command) -> std::io::Result<Self> {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        command.spawn().map(|child| Self {
-            child,
-            owned: true,
-            finalized: false,
-        })
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn exited(&mut self) -> std::io::Result<bool> {
-        use rustix::process::{WaitId, WaitIdOptions, waitid};
-        let pid = rustix::process::Pid::from_child(&self.child);
-        // Keeping the leader unreaped pins its group ID until the final signal.
-        let flags = WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT;
-        let observed = waitid(WaitId::Pid(pid), flags).map(|status| status.is_some());
-        if observed == Err(rustix::io::Errno::CHILD) {
-            self.owned = false;
-        }
-        observed_child_exit(observed)
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    fn exited(&mut self) -> std::io::Result<bool> {
-        self.child.try_wait().map(|status| status.is_some())
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn terminate(&mut self) -> Result<(), String> {
-        use rustix::process::{Pid, Signal, kill_process_group};
-        let pid = Pid::from_child(&self.child);
-        if pid.is_init() {
-            return Err("refusing to signal process group 1".to_string());
-        }
-        self.exited().map_err(|error| error.to_string())?;
-        nothing_left(kill_process_group(pid, Signal::KILL))
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    fn terminate(&mut self) -> Result<(), String> {
-        if self.exited().map_err(|error| error.to_string())? {
-            return Ok(());
-        }
-        // `/T` takes the children too, which would hold the pipes open; the PID cannot be reused
-        // while `child` holds its handle. Best effort: the kill below still ends the child itself.
-        let _ = Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &self.child.id().to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        self.child.kill().map_err(|error| error.to_string())
-    }
-
-    fn finish(&mut self) -> Result<std::process::ExitStatus, String> {
-        if self.finalized || !self.owned {
-            self.finalized = true;
-            return Err("child ownership is no longer available for cleanup".to_string());
-        }
-        self.finalized = true;
-        let mut cleanup = self.terminate();
-        if !self.owned {
-            return Err(
-                "child was reaped elsewhere; refusing a stale process identity".to_string(),
-            );
-        }
-        if let Err(reason) = &mut cleanup
-            && let Err(error) = self.child.kill()
-        {
-            reason.push_str(&format!("; direct-child kill failed: {error}"));
-        }
-        let reaped = reap_until(&mut self.child, CLEANUP);
-        match (cleanup, reaped) {
-            (Ok(()), status) => status,
-            (Err(error), Ok(_)) => Err(error),
-            (Err(error), Err(reap)) => Err(format!("{error}; {reap}")),
-        }
-    }
-}
-
-impl Drop for Process {
-    fn drop(&mut self) {
-        if !self.finalized {
-            let _ = self.finish();
-        }
-    }
 }
 
 fn reap_until(
@@ -1433,6 +1312,7 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn interrupted_exit_observation_does_not_claim_the_child_finished() {
+        use process::observed_child_exit;
         assert!(!observed_child_exit(Err(rustix::io::Errno::INTR)).unwrap());
         assert!(!observed_child_exit(Ok(false)).unwrap());
         assert!(observed_child_exit(Ok(true)).unwrap());
@@ -1777,11 +1657,22 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn timeout_kills_owned_grandchildren_but_not_another_group() {
-        let dir = crate::testdir::make("timeout-process-tree");
-        let (mut child, stdout, stderr) = tree_fixture(
-            &dir,
+        let (failure, stopped) = hung_beside_a_sentinel(
+            "timeout-process-tree",
             "printf 'stdout marker\\n'; printf 'stderr marker\\n' >&2; sh -c 'sleep 600 & printf \"%s %s\\n\" \"$$\" \"$!\" > ready; wait' & wait",
         );
+        assert_eq!(failure.stage, Stage::Hung);
+        assert!(failure.reason.contains("stdout marker"), "{failure}");
+        assert!(failure.reason.contains("stderr marker"), "{failure}");
+        assert_eq!(stopped, [true, true]);
+    }
+
+    /// Runs `script` in a fixture that hangs past its timeout, beside a sentinel that must outlive
+    /// it. Gives the failure, and whether each witness the script wrote has exited.
+    #[cfg(target_os = "linux")]
+    fn hung_beside_a_sentinel(name: &str, script: &str) -> (ExecError, Vec<bool>) {
+        let dir = crate::testdir::make(name);
+        let (mut child, stdout, stderr) = tree_fixture(&dir, script);
         let witnesses = ready_children(&dir);
         let mut sentinel = Process::spawn(Command::new("sleep").arg("600")).unwrap();
         let result = finish_capture(
@@ -1793,16 +1684,23 @@ mod tests {
             std::time::Duration::from_secs(1),
             &mut (),
         );
-        let stopped: Vec<_> = witnesses.iter().map(Witness::await_exit).collect();
-        let sentinel_alive = !sentinel.exited().unwrap();
-        let sentinel_cleanup = sentinel.finish();
-        let failure = result.unwrap_err();
+        let stopped = witnesses.iter().map(Witness::await_exit).collect();
+        assert!(
+            !sentinel.exited().unwrap(),
+            "the sentinel outside the tree was killed"
+        );
+        assert!(sentinel.finish().is_ok());
+        (result.unwrap_err(), stopped)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_stop_takes_a_process_in_a_group_of_its_own_and_spares_one_outside_the_tree() {
+        let script = "setsid sleep 600 & printf '%s\\n' \"$!\" > ready; wait";
+        let (failure, stopped) = hung_beside_a_sentinel("stop-own-group", script);
         assert_eq!(failure.stage, Stage::Hung);
-        assert!(failure.reason.contains("stdout marker"), "{failure}");
-        assert!(failure.reason.contains("stderr marker"), "{failure}");
-        assert_eq!(stopped, [true, true]);
-        assert!(sentinel_alive);
-        assert!(sentinel_cleanup.is_ok());
+        assert_eq!(stopped, [true]);
     }
 
     #[cfg(target_os = "linux")]
@@ -2063,6 +1961,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri prints the code of an OS error twice")]
     fn a_group_of_only_zombies_is_settled_on_either_system_and_any_other_refusal_is_not() {
+        use process::nothing_left;
         use rustix::io::Errno;
         assert_eq!(nothing_left(Ok(())), Ok(()));
         assert_eq!(nothing_left(Err(Errno::SRCH)), Ok(()));

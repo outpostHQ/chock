@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use crate::gates::metrics::{bigfiles, complexity, nesting, prodlines};
-use crate::gates::source;
+use crate::gates::{source, tools};
+use crate::project::release::Release;
 use crate::run::report::Finding;
 
 /// Everything in this file the commit would refuse. A Rust file that does not parse is one finding.
@@ -18,7 +19,7 @@ pub fn faults(path: &str, src: &str, rules: &Rules) -> Vec<Finding> {
         return found;
     }
     // Judged as the `source` gate does: shipped unless `not_shipped`, unread if never compiled.
-    match source::judged(path, src, !rules.unshipped) {
+    match source::judged(path, src, !rules.unshipped, rules.promise) {
         Ok(suppressions) => found.extend(rules.past("source", &|_| rules.uncompiled, suppressions)),
         Err(why) => return vec![Finding::at(path, &format!("does not parse: {why}"))],
     }
@@ -47,6 +48,8 @@ pub struct Rules {
     baseline: Option<crate::run::baseline::Baseline>,
     unshipped: bool,
     uncompiled: bool,
+    /// The `rust-version` of the crate that holds the file.
+    promise: Option<Release>,
 }
 
 impl Rules {
@@ -125,6 +128,38 @@ pub fn adopted(root: &std::path::Path) -> bool {
     root.join(crate::project::config::FILE).is_file()
 }
 
+/// The `rust-version` of the crate that holds `shown`, read by hand from the nearest manifest above
+/// it: a hook cannot wait for `cargo metadata`. A member that inherits it reads the root's.
+fn promise_near(root: &std::path::Path, shown: &str) -> Option<Release> {
+    let manifest = |dir: &std::path::Path| {
+        std::fs::read_to_string(root.join(dir).join(crate::project::MANIFEST)).ok()
+    };
+    let mut dir = std::path::Path::new(shown).parent();
+    while let Some(at) = dir {
+        if let Some(text) = manifest(at) {
+            let inherited = || {
+                let root = manifest(std::path::Path::new(""))?;
+                inherits(&text)
+                    .then(|| tools::rust_version(&root))
+                    .flatten()
+            };
+            let promise = tools::rust_version(&text).or_else(inherited)?;
+            return Release::parse(&promise);
+        }
+        dir = at.parent();
+    }
+    None
+}
+
+/// Whether a member's manifest takes `rust-version` from `[workspace.package]`, in either spelling.
+fn inherits(manifest: &str) -> bool {
+    manifest.lines().any(|line| {
+        let line: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        line.starts_with("rust-version.workspace=true")
+            || line.starts_with("rust-version={workspace=true")
+    })
+}
+
 /// The editor's path, made absolute against chock's working directory.
 fn absolute(path: &str) -> std::path::PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| std::path::PathBuf::from(path))
@@ -176,6 +211,7 @@ pub fn rules_for(root: Option<&std::path::Path>, path: &str) -> Rules {
             .flatten(),
         unshipped: !crate::project::ships(&shown, &not_shipped),
         uncompiled: source::unread(root, &shown),
+        promise: promise_near(root, &shown),
         config,
         shown,
     }
@@ -487,6 +523,33 @@ mod tests {
             ["src/a.rs:3: comment block of 3 lines, over 2"]
         );
         assert_eq!(traced("complexity"), Vec::<String>::new());
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_file_takes_the_promise_of_the_nearest_manifest_or_the_one_its_member_inherits() {
+        let dir = crate::testdir::make("edited-promise");
+        let files = [
+            (
+                "Cargo.toml",
+                "[workspace.package]\nrust-version = \"1.70\"\n",
+            ),
+            ("own/Cargo.toml", "[package]\nrust-version = \"1.85.1\"\n"),
+            (
+                "taken/Cargo.toml",
+                "[package]\nrust-version = { workspace = true }\n",
+            ),
+            ("none/Cargo.toml", "[package]\nname = \"none\"\n"),
+        ];
+        for (path, text) in files {
+            std::fs::create_dir_all(dir.join(path).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(path), text).unwrap();
+        }
+        let near = |shown| promise_near(&dir, shown).map(|release| release.to_string());
+        assert_eq!(near("own/src/deep/a.rs").as_deref(), Some("1.85"));
+        assert_eq!(near("taken/src/a.rs").as_deref(), Some("1.70"));
+        assert_eq!(near("none/src/a.rs"), None);
+        assert_eq!(near("build.rs").as_deref(), Some("1.70"));
     }
 
     #[test]

@@ -62,6 +62,22 @@ Without the parent, the gate cannot run.
 | `left_off` | default gates that are off, each with why; `init`, `enable` and `disable` keep it, and `doctor` names any gap |
 | `strict` | ratchets held to zero rather than to the record |
 | `clean_when_touched` | ratchets held to zero in each file the change touches |
+| `lint_floor` | what `profile` does with a lint table below the lint floor: absent, it advises; `true` fails the gate; `false` does not check the floor |
+
+## Hold the lint floor
+
+The `profile` gate holds each lint table that a crate builds with to a fixed set of rustc and clippy
+lints, the lint floor. It also asks the root `clippy.toml` for `max-fn-params-bools = 0`.
+[The gates](gates.md#the-lint-floor) lists each lint and what it keeps out.
+
+| `lint_floor` | a gap in the floor |
+|---|---|
+| absent | is an advisory; the gate still passes |
+| `true` | fails the gate |
+| `false` | is not checked |
+
+`chock init --local` writes `"lint_floor": true` when it creates the config. It does not add the key
+to a config that a project already has.
 
 ## A service the tests need
 

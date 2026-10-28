@@ -26,6 +26,9 @@ pub struct Package {
     pub dependencies: Vec<Dependency>,
     #[serde(default)]
     pub targets: Vec<Target>,
+    /// The Rust release its `rust-version` promises, as Cargo wrote it.
+    #[serde(default)]
+    pub rust_version: Option<String>,
     /// The registries it may go to; `Some(vec![])` is `publish = false`.
     #[serde(default)]
     pub publish: Option<Vec<String>>,

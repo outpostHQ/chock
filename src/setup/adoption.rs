@@ -176,8 +176,8 @@ fn touched_note(config: &Config) -> String {
     )
 }
 
-/// The config `init` saves and what it prints of each decision. The changed files come from the
-/// repository, so a tree that none holds gets no `clean_when_touched` list.
+/// The config `init` saves for a project with none, and what it prints of each decision. The
+/// changed files come from the repository, so a tree that none holds gets no `clean_when_touched`.
 pub(crate) fn decided(
     rows: &[(&str, Decision)],
     in_repository: bool,
@@ -187,10 +187,12 @@ pub(crate) fn decided(
         true => clean_where_touched(selected(rows)),
         false => selected(rows),
     };
-    let config = match coverage {
+    let mut config = match coverage {
         Some(argv) => chosen.with_coverage(argv),
         None => chosen,
     };
+    // A new project starts on the lint floor, so `profile` fails each lint it leaves out.
+    config.lint_floor = Some(true);
     let report = format!("{}{}", render_decisions(rows), touched_note(&config));
     (config, report)
 }
@@ -392,6 +394,17 @@ mod tests {
         let (config, report) = decided(&rows, true, None);
         assert_eq!(config.clean_when_touched, None);
         assert_eq!(report, render_decisions(&rows));
+    }
+
+    #[test]
+    fn the_config_init_saves_for_a_new_project_holds_the_lint_floor() {
+        let rows = [("profile", Decision::On("already green".to_string()))];
+        for in_repository in [true, false] {
+            let (config, _) = decided(&rows, in_repository, None);
+            assert_eq!(config.lint_floor, Some(true));
+            let saved = crate::project::document::render(&config);
+            assert!(saved.contains("\"lint_floor\": true"), "{saved}");
+        }
     }
 
     #[test]

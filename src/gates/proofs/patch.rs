@@ -157,23 +157,19 @@ fn hunks(diff: &str) -> Result<Vec<Hunk<'_>>, String> {
     }
 }
 
-/// `text` with each hunk applied where its old lines are, at its line or nearest to it, and each
-/// after the one before; `Err` names the first hunk whose old lines the text no longer holds.
+/// `text` with each hunk applied after the one before: at its line, moved as far as the hunk before
+/// moved, or else at the one place its old lines match; `Err` names the first hunk that cannot.
 pub(crate) fn patched(text: &str, diff: &str) -> Result<String, String> {
     let mut lines: Vec<&str> = text.lines().collect();
     let mut from = 0;
     let mut shift = 0_isize;
     for hunk in hunks(diff)? {
-        let wanted = hunk.start.saturating_add_signed(shift).max(from);
-        let Some(at) = found(&lines, &hunk.old, wanted, from) else {
-            return Err(format!(
-                "the hunk at line {} no longer matches",
-                hunk.start + 1
-            ));
-        };
+        let wanted = hunk.start.saturating_add_signed(shift);
+        let at = found(&lines, &hunk.old, wanted, from)
+            .map_err(|why| format!("the hunk at line {} {why}", hunk.start + 1))?;
         let (old, new) = (hunk.old.len(), hunk.new.len());
         lines.splice(at..at + old, hunk.new);
-        shift += new.cast_signed() - old.cast_signed();
+        shift = at.cast_signed() - hunk.start.cast_signed() + new.cast_signed() - old.cast_signed();
         from = at + new;
     }
     let mut out = lines.join("\n");
@@ -183,17 +179,23 @@ pub(crate) fn patched(text: &str, diff: &str) -> Result<String, String> {
     Ok(out)
 }
 
-/// Where `old` starts in `lines`, at or after `from`, nearest to `wanted`.
-fn found(lines: &[&str], old: &[&str], wanted: usize, from: usize) -> Option<usize> {
-    let fits = |at: usize| at >= from && lines.get(at..at + old.len()) == Some(old);
-    (0..=wanted.max(lines.len())).find_map(|off| {
-        let after = wanted + off;
-        let before = wanted.checked_sub(off).filter(|_| off > 0);
-        [Some(after), before]
-            .into_iter()
-            .flatten()
-            .find(|at| fits(*at))
-    })
+/// Where `old` starts in `lines`, at or after `from`: at `wanted`, or else at the one place it
+/// matches, since a hunk that matches at two places may put the fault in the wrong one.
+fn found(lines: &[&str], old: &[&str], wanted: usize, from: usize) -> Result<usize, String> {
+    let fits = |at: &usize| *at >= from && lines.get(*at..*at + old.len()) == Some(old);
+    if fits(&wanted) {
+        return Ok(wanted);
+    }
+    let mut places = (from..=lines.len()).filter(fits);
+    match (places.next(), places.next()) {
+        (Some(at), None) => Ok(at),
+        (None, _) => Err("no longer matches".into()),
+        (Some(one), Some(two)) => Err(format!(
+            "moved to more than one place, such as lines {} and {}",
+            one + 1,
+            two + 1
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -209,7 +211,7 @@ mod tests {
     const NAMES: &str = "name the file and what must fail";
 
     #[test]
-    fn a_hunk_applies_at_its_line_or_nearest_to_it_and_one_that_no_longer_matches_is_refused() {
+    fn a_hunk_applies_at_its_line_or_where_it_moved_and_one_that_no_longer_matches_is_refused() {
         assert_eq!(patched("0\na\nb\nc\n", DIFF).unwrap(), "0\na\nB\nc\n");
         assert_eq!(
             patched("x\ny\n0\na\nb\nc\nd", DIFF).unwrap(),
@@ -225,12 +227,25 @@ mod tests {
             patched("a\nm\nm\nm\n", grown).unwrap(),
             "a\nb\nc\nm\nz\nm\n"
         );
-        // A hunk never applies inside the lines that the hunk before it wrote.
+        // A hunk never applies before or inside the lines that the hunk before it wrote.
         let back = "--- f\n+++ g\n@@ -2 +2 @@\n-q\n+r\n@@ -1 +1 @@\n-r\n+x\n";
-        assert_eq!(patched("p\nq\nr\n", back).unwrap(), "p\nr\nx\n");
-        // A line past the end of the text is nearest to its last lines.
+        assert_eq!(patched("r\nq\nr\n", back).unwrap(), "r\nr\nx\n");
+        // A hunk past the end of the text applies at the one place it matches.
         let far = "--- f\n+++ g\n@@ -6 +6 @@\n-a\n+b\n";
         assert_eq!(patched("a\n", far).unwrap(), "b\n");
+        // A hunk that moved where its lines are twice is refused, but one at its line is not.
+        let moved = patched("x\nm\nx\nm\n", "--- f\n+++ g\n@@ -3 +3 @@\n-m\n+z\n").unwrap_err();
+        assert_eq!(
+            moved,
+            "the hunk at line 3 moved to more than one place, such as lines 2 and 4"
+        );
+        let stayed = "--- f\n+++ g\n@@ -2 +2 @@\n-m\n+z\n";
+        assert_eq!(patched("m\nm\n", stayed).unwrap(), "m\nz\n");
+        // The second hunk moves as far as the first, so it skips a copy of its lines nearer its line.
+        let pair = "--- f\n+++ g\n@@ -1 +1 @@\n-a\n+A\n@@ -3 +3 @@\n-m\n+z\n";
+        assert_eq!(patched("x\nx\na\nm\nm\n", pair).unwrap(), "x\nx\nA\nm\nz\n");
+        // A hunk that only adds lines fits at the end of the text, after the hunk before it.
+        assert_eq!(found(&["a"], &[], 5, 1), Ok(1));
         assert_eq!(
             patched("a\n", "--- f\n+++ g\n").unwrap_err(),
             "the patch holds no hunk"

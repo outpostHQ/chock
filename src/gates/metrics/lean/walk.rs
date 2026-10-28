@@ -259,7 +259,7 @@ impl Lean<'_> {
 
 /// The call a body makes when all it does is pass the parameters on, in order and unchanged; a
 /// parameter that is a pattern rather than a name is never passed on as it came.
-fn forwarded(sig: &Signature, block: &Block) -> Option<String> {
+pub(crate) fn forwarded(sig: &Signature, block: &Block) -> Option<String> {
     let [Stmt::Expr(tail, None)] = block.stmts.as_slice() else {
         return None;
     };

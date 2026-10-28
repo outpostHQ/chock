@@ -129,7 +129,7 @@ impl Drop for Sampled<'_> {
 /// The resident memory of `root` and every process under it, in MB.
 #[cfg(target_os = "linux")]
 fn tree_mb(root: u32) -> u64 {
-    mb(tree(root).into_iter().map(resident_kb).sum())
+    mb(super::tree::tree(root).into_iter().map(resident_kb).sum())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -140,32 +140,6 @@ fn tree_mb(_root: u32) -> u64 {
 #[cfg(target_os = "linux")]
 fn mb(kb: u64) -> u64 {
     kb / 1024
-}
-
-/// `root` and every process under it.
-#[cfg(target_os = "linux")]
-fn tree(root: u32) -> Vec<u32> {
-    let mut found = Vec::new();
-    let mut todo = vec![root];
-    while let Some(pid) = todo.pop() {
-        found.push(pid);
-        todo.extend(children(pid));
-    }
-    found
-}
-
-/// The processes each thread of `pid` started.
-#[cfg(target_os = "linux")]
-fn children(pid: u32) -> Vec<u32> {
-    let tasks = std::fs::read_dir(format!("/proc/{pid}/task"))
-        .into_iter()
-        .flatten()
-        .flatten();
-    let lists = tasks.filter_map(|task| std::fs::read_to_string(task.path().join("children")).ok());
-    let text = lists.collect::<Vec<_>>().join(" ");
-    text.split_whitespace()
-        .filter_map(|pid| pid.parse().ok())
-        .collect()
 }
 
 /// What `pid` holds in memory, in kB; 0 for a process that has gone.
@@ -271,21 +245,6 @@ mod tests {
         large.stop = past_five;
         assert_eq!(large.poll(), Err("held 6 MB".to_string()));
         assert_eq!(large.stage(), crate::exec::Stage::Memory);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
-    fn a_tree_holds_its_root_and_every_process_under_it() {
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
-        let tree = tree(std::process::id());
-        child.kill().unwrap();
-        child.wait().unwrap();
-        assert_eq!(tree.first(), Some(&std::process::id()));
-        assert!(tree.contains(&child.id()), "{tree:?}");
     }
 
     #[cfg(target_os = "linux")]

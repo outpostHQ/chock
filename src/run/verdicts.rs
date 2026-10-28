@@ -31,7 +31,7 @@ pub struct Reads {
 }
 
 impl Reads {
-    /// The tree and these tools.
+    /// A gate's answer depends on the tree and these tools only: no runner, coverage or change set.
     #[must_use]
     pub const fn tree_and(tools: &'static [&'static str]) -> Self {
         Self {
@@ -105,6 +105,8 @@ pub struct Held<'a> {
     pub coverage_tools: &'a [String],
     /// A digest of the gate's own record. No gate reads another's.
     pub record: u64,
+    /// This chock's build, from `this_build`, since a new chock may judge the same tree differently.
+    pub chock: &'a str,
 }
 
 /// A digest of everything a gate's verdict depends on. `None` if any input cannot be read, since a
@@ -112,8 +114,7 @@ pub struct Held<'a> {
 #[must_use]
 pub fn key(reads: Reads, gate: &str, held: &Held) -> Option<String> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    // A new chock may judge the same tree differently.
-    env!("CARGO_PKG_VERSION").hash(&mut hasher);
+    held.chock.hash(&mut hasher);
     gate.hash(&mut hasher);
     held.record.hash(&mut hasher);
     for tool in reads.tools {
@@ -310,9 +311,24 @@ fn built(said: &str, stamp: Option<(u64, std::time::SystemTime)>) -> String {
     }
 }
 
+/// This chock's version and its binary's size and mtime, since each install from the main branch
+/// says the same version.
+#[must_use]
+pub fn this_build() -> String {
+    let exe = std::env::current_exe().ok();
+    built(
+        concat!("chock ", env!("CARGO_PKG_VERSION")),
+        exe.as_deref().and_then(stamp_of),
+    )
+}
+
 /// Size and mtime of `program` as `listed` resolves it, or `None` where there is no file to stat.
 fn binary_of(listed: &std::ffi::OsStr, program: &str) -> Option<(u64, std::time::SystemTime)> {
-    let held = std::fs::metadata(which(listed, program)?).ok()?;
+    stamp_of(&which(listed, program)?)
+}
+
+fn stamp_of(binary: &Path) -> Option<(u64, std::time::SystemTime)> {
+    let held = std::fs::metadata(binary).ok()?;
     Some((held.len(), held.modified().ok()?))
 }
 
@@ -405,6 +421,7 @@ mod tests {
             runner_tools: &[],
             coverage_tools: &[],
             record: 0,
+            chock: "chock 1.0.0",
         }
     }
 
@@ -626,21 +643,33 @@ mod tests {
 
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    fn a_tool_that_reports_a_new_version_changes_the_key() {
+    fn a_new_tool_version_or_a_new_build_of_chock_changes_the_key() {
         let dir = crate::testdir::tree("verdicts", &[("src/a.rs", "fn a() {}\n")]);
         let reads = Reads::tree_and(&["cargo"]);
         let listed = Listed::new();
-        let at = |version: &'static str| {
+        let at = |version: &'static str, chock: &str| {
             let said = move |_: &str| Some(version.to_string());
             let run = Held {
                 version_of: &said,
+                chock,
                 ..held(&dir, &listed)
             };
             key(reads, "probe", &run)
         };
-        let (one, two) = (at("cargo 1.90.0"), at("cargo 1.91.0"));
-        assert!(one.is_some() && two.is_some());
-        assert_ne!(one, two);
+        let one = at("cargo 1.90.0", "chock 1.0.0\n90 1");
+        assert!(one.is_some());
+        assert_ne!(one, at("cargo 1.91.0", "chock 1.0.0\n90 1"));
+        assert_ne!(one, at("cargo 1.90.0", "chock 1.0.0\n90 2"));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot stat the binary it runs")]
+    fn this_build_holds_the_version_and_the_stamp_of_the_running_binary() {
+        let running = this_build();
+        assert!(
+            running.starts_with(concat!("chock ", env!("CARGO_PKG_VERSION"), "\n")),
+            "{running}"
+        );
     }
 
     #[test]

@@ -253,6 +253,10 @@
       },
       "uniqueItems": true
     },
+    "lint_floor": {
+      "description": "How the `profile` gate holds each lint table to the lint floor: a fixed set of rustc and clippy lints that the table sets to `warn`, `deny` or `forbid`, and `max-fn-params-bools = 0` in the root `clippy.toml`. Absent, each gap is an advisory and the gate still passes. `true` fails the gate on each gap; `false` does not check the floor. `chock init --local` writes `true` for a project that has no config yet.",
+      "type": "boolean"
+    },
     "local_only": {
       "description": "Checks CI cannot run, because the tool they need cannot be installed there. Measured on chock itself: 10 gates need `outpost`, which is not on crates.io and whose source is a private repository in another organisation with no release artefact, so CI failed on every push with `nice: 'outpost': No such file or directory` and therefore enforced nothing at all. The hooks still run these on every push, where the tool exists; `chock run --ci` leaves them out, so CI is green about what it can enforce and claims nothing about what it cannot. Naming a check here to make a red one go away is the one use this must not have, and the hook still running it is what makes that pointless.",
       "type": "array",

@@ -1,8 +1,11 @@
 //! Parsing `tool-versions.env`, and failing closed on anything it cannot read.
 //! A half-read pin file makes `doctor` report green over tools it never looked at.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
+
+use crate::setup::version;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pin {
@@ -238,24 +241,40 @@ pub struct Repinned {
     pub changes: Vec<String>,
 }
 
-/// `held` with each key `ours` sets at `ours`' value, then the keys only `ours` sets. `None` where
-/// `held` names no chock or will not parse.
+/// `held` with each key `ours` sets at `ours`' value, or at `held`'s where that is a newer version,
+/// then the keys only `ours` sets. `None` where `held` names no chock or will not parse.
 #[must_use]
 pub fn repinned(held: &str, ours: &str) -> Option<Repinned> {
-    let (theirs, set) = (assignments(held)?, assignments(ours)?);
+    let (theirs, wanted) = (assignments(held)?, assignments(ours)?);
     let from = value_of(&theirs, "CHOCK_VERSION")?.to_string();
     let (added, _) = own_lines(ours, &theirs);
+    // A version the project raised past chock's stays: `init` never takes a tool back.
+    let raised = |key: &str, want: &str| {
+        let have = value_of(&theirs, key)?;
+        version::compare(have, want)
+            .is_some_and(Ordering::is_gt)
+            .then_some(have)
+    };
+    let set: Vec<(&str, &str)> = wanted
+        .iter()
+        .map(|&(key, want)| (key, raised(key, want).unwrap_or(want)))
+        .collect();
     let kept: Vec<&str> = theirs
         .iter()
         .map(|&(key, _)| key)
         .filter(|key| value_of(&set, key).is_none())
         .collect();
-    let mut changes: Vec<String> = set
+    let mut changes: Vec<String> = wanted
         .iter()
-        .filter_map(|&(key, want)| match value_of(&theirs, key) {
-            None => Some(format!("added {key}={want}")),
-            Some(have) => (have != want).then(|| format!("{key} {have} -> {want}")),
-        })
+        .filter_map(
+            |&(key, want)| match (value_of(&theirs, key), raised(key, want)) {
+                (None, _) => Some(format!("added {key}={want}")),
+                (_, Some(have)) => {
+                    Some(format!("kept {key}={have}, newer than this chock's {want}"))
+                }
+                (Some(have), None) => (have != want).then(|| format!("{key} {have} -> {want}")),
+            },
+        )
         .collect();
     if !kept.is_empty() {
         changes.push(format!("kept as this project's own: {}", kept.join(", ")));
@@ -635,6 +654,18 @@ mod tests {
             unspaced.text,
             "OWN_REV=abc\nCHOCK_VERSION=0.2.0\n\n# Why A.\nA_VERSION=2\nB_VERSION=1\nD_VERSION=4\n"
         );
+    }
+
+    #[test]
+    fn a_version_the_project_raised_past_chocks_is_kept() {
+        let held = "A_VERSION=1.0.0\nB_VERSION=1.26.1 # by hand\nCHOCK_VERSION=0.1.0\n";
+        let ours = "A_VERSION=2.0.0\nB_VERSION=1.26.0\nCHOCK_VERSION=0.2.0\n";
+        let moved = repinned(held, ours).unwrap();
+        let text = "A_VERSION=2.0.0\nB_VERSION=1.26.1 # by hand\nCHOCK_VERSION=0.2.0\n";
+        assert_eq!(moved.text, text);
+        let said = "A_VERSION 1.0.0 -> 2.0.0\nkept B_VERSION=1.26.1, newer than this chock's 1.26.0\n\
+                    CHOCK_VERSION 0.1.0 -> 0.2.0";
+        assert_eq!(moved.changes.join("\n"), said);
     }
 
     #[test]

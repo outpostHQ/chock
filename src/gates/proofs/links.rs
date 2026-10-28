@@ -37,6 +37,9 @@ const NONE: &str = "none";
 /// The key of a link comment that names no item.
 const UNLINKED: &str = "unlinked";
 
+/// The key of a link to a file outside this project: a record read elsewhere cannot hold its path.
+const OUTSIDE: &str = "outside";
+
 /// The words that define an item a link can name.
 const DEFINES: [&str; 10] = [
     "fn", "struct", "union", "enum", "trait", "type", "const", "static", "mod", "impl",
@@ -69,6 +72,23 @@ struct Link {
     written: String,
     file: Option<String>,
     path: Vec<String>,
+}
+
+impl Link {
+    /// Whether its file is outside this project, by the rule a committed record keeps to.
+    fn outside(&self) -> bool {
+        let file = self.file.as_deref();
+        file.is_some_and(|file| project::unportable(std::iter::once(file)).is_some())
+    }
+
+    /// The key of a finding on this link.
+    fn key(&self) -> &str {
+        if self.outside() {
+            OUTSIDE
+        } else {
+            &self.written
+        }
+    }
 }
 
 /// One item a link can name: its path inside its file, the line it starts on, and a hash of its
@@ -211,7 +231,7 @@ fn checked(
         let resolved = tree.resolve(&link);
         linked |= !matches!(resolved, Resolved::Rust);
         if let Some(message) = wrong(&link, resolved, model, drift.as_deref_mut())? {
-            found.push(at(&link.written, message));
+            found.push(at(link.key(), message));
         }
     }
     if !linked {
@@ -355,6 +375,11 @@ impl Tree {
     /// With a file, the item must be in a source whose path ends in it. The copies of one item in
     /// one file, kept apart by `#[cfg]`, are one item.
     fn resolve(&self, link: &Link) -> Resolved<'_> {
+        if link.outside() {
+            let why = "its file is outside this project, whose code alone the gate reads; link code \
+                       here, or start the comment with `none;` and say why";
+            return Resolved::Missing(why.to_string());
+        }
         let files = link.file.as_deref().map(|file| self.ending(file));
         if let (Some(file), Some(files)) = (&link.file, &files) {
             match (files.len(), link.path.is_empty()) {
@@ -884,6 +909,12 @@ mod tests {
         assert!(items("none; a clock").is_empty());
         assert_eq!(items("a/src/lib.rs::f lib.rs"), ["lib.rs"]);
         assert_eq!(items("prose"), [UNLINKED]);
+        assert_eq!(
+            items("../b/src/lib.rs::f /crates/a/src/lib.rs"),
+            [OUTSIDE, OUTSIDE]
+        );
+        let outside = |why: &str| why.starts_with("its file is outside this project");
+        assert!(matches!(resolved("../a/src/lib.rs::f"), Resolved::Missing(why) if outside(&why)));
     }
 
     #[test]

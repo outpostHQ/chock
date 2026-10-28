@@ -54,7 +54,7 @@ fn unreached(
 }
 
 /// Every identifier the tree mentions and how often, read from tokens so a comment is not a use.
-/// The `unreferenced` gate uses it to veto its own false findings.
+/// The `wrappers` gate uses it to settle that a wrapper's one call is the only use of its name.
 pub fn names_in_tree(ctx: &Ctx) -> Result<BTreeMap<String, u64>, String> {
     read_tree(ctx).map(|(_, named)| named)
 }

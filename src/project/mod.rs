@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod document;
+pub mod release;
 pub mod vcs;
 pub mod workspace;
 

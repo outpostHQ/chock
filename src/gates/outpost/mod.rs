@@ -6,22 +6,30 @@ pub mod intel;
 pub mod measures;
 pub mod padding;
 pub mod scan;
+pub mod wrappers;
 
 use serde::de::DeserializeOwned;
 
 use crate::exec;
 
-/// Parse Outpost's JSON. A failed command or an unknown shape is an error, never an empty answer.
+/// Parse Outpost's JSON; a failed command or an unknown shape is an error, never an empty answer.
+/// Outpost exits non-zero on findings, so only output that does not parse asks how it exited.
 pub fn read<T: DeserializeOwned>(out: &exec::Output, what: &str) -> Result<T, String> {
-    // Outpost exits non-zero when it has findings, so readable output is an answer at any code.
-    match serde_json::from_str(&out.stdout) {
-        Ok(read) => Ok(read),
-        Err(_) if !out.success() => Err(format!(
-            "outpost could not {what} this tree: {}",
-            out.why_it_failed()
-        )),
-        Err(e) => Err(format!("outpost printed a {what} chock cannot read: {e}")),
+    if out.truncated {
+        return Err(format!(
+            "outpost printed more than chock keeps, so its {what} would be partial"
+        ));
     }
+    serde_json::from_str(&out.stdout).map_err(|e| {
+        if out.success() {
+            format!("outpost printed a {what} chock cannot read: {e}")
+        } else {
+            format!(
+                "outpost could not {what} this tree: {}",
+                out.why_it_failed()
+            )
+        }
+    })
 }
 
 /// Run `outpost` in the root. Every gate goes through here, so a missing binary reads the same.
@@ -315,6 +323,17 @@ mod tests {
         assert!(
             err.starts_with("outpost printed a measure chock cannot read"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn output_cut_at_the_capture_cap_is_refused_though_its_head_reads() {
+        let mut cut = said(r#"{"files":51}"#, 0);
+        cut.truncated = true;
+        let err = read::<Counted>(&cut, "measure").unwrap_err();
+        assert_eq!(
+            err,
+            "outpost printed more than chock keeps, so its measure would be partial"
         );
     }
 

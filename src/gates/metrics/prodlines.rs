@@ -19,6 +19,15 @@ pub fn is_test_file(name: &str) -> bool {
     name == "tests.rs" || name.ends_with("_tests.rs")
 }
 
+/// Whether a `/`-separated path relative to the root is a file only tests build: under a `tests`
+/// directory, such as a crate's integration tests, a fixture or skipped directory, or a test file.
+#[must_use]
+pub fn is_test_path(path: &str) -> bool {
+    let mut parts: Vec<&str> = path.split('/').collect();
+    let name = parts.pop().unwrap_or_default();
+    parts.into_iter().any(skip_dir) || is_test_file(name)
+}
+
 /// The parsed file, or `line N: reason` for the caller to prefix with the path.
 pub(crate) fn parse_rust(src: &str) -> Result<syn::File, String> {
     syn::parse_file(src).map_err(|e| format!("line {}: {e}", e.span().start().line))

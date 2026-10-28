@@ -1,6 +1,9 @@
 //! The `deps` gate: `cargo deny check` for each section the project's `deny.toml` has, read into
 //! findings, with the checks nobody asked for named beside the answer.
 
+use std::collections::BTreeMap;
+use std::path::Path;
+
 use super::{Note, located, note, unread, verdict};
 use crate::exec;
 use crate::run::report::Finding;
@@ -19,7 +22,11 @@ pub(super) fn check(ctx: &Ctx) -> Result<Outcome, String> {
     let deny = |checks: &[&str]| -> Result<Outcome, String> {
         let args: Vec<&str> = ["deny", "check"].iter().chain(checks).copied().collect();
         let out = exec::tool(&ctx.root, "cargo", &args)?;
-        Ok(with_unplaced(verdict(&out, &ctx.root), &out))
+        let mut outcome = with_unplaced(verdict(&out, &ctx.root), &out);
+        let said = format!("{}{}", out.stderr, out.stdout);
+        let read = |file: &str| std::fs::read_to_string(ctx.root.join(file)).ok();
+        relocated(&mut outcome.findings, &said, &read);
+        Ok(outcome)
     };
     let outcome = checked(&asked, &deny)?;
     Ok(with_unasked(outcome, &asked))
@@ -126,6 +133,56 @@ fn with_unasked(mut outcome: Outcome, asked: &[&str]) -> Outcome {
     outcome
 }
 
+/// The lock file, whose lines cargo-deny numbers by a list of its own.
+const LOCK: &str = "Cargo.lock";
+
+/// Each finding on a lock file, moved from a line of cargo-deny's own list of crates to the line of
+/// the file that names the same crate; to no line where the file has none, not to a wrong one.
+fn relocated(findings: &mut [Finding], said: &str, read: &dyn Fn(&str) -> Option<String>) {
+    let drawn = drawn(said);
+    let mut locks = BTreeMap::new();
+    for found in findings.iter_mut().filter(|found| is_lock(&found.file)) {
+        let lock = locks
+            .entry(found.file.clone())
+            .or_insert_with(|| read(&found.file));
+        let entry = drawn.iter().find(|(line, ..)| Some(*line) == found.line);
+        let line = |&(_, name, version): &(u32, &str, &str)| named(lock.as_deref()?, name, version);
+        found.line = entry.and_then(line);
+    }
+}
+
+fn is_lock(file: &str) -> bool {
+    Path::new(file).file_name().is_some_and(|name| name == LOCK)
+}
+
+/// Each line cargo-deny drew under the place of a lock file: its number in cargo-deny's list, then
+/// the name and version of the crate on it.
+fn drawn(said: &str) -> Vec<(u32, &str, &str)> {
+    let under_lock = said.split("┌─ ").skip(1).filter(|place| {
+        let at = place.lines().next().unwrap_or_default();
+        at.rsplitn(3, ':').nth(2).is_some_and(is_lock)
+    });
+    under_lock.flat_map(str::lines).filter_map(listed).collect()
+}
+
+/// `70 │ ╭ getrandom 0.2.17 registry+…`: the number of a line in cargo-deny's list, and its crate.
+fn listed(line: &str) -> Option<(u32, &str, &str)> {
+    let (number, rest) = line.trim().split_once(" │ ")?;
+    let mut words = rest.trim_start_matches(['│', '╭', ' ']).split_whitespace();
+    Some((number.parse().ok()?, words.next()?, words.next()?))
+}
+
+/// The line of `lock` that names the crate `name` at `version`, counted from 1.
+fn named(lock: &str, name: &str, version: &str) -> Option<u32> {
+    let (name, version) = (
+        format!("name = \"{name}\""),
+        format!("version = \"{version}\""),
+    );
+    let pair = |(first, next): (&str, &str)| first == name && next == version;
+    let at = lock.lines().zip(lock.lines().skip(1)).position(pair)?;
+    u32::try_from(at + 1).ok()
+}
+
 /// The policy file a project writes for cargo-deny.
 const DENY: &str = "deny.toml";
 
@@ -180,6 +237,36 @@ mod tests {
 
     fn rendered(found: &[Finding]) -> Vec<String> {
         found.iter().map(Finding::render).collect()
+    }
+
+    /// Real cargo-deny 0.20.2 output for two `getrandom`s; its line 70 is in a list it made.
+    const DUPLICATE: &str = "warning[duplicate]: found 2 duplicate entries for crate 'getrandom'\n   \u{250c}\u{2500} /w/proj/Cargo.lock:70:1\n   \u{2502}\n70 \u{2502} \u{256d} getrandom 0.2.17 registry+https://github.com/rust-lang/crates.io-index\n71 \u{2502} \u{2502} getrandom 0.3.4 registry+https://github.com/rust-lang/crates.io-index\n   \u{2502} \u{2570}\u{2500}\u{2500}\n   \u{251c} getrandom v0.2.17\n     \u{2514}\u{2500}\u{2500} ring v0.17.14\n";
+
+    /// The lock file that output is about, where each `getrandom` is named far from line 70.
+    const LOCKED: &str = "version = 4\n\n[[package]]\nname = \"getrandom\"\nversion = \"0.2.17\"\n\n\
+                          [[package]]\nname = \"getrandom\"\nversion = \"0.3.4\"\n";
+
+    #[test]
+    fn a_finding_on_the_lock_file_is_at_the_line_that_names_its_crate() {
+        let lines = |said: &str, lock: &'static str| {
+            let out = exec::Output::of(Some(0), "", said);
+            let mut found = verdict(&out, Path::new("/w/proj")).findings;
+            relocated(&mut found, said, &|file| {
+                (file == LOCK).then(|| lock.to_string())
+            });
+            found.iter().map(|found| found.line).collect::<Vec<_>>()
+        };
+        assert_eq!(lines(DUPLICATE, LOCKED), [Some(4)]);
+        assert_eq!(lines(&DUPLICATE.replace(":70:", ":71:"), LOCKED), [Some(8)]);
+        // A lock that names no such crate gives no line, and another file keeps its own.
+        assert_eq!(lines(DUPLICATE, "version = 4\n"), [None]);
+        assert_eq!(lines(&DUPLICATE.replace(LOCK, DENY), LOCKED), [Some(70)]);
+        // A line drawn under another file is no crate, though it has the same number.
+        let policy = "warning[a]: b\n \u{250c}\u{2500} /w/proj/deny.toml:70:1\n70 \u{2502} x = 1\n";
+        assert_eq!(
+            lines(&format!("{policy}{DUPLICATE}"), LOCKED),
+            [Some(70), Some(4)]
+        );
     }
 
     #[test]

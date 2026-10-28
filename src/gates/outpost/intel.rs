@@ -88,7 +88,7 @@ fn hazards(ctx: &Ctx) -> Result<Series, String> {
 }
 
 /// Its own `outpost measure dead` call: the shared check's `dead_items` is a different analysis
-/// and carries no `uncertain` field to filter on.
+/// and does not set apart the entities whose callers the graph cannot know.
 fn unreferenced(ctx: &Ctx) -> Result<Series, String> {
     let out = super::spawn(&ctx.root, &["measure", "dead", "--json"])?;
     read_unreferenced(&out, ctx)
@@ -142,6 +142,10 @@ struct Dead {
     files_indexed: u64,
     #[serde(default)]
     found: Vec<Unreached>,
+    /// The entities the graph cannot know every caller of, kept out of `found`. An outpost that
+    /// does not print it may mix them into `found`, so its answer is refused.
+    #[serde(default)]
+    unknown_callers: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -152,40 +156,26 @@ struct Unreached {
     lines: u64,
     #[serde(default)]
     origin: String,
-    /// Who the graph found reaching it: `nothing`, or `tests_only` when every caller is a test.
-    #[serde(default)]
-    callers: String,
-    /// Present when Outpost could not resolve every edge to this entity, e.g. an unknown receiver.
-    #[serde(default)]
-    uncertain: Option<serde_json::Value>,
 }
 
 /// The `origin` Outpost gives shipped code, the only origin this gate reports.
 const SHIPPED: &str = "production";
-
-/// The graph found callers and all are tests. The mention-count veto is skipped, since the mentions
-/// it would count are those tests.
-const TESTS_ONLY: &str = "tests_only";
 
 fn read_unreferenced(out: &exec::Output, ctx: &Ctx) -> Result<Series, String> {
     let read: Dead = super::read(out, "measure")?;
     if read.files_indexed == 0 {
         return Err(super::nothing_read("reference"));
     }
-    // The graph alone misses calls, so only what a token scan also finds unreached is reported.
-    let named = crate::gates::metrics::dead::names_in_tree(ctx)?;
-    let resolved: std::collections::BTreeSet<(&str, &str)> = read
-        .found
-        .iter()
-        .filter(|one| one.callers == TESTS_ONLY)
-        .map(|one| (one.path.as_str(), one.name.as_str()))
-        .collect();
+    if read.unknown_callers.is_none() {
+        return Err(
+            "this outpost does not set apart the code whose callers it cannot know, so \
+                    its dead code may be live; update outpost"
+                .to_string(),
+        );
+    }
     keyed(&read.found, &|path, name| {
-        // chock's token scan reads only Rust, and an uncorroborated finding is not reported.
+        // chock reads entry points only in Rust, so an entity in another language is left alone.
         if !path.ends_with(".rs") {
-            return Ok(true);
-        }
-        if !resolved.contains(&(path, name)) && named.get(name).is_some_and(|m| *m > 1) {
             return Ok(true);
         }
         let src = std::fs::read_to_string(ctx.root.join(path))
@@ -195,15 +185,14 @@ fn read_unreferenced(out: &exec::Output, ctx: &Ctx) -> Result<Series, String> {
     })
 }
 
-/// Shipped, certain findings that are not entry points, keyed by file and name at their largest
-/// size. `entry_point` is injected for tests, and its error stops the gate.
+/// Shipped findings that are not entry points, keyed by file and name at their largest size.
+/// `entry_point` is injected for tests, and its error stops the gate.
 fn keyed(
     found: &[Unreached],
     entry_point: &dyn Fn(&str, &str) -> Result<bool, String>,
 ) -> Result<Series, String> {
     let mut series = Series::new();
-    let shipped_and_certain = |f: &&Unreached| f.origin == SHIPPED && f.uncertain.is_none();
-    for one in found.iter().filter(shipped_and_certain) {
+    for one in found.iter().filter(|one| one.origin == SHIPPED) {
         if entry_point(&one.path, &one.name)? {
             continue;
         }
@@ -237,7 +226,7 @@ mod tests {
                 ("src/lib.rs", "fn helper() {}\n"),
             ],
         );
-        let json = r#"{"files_indexed":1,"found":[
+        let json = r#"{"files_indexed":1,"unknown_callers":[],"found":[
             {"path":"src/lib.rs","name":"helper","lines":21,"origin":"production"}]}"#;
         let series = read_unreferenced(&said(json), &dir).unwrap();
         assert_eq!(series.get("src/lib.rs#helper"), Some(21));
@@ -245,46 +234,30 @@ mod tests {
 
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    fn a_function_the_tree_still_names_is_not_reported_however_the_graph_scored_it() {
+    fn a_function_the_tree_names_again_is_reported_when_the_graph_knows_all_its_callers() {
         let dir = Held::tree(
-            "intel-corroborated",
-            &[
-                ("Cargo.toml", "[package]\nname = \"p\"\n"),
-                ("src/lib.rs", "fn helper() {}\nfn caller() { helper(); }\n"),
-            ],
-        );
-        let json = r#"{"files_indexed":1,"found":[
-            {"path":"src/lib.rs","name":"helper","lines":21,"origin":"production"}]}"#;
-        assert_eq!(read_unreferenced(&said(json), &dir).unwrap(), Series::new());
-    }
-
-    #[test]
-    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    fn a_function_the_graph_says_only_tests_reach_is_reported_though_the_tree_names_it_twice() {
-        let dir = Held::tree(
-            "intel-tests-only",
+            "intel-named-again",
             &[
                 ("Cargo.toml", "[package]\nname = \"p\"\n"),
                 (
                     "src/lib.rs",
-                    "fn helper() {}\n#[test]\nfn t() { helper(); }\n",
+                    "fn helper() {}\nconst WHY: &str = \"helper\";\n#[test]\nfn t() { helper(); }\n",
                 ),
             ],
         );
-        let said_by = |callers: &str| {
-            format!(
-                r#"{{"files_indexed":1,"found":[
-                {{"path":"src/lib.rs","name":"helper","lines":21,"origin":"production",
-                  "callers":"{callers}"}}]}}"#
-            )
-        };
-        let series = read_unreferenced(&said(&said_by("tests_only")), &dir).unwrap();
+        let json = r#"{"files_indexed":1,"unknown_callers":[],"found":[
+            {"path":"src/lib.rs","name":"helper","lines":21,"origin":"production",
+             "callers":"tests_only"}]}"#;
+        let series = read_unreferenced(&said(json), &dir).unwrap();
         assert_eq!(series.get("src/lib.rs#helper"), Some(21));
-        // With `nothing`, the mention may be a caller the graph missed, so the veto still applies.
-        assert_eq!(
-            read_unreferenced(&said(&said_by("nothing")), &dir).unwrap(),
-            Series::new()
-        );
+    }
+
+    #[test]
+    fn an_outpost_that_does_not_set_apart_unknown_callers_is_refused() {
+        let json = r#"{"files_indexed":1,"found":[
+            {"path":"src/lib.rs","name":"helper","lines":21,"origin":"production"}]}"#;
+        let err = read_unreferenced(&said(json), &nowhere_ctx()).unwrap_err();
+        assert!(err.ends_with("; update outpost"), "{err}");
     }
 
     #[test]
@@ -300,7 +273,7 @@ mod tests {
                 ),
             ],
         );
-        let json = r#"{"files_indexed":1,"found":[
+        let json = r#"{"files_indexed":1,"unknown_callers":[],"found":[
             {"path":"src/lib.rs","name":"go","lines":4,"origin":"production"}]}"#;
         assert_eq!(read_unreferenced(&said(json), &dir).unwrap(), Series::new());
     }
@@ -315,7 +288,7 @@ mod tests {
                 ("src/lib.rs", "fn helper() {}\n"),
             ],
         );
-        let json = r#"{"files_indexed":2,"found":[
+        let json = r#"{"files_indexed":2,"unknown_callers":[],"found":[
             {"path":"py/app.py","name":"read","lines":12,"origin":"production"}]}"#;
         assert_eq!(read_unreferenced(&said(json), &dir).unwrap(), Series::new());
     }
@@ -330,7 +303,7 @@ mod tests {
                 ("src/lib.rs", "fn helper() {}\n"),
             ],
         );
-        let json = r#"{"files_indexed":2,"found":[
+        let json = r#"{"files_indexed":2,"unknown_callers":[],"found":[
             {"path":"src/gone.rs","name":"helper","lines":3,"origin":"production"}]}"#;
         let err = read_unreferenced(&said(json), &dir).unwrap_err();
         assert!(err.starts_with("outpost indexed src/gone.rs"), "{err}");
@@ -342,20 +315,11 @@ mod tests {
             name: name.to_string(),
             lines,
             origin: origin.to_string(),
-            callers: String::new(),
-            uncertain: None,
         }
     }
 
     #[test]
-    fn an_entity_outpost_is_not_sure_about_is_not_reported_however_the_scan_read_it() {
-        let mut doubted = unreached("src/a.rs", "helper", 9, SHIPPED);
-        doubted.uncertain = Some(serde_json::json!({"receiver_unknown": true}));
-        assert_eq!(keyed(&[doubted], &never).unwrap(), Series::new());
-    }
-
-    #[test]
-    fn an_entity_outpost_is_sure_about_is_still_reported() {
+    fn a_shipped_entity_is_reported_at_its_size() {
         let found = [unreached("src/a.rs", "helper", 9, SHIPPED)];
         let series = keyed(&found, &never).unwrap();
         assert_eq!(series.get("src/a.rs#helper"), Some(9));
@@ -620,17 +584,6 @@ mod tests {
         let found = [unreached("src/a.rs", "helper", 21, SHIPPED)];
         let err = keyed(&found, &|path, _| Err(format!("cannot read {path}"))).unwrap_err();
         assert_eq!(err, "cannot read src/a.rs");
-    }
-
-    #[test]
-    fn an_entity_the_tree_still_mentions_is_not_reported() {
-        let found = [
-            unreached("src/a.rs", "mentioned", 9, SHIPPED),
-            unreached("src/b.rs", "nowhere", 7, SHIPPED),
-        ];
-        let series = keyed(&found, &|_, name| Ok(name == "mentioned")).unwrap();
-        assert_eq!(series.get("src/b.rs#nowhere"), Some(7));
-        assert_eq!(series.get("src/a.rs#mentioned"), None);
     }
 
     #[test]

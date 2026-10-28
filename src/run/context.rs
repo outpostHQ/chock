@@ -77,6 +77,8 @@ pub struct Ctx {
     pub mutest_args: Vec<String>,
     /// Whether a whole-crate mutest run gives every test a verdict, from `mutest_exhaustive`.
     pub exhaustive: bool,
+    /// How `profile` holds each lint table to the lint floor, from `lint_floor`.
+    pub lint_floor: Option<bool>,
     /// Whether a Kani harness that fails on a mutation no test detects kills it, from
     /// `mutest_proofs`.
     pub mutest_proofs: bool,
@@ -132,6 +134,7 @@ impl Ctx {
             test_wrapper: Vec::new(),
             mutest_args: Vec::new(),
             exhaustive: false,
+            lint_floor: None,
             mutest_proofs: false,
             proof_jobs: None,
             proof: crate::project::config::Proof::default(),
@@ -191,6 +194,7 @@ impl Ctx {
                 .and_then(|set| set.mutest_args.clone())
                 .unwrap_or_default(),
             exhaustive: config.and_then(|set| set.mutest_exhaustive) == Some(true),
+            lint_floor: config.and_then(|set| set.lint_floor),
             mutest_proofs: config.and_then(|set| set.mutest_proofs) == Some(true),
             proof_jobs: config.and_then(|set| set.proof_jobs),
             proof: config.and_then(|set| set.proof.clone()).unwrap_or_default(),
@@ -480,6 +484,18 @@ mod tests {
         };
         assert_eq!(Ctx::from_config(Some(&config)).accepted, vec![fixture]);
         assert!(Ctx::from_config(None).accepted.is_empty());
+    }
+
+    #[test]
+    fn the_lint_floor_key_reaches_the_run_as_the_project_set_it() {
+        for setting in [None, Some(true), Some(false)] {
+            let config = Config {
+                lint_floor: setting,
+                ..Config::of(["profile"])
+            };
+            assert_eq!(Ctx::from_config(Some(&config)).lint_floor, setting);
+        }
+        assert_eq!(Ctx::from_config(None).lint_floor, None);
     }
 
     /// A project's own command hides what it calls, so the names it gives are all a key holds.

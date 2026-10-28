@@ -3,6 +3,7 @@
 use serde::Deserialize;
 
 use crate::exec;
+use crate::gates::metrics::prodlines;
 use crate::run::baseline::{Keys, Series};
 use crate::run::{Ctx, Gate, Group, Kind};
 
@@ -46,13 +47,17 @@ struct Found {
     file: String,
 }
 
-/// Rule and taint findings as a series; a scan that read no files is an error, not a clean tree.
+/// Rule and taint findings outside the files only tests build, which Outpost may miss; a scan
+/// that read no files is an error, not a clean tree.
 fn read_scan(out: &exec::Output) -> Result<Series, String> {
     let scan: Scan = super::read(out, "scan")?;
     if scan.languages.values().all(|read| read.files == 0) {
         return Err(super::nothing_read("rule"));
     }
-    Ok(keyed(scan.findings.iter().chain(&scan.taint)))
+    let shipped = |found: &&Found| !prodlines::is_test_path(&found.file);
+    Ok(keyed(
+        scan.findings.iter().chain(&scan.taint).filter(shipped),
+    ))
 }
 
 /// Keyed by file and rule, not line, so an edit above a finding does not read as a new one.
@@ -138,6 +143,21 @@ mod tests {
         let out = flowed(55, "", &found("src/cli.rs", "rust-command-injection"));
         let series = read_scan(&out).unwrap();
         assert_eq!(series.get("src/cli.rs#rust-command-injection"), Some(1));
+    }
+
+    #[test]
+    fn a_finding_in_a_file_only_tests_build_is_not_counted() {
+        let tested = [
+            found("crates/a/tests/contract/model.rs", "unwrap-in-production"),
+            found("site/tests/play.rs", "unwrap-in-production"),
+            found("src/parse_tests.rs", "unwrap-in-production"),
+            found("crates/a/src/parse/tests.rs", "unwrap-in-production"),
+        ];
+        let shipped = found("crates/a/src/lib.rs", "unwrap-in-production");
+        let out = flowed(9, &tested.join(","), &shipped);
+        let mut only = Series::new();
+        only.set("crates/a/src/lib.rs#unwrap-in-production", 1);
+        assert_eq!(read_scan(&out).unwrap(), only);
     }
 
     #[test]

@@ -25,6 +25,7 @@
     "dupdeps",
     "duplicates",
     "duplication",
+    "echoes",
     "features",
     "fmt",
     "hazards",
@@ -70,7 +71,8 @@
     "unused-deep",
     "verus",
     "wiring",
-    "workflows"
+    "workflows",
+    "wrappers"
   ],
   "vcs": "git",
   "local_only": [
@@ -83,7 +85,8 @@
     "padding",
     "scan",
     "unread",
-    "unreferenced"
+    "unreferenced",
+    "wrappers"
   ],
   "commands": [
     { "name": "package-list", "run": ["cargo", "package", "--locked", "--allow-dirty", "--list"] },
