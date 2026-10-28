@@ -85,7 +85,15 @@ impl Open {
 
 /// The documents in `text`, or the parser's error with its line.
 pub(super) fn documents(text: &str) -> Result<Vec<Node>, String> {
-    let mut fold = Fold::default();
+    within(text, MAX_NODES)
+}
+
+/// The documents in `text` while they make at most `limit` nodes, aliases copied out.
+fn within(text: &str, limit: usize) -> Result<Vec<Node>, String> {
+    let mut fold = Fold {
+        limit,
+        ..Fold::default()
+    };
     for event in Parser::new_from_str(text) {
         let (event, span) =
             event.map_err(|e| format!("line {}: {}", e.marker().line(), e.info()))?;
@@ -100,6 +108,7 @@ struct Fold {
     anchors: BTreeMap<usize, Node>,
     documents: Vec<Node>,
     made: usize,
+    limit: usize,
 }
 
 impl Fold {
@@ -131,9 +140,10 @@ impl Fold {
     /// the nodes it adds: a collection's children are counted, and an alias's copy is all new.
     fn place(&mut self, anchor: usize, node: Node, new: usize) -> Result<(), String> {
         self.made += new;
-        if self.made > MAX_NODES {
+        if self.made > self.limit {
             return Err(format!(
-                "more than {MAX_NODES} nodes once its aliases are copied"
+                "more than {} nodes once its aliases are copied",
+                self.limit
             ));
         }
         if anchor != 0 {
@@ -197,6 +207,26 @@ mod tests {
         assert_eq!(document.entries(), [("b".to_string(), scalar("y", 3))]);
     }
 
+    /// A list, then an anchored list of `scalars` scalars and `copies` aliases of it:
+    /// 1 + (copies + 1) × (scalars + 1) nodes.
+    fn copied(scalars: usize, copies: usize) -> String {
+        format!(
+            "[&a [{}x]{}]\n",
+            "x, ".repeat(scalars - 1),
+            ", *a".repeat(copies)
+        )
+    }
+
+    /// `read` takes `stream` whole, and refuses it with one more document of one node.
+    fn holds(read: fn(&str) -> Result<Vec<Node>, String>, stream: &str, limit: usize) {
+        assert!(read(stream).is_ok());
+        let refused = read(&format!("{stream}--- y\n")).err().unwrap_or_default();
+        assert!(
+            refused.contains(&format!("more than {limit} nodes")),
+            "{refused}"
+        );
+    }
+
     #[test]
     fn nested_aliases_past_the_node_limit_are_refused() {
         let mut text = String::from("a0: &a0 [x, x, x, x, x, x, x, x, x, x]\n");
@@ -204,19 +234,22 @@ mod tests {
             let below = level - 1;
             text.push_str(&format!("a{level}: &a{level} [*a{below}, *a{below}, *a{below}, *a{below}, *a{below}, *a{below}, *a{below}, *a{below}, *a{below}, *a{below}]\n"));
         }
-        let refused = documents(&text).err().unwrap_or_default();
-        assert!(refused.contains("more than 100000 nodes"), "{refused}");
+        let refused = within(&text, 1_000).err().unwrap_or_default();
+        assert!(refused.contains("more than 1000 nodes"), "{refused}");
     }
 
     #[test]
     fn a_stream_of_exactly_the_node_limit_is_read_and_one_node_more_is_refused() {
-        // The outer list, then an anchored list of 368 scalars and 270 copies: 1 + 271 × 369 nodes.
-        let limit = format!("[&a [{}x]{}]\n", "x, ".repeat(367), ", *a".repeat(270));
-        assert!(documents(&limit).is_ok());
-        let refused = documents(&format!("{limit}--- y\n"))
-            .err()
-            .unwrap_or_default();
-        assert!(refused.contains("more than 100000 nodes"), "{refused}");
+        holds(|text| within(text, 1_000), &copied(36, 26), 1_000);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri takes minutes to copy 100,000 nodes; the test above holds the rule at 1,000"
+    )]
+    fn the_gate_reads_a_hundred_thousand_nodes_and_refuses_one_more() {
+        holds(documents, &copied(368, 270), MAX_NODES);
     }
 
     #[test]
