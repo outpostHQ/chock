@@ -435,7 +435,7 @@
       "hazard_unordered_into_ordered": 0
     },
     "lines": {
-      "total": 98906
+      "total": 98924
     },
     "links": {},
     "manifest": {},
@@ -619,6 +619,7 @@
     "mutest@windows": {
       "src/cli.rs#bool_expr_negate": 1,
       "src/exec/budget.rs#bool_expr_negate": 1,
+      "src/exec/mod.rs#bool_expr_negate": 1,
       "src/exec/process.rs#bool_expr_negate": 5,
       "src/exec/process.rs#logical_op_and_or_swap": 1,
       "src/exec/process.rs#unary_op_delete": 1,

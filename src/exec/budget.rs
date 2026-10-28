@@ -695,6 +695,18 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn this_machine_has_no_more_memory_free_than_in_all() {
+        let (total, free) = (total_mb(), free_mb());
+        if let (Some(total), Some(free)) = (total, free) {
+            assert!(free <= total, "{free} MB free of {total} MB");
+        }
+        if cfg!(target_os = "linux") {
+            assert!(total.is_some() && free.is_some(), "{total:?} {free:?}");
+        }
+    }
+
+    #[test]
     fn a_ci_runner_keeps_a_set_limit_and_drops_the_stall_rule() {
         assert_eq!(limit(Some(10), Some("true")), Limit::Asked(10));
         assert_eq!(limit(Some(10), None), Limit::Asked(10));

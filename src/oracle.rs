@@ -320,11 +320,17 @@ fn held(path: &Path) -> std::io::Result<(bool, u64)> {
     Ok((meta.is_dir(), hasher.finish()))
 }
 
-/// Each entry under `dir` that is not in a store, by its path from `root`.
+/// Each entry under `dir` that is not in a store, by its path from `root`. The walk goes in path
+/// order, not in the file system's, so it is the same on every machine.
 fn tree(root: &Path, dir: &Path, into: &mut BTreeMap<String, u64>) -> Result<(), String> {
     let unread = |e: std::io::Error| format!("cannot read {}: {e}", dir.display());
-    for entry in std::fs::read_dir(dir).map_err(unread)? {
-        let path = entry.map_err(unread)?.path();
+    let mut paths = std::fs::read_dir(dir)
+        .map_err(unread)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(unread)?;
+    paths.sort();
+    for path in paths {
         if STORES.iter().any(|store| path.ends_with(store)) {
             continue;
         }
