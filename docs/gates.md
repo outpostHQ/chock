@@ -179,7 +179,8 @@ TLAPS proves each module that states a `THEOREM`, `LEMMA`, `PROPOSITION` or `COR
 trips on an obligation that no backend of tlapm proves, on an `OMITTED` proof, and on a step with
 no proof, and it names the file and the line of each. `BY OBVIOUS` is a proof, because a backend
 must prove it. chock pins tlapm as `TLAPM` in `tool-versions.env`, for Linux x86_64 and macOS
-arm64. Where the pin has no file for the machine, or the project has no pin, the gate gives a note
+arm64. Upstream rebuilds 1.6.0-pre with new files, so the pin names fixed copies on a chock
+release. Where the pin has no file for the machine, or the project has no pin, the gate gives a note
 and proves no theorem. `tla.timeout_s` and `tla.timeouts`, by the module's name, limit the proof
 of each module, and `tla.workers` sets the threads of tlapm.
 

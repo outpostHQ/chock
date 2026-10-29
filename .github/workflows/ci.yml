@@ -309,7 +309,7 @@ jobs:
   miri:
     name: Miri on ${{ matrix.system }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -338,13 +338,21 @@ jobs:
           prefix-key: miri
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@81df5c23b0dc775b009efdfc9895c5965b7a4e40 # v1.26.1
-
+      # nextest's own prebuilt file: on macOS, binstall timed out and built it from source (6 min).
       - name: Install cargo-nextest
         run: |
           . ./tool-versions.env
-          cargo binstall -y --locked cargo-nextest@"$CARGO_NEXTEST_VERSION"
+          case "$RUNNER_OS" in
+            Linux) target=x86_64-unknown-linux-gnu ;;
+            macOS) target=universal-apple-darwin ;;
+            Windows) target=x86_64-pc-windows-msvc ;;
+          esac
+          release=cargo-nextest-$CARGO_NEXTEST_VERSION
+          cd "${CARGO_HOME:-$HOME/.cargo}/bin"
+          curl -fsSL --retry 3 --proto =https \
+            "https://github.com/nextest-rs/nextest/releases/download/$release/$release-$target.tar.gz" \
+            | tar -xzf -
+          cargo nextest --version
 
       - name: Install chock from this checkout
         run: cargo install --locked --path .

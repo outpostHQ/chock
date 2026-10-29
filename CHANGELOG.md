@@ -15,6 +15,10 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **A ratchet gate finds its tool in the project's pinned downloads.** A gate that keeps a record
   looked for each tool it reads on `PATH` only, so after `chock init --downloads` the `verus` gate
   said CANNOT RUN. Now a fetched download that the project pins, such as `VERUS`, counts.
+- **`chock init --downloads` fetches tlapm again.** The tlaplus team rebuilt tlapm 1.6.0-pre on
+  2026-10-28 with new files, so the pinned SHA-256 no longer matched and the install failed. The
+  `TLAPM` pin now names unchanged copies of the 1.6.0-pre files of 2026-10-29, which chock keeps
+  on its release `tlapm-1.6.0-pre-2026-10-29` with the notices of the provers inside them.
 - **A `deps` finding on `Cargo.lock` gives the real line of its crate.** cargo-deny numbers the
   lines of a list of crates that it makes, and prints that number beside the path of
   `Cargo.lock`. chock copied the number, so `Cargo.lock:21` for a duplicate `base64` showed
