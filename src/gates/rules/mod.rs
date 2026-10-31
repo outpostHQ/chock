@@ -213,10 +213,6 @@ pub(crate) fn is_test(attrs: &[syn::Attribute]) -> bool {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

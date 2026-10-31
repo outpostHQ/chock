@@ -1,0 +1,8 @@
+# Tests may unwrap, expect, panic and print; production code may not (see `[lints]` in Cargo.toml).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+
+# Every bool parameter becomes a named enum, so a call site says what it means.
+max-fn-params-bools = 0

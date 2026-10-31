@@ -7,6 +7,8 @@ use std::time::Duration;
 use super::{DRAIN, ExecError, MAX_CAPTURE, Output, Process, Stage, captured, finish_capture};
 
 /// Runs `command` to its end, or kills its whole process group once `limit` passes.
+/// # Errors
+/// When the command cannot start or be read, or is stopped before its end.
 pub fn run(
     command: &mut Command,
     program: &str,
@@ -36,10 +38,6 @@ pub fn run(
 
 #[cfg(test)]
 #[cfg(unix)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

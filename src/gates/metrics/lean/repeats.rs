@@ -12,7 +12,7 @@ use syn::{
     ItemImpl, ItemMod, Macro, PatIdent, Stmt, TraitItemFn,
 };
 
-use crate::gates::metrics::prodlines;
+use crate::gates::metrics::prodlines::{self, Code};
 use crate::run::report::Place;
 use shape::{Inside, shape};
 
@@ -41,9 +41,18 @@ const FORMAT: char = '\u{1}';
 /// Marks a string a format macro reads. Copies that differ in one merge where each has the same
 /// placeholders, since the function can pass the text that differs to a placeholder of its own.
 const TEXT: char = '\u{2}';
+/// How the copies of a group sit in their file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Copies {
+    /// Each copy starts where the one before it ends, so the copies can merge into a table.
+    Tandem,
+    /// Other code stands between the copies.
+    Spaced,
+}
+
 /// How a group of copies merges.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Merge {
+pub(crate) enum Merge {
     /// Into one new function that each copy calls.
     Function,
     /// Side by side in one block or match: into one table of rows, and the shared lines once.
@@ -58,7 +67,7 @@ pub enum Merge {
 
 /// The lines one copy spans.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Site {
+pub(crate) struct Site {
     pub file: String,
     pub line: u32,
     pub last: u32,
@@ -67,7 +76,7 @@ pub struct Site {
 /// A group of copies in path and line order, how they merge, the lines the merge removes, and
 /// each tuple of names or values that differs between them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Repeat {
+pub(crate) struct Repeat {
     pub sites: Vec<Site>,
     pub merge: Merge,
     pub saves: u32,
@@ -76,7 +85,7 @@ pub struct Repeat {
 
 impl Repeat {
     /// Each copy's part of the lines the merge removes: an even split, and the rest to the first.
-    pub fn shares(&self) -> Vec<u64> {
+    pub(crate) fn shares(&self) -> Vec<u64> {
         let copies = u32::try_from(self.sites.len()).unwrap_or(u32::MAX).max(1);
         let rest = self.saves % copies;
         (0..copies)
@@ -85,7 +94,7 @@ impl Repeat {
     }
 
     /// Each file's part of the lines the merge removes.
-    pub fn by_file(&self) -> BTreeMap<&str, u64> {
+    pub(crate) fn by_file(&self) -> BTreeMap<&str, u64> {
         let mut lines = BTreeMap::new();
         for (site, share) in self.sites.iter().zip(self.shares()) {
             *lines.entry(site.file.as_str()).or_default() += share;
@@ -94,7 +103,7 @@ impl Repeat {
     }
 
     /// Each copy as a place, named as a copy or a row of the group.
-    pub fn places(&self) -> Vec<Place> {
+    pub(crate) fn places(&self) -> Vec<Place> {
         let role = match self.merge {
             Merge::Table => "row",
             Merge::Cases => "case",
@@ -110,7 +119,7 @@ impl Repeat {
     }
 
     /// What to do, in words.
-    pub fn fix(&self) -> String {
+    pub(crate) fn fix(&self) -> String {
         let copies = self.sites.len();
         let saves = self.saves;
         let (parameter, passing, values) = match self.differs.as_slice() {
@@ -180,7 +189,7 @@ struct Unit {
 
 /// The statements and arms of every file read so far, each name kept once.
 #[derive(Debug, Default)]
-pub struct Corpus {
+pub(crate) struct Corpus {
     files: Vec<String>,
     holders: Vec<Holder>,
     units: Vec<Unit>,
@@ -189,9 +198,9 @@ pub struct Corpus {
 }
 
 impl Corpus {
-    /// Reads one file's blocks and matches, all of them test code where `test` says so or the file
+    /// Reads one file's blocks and matches, all of them test code where `code` says so or the file
     /// builds only for tests. A file that does not parse adds nothing.
-    pub fn add(&mut self, shown: &str, src: &str, test: bool) {
+    pub(crate) fn add(&mut self, shown: &str, src: &str, code: Code) {
         let Ok(file) = prodlines::parse_rust(src) else {
             return;
         };
@@ -199,14 +208,14 @@ impl Corpus {
         Walk {
             corpus: self,
             body: None,
-            test: test || prodlines::is_test_gated(&file.attrs),
+            test: code.within(&file.attrs) == Code::Test,
         }
         .visit_file(&file);
     }
 
     /// The file and first line of each statement and arm of test code. A group is all test code
     /// or all production code, so a group's first copy says which the group is.
-    pub fn test_starts(&self) -> BTreeSet<(&str, u32)> {
+    pub(crate) fn test_starts(&self) -> BTreeSet<(&str, u32)> {
         (self.units.iter())
             .filter(|unit| self.holders[unit.holder].test)
             .map(|unit| {
@@ -219,7 +228,7 @@ impl Corpus {
     }
 
     /// The groups to name, most lines removed first; no two share a line.
-    pub fn repeats(&self) -> Vec<Repeat> {
+    pub(crate) fn repeats(&self) -> Vec<Repeat> {
         let (symbols, units) = self.symbols();
         let order = suffixes(&symbols);
         let shared = common(&symbols, &order);
@@ -234,7 +243,11 @@ impl Corpus {
                 continue;
             }
             let apart = apart(starts, length);
-            let tandem = apart.windows(2).all(|pair| pair[1] == pair[0] + length);
+            let tandem = if apart.windows(2).all(|pair| pair[1] == pair[0] + length) {
+                Copies::Tandem
+            } else {
+                Copies::Spaced
+            };
             let firsts: Vec<usize> = apart.iter().filter_map(|&at| units[at]).collect();
             found.extend(self.judge(&firsts, length, None, tandem));
             found.extend(self.gapped(&symbols, &units, &apart, length));
@@ -272,7 +285,7 @@ impl Corpus {
             }
             let apart = apart(starts, span);
             let firsts: Vec<usize> = apart.iter().filter_map(|&at| units[at]).collect();
-            found.extend(self.judge(&firsts, span, Some(length), false));
+            found.extend(self.judge(&firsts, span, Some(length), Copies::Spaced));
         }
         found
     }
@@ -305,7 +318,7 @@ impl Corpus {
         firsts: &[usize],
         length: usize,
         gap: Option<usize>,
-        tandem: bool,
+        tandem: Copies,
     ) -> Option<Repeat> {
         let runs: Vec<&[Unit]> = firsts
             .iter()
@@ -352,7 +365,7 @@ impl Corpus {
         let removed = removed + rows - kept;
         let (merge, saves, width) = match whole.iter().flatten().next() {
             _ if whole.iter().all(Option::is_some) => return None,
-            _ if tandem => (Merge::Table, removed - (least + 2), COLUMNS),
+            _ if tandem == Copies::Tandem => (Merge::Table, removed - (least + 2), COLUMNS),
             _ if gap.is_some() => (Merge::Closure, removed - (least + 4 + values), VALUES),
             _ if cases => (Merge::Cases, removed - (least + 2), COLUMNS),
             Some(name) => (Merge::Call((*name).to_string()), removed - bodies, VALUES),
@@ -444,12 +457,15 @@ impl Corpus {
         Some(out)
     }
 
+    /// The name or value that `id` stands for, as the corpus keeps it.
+    fn text(&self, id: u32) -> &str {
+        &self.texts[usize::try_from(id).unwrap_or(usize::MAX)]
+    }
+
     /// Whether a function can take each of a tuple's values: never a string a macro reads unless
     /// that macro formats it, and then only where each copy has the same placeholders.
     fn passed(&self, tuple: &[u32]) -> bool {
-        let texts: Vec<&str> = (tuple.iter())
-            .map(|&id| self.texts[id as usize].as_str())
-            .collect();
+        let texts: Vec<&str> = (tuple.iter()).map(|&id| self.text(id)).collect();
         let first = texts
             .first()
             .and_then(|it| it.strip_prefix(TEXT))
@@ -462,7 +478,7 @@ impl Corpus {
     fn widths(&self, differs: &[Vec<u32>], at: usize) -> Vec<usize> {
         (differs.iter())
             .map(|tuple| {
-                self.texts[tuple[at] as usize]
+                self.text(tuple[at])
                     .trim_start_matches([TEXT, FORMAT])
                     .len()
             })
@@ -479,7 +495,7 @@ impl Corpus {
         }
         let values: Vec<String> = (distinct.iter().take(SHOWN))
             .map(|&id| {
-                let text = self.texts[id as usize].trim_start_matches(TEXT);
+                let text = self.text(id).trim_start_matches(TEXT);
                 match text.char_indices().nth(24) {
                     Some((cut, _)) => format!("`{}…`", &text[..cut]),
                     None => format!("`{text}`"),
@@ -508,7 +524,8 @@ impl Corpus {
 
     /// Adds a holder of `parts`: each one's span, what it binds and whether it leaves, and the
     /// names a `let` binds. Production code and the tests of each directory are shapes apart.
-    fn hold(&mut self, body: Option<(String, bool)>, test: bool, parts: Vec<Part>) {
+    fn hold(&mut self, body: Option<(String, bool)>, code: Code, parts: Vec<Part>) {
+        let test = code == Code::Test;
         let file = self.files.len() - 1;
         let side = test.then(|| reach(&self.files[file]));
         let holder = self.holders.len();
@@ -715,6 +732,15 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
+    /// What the walk reads now: test code, or production code.
+    fn code(&self) -> Code {
+        if self.test {
+            Code::Test
+        } else {
+            Code::Production
+        }
+    }
+
     /// Visits an item, as test code where its attributes build it only for tests.
     fn within(&mut self, attrs: &[Attribute], visit: impl FnOnce(&mut Self)) {
         let test = self.test;
@@ -774,7 +800,7 @@ impl<'ast> Visit<'ast> for Walk<'_> {
                 (stmt.span(), facts, lets.bound)
             })
             .collect();
-        self.corpus.hold(body, self.test, parts);
+        self.corpus.hold(body, self.code(), parts);
         visit::visit_block(self, node);
     }
 
@@ -788,7 +814,7 @@ impl<'ast> Visit<'ast> for Walk<'_> {
                 (arm.span(), facts, Vec::new())
             })
             .collect();
-        self.corpus.hold(None, self.test, parts);
+        self.corpus.hold(None, self.code(), parts);
         visit::visit_expr_match(self, node);
     }
 }
@@ -837,11 +863,9 @@ impl<'ast> Visit<'ast> for Facts {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::shape::unnamed;
     use super::*;
 
@@ -856,15 +880,16 @@ mod tests {
     /// Each body in a function of its own, closed by a macro no other function names, so a run ends
     /// there and no body is a run alone. The macro reads `tail`.
     fn spread(bodies: &[String], tail: &str) -> String {
-        (bodies.iter().enumerate())
-            .map(|(at, body)| format!("fn f{at}() {{\n{body}    m{at}!({tail});\n}}\n"))
-            .collect()
+        (bodies.iter().enumerate()).fold(String::new(), |mut out, (at, body)| {
+            let _ = writeln!(out, "fn f{at}() {{\n{body}    m{at}!({tail});\n}}");
+            out
+        })
     }
 
     /// One file's corpus. Each test calls `repeats` itself, so mutest's call depth reaches `judge`.
     fn lib(src: &str) -> Corpus {
         let mut corpus = Corpus::default();
-        corpus.add("src/lib.rs", src, false);
+        corpus.add("src/lib.rs", src, Code::Production);
         corpus
     }
 
@@ -894,7 +919,10 @@ mod tests {
 
     /// A six-line `report` call; its second line holds one value per column, each named for `at`.
     fn report(columns: usize, at: usize) -> String {
-        let values: String = (0..columns).map(|c| format!(" v{c}_{at},")).collect();
+        let values = (0..columns).fold(String::new(), |mut out, c| {
+            let _ = write!(out, " v{c}_{at},");
+            out
+        });
         format!(
             "    report(\n       {values}\n        &settings.layout.margins,\n        \
              &settings.layout.columns,\n        settings.layout.padding,\n    );\n"
@@ -968,8 +996,8 @@ mod tests {
             c = run("c"),
         );
         let mut corpus = Corpus::default();
-        corpus.add("src/bad.rs", "fn broken( {\n", false);
-        corpus.add("src/lib.rs", &src, false);
+        corpus.add("src/bad.rs", "fn broken( {\n", Code::Production);
+        corpus.add("src/lib.rs", &src, Code::Production);
         assert_eq!(corpus.repeats(), [function(6, [4, 15, 25], 5)]);
     }
 
@@ -1074,13 +1102,17 @@ mod tests {
             lib(&(shared + &spread(&copies(&["b", "c"]), ""))).repeats(),
             [named]
         );
-        let bodies: String = (["a", "b", "c"].iter().enumerate())
-            .map(|(at, value)| format!("fn s{at}() {{\n{}}}\n", run(value)))
-            .collect();
+        let bodies =
+            (["a", "b", "c"].iter().enumerate()).fold(String::new(), |mut out, (at, value)| {
+                let _ = writeln!(out, "fn s{at}() {{\n{}}}", run(value));
+                out
+            });
         assert_eq!(lib(&bodies).repeats(), []);
-        let led: String = (["a", "b", "c"].iter().enumerate())
-            .map(|(at, value)| format!("fn s{at}() {{\n    let x = setup();\n{}}}\n", run(value)))
-            .collect();
+        let led =
+            (["a", "b", "c"].iter().enumerate()).fold(String::new(), |mut out, (at, value)| {
+                let _ = writeln!(out, "fn s{at}() {{\n    let x = setup();\n{}}}", run(value));
+                out
+            });
         assert_eq!(
             lib(&led).repeats(),
             [],
@@ -1100,7 +1132,10 @@ mod tests {
         let two_lines = |value: &str| format!("    call(\"{value}\", {names}, x13);\n");
         let three_lines = |value: &str| format!("    call(\n        \"{value}\", {names}, x13);\n");
         let fewer_tokens = |value: &str| format!("    call(\n        \"{value}\", {names},);\n");
-        let column: String = (1..=13).map(|at| format!("        x{at},\n")).collect();
+        let column = (1..=13).fold(String::new(), |mut out, at| {
+            let _ = writeln!(out, "        x{at},");
+            out
+        });
         let tall = |value: &str| format!("    call(\n        \"{value}\",\n{column}    );\n");
         assert_eq!(saves(&tree(20, &two_lines).repeats()), Vec::<u32>::new());
         assert_eq!(saves(&tree(10, &three_lines).repeats()), [14]);
@@ -1112,14 +1147,18 @@ mod tests {
     #[test]
     fn a_group_merges_as_a_table_where_its_copies_stand_side_by_side() {
         let mut corpus = Corpus::default();
-        corpus.add("src/lib.rs", &spread(&copies(&["a", "b", "c"]), ""), false);
+        corpus.add(
+            "src/lib.rs",
+            &spread(&copies(&["a", "b", "c"]), ""),
+            Code::Production,
+        );
         let judged = |tandem| {
             corpus
                 .judge(&[0, 4, 8], 3, None, tandem)
                 .map(|it| (it.merge, it.saves))
         };
-        assert_eq!(judged(false), Some((Merge::Function, 6)));
-        assert_eq!(judged(true), Some((Merge::Table, 7)));
+        assert_eq!(judged(Copies::Spaced), Some((Merge::Function, 6)));
+        assert_eq!(judged(Copies::Tandem), Some((Merge::Table, 7)));
     }
 
     #[test]
@@ -1129,12 +1168,12 @@ mod tests {
             "src/lib.rs",
             "fn whole() {\n    let a = 1;\n    let b = a;\n}\nfn later() {\n    let a = 1;\n    let b = 2;\n    \
              use_it(a);\n    let b = 3;\n    use_it(b);\n}\n",
-            false,
+            Code::Production,
         );
         corpus.add(
             "src/t.rs",
             "#![cfg(test)]\nfn t() {\n    let a = 1;\n}\n",
-            false,
+            Code::Production,
         );
         assert_eq!(corpus.files, ["src/lib.rs", "src/t.rs"]);
         let (symbols, units) = corpus.symbols();
@@ -1210,7 +1249,7 @@ mod tests {
         let gated = format!("#[cfg(test)]\nmod tests {{\n{three}}}\n");
         assert_eq!(lib(&gated).repeats(), [function(6, [4, 13, 22], 5)]);
         let mut corpus = Corpus::default();
-        corpus.add("tests/cli.rs", &three, true);
+        corpus.add("tests/cli.rs", &three, Code::Test);
         let mut found = function(6, [2, 11, 20], 5);
         (found.sites.iter_mut()).for_each(|site| site.file = "tests/cli.rs".to_string());
         assert_eq!(corpus.repeats(), [found]);
@@ -1219,9 +1258,9 @@ mod tests {
         apart.add(
             "src/lib.rs",
             &format!("#[cfg(test)]\nmod tests {{\n{two}}}\n"),
-            false,
+            Code::Production,
         );
-        apart.add("tests/cli.rs", &tested("c"), true);
+        apart.add("tests/cli.rs", &tested("c"), Code::Test);
         assert_eq!(
             apart.repeats(),
             [],
@@ -1260,13 +1299,13 @@ mod tests {
             matched("a"),
             matched("b")
         );
-        corpus.add("src/lib.rs", &units, false);
-        corpus.add("tests/cli.rs", &matched("c"), true);
+        corpus.add("src/lib.rs", &units, Code::Production);
+        corpus.add("tests/cli.rs", &matched("c"), Code::Test);
         assert_eq!(corpus.repeats(), [], "two copies on each side are too few");
         corpus.add(
             "tests/more.rs",
             &format!("{}{}", matched("d"), matched("e")),
-            true,
+            Code::Test,
         );
         let sites: Vec<usize> = corpus.repeats().iter().map(|it| it.sites.len()).collect();
         assert_eq!(sites, [3], "the arms in `tests` are one group of three");
@@ -1275,9 +1314,13 @@ mod tests {
     #[test]
     fn tests_whose_whole_bodies_repeat_are_one_test_over_a_table_of_cases() {
         let cases = |marks: [&str; 3]| -> String {
-            (marks.iter().zip(["a", "b", "c"]).enumerate())
-                .map(|(at, (mark, value))| format!("#[{mark}]\nfn t{at}() {{\n{}}}\n", run(value)))
-                .collect()
+            (marks.iter().zip(["a", "b", "c"]).enumerate()).fold(
+                String::new(),
+                |mut out, (at, (mark, value))| {
+                    let _ = writeln!(out, "#[{mark}]\nfn t{at}() {{\n{}}}", run(value));
+                    out
+                },
+            )
         };
         let sites = |file: &str| [3, 12, 21].map(|line| site(file, line, line + 5)).to_vec();
         let differs = function(0, [0; 3], 0).differs;
@@ -1292,7 +1335,11 @@ mod tests {
             [table]
         );
         let mut corpus = Corpus::default();
-        corpus.add("tests/cli.rs", &cases(["test", "test", "inline"]), true);
+        corpus.add(
+            "tests/cli.rs",
+            &cases(["test", "test", "inline"]),
+            Code::Test,
+        );
         let called = Repeat {
             sites: sites("tests/cli.rs"),
             merge: Merge::Call("t2".to_string()),
@@ -1304,9 +1351,10 @@ mod tests {
 
     #[test]
     fn copies_alike_but_for_one_statement_are_one_function_taking_that_statement_as_a_closure() {
-        let head: String = (run("a").lines().take(5))
-            .map(|line| format!("{line}\n"))
-            .collect();
+        let head = (run("a").lines().take(5)).fold(String::new(), |mut out, line| {
+            let _ = writeln!(out, "{line}");
+            out
+        });
         let bodies = |gaps: [&str; 3]| -> Vec<String> {
             (gaps.iter().zip(["a", "b", "c"]))
                 .map(|(gap, value)| {
@@ -1341,9 +1389,10 @@ mod tests {
             "mean.record();",
             "audit.push(mean);",
         ];
-        let whole: String = (bodies(gaps).iter().enumerate())
-            .map(|(at, body)| format!("fn f{at}() {{\n{body}}}\n"))
-            .collect();
+        let whole = (bodies(gaps).iter().enumerate()).fold(String::new(), |mut out, (at, body)| {
+            let _ = writeln!(out, "fn f{at}() {{\n{body}}}");
+            out
+        });
         assert_eq!(
             lib(&whole).repeats(),
             [],
@@ -1379,8 +1428,9 @@ mod tests {
         let shared = common(&symbols, &order);
         assert_eq!(shared, [0, 2, 3, 1, 0, 1, 2, 0]);
         let mut runs = intervals(&order, &shared);
-        runs.iter_mut()
-            .for_each(|(_, starts)| starts.sort_unstable());
+        for (_, starts) in &mut runs {
+            starts.sort_unstable();
+        }
         runs.sort();
         let expected: [(usize, &[usize]); 5] = [
             (1, &[0, 2, 4, 6]),

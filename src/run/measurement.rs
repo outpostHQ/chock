@@ -1,13 +1,17 @@
 //! What a ratchet read: its series, its notes, what it knows of each key, and the files it could
 //! not read.
 
+use std::fmt::Write as _;
+
 use crate::run::baseline::Series;
 use crate::run::report::{Detail, Finding};
 
 /// A measured series with scope notes that must survive comparison and baseline recording.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Measurement {
+    /// The number the gate measured for each key.
     pub series: Series,
+    /// Scope notes that baseline output shows but never records as debt.
     pub findings: Vec<Finding>,
     /// What the gate knows about a key beyond its number, by key.
     pub details: Details,
@@ -39,12 +43,16 @@ impl Measurement {
     pub fn notes(&self, gate: &str) -> String {
         self.findings
             .iter()
-            .map(|finding| format!("  note      {gate:<12} {}\n", finding.render()))
-            .collect()
+            .fold(String::new(), |mut notes, finding| {
+                let _ = writeln!(notes, "  note      {gate:<12} {}", finding.render());
+                notes
+            })
     }
 
     /// A read of every file, with no fault. Recording or comparing a read that left a file out
     /// would take that file's debt as paid, and recording a fault would make it debt.
+    /// # Errors
+    /// The text says which files went unread, or which faults the read found.
     pub fn whole(self) -> Result<Self, String> {
         match self.why_unrecorded() {
             Some(why) => Err(why),

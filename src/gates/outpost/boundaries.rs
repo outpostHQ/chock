@@ -4,6 +4,8 @@ use crate::run::baseline::{Keys, Series};
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind, Measurement};
 
+/// Counts definitions whose callers reach past the directory that owns them, and directories
+/// that hold more than one concern.
 pub const GATE: Gate = Gate {
     name: "boundaries",
     about: "a definition whose callers are spread past the directory that owns it, and a directory \
@@ -75,10 +77,6 @@ fn tallied(measured: &super::Measure) -> Result<u64, String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::exec;

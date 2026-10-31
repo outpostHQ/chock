@@ -7,7 +7,7 @@ use crate::tokens::{Item, Lexed, Tok};
 
 /// One `#[test]`-shaped function, with what a rule needs to judge it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TestItem {
+pub(crate) struct TestItem {
     /// Line of the first attribute, which is what a reader looks for.
     pub line: usize,
     pub name: String,
@@ -20,7 +20,7 @@ pub struct TestItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Waiver {
+pub(crate) struct Waiver {
     pub rule: String,
     pub reason: String,
     pub line: usize,
@@ -28,7 +28,7 @@ pub struct Waiver {
 
 /// A function of the test code, a test or not: a test may assert through it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Helper {
+pub(crate) struct Helper {
     pub name: String,
     /// Token range of the function body, braces included.
     pub body: Range<usize>,
@@ -36,7 +36,7 @@ pub struct Helper {
 
 /// One file's text, tokens, tests and the functions its tests may assert through.
 #[derive(Clone, Debug, Default)]
-pub struct FileScan {
+pub(crate) struct FileScan {
     pub file: String,
     pub raw: String,
     pub lexed: Lexed,
@@ -45,7 +45,7 @@ pub struct FileScan {
 }
 
 /// A file that does not lex compiles nowhere, so it holds no test.
-pub fn scan_source(file: &str, raw: &str) -> FileScan {
+pub(crate) fn scan_source(file: &str, raw: &str) -> FileScan {
     let lexed = Lexed::new(raw).unwrap_or_default();
     let (items, functions) = (lexed.items(), lexed.functions());
     let test = |item: &Item| {

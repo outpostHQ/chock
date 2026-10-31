@@ -62,7 +62,9 @@ fn verified(out: &exec::Output, asked: &BTreeSet<String>) -> BTreeSet<String> {
     summaries
         .iter()
         .filter(|held| asked.contains(&held.name))
-        .filter(|held| proof::findings(std::slice::from_ref(*held), false).is_empty())
+        .filter(|held| {
+            proof::findings(std::slice::from_ref(*held), proof::Cover::Optional).is_empty()
+        })
         .map(|held| held.name.clone())
         .collect()
 }
@@ -83,9 +85,9 @@ fn verdict(
         .iter()
         .filter(|held| asked.contains(&held.name))
         .collect();
-    let failed = ran
-        .iter()
-        .find(|held| !proof::findings(std::slice::from_ref(**held), false).is_empty());
+    let failed = ran.iter().find(|held| {
+        !proof::findings(std::slice::from_ref(**held), proof::Cover::Optional).is_empty()
+    });
     Ok(match (failed, ran.is_empty()) {
         (Some(held), _) => Outcome::Killed(held.name.clone()),
         (None, false) => Outcome::Verified,
@@ -229,10 +231,6 @@ impl Tally {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -252,8 +250,8 @@ VERIFICATION:- SUCCESSFUL
         names.iter().map(|name| (*name).to_string()).collect()
     }
 
-    fn ran(stdout: &str, code: i32) -> Result<exec::Output, exec::ExecError> {
-        Ok(exec::Output::of(Some(code), stdout, ""))
+    fn ran(stdout: &str, code: i32) -> exec::Output {
+        exec::Output::of(Some(code), stdout, "")
     }
 
     fn survivor() -> Survivor {
@@ -287,19 +285,19 @@ VERIFICATION:- SUCCESSFUL
     fn only_a_harness_chock_asked_for_and_kani_names_at_fault_kills() {
         let both = asked(&["a::fails", "a::holds"]);
         let killed = Outcome::Killed("a::fails".to_string());
-        assert_eq!(verdict(ran(RAN, 1), &both), Ok(killed));
+        assert_eq!(verdict(Ok(ran(RAN, 1)), &both), Ok(killed));
         assert_eq!(
-            verdict(ran(RAN, 1), &asked(&["a::holds"])),
+            verdict(Ok(ran(RAN, 1)), &asked(&["a::holds"])),
             Ok(Outcome::Verified)
         );
-        let other = verdict(ran(RAN, 1), &asked(&["b::other"]));
+        let other = verdict(Ok(ran(RAN, 1)), &asked(&["b::other"]));
         assert!(matches!(other, Ok(Outcome::Unchecked(_))), "{other:?}");
         let error = "warning: unused\nerror[E0308]: mismatched types\n --> src/a.rs:4:20\n";
         let summary = "error: could not compile `a` (lib) due to 1 previous error\n";
         let unbuilt = verdict(Ok(exec::Output::of(Some(101), error, summary)), &both);
         let said = "error[E0308]: mismatched types at src/a.rs:4:20".to_string();
         assert_eq!(unbuilt, Ok(Outcome::Unchecked(said)));
-        let unplaced = verdict(ran("error[E0308]: mismatched types\n", 101), &both);
+        let unplaced = verdict(Ok(ran("error[E0308]: mismatched types\n", 101)), &both);
         let said = "error[E0308]: mismatched types".to_string();
         assert_eq!(unplaced, Ok(Outcome::Unchecked(said)));
         let unsaid = verdict(Ok(exec::Output::of(Some(1), "", summary)), &both);

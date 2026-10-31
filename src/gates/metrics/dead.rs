@@ -8,6 +8,7 @@ use syn::visit::Visit;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
 
+/// The `dead` gate: private functions that nothing in the tree names.
 pub const GATE: Gate = Gate {
     name: "dead",
     about: "a function defined in this crate that nothing in it names",
@@ -55,6 +56,8 @@ fn unreached(
 
 /// Every identifier the tree mentions and how often, read from tokens so a comment is not a use.
 /// The `wrappers` gate uses it to settle that a wrapper's one call is the only use of its name.
+/// # Errors
+/// When a source cannot be read, or one that a crate compiles does not parse.
 pub fn names_in_tree(ctx: &Ctx) -> Result<BTreeMap<String, u64>, String> {
     read_tree(ctx).map(|(_, named)| named)
 }
@@ -171,6 +174,8 @@ struct Definitions {
 
 /// Whether this source hands `name` to something outside the crate: `main`, a harness or binding
 /// attribute, or a trait impl. A call graph cannot see those callers.
+/// # Errors
+/// When `src` does not parse as Rust.
 pub fn is_entry_point(src: &str, name: &str) -> Result<bool, String> {
     let file = crate::gates::metrics::prodlines::parse_rust(src)?;
     let mut look = Entry { name, found: false };
@@ -311,11 +316,6 @@ impl<'ast> Visit<'ast> for Definitions {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::testdir::Held;

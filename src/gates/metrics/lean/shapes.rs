@@ -9,7 +9,7 @@ use syn::visit::Visit;
 use syn::{Fields, GenericArgument, Item, ItemImpl, Macro, PathArguments, Type, Visibility};
 
 use super::report::Cut;
-use crate::gates::metrics::prodlines;
+use crate::gates::metrics::prodlines::{self, Code};
 
 /// A struct or a trait: its name, where it is, and a struct's field names in order of name.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +28,7 @@ type Impls = BTreeMap<String, Vec<Option<String>>>;
 /// What the production code of every file defines, and the types and the impls of all code,
 /// test code included.
 #[derive(Debug, Default)]
-pub struct Seen {
+pub(crate) struct Seen {
     structs: Vec<Named>,
     traits: Vec<Named>,
     types: BTreeSet<String>,
@@ -122,9 +122,9 @@ fn field_names(fields: &Fields) -> Vec<String> {
 }
 
 impl Seen {
-    /// Reads one file; `test` is a file of test code. A production file whose every item is a
-    /// `pub use` is a re-export module, unless it is `lib.rs`, the crate's interface.
-    pub fn read(&mut self, shown: &str, src: &str, test: bool) {
+    /// Reads one file of `code`. A production file whose every item is a `pub use` is a
+    /// re-export module, unless it is `lib.rs`, the crate's interface.
+    pub(crate) fn read(&mut self, shown: &str, src: &str, code: Code) {
         let Ok(file) = prodlines::parse_rust(src) else {
             return;
         };
@@ -133,30 +133,28 @@ impl Seen {
             _ => false,
         };
         let only_uses = !file.items.is_empty() && file.items.iter().all(public);
-        if only_uses && !test && !shown.ends_with("lib.rs") {
+        if only_uses && code == Code::Production && !shown.ends_with("lib.rs") {
             self.reexports.push(shown.to_string());
         }
         Macros(&mut self.impls).visit_file(&file);
-        let gated = test || prodlines::is_test_gated(&file.attrs);
-        self.items(&file.items, shown, gated);
+        self.items(&file.items, shown, code.within(&file.attrs));
     }
 
-    fn items(&mut self, items: &[Item], shown: &str, test: bool) {
+    fn items(&mut self, items: &[Item], shown: &str, code: Code) {
         for item in items {
             self.types.extend(declared(item));
             match item {
-                Item::Struct(it) if !test => {
+                Item::Struct(it) if code == Code::Production => {
                     let fields = field_names(&it.fields);
                     (self.structs).push(place(&it.ident.to_string(), shown, it, fields));
                 }
-                Item::Trait(it) if !test => {
+                Item::Trait(it) if code == Code::Production => {
                     (self.traits).push(place(&it.ident.to_string(), shown, it, Vec::new()));
                 }
-                Item::Impl(it) => self.implemented(it, shown, test),
+                Item::Impl(it) => self.implemented(it, shown, code),
                 Item::Mod(it) => {
                     let inner = it.content.as_ref().map(|(_, items)| items.as_slice());
-                    let gated = test || prodlines::is_test_gated(&it.attrs);
-                    self.items(inner.unwrap_or_default(), shown, gated);
+                    self.items(inner.unwrap_or_default(), shown, code.within(&it.attrs));
                 }
                 _ => {}
             }
@@ -165,7 +163,7 @@ impl Seen {
 
     /// Keeps what the trait's impl is for, which is no one type where the impl is generic, and
     /// keeps a production `impl From<A> for B`.
-    fn implemented(&mut self, node: &ItemImpl, shown: &str, test: bool) {
+    fn implemented(&mut self, node: &ItemImpl, shown: &str, code: Code) {
         let path = node.trait_.as_ref().map(|(path, _)| path);
         let Some((path, last)) = path.and_then(|it| Some((it, it.segments.last()?))) else {
             return;
@@ -174,7 +172,7 @@ impl Seen {
         let impls = self.impls.entry(last.ident.to_string()).or_default();
         impls.push(one);
         if last.ident == "From"
-            && !test
+            && code == Code::Production
             && let (Some(from), Some(into)) = (first_argument(path), named(&node.self_ty))
         {
             (self.conversions).push((from, place(&into, shown, node, Vec::new())));
@@ -182,7 +180,7 @@ impl Seen {
     }
 
     /// Each estimate with its file. `lines` gives a re-export module's length.
-    pub fn cuts(&self, lines: &BTreeMap<String, u64>) -> Vec<(String, Cut)> {
+    pub(crate) fn cuts(&self, lines: &BTreeMap<String, u64>) -> Vec<(String, Cut)> {
         let mut cuts = Vec::new();
         for shown in &self.reexports {
             let whole = lines.get(shown).copied().unwrap_or(0);
@@ -247,11 +245,6 @@ fn place(name: &str, shown: &str, node: &impl Spanned, fields: Vec<String>) -> N
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -260,8 +253,16 @@ mod tests {
         let mut seen = Seen::default();
         let mut lines = BTreeMap::new();
         for (shown, src) in files {
-            seen.read(shown, src, shown.starts_with("tests/"));
-            lines.insert((*shown).to_string(), src.lines().count() as u64);
+            let code = if shown.starts_with("tests/") {
+                Code::Test
+            } else {
+                Code::Production
+            };
+            seen.read(shown, src, code);
+            lines.insert(
+                (*shown).to_string(),
+                u64::try_from(src.lines().count()).unwrap_or(u64::MAX),
+            );
         }
         seen.cuts(&lines)
     }
@@ -286,11 +287,20 @@ mod tests {
 
     #[test]
     fn a_private_use_another_item_an_empty_file_or_a_lib_rs_is_not_a_reexport_module() {
-        assert!(kinds(&[("src/a.rs", "pub use crate::a::A;\nuse crate::b::B;\n")]).is_empty());
-        assert!(kinds(&[("src/a.rs", "pub use crate::a::A;\nfn f() {}\n")]).is_empty());
-        assert!(kinds(&[("src/a.rs", "// nothing\n")]).is_empty());
-        assert!(kinds(&[("src/lib.rs", "pub use crate::a::A;\n")]).is_empty());
-        assert!(kinds(&[("src/a.rs", "pub use crate::a::A;\nfn broken( {\n")]).is_empty());
+        assert_eq!(
+            kinds(&[("src/a.rs", "pub use crate::a::A;\nuse crate::b::B;\n")]),
+            []
+        );
+        assert_eq!(
+            kinds(&[("src/a.rs", "pub use crate::a::A;\nfn f() {}\n")]),
+            []
+        );
+        assert_eq!(kinds(&[("src/a.rs", "// nothing\n")]), []);
+        assert_eq!(kinds(&[("src/lib.rs", "pub use crate::a::A;\n")]), []);
+        assert_eq!(
+            kinds(&[("src/a.rs", "pub use crate::a::A;\nfn broken( {\n")]),
+            []
+        );
     }
 
     #[test]
@@ -316,15 +326,15 @@ mod tests {
     #[test]
     fn a_trait_with_no_impl_two_impls_a_generic_impl_or_a_test_impl_is_not_named() {
         let shape = "trait Shape {}\n";
-        assert!(kinds(&[("src/a.rs", shape)]).is_empty());
+        assert_eq!(kinds(&[("src/a.rs", shape)]), []);
         let two =
             "trait Shape {}\nstruct A;\nstruct B;\nimpl Shape for A {}\nimpl Shape for B {}\n";
-        assert!(kinds(&[("src/a.rs", two)]).is_empty());
+        assert_eq!(kinds(&[("src/a.rs", two)]), []);
         let generic = "trait Shape {}\nstruct T;\nimpl<T: Clone> Shape for T {}\n";
-        assert!(kinds(&[("src/a.rs", generic)]).is_empty());
+        assert_eq!(kinds(&[("src/a.rs", generic)]), []);
         let mock = "trait Shape {}\nstruct A;\nimpl Shape for A {}\n#[cfg(test)]\nmod tests {\n    \
                     struct Mock;\n    impl super::Shape for Mock {}\n}\n";
-        assert!(kinds(&[("src/a.rs", mock)]).is_empty());
+        assert_eq!(kinds(&[("src/a.rs", mock)]), []);
     }
 
     /// One trait with one impl for a type of the tree, which `single_impl_trait` names at line 1.
@@ -339,7 +349,7 @@ mod tests {
     fn an_impl_in_a_file_of_test_code_is_an_impl_and_the_file_declares_nothing_to_remove() {
         assert!(named_at_line_one(&[("src/a.rs", SHAPE)]));
         let fake = "struct Fake;\nimpl crate::Shape for Fake {}\n";
-        assert!(kinds(&[("src/a.rs", SHAPE), ("tests/fake.rs", fake)]).is_empty());
+        assert_eq!(kinds(&[("src/a.rs", SHAPE), ("tests/fake.rs", fake)]), []);
         let own = "pub trait Probe {}\npub struct One;\nimpl Probe for One {}\n";
         assert!(named_at_line_one(&[
             ("src/a.rs", SHAPE),
@@ -403,9 +413,9 @@ mod tests {
     #[test]
     fn a_trait_declared_in_test_code_is_not_named() {
         let gated = "#[cfg(test)]\nmod tests {\n    trait Shape {}\n    impl Shape for A {}\n}\n";
-        assert!(kinds(&[("src/a.rs", gated)]).is_empty());
+        assert_eq!(kinds(&[("src/a.rs", gated)]), []);
         let whole = "#![cfg(test)]\ntrait Shape {}\nimpl Shape for A {}\n";
-        assert!(kinds(&[("src/a.rs", whole)]).is_empty());
+        assert_eq!(kinds(&[("src/a.rs", whole)]), []);
     }
 
     const POINT: &str = "pub struct Point {\n    pub x: u32,\n    pub y: u32,\n}\n";
@@ -435,16 +445,16 @@ mod tests {
     fn a_struct_with_other_fields_one_field_or_no_from_is_not_a_mirror() {
         let from = "impl From<Point> for Dot {}\n";
         let other = format!("struct Dot {{\n    x: u32,\n    z: u32,\n}}\n{from}");
-        assert!(kinds(&[("src/a.rs", POINT), ("src/b.rs", &other)]).is_empty());
+        assert_eq!(kinds(&[("src/a.rs", POINT), ("src/b.rs", &other)]), []);
         let one = format!(
             "struct One {{ x: u32 }}\nstruct Dot {{ x: u32 }}\n{}",
             from.replace("Point", "One")
         );
-        assert!(kinds(&[("src/b.rs", &one)]).is_empty());
+        assert_eq!(kinds(&[("src/b.rs", &one)]), []);
         let none = "struct Dot {\n    x: u32,\n    y: u32,\n}\n";
-        assert!(kinds(&[("src/a.rs", POINT), ("src/b.rs", none)]).is_empty());
+        assert_eq!(kinds(&[("src/a.rs", POINT), ("src/b.rs", none)]), []);
         let tuple = format!("struct Dot(u32, u32);\n{from}");
-        assert!(kinds(&[("src/a.rs", POINT), ("src/b.rs", &tuple)]).is_empty());
+        assert_eq!(kinds(&[("src/a.rs", POINT), ("src/b.rs", &tuple)]), []);
     }
 
     #[test]
@@ -452,20 +462,20 @@ mod tests {
         let dot = "struct Dot {\n    x: u32,\n    y: u32,\n}\n";
         let gated =
             format!("{dot}#[cfg(test)]\nmod tests {{\n    impl From<Point> for Dot {{}}\n}}\n");
-        assert!(kinds(&[("src/a.rs", POINT), ("src/b.rs", &gated)]).is_empty());
+        assert_eq!(kinds(&[("src/a.rs", POINT), ("src/b.rs", &gated)]), []);
         let own = format!("{dot}impl From<Dot> for Dot {{}}\n");
-        assert!(kinds(&[("src/b.rs", &own)]).is_empty());
+        assert_eq!(kinds(&[("src/b.rs", &own)]), []);
         let borrowed = format!("{dot}impl From<&Point> for Dot {{}}\n");
-        assert!(kinds(&[("src/a.rs", POINT), ("src/b.rs", &borrowed)]).is_empty());
+        assert_eq!(kinds(&[("src/a.rs", POINT), ("src/b.rs", &borrowed)]), []);
         let lifetime = format!("{dot}impl From<Wrap<'static>> for Dot {{}}\n");
-        assert!(kinds(&[("src/a.rs", POINT), ("src/b.rs", &lifetime)]).is_empty());
+        assert_eq!(kinds(&[("src/a.rs", POINT), ("src/b.rs", &lifetime)]), []);
     }
 
     #[test]
     fn a_struct_declared_only_in_test_code_is_not_the_mirror_a_production_from_builds() {
         let built = "impl From<Point> for Dot {}\n#[cfg(test)]\nmod tests {\n    \
                      struct Dot {\n        x: u32,\n        y: u32,\n    }\n}\n";
-        assert!(kinds(&[("src/a.rs", POINT), ("src/b.rs", built)]).is_empty());
+        assert_eq!(kinds(&[("src/a.rs", POINT), ("src/b.rs", built)]), []);
     }
 
     #[test]

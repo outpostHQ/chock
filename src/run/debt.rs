@@ -1,8 +1,11 @@
 //! The debt a project's baseline holds, largest first, with what to do about each kind.
 
+use std::fmt::Write as _;
+
 use serde::Serialize;
 
 use crate::run::baseline::Baseline;
+use crate::run::report::Format;
 
 /// How many of a gate's largest records are listed; the rest are counted.
 const SHOWN: usize = 5;
@@ -10,18 +13,24 @@ const SHOWN: usize = 5;
 /// One gate's recorded debt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Debt {
+    /// The gate that holds the debt.
     pub gate: String,
+    /// What the gate counts, such as `orphan module file(s)`.
     pub unit: String,
+    /// The sum of every record.
     pub total: u64,
     /// Every record above zero, largest first.
     pub items: Vec<Held>,
+    /// What to do about this kind of debt, where chock knows.
     pub fix: Option<&'static str>,
 }
 
 /// One record: a file, or a file and the function or lint inside it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Held {
+    /// The file, or the file and the function or lint, as the baseline keys it.
     pub key: String,
+    /// The number the baseline holds for it.
     pub count: u64,
 }
 
@@ -61,22 +70,23 @@ pub fn render(owed: &[Debt]) -> String {
         "Debt on record. A commit that measures less lowers the record and keeps it lower.\n"
             .to_string();
     for debt in owed {
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "\n{} — {} {} in {} place(s)\n",
             debt.gate,
             debt.total,
             debt.unit,
             debt.items.len()
-        ));
+        );
         for held in debt.items.iter().take(SHOWN) {
-            out.push_str(&format!("  {}: {}\n", held.key, held.count));
+            let _ = writeln!(out, "  {}: {}", held.key, held.count);
         }
         let more = debt.items.len().saturating_sub(SHOWN);
         if more > 0 {
-            out.push_str(&format!("  and {more} more\n"));
+            let _ = writeln!(out, "  and {more} more");
         }
         if let Some(fix) = debt.fix {
-            out.push_str(&format!("  fix: {fix}\n"));
+            let _ = writeln!(out, "  fix: {fix}");
         }
     }
     out
@@ -93,11 +103,13 @@ fn on_record(root: &std::path::Path) -> Result<Vec<Debt>, String> {
 }
 
 /// The debt recorded under `root`, rendered for a person or, with `json`, for an agent.
-pub fn shown(root: &std::path::Path, json: bool) -> Result<String, String> {
+/// # Errors
+/// When a baseline under `root` does not read.
+pub fn shown(root: &std::path::Path, format: Format) -> Result<String, String> {
     let owed = on_record(root)?;
-    Ok(match json {
-        true => format!("{}\n", render_json(&owed)),
-        false => render(&owed),
+    Ok(match format {
+        Format::Json => format!("{}\n", render_json(&owed)),
+        Format::Text => render(&owed),
     })
 }
 
@@ -112,10 +124,6 @@ pub fn render_json(owed: &[Debt]) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::run::baseline::Series;
@@ -169,24 +177,27 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_record_on_disk_is_shown_to_a_person_or_an_agent_and_an_unreadable_one_is_refused() {
         let dir = crate::testdir::make("debt-shown");
-        assert_eq!(shown(&dir, false).unwrap(), "The baseline holds no debt.\n");
-        assert_eq!(shown(&dir, true).unwrap(), "{\"debt\":[]}\n");
+        assert_eq!(
+            shown(&dir, Format::Text).unwrap(),
+            "The baseline holds no debt.\n"
+        );
+        assert_eq!(shown(&dir, Format::Json).unwrap(), "{\"debt\":[]}\n");
         let file = dir.join(crate::run::baseline::FILE);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         let held = holding("slop", &[("src/a.rs", 2)]);
         crate::project::document::write(&file, &crate::project::document::render(&held)).unwrap();
-        let told = shown(&dir, false).unwrap();
+        let told = shown(&dir, Format::Text).unwrap();
         assert!(
             told.contains("slop — 2 over-long comment block(s) in 1 place(s)"),
             "{told}"
         );
         assert!(
-            shown(&dir, true)
+            shown(&dir, Format::Json)
                 .unwrap()
                 .starts_with(r#"{"debt":[{"gate":"slop""#)
         );
         std::fs::write(&file, "not json").unwrap();
-        assert!(shown(&dir, false).is_err());
+        assert!(shown(&dir, Format::Text).is_err());
     }
 
     #[test]
@@ -197,7 +208,7 @@ mod tests {
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         let record = r#"{"entries":[{"file":"src/a.rs","function":"parse","line":1,"crap":42.4}]}"#;
         std::fs::write(&file, record).unwrap();
-        let told = shown(&dir, false).unwrap();
+        let told = shown(&dir, Format::Text).unwrap();
         assert!(
             told.contains(
                 "crap — 1 function(s) over CRAP 30 in 1 place(s)\n  src/a.rs: parse: 42\n"
@@ -205,7 +216,7 @@ mod tests {
             "{told}"
         );
         std::fs::write(&file, "not json").unwrap();
-        let why = shown(&dir, false).unwrap_err();
+        let why = shown(&dir, Format::Text).unwrap_err();
         assert!(why.contains("a report chock cannot read"), "{why}");
     }
 

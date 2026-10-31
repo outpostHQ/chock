@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
+use std::path::Path;
 
 use crate::gates::metrics::prodlines;
 use crate::gates::metrics::testlint::finding;
@@ -11,6 +12,7 @@ use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Inspection, Kind};
 use crate::tokens::{Item, Lexed, Tok};
 
+/// The `claims` gate: Markdown that cites a stale line or calls a present thing absent.
 pub const GATE: Gate = Gate {
     name: "claims",
     about: "a document citing a line past the end of its file, or naming as absent a thing the tree holds, per file and rule",
@@ -141,7 +143,10 @@ fn inspect(ctx: &Ctx) -> Result<Inspection, String> {
     let files: Vec<String> = shown.collect();
     let mut tree = Tree::of(files.iter().map(String::as_str));
     let mut docs = Vec::new();
-    for file in files.iter().filter(|file| file.ends_with(".md")) {
+    for file in files
+        .iter()
+        .filter(|file| Path::new(file).extension().is_some_and(|ext| ext == "md"))
+    {
         let text = std::fs::read_to_string(ctx.root.join(file));
         docs.push((file, read(&text.map_err(|e| format!("{file}: {e}"))?)));
     }
@@ -391,20 +396,25 @@ fn definitions(src: &str) -> Vec<(String, &'static str, usize)> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::testdir::Held;
 
-    fn cited(line: usize, path: &str, last: Option<usize>, foreign: bool) -> Anchor {
+    /// Which tree a cited anchor is about.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Side {
+        /// This tree.
+        Own,
+        /// Another tree, under `<!-- doc-check: foreign -->`.
+        Foreign,
+    }
+
+    fn cited(line: usize, path: &str, last: Option<usize>, side: Side) -> Anchor {
         Anchor {
             line,
             path: path.to_string(),
             last,
-            foreign,
+            foreign: side == Side::Foreign,
         }
     }
 
@@ -454,8 +464,8 @@ mod tests {
         assert_eq!(
             claims.anchors,
             [
-                cited(1, "src/a.rs", Some(9), false),
-                cited(1, "b.toml", None, false)
+                cited(1, "src/a.rs", Some(9), Side::Own),
+                cited(1, "b.toml", None, Side::Own)
             ]
         );
         assert_eq!(
@@ -487,7 +497,7 @@ mod tests {
     fn a_fenced_block_and_a_directive_in_a_code_span_claim_nothing() {
         let text = "```sh\ncat `src/a.rs:9`\n<!-- absent: Evidence -->\n  ```\nUse `<!-- absent: Décision -->` to claim it; see `src/b.rs:3`.\n";
         let claims = read(text);
-        assert_eq!(claims.anchors, [cited(5, "src/b.rs", Some(3), false)]);
+        assert_eq!(claims.anchors, [cited(5, "src/b.rs", Some(3), Side::Own)]);
         assert_eq!((claims.absent, claims.wrong), (Vec::new(), Vec::new()));
         assert_eq!(masked("é `é` <!--"), "é `  ` <!--");
     }
@@ -498,11 +508,11 @@ mod tests {
         assert_eq!(
             read(text).anchors,
             [
-                cited(2, "engine/push.rs", Some(994), true),
-                cited(4, "engine/push.rs", Some(994), false),
-                cited(5, "src/a.rs", Some(1), false),
-                cited(6, "src/b.rs", Some(2), false),
-                cited(7, "src/c.rs", Some(3), false),
+                cited(2, "engine/push.rs", Some(994), Side::Foreign),
+                cited(4, "engine/push.rs", Some(994), Side::Own),
+                cited(5, "src/a.rs", Some(1), Side::Own),
+                cited(6, "src/b.rs", Some(2), Side::Own),
+                cited(7, "src/c.rs", Some(3), Side::Own),
             ]
         );
     }
@@ -587,13 +597,13 @@ mod tests {
             format!("docs/plan.md:7: stale-doc-anchor: `core/src/push.rs:{cited}` — {what}")
         };
         let found = stale_among(&[
-            cited(7, "core/src/push.rs", Some(121), false),
-            cited(7, "core/src/push.rs", Some(120), false),
-            cited(7, "core/src/push.rs", None, false),
-            cited(7, "push.rs", Some(500), false),
-            cited(7, "gates/run.rs", Some(500), false),
-            cited(7, "data/blob.json", Some(500), false),
-            cited(7, "core/src/push.rs", Some(500), false),
+            cited(7, "core/src/push.rs", Some(121), Side::Own),
+            cited(7, "core/src/push.rs", Some(120), Side::Own),
+            cited(7, "core/src/push.rs", None, Side::Own),
+            cited(7, "push.rs", Some(500), Side::Own),
+            cited(7, "gates/run.rs", Some(500), Side::Own),
+            cited(7, "data/blob.json", Some(500), Side::Own),
+            cited(7, "core/src/push.rs", Some(500), Side::Own),
         ]);
         assert_eq!(found, [stale(121), stale(500)]);
     }
@@ -601,14 +611,14 @@ mod tests {
     #[test]
     fn a_line_about_another_tree_is_checked_only_where_it_cites_a_path_from_the_root() {
         let found = stale_among(&[
-            cited(3, "engine/merge.rs", Some(9), false),
-            cited(3, "core/src/push.rs", Some(500), false),
-            cited(3, "crates/core/src/push.rs", Some(501), false),
-            cited(4, "core/src/push.rs", Some(502), true),
-            cited(4, "crates/core/src/push.rs", Some(503), true),
-            cited(5, "core/src/push.rs", Some(504), false),
-            cited(6, "src/push.rs", Some(505), false),
-            cited(6, "crates/core/src/push.rs", Some(120), false),
+            cited(3, "engine/merge.rs", Some(9), Side::Own),
+            cited(3, "core/src/push.rs", Some(500), Side::Own),
+            cited(3, "crates/core/src/push.rs", Some(501), Side::Own),
+            cited(4, "core/src/push.rs", Some(502), Side::Foreign),
+            cited(4, "crates/core/src/push.rs", Some(503), Side::Foreign),
+            cited(5, "core/src/push.rs", Some(504), Side::Own),
+            cited(6, "src/push.rs", Some(505), Side::Own),
+            cited(6, "crates/core/src/push.rs", Some(120), Side::Own),
         ]);
         let stale = |line: u8, cited: &str| {
             let what = "crates/core/src/push.rs has 120 lines; the code it named moved";

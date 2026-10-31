@@ -6,6 +6,7 @@ use crate::project::workspace::{Dependency, Metadata};
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Inspection, Kind};
 
+/// Counts the dependencies whose version or revision can still move.
 pub const GATE: Gate = Gate {
     name: "manifest",
     about: "every dependency names an immutable version or revision",
@@ -33,6 +34,8 @@ fn inspect(ctx: &Ctx) -> Result<Inspection, String> {
 
 /// The unpinned dependencies of workspace members, read from `cargo metadata` rather than the TOML
 /// so inline tables, `[dependencies.x]` sections and workspace inheritance arrive resolved.
+/// # Errors
+/// Returns `Err` when the `cargo metadata` text does not parse.
 pub fn faults(metadata_json: &str) -> Result<Vec<Finding>, String> {
     let metadata: Metadata = serde_json::from_str(metadata_json)
         .map_err(|e| format!("cargo metadata produced something unreadable: {e}"))?;
@@ -95,10 +98,6 @@ pub fn pinned_to_a_revision(source: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

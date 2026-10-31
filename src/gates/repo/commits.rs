@@ -4,6 +4,7 @@
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
 
+/// The `commits` gate: the shape of each unpushed commit message.
 pub const GATE: Gate = Gate {
     name: "commits",
     about: "every commit not yet upstream has a subject that fits and a body that is not an essay",
@@ -25,8 +26,11 @@ pub const WIDTH: usize = 72;
 /// The message limits a project allows; chock's numbers are only the default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
+    /// The most characters a subject line may hold.
     pub subject: usize,
+    /// The most non-blank lines below the subject.
     pub body: usize,
+    /// The most characters a line below the subject may hold.
     pub width: usize,
 }
 
@@ -82,6 +86,7 @@ fn abbreviated(commit: &str) -> String {
     commit.to_string()
 }
 
+/// What is wrong with the shape of one commit's message, each fault naming the short hash.
 #[must_use]
 pub fn faults(commit: &str, message: &str, limits: Limits) -> Vec<Finding> {
     let short = abbreviated(commit);
@@ -140,10 +145,6 @@ pub fn faults(commit: &str, message: &str, limits: Limits) -> Vec<Finding> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

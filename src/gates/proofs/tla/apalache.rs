@@ -189,7 +189,7 @@ pub(super) fn checking(
     settings: &Tla,
     cfg: &Cfg,
     out: &Path,
-    args: Vec<String>,
+    extra: Vec<String>,
 ) -> Run {
     let mut argv: Vec<String> = ["-Xmx4g", "-jar"].map(String::from).to_vec();
     argv.push(jar.to_string_lossy().into_owned());
@@ -200,7 +200,7 @@ pub(super) fn checking(
     ]);
     let encoding = settings.smt_encoding.get(&cfg.model);
     argv.extend(encoding.map(|it| format!("--smt-encoding={it}")));
-    argv.extend(args);
+    argv.extend(extra);
     argv.push(format!("{}.tla", cfg.model));
     Run {
         dir: cfg.dir.clone(),
@@ -264,10 +264,6 @@ fn apalache_error(text: &str, code: Option<i32>) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use std::collections::BTreeSet;
 

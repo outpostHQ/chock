@@ -11,10 +11,15 @@ use proc_macro2::{Delimiter, Spacing, Span, TokenStream, TokenTree};
 /// differ.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Tok {
+    /// A word: a keyword or a name.
     Ident(String),
+    /// A punctuation mark, and whether the next token touches it.
     Punct(char, bool),
+    /// A string, number or character literal, as written.
     Literal(String),
+    /// The opening `(`, `[` or `{` of a group.
     Open(char),
+    /// The closing `)`, `]` or `}` of a group.
     Close(char),
 }
 
@@ -22,6 +27,7 @@ pub enum Tok {
 /// never read as code.
 #[derive(Clone, Debug, Default)]
 pub struct Lexed {
+    /// The tokens in file order.
     pub toks: Vec<Tok>,
     /// The 1-based line each token starts on.
     pub line: Vec<usize>,
@@ -35,12 +41,18 @@ pub struct Lexed {
 /// token past the attributes, and the token that ends the item.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Item {
+    /// The `#` of the first written attribute.
     pub first: usize,
+    /// The first token past the attributes.
     pub head: usize,
+    /// The token that ends the item.
     pub end: usize,
 }
 
 impl Lexed {
+    /// Lexes `source` into tokens with their lines, byte ranges and partners.
+    /// # Errors
+    /// When `source` does not lex as Rust tokens.
     pub fn new(source: &str) -> Result<Self, String> {
         let stream = TokenStream::from_str(source).map_err(|e| format!("does not lex: {e}"))?;
         let mut out = Self::default();
@@ -87,6 +99,7 @@ impl Lexed {
         }
     }
 
+    /// Whether the token at `i` is the punctuation mark `c`.
     #[must_use]
     pub fn is_punct(&self, i: usize, c: char) -> bool {
         matches!(self.toks.get(i), Some(Tok::Punct(p, _)) if *p == c)
@@ -98,6 +111,7 @@ impl Lexed {
         self.ident(i) == name && self.is_punct(i + 1, '!')
     }
 
+    /// Whether the token at `i` opens a group with `c`.
     #[must_use]
     pub fn opens(&self, i: usize, c: char) -> bool {
         self.toks.get(i) == Some(&Tok::Open(c))
@@ -198,6 +212,8 @@ fn delimiters(delimiter: Delimiter) -> (char, char) {
 }
 
 /// The tokens of a source file, places dropped.
+/// # Errors
+/// When `source` does not lex as Rust tokens.
 pub fn lex(source: &str) -> Result<Vec<Tok>, String> {
     Lexed::new(source).map(|lexed| lexed.toks)
 }
@@ -234,15 +250,24 @@ pub enum Verdict {
     /// Not one token moved: only `//` comments and blank lines changed.
     Clean,
     /// Only `///` and `//!` text changed.
-    DocsOnly { removed: usize, added: usize },
+    DocsOnly {
+        /// How many doc runs the change took away.
+        removed: usize,
+        /// How many doc runs the change put in.
+        added: usize,
+    },
     /// Code changed. `at` is the index of the first token that differs, doc comments left out.
     CodeChanged {
+        /// The index of the first token that differs.
         at: usize,
+        /// The token at `at` before the change, or `None` past the end.
         before: Option<Tok>,
+        /// The token at `at` after the change, or `None` past the end.
         after: Option<Tok>,
     },
 }
 
+/// What changed from `before` to `after`: nothing, only doc comments, or code.
 #[must_use]
 pub fn classify(before: &[Tok], after: &[Tok]) -> Verdict {
     if before == after {
@@ -302,10 +327,6 @@ pub fn describe(tok: Option<&Tok>) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

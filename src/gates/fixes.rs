@@ -38,6 +38,7 @@ fn tool_named(reason: &str) -> Option<&str> {
 /// rustup's words when `cargo +nightly…` finds no such toolchain on this machine.
 const NO_NIGHTLY: [&str; 2] = ["toolchain 'nightly", "is not installed"];
 
+/// Whether rustup said that no nightly toolchain is installed.
 #[must_use]
 pub fn no_nightly(said: &str) -> bool {
     NO_NIGHTLY.iter().all(|part| said.contains(part))

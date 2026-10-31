@@ -6,7 +6,7 @@ use super::{Ctx, Gate, Told, in_turn};
 
 /// With jobs for two lanes or more, the gates that compile, in the lanes `lanes_of` plans.
 /// Otherwise every slot stays empty.
-pub(super) fn in_lanes(gates: &[&Gate], ctx: &Ctx, told: Told) -> Vec<Option<GateReport>> {
+pub(super) fn in_lanes(gates: &[&Gate], ctx: &Ctx, told: Told<'_>) -> Vec<Option<GateReport>> {
     let room = room(crate::exec::budget::available_mb().unwrap_or(0));
     let lanes = lanes_of(gates, ctx, &recorded_peaks(&ctx.root), room);
     let width = crate::exec::budget::lanes(ctx.jobs, lanes.len());
@@ -36,6 +36,11 @@ pub(super) fn lanes_of(
         .filter(|(_, gate)| gate.builds)
         .map(|(at, _)| at)
         .partition(|&at| crate::gates::builds_apart(gates[at].name, &ctx.build));
+    let proofs = if ctx.mutest_proofs {
+        crate::gates::MutestProofs::On
+    } else {
+        crate::gates::MutestProofs::Off
+    };
     let peak = |at: &usize| {
         peaks
             .iter()
@@ -45,7 +50,7 @@ pub(super) fn lanes_of(
     let alone = alone(
         &beside,
         &apart,
-        &|at| crate::gates::builds_alone(gates[at].name, ctx.mutest_proofs),
+        &|at| crate::gates::builds_alone(gates[at].name, proofs),
         &peak,
         room,
     );
@@ -123,10 +128,6 @@ pub(crate) fn recorded_tests(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
     use crate::run::report::Verdict;

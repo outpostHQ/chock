@@ -43,7 +43,7 @@ const RUSTC_LINTS: [&str; 5] = [
 ];
 
 /// Two clippy groups, then lints outside every group, which only a lint table turns on.
-const CLIPPY_LINTS: [&str; 12] = [
+const CLIPPY_LINTS: [&str; 14] = [
     "all",
     "pedantic",
     "unwrap_used",
@@ -56,6 +56,8 @@ const CLIPPY_LINTS: [&str; 12] = [
     "todo",
     "print_stdout",
     "print_stderr",
+    "panic_in_result_fn",
+    "as_conversions",
 ];
 
 /// Pedantic lints the floor names. The `pedantic` group meets each one, unless the table lowers
@@ -240,10 +242,6 @@ pub(super) fn clippy_config(sources: &Sources, review: &mut Review) -> Result<()
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::super::review;
     use super::*;
@@ -268,7 +266,9 @@ mod tests {
         dbg_macro = \"deny\"\n\
         todo = \"deny\"\n\
         print_stdout = \"deny\"\n\
-        print_stderr = \"deny\"\n";
+        print_stderr = \"deny\"\n\
+        panic_in_result_fn = \"deny\"\n\
+        as_conversions = \"deny\"\n";
 
     /// The item of each gap in a lint table that sets nothing, in the order the gate names them.
     const EVERY_LINT: &str = "rust::missing_docs rust::missing_debug_implementations \
@@ -276,7 +276,8 @@ mod tests {
         clippy::pedantic clippy::unwrap_used clippy::allow_attributes \
         clippy::allow_attributes_without_reason clippy::undocumented_unsafe_blocks \
         clippy::multiple_unsafe_ops_per_block clippy::clone_on_ref_ptr clippy::dbg_macro \
-        clippy::todo clippy::print_stdout clippy::print_stderr";
+        clippy::todo clippy::print_stdout clippy::print_stderr clippy::panic_in_result_fn \
+        clippy::as_conversions";
 
     /// One crate whose manifest is `manifest`, with a clippy config at zero, held as `floor` says.
     fn crate_of(manifest: &str, floor: Floor) -> Sources {
@@ -381,6 +382,23 @@ mod tests {
             format!("{FLOOR}module_name_repetitions = \"allow\"\nmust-use-candidate = \"allow\"\n");
         assert_eq!(
             gaps_in(&crate_of(&allowed, Floor::Enforced)),
+            Vec::<String>::new()
+        );
+    }
+
+    /// Both are restriction lints outside every group, so only the table turns them on: a table
+    /// without them has one gap for each, and `FLOOR`, which sets both, has none.
+    #[test]
+    fn a_table_without_panic_in_result_fn_or_as_conversions_has_one_gap_for_each() {
+        let without = FLOOR
+            .replace("panic_in_result_fn = \"deny\"\n", "")
+            .replace("as_conversions = \"deny\"\n", "");
+        assert_eq!(
+            gaps_in(&crate_of(&without, Floor::Enforced)),
+            ["clippy::panic_in_result_fn", "clippy::as_conversions"]
+        );
+        assert_eq!(
+            gaps_in(&crate_of(FLOOR, Floor::Enforced)),
             Vec::<String>::new()
         );
     }

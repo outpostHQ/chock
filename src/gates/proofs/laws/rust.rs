@@ -98,7 +98,7 @@ pub(super) fn harnesses(lexed: &Lexed) -> Vec<Law> {
         }
         let keyword = (item.head..item.end).find(|i| lexed.ident(*i) == "fn")?;
         let groups = attrs.iter().map(|open| *open..lexed.pair[*open] + 1);
-        let parts = groups.chain((keyword..item.end + 1).filter_map(check));
+        let parts = groups.chain((keyword..=item.end).filter_map(check));
         let texts: Vec<String> = parts.map(|range| joined(&lexed.toks[range])).collect();
         Some(Law {
             name: lexed.ident(keyword + 1).to_string(),
@@ -126,10 +126,6 @@ fn joined(toks: &[Tok]) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::gates::proofs::laws::tests::law;

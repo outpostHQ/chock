@@ -59,7 +59,8 @@ fn targets_in(root: &Path, dir: &str) -> Vec<String> {
             if !kind.is_symlink() && main.is_ok_and(|held| held.file_type().is_file()) {
                 return Some(format!("{dir}/{name}/main.rs"));
             }
-            (name.ends_with(".rs") && kind.is_file()).then(|| format!("{dir}/{name}"))
+            (Path::new(&name).extension().is_some_and(|ext| ext == "rs") && kind.is_file())
+                .then(|| format!("{dir}/{name}"))
         })
         .collect()
 }

@@ -7,6 +7,7 @@ use crate::exec;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Inspection, Kind};
 
+/// Counts shellcheck's findings in each tracked shell script, per file and check.
 pub const GATE: Gate = Gate {
     name: "shellcheck",
     about: "what shellcheck says about each shell script the repository tracks, per file and check",
@@ -127,10 +128,6 @@ fn read(out: &exec::Output) -> Result<Vec<Finding>, String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

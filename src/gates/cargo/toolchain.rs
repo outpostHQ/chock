@@ -4,6 +4,7 @@
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
 
+/// Fails a rust-toolchain file whose channel moves, such as `stable` or `nightly`.
 pub const GATE: Gate = Gate {
     name: "toolchain",
     about: "each rust-toolchain file names an exact release or a dated nightly, not a channel that \
@@ -144,10 +145,6 @@ fn exact(channel: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

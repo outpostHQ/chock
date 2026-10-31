@@ -14,9 +14,10 @@ pub(crate) fn uncommented(text: &str) -> String {
     {
         let (kept, comment) = rest.split_at(at);
         out.push_str(kept);
-        let (close, skip) = match comment.starts_with("\\*") {
-            true => ("\n", 0),
-            false => ("*)", 2),
+        let (close, skip) = if comment.starts_with("\\*") {
+            ("\n", 0)
+        } else {
+            ("*)", 2)
         };
         let body = comment.get(2..).unwrap_or_default();
         let end = body.find(close).map_or(comment.len(), |end| 2 + end + skip);
@@ -39,7 +40,7 @@ pub(crate) struct Unit {
 impl Unit {
     /// Its first word, such as `ASSUME` or the name a definition defines.
     #[must_use]
-    pub fn first(&self) -> &str {
+    pub(crate) fn first(&self) -> &str {
         words(&self.text).next().unwrap_or_default()
     }
 }

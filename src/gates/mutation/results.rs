@@ -1,7 +1,7 @@
 //! Reads survivors from the JSON mutest writes per target: parallel runs interleave its text
 //! output, so a verdict there cannot be matched to its mutation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -9,11 +9,20 @@ use serde::Deserialize;
 use super::survivors::{Edit, Span, Survivor, Totals};
 use crate::run::report::{Finding, plural};
 
+/// What chock reads of each mutation from a mutest run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Reads {
+    /// Its verdict and each test that detected it, from a run that gave every test a verdict.
+    EachTest,
+    /// Killed or not, from a run without `--exhaustive`, which names no detecting test.
+    VerdictOnly,
+}
+
 /// Where one run writes its results: a directory made for that run, so no earlier run's are read.
 pub(super) struct Results {
     directory: PathBuf,
-    /// Whether each test's detections are read, from a run that gave every test a verdict.
-    tests: bool,
+    /// What is read of each mutation.
+    reads: Reads,
     /// Whether the directory stays once read, since the project's own flags may write there.
     keep: bool,
 }
@@ -34,7 +43,7 @@ impl Results {
         std::fs::create_dir(&directory).map_err(made)?;
         Ok(Self {
             directory,
-            tests: false,
+            reads: Reads::VerdictOnly,
             keep: false,
         })
     }
@@ -43,11 +52,11 @@ impl Results {
         format!("--metadata-out-root-dir={}", self.directory.display())
     }
 
-    /// These results, reading each test's detections where `tests`, and kept where the project
-    /// passes `own` flags to mutest, since those may write there.
-    pub(super) fn reading(self, tests: bool, own: &[String]) -> Self {
+    /// These results, read as `reads` says, and kept where the project passes `own` flags to
+    /// mutest, since those may write there.
+    pub(super) fn reading(self, reads: Reads, own: &[String]) -> Self {
         Self {
-            tests,
+            reads,
             keep: !own.is_empty(),
             ..self
         }
@@ -55,28 +64,21 @@ impl Results {
 
     /// Whether each test's detections are read, so mutest must give every test a verdict.
     pub(super) fn reads_each_test(&self) -> bool {
-        self.tests
+        self.reads == Reads::EachTest
     }
 
     /// Every evaluated target's verdicts, joined per mutation, and their totals: the text mutest
     /// prints interleaves its parallel targets, so a count there can be torn.
     pub(super) fn survivors(&self) -> Result<Joined, String> {
-        let read = |path: &Path| {
-            std::fs::read_to_string(path)
-                .map_err(|error| format!("cannot read {}: {error}", path.display()))
-        };
         let (mut judged, mut totals) = (Vec::new(), None);
         let (mut tested, mut ids) = (Vec::new(), Ids::new());
-        // A target no test reaches is analysed but never evaluated, so it has no evaluation.json.
-        for evaluation in crate::project::walk(&self.directory, &|_| true, &|name, _| {
-            name == "evaluation.json"
-        })? {
+        for evaluation in self.evaluations()? {
             let mutations = read(&evaluation.with_file_name("mutations.json"))?;
             let evaluated = read(&evaluation)?;
             let target = verdicts(&mutations, &evaluated)?;
             totals = Some(counted(totals.unwrap_or_default(), &target)?);
             judged.extend(target);
-            if self.tests {
+            if self.reads == Reads::EachTest {
                 let target = self.label(&evaluation).unwrap_or_default();
                 tested.extend(tested_in(&target, &mutations, &evaluated, &mut ids)?);
             }
@@ -85,6 +87,32 @@ impl Results {
         found.tests = idle(tested);
         found.totals = totals;
         Ok(found)
+    }
+
+    /// Each mutation the run evaluated, once, under the strongest verdict any target gave it, with
+    /// the tests that killed it where each test was read.
+    pub(super) fn kills(&self) -> Result<Vec<Kill>, String> {
+        let mut joined: BTreeMap<Identity, (Mutation, Verdict, BTreeSet<String>)> = BTreeMap::new();
+        for evaluation in self.evaluations()? {
+            let mutations = read(&evaluation.with_file_name("mutations.json"))?;
+            let evaluated = read(&evaluation)?;
+            for (mutation, verdict, tests) in killed_in(&mutations, &evaluated, self.reads)? {
+                let identity = mutation.identity();
+                let held = joined
+                    .entry(identity)
+                    .or_insert((mutation, verdict, BTreeSet::new()));
+                held.1 = held.1.max(verdict);
+                held.2.extend(tests);
+            }
+        }
+        Ok(joined.into_values().filter_map(Kill::of).collect())
+    }
+
+    /// Each target's `evaluation.json`. A target no test reaches is analysed but never evaluated,
+    /// so it has none.
+    fn evaluations(&self) -> Result<Vec<PathBuf>, String> {
+        let evaluation = |name: &str, _: &Path| name == "evaluation.json";
+        crate::project::walk(&self.directory, &|_| true, &evaluation)
     }
 
     /// Each target mutest analysed, as `package/lib` or `package/tests/cli`: where it wrote mutations.
@@ -126,6 +154,49 @@ impl Results {
     }
 }
 
+fn read(path: &Path) -> Result<String, String> {
+    std::fs::read_to_string(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))
+}
+
+/// One mutation a run evaluated, under its strongest verdict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Kill {
+    pub file: String,
+    pub line: u32,
+    /// mutest's column, counted from 1.
+    pub column: u32,
+    pub operator: String,
+    pub mutation: String,
+    /// `killed`, `survived` or `timed_out`.
+    pub verdict: &'static str,
+    /// The tests that detected it or made it crash, where each test was read.
+    pub tests: Vec<String>,
+}
+
+impl Kill {
+    /// `None` for a mutation no test ran, which the run never evaluated.
+    fn of((mutation, verdict, tests): (Mutation, Verdict, BTreeSet<String>)) -> Option<Self> {
+        let verdict = match verdict {
+            Verdict::NotRun => return None,
+            Verdict::Undetected => "survived",
+            Verdict::TimedOut => "timed_out",
+            Verdict::Crashed | Verdict::Detected => "killed",
+        };
+        let column = mutation.origin_span.begin.1;
+        let held = mutation.survivor();
+        Some(Self {
+            file: held.file,
+            line: held.line,
+            column,
+            operator: held.operator,
+            mutation: held.what,
+            verdict,
+            tests: tests.into_iter().collect(),
+        })
+    }
+}
+
 /// Each mutation every target missed, and each one only a time limit stopped.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct Joined {
@@ -164,8 +235,10 @@ struct Mutations {
 
 #[derive(Deserialize)]
 struct Mutation {
-    mutation_id: u32,
-    mutation_op: String,
+    #[serde(rename = "mutation_id")]
+    id: u32,
+    #[serde(rename = "mutation_op")]
+    operator: String,
     display_name: String,
     origin_span: Span,
     /// What the mutation changes; a mutest that writes none leaves nothing to rebuild.
@@ -180,13 +253,13 @@ impl Mutation {
     fn identity(&self) -> Identity {
         let span = &self.origin_span;
         let file = span.path.replace('\\', "/");
-        let (op, what) = (self.mutation_op.clone(), self.display_name.clone());
+        let (op, what) = (self.operator.clone(), self.display_name.clone());
         (file, span.begin, span.end, op, what)
     }
 
     fn survivor(self) -> Survivor {
         Survivor {
-            operator: self.mutation_op,
+            operator: self.operator,
             file: self.origin_span.path.replace('\\', "/"),
             line: self.origin_span.begin.0,
             what: self.display_name,
@@ -254,7 +327,7 @@ fn verdicts(mutations: &str, evaluation: &str) -> Result<Vec<(Mutation, Verdict)
     let verdicts = matrix.overall_detections.as_bytes();
     let in_order = (1..)
         .zip(&mutations)
-        .all(|(id, mutation)| mutation.mutation_id == id);
+        .all(|(id, mutation)| mutation.id == id);
     if verdicts.len() != mutations.len() || !in_order {
         return Err("mutest's verdicts do not line up with its mutations".to_string());
     }
@@ -263,6 +336,40 @@ fn verdicts(mutations: &str, evaluation: &str) -> Result<Vec<(Mutation, Verdict)
         .zip(verdicts)
         .map(|(mutation, mark)| Ok((mutation, Verdict::of(*mark)?)))
         .collect()
+}
+
+/// One target's mutations, each with its verdict and, where `reads` takes each test, the tests that
+/// detected it or made it crash. A timeout kills nothing, so it names no test.
+fn killed_in(
+    mutations: &str,
+    evaluation: &str,
+    reads: Reads,
+) -> Result<Vec<(Mutation, Verdict, Vec<String>)>, String> {
+    let each = reads == Reads::EachTest;
+    let judged = verdicts(mutations, evaluation)?;
+    let (_, tests, matrix) = parsed(mutations, evaluation)?;
+    let rows = if each {
+        matrix.test_detections
+    } else {
+        Vec::new()
+    };
+    let fits = rows.iter().all(|row| row.len() == judged.len());
+    if each && (rows.len() != tests.len() || !fits) {
+        return Err("mutest's tests do not line up with their detections".to_string());
+    }
+    let killed = |at: usize| {
+        let named = tests.iter().zip(&rows);
+        let mark = |row: &String| row.as_bytes().get(at).copied();
+        let kills = |(_, row): &(&Test, &String)| matches!(mark(row), Some(b'D' | b'C'));
+        named
+            .filter(kills)
+            .map(|(test, _)| test.name.clone())
+            .collect()
+    };
+    let numbered = judged.into_iter().enumerate();
+    Ok(numbered
+        .map(|(at, (mutation, verdict))| (mutation, verdict, killed(at)))
+        .collect())
 }
 
 /// One target's mutations, its tests, and its one evaluation of them.
@@ -373,10 +480,6 @@ fn joined(judged: Vec<(Mutation, Verdict)>) -> Joined {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -464,11 +567,41 @@ mod tests {
     }
 
     #[test]
+    fn only_a_run_that_reads_each_test_refuses_tests_that_do_not_line_up() {
+        let ops = mutations(&["call_delete", "eq_op_invert"]);
+        let named = |evaluation: &str, reads| {
+            let killed = killed_in(&ops, evaluation, reads)?;
+            Ok::<_, String>(
+                killed
+                    .into_iter()
+                    .map(|(_, _, tests)| tests)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let refused = Err("mutest's tests do not line up with their detections".to_string());
+        let short = tested("DD", &[("t::a", "D")]);
+        assert_eq!(named(&short, Reads::EachTest), refused);
+        let unnamed =
+            tested("DD", &[]).replace(r#""test_detections":[]"#, r#""test_detections":["DD"]"#);
+        assert_eq!(named(&unnamed, Reads::EachTest), refused);
+        let none: Vec<String> = Vec::new();
+        assert_eq!(
+            named(&short, Reads::VerdictOnly),
+            Ok(vec![none.clone(), none.clone()])
+        );
+        let fitting = tested("DD", &[("t::a", "-D")]);
+        let by_a = vec!["t::a".to_string()];
+        assert_eq!(named(&fitting, Reads::EachTest), Ok(vec![none, by_a]));
+    }
+
+    #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_run_that_reads_each_test_names_the_idle_ones_and_keeps_its_results_if_asked() {
         let root = crate::testdir::make("mutest-results-tests");
         let own = ["--timings".to_string()];
-        let results = Results::create(&root).unwrap().reading(true, &own);
+        let results = Results::create(&root)
+            .unwrap()
+            .reading(Reads::EachTest, &own);
         let flag = results.flag();
         let directory = PathBuf::from(flag.strip_prefix("--metadata-out-root-dir=").unwrap());
         let at = directory.join("fixture").join("lib");
@@ -479,7 +612,7 @@ mod tests {
         std::fs::write(at.join("evaluation.json"), tested("D-", &rows)).unwrap();
         let plain = Results {
             directory: directory.clone(),
-            tests: false,
+            reads: Reads::VerdictOnly,
             keep: false,
         };
         assert_eq!(plain.survivors().unwrap().tests, Vec::new());
@@ -701,6 +834,61 @@ mod tests {
         );
         results.accept().unwrap();
         assert!(!directory.exists(), "accepted results outlived their run");
+    }
+
+    /// Each evaluated mutation is one kill under its strongest verdict, survivors too, and names
+    /// its killers only where each test was read. Mutant: `Undetected => return None` drops survivors.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn every_evaluated_mutation_is_one_kill_that_names_its_killers_only_where_each_test_was_read() {
+        let root = crate::testdir::make("mutest-results-kills");
+        let each = Results::create(&root)
+            .unwrap()
+            .reading(Reads::EachTest, &[]);
+        let operators = [
+            "call_delete",
+            "eq_op_invert",
+            "bool_expr_negate",
+            "unary_op_delete",
+            "x",
+        ];
+        let target = |kind: &str, evaluated: String| {
+            let at = each.directory.join("fixture").join(kind);
+            std::fs::create_dir_all(&at).unwrap();
+            std::fs::write(at.join("mutations.json"), mutations(&operators)).unwrap();
+            std::fs::write(at.join("evaluation.json"), evaluated).unwrap();
+        };
+        target(
+            "lib",
+            tested("D-T-.", &[("t::a", "D-T-."), ("t::b", "C....")]),
+        );
+        target("tests/x", tested("-D-..", &[("x::c", "-D-..")]));
+        let kill = |id: u32, verdict: &'static str, tests: &[&str]| Kill {
+            file: "src/a.rs".to_string(),
+            line: id,
+            column: 5,
+            operator: operators[usize::try_from(id).unwrap() - 1].to_string(),
+            mutation: format!("change {id}"),
+            verdict,
+            tests: tests.iter().map(ToString::to_string).collect(),
+        };
+        let named = [
+            kill(1, "killed", &["t::a", "t::b"]),
+            kill(2, "killed", &["x::c"]),
+            kill(3, "timed_out", &[]),
+            kill(4, "survived", &[]),
+        ];
+        assert_eq!(each.kills().unwrap(), named);
+        let plain = Results {
+            reads: Reads::VerdictOnly,
+            ..each
+        };
+        let unnamed = named.map(|it| Kill {
+            tests: Vec::new(),
+            ..it
+        });
+        assert_eq!(plain.kills().unwrap(), unnamed);
+        plain.accept().unwrap();
     }
 
     #[test]

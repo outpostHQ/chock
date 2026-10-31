@@ -14,6 +14,7 @@ use crate::run::{Ctx, Gate, Group, Inspection, Kind};
 
 mod expand;
 
+/// Counts each `mod` declaration with no file, and each module file that no `mod` declares.
 pub const GATE: Gate = Gate {
     name: "modcheck",
     about: "every `mod` declaration names a file, and every module file is declared",
@@ -70,7 +71,7 @@ pub(super) fn read(root: &Path) -> Result<BTreeMap<String, Option<String>>, Stri
         root,
         &|name| !project::SKIPPED.contains(&name) && !project::FIXTURE_DIRS.contains(&name),
         &|name, path| {
-            (name == "Cargo.toml" || name.ends_with(".rs"))
+            (name == "Cargo.toml" || Path::new(name).extension().is_some_and(|ext| ext == "rs"))
                 && !project::is_compile_fail_fixture(path)
         },
     )
@@ -134,7 +135,7 @@ fn inspected(tree: &Tree) -> Result<Inspection, String> {
     let reach = walked(tree, &crates)?;
     let debt = tree
         .paths()
-        .filter(|path| path.ends_with(".rs"))
+        .filter(|path| Path::new(path).extension().is_some_and(|ext| ext == "rs"))
         .filter(|path| !reach.reached.contains(*path))
         .filter(|path| compiled(&crates, path))
         .filter(|path| project::is_crate_code(path, &crates))
@@ -154,7 +155,7 @@ fn walked(tree: &Tree, crates: &[String]) -> Result<Reach, String> {
         .iter()
         .flat_map(|dir| roots(tree, dir))
         .map(|path| Site {
-            base: base_dir(&path, true),
+            base: base_dir(&path, Role::CrateRoot),
             path,
         })
         .collect();
@@ -260,7 +261,7 @@ fn roots(tree: &Tree, dir: &str) -> BTreeSet<String> {
 /// module of one of those, not a target of its own.
 fn is_target(rest: &str) -> bool {
     match rest.split_once('/') {
-        None => rest.ends_with(".rs"),
+        None => Path::new(rest).extension().is_some_and(|ext| ext == "rs"),
         Some((_, tail)) => tail == "main.rs",
     }
 }
@@ -278,7 +279,7 @@ fn manifest_targets(tree: &Tree, dir: &str) -> Vec<String> {
             rest.starts_with([' ', '=']).then_some(rest)
         })
         .filter_map(quoted)
-        .filter(|value| value.ends_with(".rs"))
+        .filter(|value| Path::new(value).extension().is_some_and(|ext| ext == "rs"))
         .map(|value| normalise(&join(dir, &value)))
         .collect()
 }
@@ -295,7 +296,7 @@ fn sites(tree: &Tree, decl: &Decl) -> Vec<Site> {
     resolve(tree, decl)
         .into_iter()
         .map(|path| Site {
-            base: base_dir(&path, false),
+            base: base_dir(&path, Role::Module),
             path,
         })
         .collect()
@@ -327,10 +328,19 @@ fn nested(decl: &Decl) -> String {
     normalise(&join(&decl.dir, &format!("{}/mod.rs", decl.name)))
 }
 
+/// What a source file is to its crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// A target root, such as `src/lib.rs` or `src/main.rs`.
+    CrateRoot,
+    /// A module file that a `mod` declaration reaches.
+    Module,
+}
+
 /// Where a file's children live. A crate root and a `mod.rs` share their own directory; every other
 /// module file owns the directory named after it.
-fn base_dir(path: &str, is_root: bool) -> String {
-    if is_root || stem(path) == "mod" {
+fn base_dir(path: &str, role: Role) -> String {
+    if role == Role::CrateRoot || stem(path) == "mod" {
         return beside(path);
     }
     path.strip_suffix(".rs").unwrap_or(path).to_string()
@@ -594,10 +604,6 @@ fn declared_module(window: &[proc_macro2::TokenTree]) -> Option<String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -927,13 +933,16 @@ mod tests {
 
     #[test]
     fn a_crate_root_owns_its_src_directory() {
-        assert_eq!(base_dir("crates/c/src/lib.rs", true), "crates/c/src");
-        assert_eq!(base_dir("src/parser.rs", false), "src/parser");
+        assert_eq!(
+            base_dir("crates/c/src/lib.rs", Role::CrateRoot),
+            "crates/c/src"
+        );
+        assert_eq!(base_dir("src/parser.rs", Role::Module), "src/parser");
     }
 
     #[test]
     fn a_mod_rs_file_shares_the_directory_it_sits_in() {
-        assert_eq!(base_dir("src/gates/mod.rs", false), "src/gates");
+        assert_eq!(base_dir("src/gates/mod.rs", Role::Module), "src/gates");
     }
 
     #[test]

@@ -812,6 +812,35 @@ fn lines_counts_every_tracked_line_and_trips_when_the_total_goes_up() {
     says(&tripped.out, "total");
 }
 
+/// Where both streams reach one file, the report leaves out the block that progress printed;
+/// where they go apart, each stream keeps it. Mutant: `on_one_stream` negates `said`.
+#[test]
+#[cfg(unix)]
+fn a_tripped_block_prints_once_where_both_streams_reach_one_file() {
+    let dir = project("one-stream", &[("src/lib.rs", "fn a() {}\n")]);
+    turn_on(&dir, &["lines"]);
+    first_commit(&dir);
+    exits(&dir, &["baseline", "lines"], 0);
+    put(&dir, "src/lib.rs", "fn a() {}\nfn b() {}\n");
+    let block = "lines — chock run lines";
+    let apart = exits(&dir, &["run", "lines"], 1);
+    assert_eq!(apart.out.matches(block).count(), 1, "{}", apart.out);
+    assert_eq!(apart.err.matches(block).count(), 1, "{}", apart.err);
+    let path = dir.join("both.txt");
+    let file = std::fs::File::create(&path).unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_chock"))
+        .args(["run", "lines"])
+        .env_remove("GITHUB_ACTIONS")
+        .current_dir(&dir)
+        .stdout(file.try_clone().unwrap())
+        .stderr(file)
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(1));
+    let both = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(both.matches(block).count(), 1, "{both}");
+}
+
 #[test]
 fn cache_clear_removes_every_kept_verdict_and_cache_alone_is_refused() {
     let dir = project("cache-clear", &[]);
@@ -1220,6 +1249,56 @@ fn make_runnable(path: &Path) {
     let mut mode = std::fs::metadata(path).unwrap().permissions();
     mode.set_mode(0o755);
     std::fs::set_permissions(path, mode).unwrap();
+}
+
+/// A record the pre-commit hook writes goes into the commit and into the index the commit leaves,
+/// so `git status` shows no change to it after a plain commit, `-a` or `--only`.
+#[cfg(unix)]
+#[test]
+fn a_record_the_hook_writes_leaves_no_change_after_each_kind_of_commit() {
+    let record = ".chock/baseline.json";
+    let dir = project(
+        "hook-commit-kinds",
+        &[("src/legacy.rs", &OVER_LIMIT.repeat(4))],
+    );
+    turn_on(&dir, &["slop"]);
+    assert_eq!(chock(&dir, &["baseline", "slop"]).code, 0);
+    first_commit(&dir);
+    let hook = format!(
+        "#!/bin/sh\nexec '{}' hook pre-commit\n",
+        env!("CARGO_BIN_EXE_chock")
+    );
+    put(&dir, ".git/hooks/pre-commit", &hook);
+    make_runnable(&dir.join(".git/hooks/pre-commit"));
+    let kinds: [(usize, bool, &[&str]); 3] = [
+        (3, true, &["commit", "-q", "-m", "plain"]),
+        (2, false, &["commit", "-q", "-a", "-m", "all"]),
+        (
+            1,
+            false,
+            &["commit", "-q", "--only", "src/legacy.rs", "-m", "only"],
+        ),
+    ];
+    for (left, staged, kind) in kinds {
+        put(&dir, "src/legacy.rs", &OVER_LIMIT.repeat(left));
+        if staged {
+            assert!(git(&dir, &["add", "src/legacy.rs"]).status.success());
+        }
+        let made = git(&dir, kind);
+        assert!(
+            made.status.success(),
+            "{}",
+            String::from_utf8_lossy(&made.stderr)
+        );
+        assert_eq!(slop_record(&dir), u64::try_from(left).ok(), "{kind:?}");
+        let status = git(&dir, &["status", "--porcelain", "--", record]);
+        assert_eq!(String::from_utf8_lossy(&status.stdout), "", "{kind:?}");
+        let committed = git(&dir, &["diff", "--quiet", "HEAD", "--", record]);
+        assert!(
+            committed.status.success(),
+            "{kind:?}: the commit holds the record"
+        );
+    }
 }
 
 /// A run refuses a config that does not read, so `gates` and `message` refuse it too.
@@ -1871,10 +1950,20 @@ fn init_retains_unreadable_source_checks_without_turning_on_opt_in_tools() {
     assert!(why.contains("src/lib.rs"), "{why}");
 }
 
+/// Whether the fixture mutation tool says a test harness did not build.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Harness {
+    /// Every test harness built.
+    Built,
+    /// One test harness did not build, so its mutations were not evaluated.
+    Broken,
+}
+
 /// A controlled child replaces Cargo for these tests. PATH is isolated in that child, so the installed
 /// mutation tool is never invoked and test output cannot be mistaken for a live measurement.
 #[cfg(unix)]
-fn mutation_tool(dir: &Path, args: &[&str], exit: &str, failed: bool) -> Ran {
+fn mutation_tool(dir: &Path, args: &[&str], exit: &str, harness: Harness) -> Ran {
     let cargo = dir.join("bin/cargo");
     put(
         dir,
@@ -1926,7 +2015,14 @@ exit "$FIXTURE_EXIT"
         args,
         &[
             ("FIXTURE_EXIT", exit),
-            ("FIXTURE_FAILED", if failed { "yes" } else { "no" }),
+            (
+                "FIXTURE_FAILED",
+                if harness == Harness::Broken {
+                    "yes"
+                } else {
+                    "no"
+                },
+            ),
         ],
     )
 }
@@ -2325,7 +2421,7 @@ case "$*" in
   --version | 'acl --version') printf 'cargo fixture\n';;
   'metadata --no-deps --format-version 1')
     printf '{"workspace_root":"%s","workspace_members":["private"],"packages":[{"id":"private","name":"private","manifest_path":"%s/Cargo.toml","publish":[],"targets":[{"name":"app","kind":["bin"]}]}]}\n' "$PWD" "$PWD";;
-  'bsize --bin app' | 'acl --no-ui --quiet --fail-on-warnings --features testkit' | 'doc --no-deps --workspace --features testkit')
+  'bsize --bin app' | 'acl --no-ui --quiet --fail-on-warnings --features testkit' | 'doc --no-deps --keep-going --workspace --features testkit')
     printf 'measured\n'
     if [ "$FIXTURE_FAILED" = yes ]; then printf 'error: fixture could not inspect\n' >&2; exit 1; fi;;
   *) printf 'unexpected invocation: %s\n' "$*" >&2; exit 1;;
@@ -2442,11 +2538,14 @@ fn init_global_takes_a_prebuilt_release_through_binstall_and_compiles_when_it_ca
             "  skipped   miri — only rustup installs it, and chock could not start rustup: ",
         );
         let log = std::fs::read_to_string(dir.join("cargo.log")).unwrap();
-        let fetches: Vec<&str> = log
+        let deny_calls: Vec<&str> = log
             .lines()
             .filter(|line| line.contains("cargo-deny"))
             .collect();
-        assert_eq!(fetches, asked, "binstall here {here}, fetching {fetching}");
+        assert_eq!(
+            deny_calls, asked,
+            "binstall here {here}, fetching {fetching}"
+        );
     }
 }
 
@@ -2697,11 +2796,11 @@ fn timeout_diagnostics_survive_the_run_record_and_explain() {
     put(
         &dir,
         "bin/coverage",
-        r#"#!/bin/sh
+        r"#!/bin/sh
 printf 'fixture is waiting for its input\n'
 printf 'error: fixture cannot continue\n' >&2
 while :; do :; done
-"#,
+",
     );
     let failed = with_tools(
         &dir,
@@ -2764,12 +2863,12 @@ fn failed_coverage_is_not_retried_by_crap_or_recorded_as_a_new_baseline() {
 fn mutation_scope_notes_reach_baseline_output_and_run_json() {
     let dir = project("mutation-scope", &[("src/lib.rs", "pub fn f() {}\n")]);
     turn_on(&dir, &["mutest"]);
-    let recorded = mutation_tool(&dir, &["baseline", "mutest"], "2", false);
+    let recorded = mutation_tool(&dir, &["baseline", "mutest"], "2", Harness::Built);
     assert_eq!(recorded.code, 0, "{}{}", recorded.out, recorded.err);
     says(&recorded.err, "integration test commands");
     says(&recorded.err, "not mutation-covered");
     let baseline = std::fs::read_to_string(dir.join(chock::run::baseline::FILE)).unwrap();
-    let result = mutation_tool(&dir, &["run", "mutest", "--json"], "2", false);
+    let result = mutation_tool(&dir, &["run", "mutest", "--json"], "2", Harness::Built);
     assert_eq!(result.code, 0, "{}{}", result.out, result.err);
     let report = parsed(&result.out);
     assert_eq!(report.gates[0].verdict, Verdict::Pass);
@@ -2834,7 +2933,7 @@ fn mutation_target_failure_never_replaces_a_baseline_with_partial_results() {
     baseline.record("mutest", "mutation(s) no test killed", series.clone());
     put_document(&dir, chock::run::baseline::FILE, &baseline);
     for code in ["0", "4", "101"] {
-        let result = mutation_tool(&dir, &["run", "mutest", "--json"], code, true);
+        let result = mutation_tool(&dir, &["run", "mutest", "--json"], code, Harness::Broken);
         assert_eq!(result.code, 2, "{}{}", result.out, result.err);
         let report = parsed(&result.out);
         assert_eq!(report.gates[0].verdict, Verdict::CannotRun);
@@ -2843,7 +2942,7 @@ fn mutation_target_failure_never_replaces_a_baseline_with_partial_results() {
             report.gates[0].cannot_run_reason.as_deref().unwrap(),
             "launch",
         );
-        let recorded = mutation_tool(&dir, &["baseline", "mutest"], code, true);
+        let recorded = mutation_tool(&dir, &["baseline", "mutest"], code, Harness::Broken);
         assert_eq!(recorded.code, 2, "{}{}", recorded.out, recorded.err);
         let after: chock::run::baseline::Baseline = serde_json::from_str(
             &std::fs::read_to_string(dir.join(chock::run::baseline::FILE)).unwrap(),

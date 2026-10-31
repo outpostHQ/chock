@@ -4,6 +4,7 @@
 use crate::run::baseline::{Keys, Series};
 use crate::run::{Ctx, Gate, Group, Kind};
 
+/// Counts production code that is longer than the density of this tree explains.
 pub const GATE: Gate = Gate {
     name: "padding",
     about: "production code longer than this tree's own density explains; needs `outpost`",
@@ -25,14 +26,28 @@ fn measure(ctx: &Ctx) -> Result<Series, String> {
 
 /// Every entity over the bar, provided two runs can be compared against that bar.
 fn over_the_bar(check: &super::Check) -> Result<Series, String> {
-    comparable(check.measure(MEASURE)?.relative, check.bar.as_ref())?;
+    let scale = if check.measure(MEASURE)?.relative {
+        Scale::Relative
+    } else {
+        Scale::Absolute
+    };
+    comparable(scale, check.bar.as_ref())?;
     check.series(MEASURE)
+}
+
+/// The scale a measure reads its values on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scale {
+    /// Against a bar taken from the tree, which can move.
+    Relative,
+    /// On a fixed scale.
+    Absolute,
 }
 
 /// Whether two runs of this measure can be compared. An unpinned bar is this tree's median
 /// density, so an entity nobody edited crosses it when anything else moves.
-fn comparable(relative: bool, bar: Option<&super::Bar>) -> Result<(), String> {
-    if !relative {
+fn comparable(scale: Scale, bar: Option<&super::Bar>) -> Result<(), String> {
+    if scale == Scale::Absolute {
         return Ok(());
     }
     match bar {
@@ -51,10 +66,6 @@ fn comparable(relative: bool, bar: Option<&super::Bar>) -> Result<(), String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
 
@@ -62,17 +73,26 @@ mod tests {
         crate::gates::outpost::checked(&crate::exec::Output::of(Some(0), json, "")).unwrap()
     }
 
-    fn bar(tree_median: f64, pinned: bool) -> crate::gates::outpost::Bar {
+    /// Whether a test bar stays put or moves with the tree.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Anchor {
+        /// A pinned bar.
+        Pinned,
+        /// The tree's own median.
+        Median,
+    }
+
+    fn bar(tree_median: f64, anchor: Anchor) -> crate::gates::outpost::Bar {
         crate::gates::outpost::Bar {
             tree_median,
             population: 724,
-            pinned,
+            pinned: anchor == Anchor::Pinned,
         }
     }
 
     #[test]
     fn a_measure_judged_against_an_unpinned_tree_median_cannot_be_ratcheted() {
-        let why = comparable(true, Some(&bar(7.57, false))).unwrap_err();
+        let why = comparable(Scale::Relative, Some(&bar(7.57, Anchor::Median))).unwrap_err();
         assert!(why.contains("outpost check --pin-bar"), "{why}");
         assert!(why.contains("7.57"), "{why}");
         assert!(why.contains("724"), "{why}");
@@ -80,18 +100,21 @@ mod tests {
 
     #[test]
     fn a_pinned_bar_is_the_same_yardstick_twice_and_compares() {
-        assert_eq!(comparable(true, Some(&bar(7.57, true))), Ok(()));
+        assert_eq!(
+            comparable(Scale::Relative, Some(&bar(7.57, Anchor::Pinned))),
+            Ok(())
+        );
     }
 
     #[test]
     fn an_outpost_that_reports_no_bar_at_all_stops_the_gate() {
-        let why = comparable(true, None).unwrap_err();
+        let why = comparable(Scale::Relative, None).unwrap_err();
         assert!(why.contains("no density bar"), "{why}");
     }
 
     #[test]
     fn a_measure_that_is_not_relative_needs_no_bar_to_be_comparable() {
-        assert_eq!(comparable(false, None), Ok(()));
+        assert_eq!(comparable(Scale::Absolute, None), Ok(()));
     }
 
     #[test]

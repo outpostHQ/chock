@@ -48,16 +48,26 @@ enum Refusal {
     Verdict,
 }
 
+/// Whether Apalache proves an inductive invariant of a model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+enum Induction {
+    /// Apalache proves an inductive invariant of the model.
+    Proved,
+    /// Apalache proves no inductive invariant of the model.
+    Unproved,
+}
+
 /// `Some` says why `engines` cannot check a model whose cfgs have these shapes, and which cfg is
-/// the cause. `inductive` says whether Apalache proves an inductive invariant of the model.
-fn refused(engines: Engines, inductive: bool, shapes: &[Shape]) -> Option<(Refusal, usize)> {
+/// the cause. `induction` says whether Apalache proves an inductive invariant of the model.
+fn refused(engines: Engines, induction: Induction, shapes: &[Shape]) -> Option<(Refusal, usize)> {
     if engines.tlc {
         return None;
     }
     if !engines.apalache {
         return Some((Refusal::NoEngine, 0));
     }
-    if !inductive {
+    if induction == Induction::Unproved {
         return Some((Refusal::NotInductive, 0));
     }
     let first = |cause: &dyn Fn(&Shape) -> bool| shapes.iter().position(cause);
@@ -98,34 +108,10 @@ impl Split {
 
 /// `Err` names a model that the engines `tla.engines` names cannot check, and why.
 pub(super) fn split(ctx: &Ctx, cfgs: &[Cfg]) -> Result<Split, String> {
-    let settings = &ctx.tla;
     let mut split = Split::default();
-    let asked = settings.engines.iter();
+    let asked = ctx.tla.engines.iter();
     for (model, names) in asked.filter(|(model, _)| ctx.scope.asks_model(model)) {
-        let known = |name: &&String| matches!(name.as_str(), "tlc" | "apalache");
-        if let Some(other) = names.iter().find(|name| !known(name)) {
-            return Err(format!(
-                "`tla.engines` gives {model} `{other}`, and the engines are tlc and apalache"
-            ));
-        }
-        let has = |engine: &str| names.iter().any(|name| name == engine);
-        let engines = Engines {
-            tlc: has("tlc"),
-            apalache: has("apalache"),
-        };
-        let kin: Vec<&Cfg> = cfgs.iter().filter(|cfg| cfg.model == *model).collect();
-        if kin.is_empty() {
-            return Err(format!(
-                "`tla.engines` names {model}, and no cfg under the model directories is of it"
-            ));
-        }
-        let own = kin.iter().find(|cfg| cfg.is_own());
-        let proved = own.is_some_and(|own| inductive(settings, own));
-        let shapes: Vec<Shape> = kin.iter().map(|cfg| Shape::of(cfg)).collect();
-        if let Some((why, at)) = refused(engines, proved, &shapes) {
-            let cfg = kin.get(at).copied();
-            return Err(refusal(model, why, cfg));
-        }
+        let engines = engines_of(&ctx.tla, model, names, cfgs)?;
         if engines.tlc != engines.apalache {
             let alone = if engines.tlc {
                 &mut split.tlc
@@ -136,6 +122,43 @@ pub(super) fn split(ctx: &Ctx, cfgs: &[Cfg]) -> Result<Split, String> {
         }
     }
     Ok(split)
+}
+
+/// The engines `names` gives `model`, or why they are not engines or cannot check its cfgs.
+fn engines_of(
+    settings: &Tla,
+    model: &str,
+    names: &[String],
+    cfgs: &[Cfg],
+) -> Result<Engines, String> {
+    let known = |name: &&String| matches!(name.as_str(), "tlc" | "apalache");
+    if let Some(other) = names.iter().find(|name| !known(name)) {
+        return Err(format!(
+            "`tla.engines` gives {model} `{other}`, and the engines are tlc and apalache"
+        ));
+    }
+    let has = |engine: &str| names.iter().any(|name| name == engine);
+    let engines = Engines {
+        tlc: has("tlc"),
+        apalache: has("apalache"),
+    };
+    let kin: Vec<&Cfg> = cfgs.iter().filter(|cfg| cfg.model == model).collect();
+    if kin.is_empty() {
+        return Err(format!(
+            "`tla.engines` names {model}, and no cfg under the model directories is of it"
+        ));
+    }
+    let own = kin.iter().find(|cfg| cfg.is_own());
+    let proved = if own.is_some_and(|own| inductive(settings, own)) {
+        Induction::Proved
+    } else {
+        Induction::Unproved
+    };
+    let shapes: Vec<Shape> = kin.iter().map(|cfg| Shape::of(cfg)).collect();
+    match refused(engines, proved, &shapes) {
+        Some((why, at)) => Err(refusal(model, why, kin.get(at).copied())),
+        None => Ok(engines),
+    }
 }
 
 fn refusal(model: &str, why: Refusal, cfg: Option<&Cfg>) -> String {
@@ -173,9 +196,9 @@ mod proofs {
 
     /// What Apalache decides: the own cfg passes, by the inductive proof, and a variant fails, by
     /// a bounded run. It checks no `PROPERTY` and no deadlock. TLC decides each cfg.
-    fn apalache_decides(inductive: bool, shape: Shape) -> bool {
+    fn apalache_decides(induction: Induction, shape: Shape) -> bool {
         let verdict = match (shape.own, shape.expect) {
-            (true, Expect::Pass) => inductive,
+            (true, Expect::Pass) => induction == Induction::Proved,
             (false, Expect::Violation) => true,
             _ => false,
         };
@@ -187,10 +210,10 @@ mod proofs {
     #[kani::unwind(4)]
     fn no_cfg_goes_to_an_engine_that_cannot_decide_it() {
         let engines: Engines = kani::any();
-        let inductive: bool = kani::any();
+        let induction: Induction = kani::any();
         let shapes: [Shape; 3] = kani::any();
-        if refused(engines, inductive, &shapes).is_none() {
-            let decided = |shape: &Shape| apalache_decides(inductive, *shape);
+        if refused(engines, induction, &shapes).is_none() {
+            let decided = |shape: &Shape| apalache_decides(induction, *shape);
             assert!(engines.tlc || (engines.apalache && shapes.iter().all(decided)));
         }
     }
@@ -205,17 +228,16 @@ mod proofs {
             tlc: false,
             apalache: true,
         };
-        if shapes.iter().all(|shape| apalache_decides(true, *shape)) {
-            assert!(refused(alone, true, &shapes).is_none());
+        if shapes
+            .iter()
+            .all(|shape| apalache_decides(Induction::Proved, *shape))
+        {
+            assert!(refused(alone, Induction::Proved, &shapes).is_none());
         }
     }
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::super::tests::cfg;
     use super::*;
@@ -224,6 +246,20 @@ mod tests {
     fn split_by(ctx: &mut Held, engines: &str, cfgs: &[Cfg]) -> Result<Split, String> {
         ctx.tla = serde_json::from_str(&format!(r#"{{"engines": {engines}}}"#)).unwrap();
         split(ctx, cfgs)
+    }
+
+    /// `tla.inductive` names the models Apalache proves; without it, a cfg that lists `IndInv` is
+    /// proved. Mutant: negating either answer proves the wrong model.
+    #[test]
+    fn apalache_proves_the_models_tla_inductive_names_or_whose_cfg_lists_the_invariant() {
+        let listed = cfg("M", "M", &format!("INVARIANT {INDUCTIVE}\n"));
+        let plain = cfg("N", "N", "INVARIANT Safe\n");
+        let unset = Tla::default();
+        assert!(inductive(&unset, &listed));
+        assert!(!inductive(&unset, &plain));
+        let named: Tla = serde_json::from_str(r#"{"inductive": {"N": "Safe"}}"#).unwrap();
+        assert!(inductive(&named, &plain));
+        assert!(!inductive(&named, &listed));
     }
 
     #[test]

@@ -7,11 +7,26 @@ use crate::gates;
 use crate::project::config::Config;
 use crate::run::baseline::Baseline;
 
+/// Where a run happens: on a person's machine, or in CI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Host {
+    /// A person's machine, where a run writes the records.
+    Local,
+    /// CI, which writes no record and fails a gain the record does not hold.
+    Ci,
+}
+
 /// What every gate is handed, filled once from the config and the machine, so a test can set any
 /// of it. A gate edits no source; `init`'s ignores cover what its tool leaves behind.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one switch of the run, and code outside `run` builds this struct"
+)]
 pub struct Ctx {
+    /// The root of the tree the run checks.
     pub root: PathBuf,
+    /// The recorded debt that each gate compares its read with.
     pub baseline: Baseline,
     /// How many chock runs this one is nested inside.
     pub depth: u32,
@@ -229,6 +244,8 @@ impl Ctx {
     }
 
     /// The name and text of each file outside the skipped directories that `keep` takes.
+    /// # Errors
+    /// The text says which walk or which file read failed.
     pub fn texts(
         &self,
         keep: &dyn Fn(&str, &std::path::Path) -> bool,
@@ -244,10 +261,18 @@ impl Ctx {
         files.into_iter().map(read).collect()
     }
 
+    /// Where this run happens, from `ci`.
+    #[must_use]
+    pub fn host(&self) -> Host {
+        if self.ci { Host::Ci } else { Host::Local }
+    }
+
     /// The files the change touched, from the repository that holds the tree.
+    /// # Errors
+    /// The text says why the repository could not list the changed files.
     pub fn changed(&self) -> Result<&[String], String> {
         self.changed
-            .get_or_init(|| crate::project::vcs::changed(&self.root, self.vcs, self.ci))
+            .get_or_init(|| crate::project::vcs::changed(&self.root, self.vcs, self.host()))
             .as_deref()
             .map_err(Clone::clone)
     }
@@ -277,14 +302,16 @@ impl Ctx {
         let Some((first, rest)) = self.test_wrapper.split_first() else {
             return (program, args.to_vec());
         };
-        let mut argv: Vec<&str> = rest.iter().map(String::as_str).collect();
-        argv.push(program);
-        argv.extend(args);
-        (first.as_str(), argv)
+        let mut words: Vec<&str> = rest.iter().map(String::as_str).collect();
+        words.push(program);
+        words.extend(args);
+        (first.as_str(), words)
     }
 
     /// Refused for a tool that cannot be told the configured target or profile: it would measure a
     /// build the project does not ship and report it as this one.
+    /// # Errors
+    /// The text names the tool and the build flags it cannot take.
     pub fn default_build(&self, tool: &str) -> Result<(), String> {
         if self.build.is_empty() {
             return Ok(());
@@ -318,6 +345,7 @@ pub fn default_coverage() -> Coverage {
 /// The command and its invocation-local measurement stay together when a context is cloned.
 #[derive(Debug, Clone)]
 pub struct Coverage {
+    /// The command that writes the coverage report, with `LCOV` where the report goes.
     pub argv: Vec<String>,
     /// The commands `argv` calls, which chock cannot see in a project's own command.
     pub tools: Vec<String>,
@@ -386,6 +414,7 @@ fn under_wrapper(config: Option<&Config>, argv: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// The coverage command the config names, or chock's own when it names none.
 #[must_use]
 pub fn coverage_for(config: Option<&crate::project::config::Config>) -> Coverage {
     if let Some(argv) = config.and_then(|set| set.coverage.clone()) {
@@ -416,9 +445,13 @@ pub fn coverage_for(config: Option<&crate::project::config::Config>) -> Coverage
 /// `mutest` to, and `--model=NAME,...` narrows `tla` to; the default is all of it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Scope {
+    /// The one package `test` runs, from `--package`.
     pub package: Option<String>,
+    /// The text that test names must hold, from `--filter`.
     pub filter: Option<String>,
+    /// The files `mutest` mutates, from `--mutate`.
     pub mutate: Vec<String>,
+    /// The models `tla` checks, from `--model`.
     pub models: Vec<String>,
 }
 
@@ -451,7 +484,9 @@ impl Scope {
 /// the clippy and kani it calls are not, so a change to one makes a kept verdict stale.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Runner {
+    /// The command that runs the suite.
     pub argv: Vec<String>,
+    /// The commands `argv` calls, which chock cannot see in a project's own command.
     pub tools: Vec<String>,
 }
 
@@ -483,7 +518,7 @@ mod tests {
             ..Config::of(["history"])
         };
         assert_eq!(Ctx::from_config(Some(&config)).accepted, vec![fixture]);
-        assert!(Ctx::from_config(None).accepted.is_empty());
+        assert_eq!(Ctx::from_config(None).accepted, Vec::<Accepted>::new());
     }
 
     #[test]
@@ -515,8 +550,8 @@ mod tests {
             coverage_tools: None,
             ..named
         };
-        assert!(runner_for(Some(&unnamed)).tools.is_empty());
-        assert!(coverage_for(Some(&unnamed)).tools.is_empty());
+        assert_eq!(runner_for(Some(&unnamed)).tools, Vec::<String>::new());
+        assert_eq!(coverage_for(Some(&unnamed)).tools, Vec::<String>::new());
     }
 
     /// chock knows what its own commands call, so a list for a command the project did not
@@ -540,23 +575,23 @@ mod tests {
     #[test]
     fn a_test_wrapper_runs_the_suite_and_the_coverage_command() {
         let wrapper = ["scripts/with-db".to_string(), "--".to_string()];
-        let wrapped = Config {
+        let configured = Config {
             test_wrapper: Some(wrapper.to_vec()),
             ..Config::of(["test"])
         };
         let after = |argv: Vec<String>| [wrapper.to_vec(), argv].concat();
         assert_eq!(
-            runner_for(Some(&wrapped)).argv,
+            runner_for(Some(&configured)).argv,
             after(default_runner().argv)
         );
         assert_eq!(
-            coverage_for(Some(&wrapped)).argv,
+            coverage_for(Some(&configured)).argv,
             after(default_coverage().argv)
         );
         let own = Config {
             runner: Some(vec!["bin/test-rust".to_string()]),
             coverage: Some(vec!["bin/coverage-rust".to_string(), LCOV.to_string()]),
-            ..wrapped.clone()
+            ..configured.clone()
         };
         assert_eq!(
             runner_for(Some(&own)).argv,
@@ -566,7 +601,7 @@ mod tests {
             coverage_for(Some(&own)).argv,
             ["scripts/with-db", "--", "bin/coverage-rust", LCOV]
         );
-        let ctx = Ctx::from_config(Some(&wrapped));
+        let ctx = Ctx::from_config(Some(&configured));
         assert_eq!(
             ctx.wrapped("cargo", &["mutest", "run"]),
             ("scripts/with-db", vec!["--", "cargo", "mutest", "run"])

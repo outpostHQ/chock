@@ -4,12 +4,14 @@
 use crate::run::baseline::{Keys, Series};
 use crate::run::{Ctx, Gate, Group, Kind};
 
+/// Counts each measure that outpost reports.
 pub const GATE: Gate = Gate {
     name: "measures",
     about: "every measure outpost reports, counted per measure; needs `outpost`",
     group: Group::OptIn,
     builds: false,
-    reads: Some(crate::run::verdicts::OUTPOST),
+    // `outpost check` also judges the messages of the commits above the upstream.
+    reads: Some(crate::run::verdicts::OUTPOST.and_commits()),
     kind: Kind::Ratchet {
         measure,
         keys: Keys::Census,
@@ -79,10 +81,6 @@ fn judged(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::{counted, judged};
     use crate::run::baseline::{Keys, Series};

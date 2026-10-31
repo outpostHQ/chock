@@ -2,6 +2,7 @@
 //! Only a matching end record closes a deadline; no other output extends one.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -75,7 +76,10 @@ fn random_nonce() -> Result<String, String> {
     File::open("/dev/urandom")
         .and_then(|mut file| file.read_exact(&mut bytes))
         .map_err(|error| format!("cannot allocate mutation run identity: {error}"))?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+    Ok(bytes.iter().fold(String::new(), |mut hex, byte| {
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    }))
 }
 
 impl Watch {
@@ -255,7 +259,7 @@ impl Journal {
             .read_to_end(&mut bytes)
             .map_err(|error| error.to_string())?;
         let now = started.elapsed();
-        self.read += bytes.len() as u64;
+        self.read += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         for byte in bytes {
             if byte == b'\n' {
                 let line = std::str::from_utf8(&self.partial)
@@ -325,10 +329,6 @@ fn process_ticks(stat: std::io::Result<String>) -> Result<Option<u64>, String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "invalid fixture state is a failing test"
-)]
 mod tests {
     use super::*;
     use serde_json::{Value, json};
@@ -382,7 +382,7 @@ mod tests {
             json!({"pid":std::process::id(),
             "process_start":{"kind":"linux-proc-starttime","ticks":ticks},
             "exe":std::fs::read_link("/proc/self/exe").unwrap().to_str().unwrap(),
-            "record_limit_bytes":16384,"file_limit_bytes":67108864}),
+            "record_limit_bytes":16384,"file_limit_bytes":67_108_864}),
         );
     }
 
@@ -425,7 +425,7 @@ mod tests {
             json!({"pid":std::process::id(),
                 "process_start":{"kind":"linux-proc-starttime","ticks":0},
                 "exe":std::fs::read_link("/proc/self/exe").unwrap().to_str().unwrap(),
-                "record_limit_bytes":16384,"file_limit_bytes":67108864}),
+                "record_limit_bytes":16384,"file_limit_bytes":67_108_864}),
         );
         append(
             &watch,
@@ -891,7 +891,7 @@ mod tests {
             "startup_timeout_ms":5000,"cleanup_timeout_ms":10000,"report_timeout_ms":1000,"join_timeout_ms":1000}),
         );
         watch.poll().unwrap();
-        watch.started = Instant::now() - Duration::from_secs(20);
+        watch.started = Instant::now().checked_sub(Duration::from_secs(20)).unwrap();
         assert!(watch.poll().unwrap_err().contains("invocation 7 exceeded"));
     }
 }

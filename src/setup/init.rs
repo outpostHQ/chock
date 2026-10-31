@@ -5,19 +5,22 @@ use std::fmt;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
-use crate::exec::Start;
 use crate::gates;
 use crate::project;
 use crate::project::config::Config;
-use crate::run::baseline::Baseline;
+use crate::run::baseline::{Baseline, Keep};
 use crate::run::report::plural;
-use crate::run::{self, Ctx, Group, Kind};
+use crate::run::{self, Ctx, Group, Kind, Pace};
 pub use crate::setup::adoption::{Decision, render_decisions};
-use crate::setup::adoption::{adoption, decided};
-use crate::setup::fetching::{fetch_args, kept, not_a_crate, not_fetched, replacing, starting};
-use crate::setup::pins::{self, Pin};
+use crate::setup::adoption::{Tracked, adoption, decided};
+use crate::setup::pins;
+
+mod install;
+#[cfg(test)]
+use install::{SETUP_PAUSE, reported, run_setup, set_up, setup_command};
+use install::{fetch_downloads, install_global, joined};
 
 /// chock's own files are the template, because chock runs its own gates on itself; a separate
 /// template would drift.
@@ -26,13 +29,15 @@ const DENY: &str = include_str!("../../deny.toml");
 
 /// The baselines are deliberately absent: they are the shared reference the gates measure against,
 /// so they belong in git. `last-run.json` is this machine's cache of the last run and does not.
-pub(crate) const IGNORES: [&str; 10] = [
+pub(crate) const IGNORES: [&str; 11] = [
     "/target",
     "lcov.info",
     // What `proof` leaves behind.
     "kani-list.json",
     ".chock/last-run.json",
     ".chock/run.lock",
+    // What the last `mutest` run killed, in the tree as it was then.
+    crate::gates::mutation::kills::FILE,
     // Verdicts this machine may answer from. It names this machine's tool versions, so another
     // checkout reading it would match a key it has no right to.
     crate::run::verdicts::FILE,
@@ -48,10 +53,25 @@ pub(crate) const IGNORES: [&str; 10] = [
 /// What went wrong, as a value, so a test asserts the case and not the wording.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
+    /// An argument `chock init` does not take.
     UnknownOption(String),
+    /// No `Cargo.toml` here or in a parent directory.
     NotARustProject,
-    Unreadable { path: String, reason: String },
-    Unwritable { path: String, reason: String },
+    /// A file that exists but cannot be read.
+    Unreadable {
+        /// The file.
+        path: String,
+        /// What the system said.
+        reason: String,
+    },
+    /// A file or directory that cannot be written.
+    Unwritable {
+        /// The file or directory.
+        path: String,
+        /// What the system said.
+        reason: String,
+    },
+    /// The tools that did not install.
     NotInstalled(Vec<String>),
 }
 
@@ -74,9 +94,16 @@ impl fmt::Display for Error {
     }
 }
 
+/// What `chock init` was asked to do, one field for each option.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each field is one command-line option, and any mix of them is valid"
+)]
 pub struct Scope {
+    /// Install the pinned tools on this machine.
     pub global: bool,
+    /// Write this project's hooks, pins and config.
     pub local: bool,
     /// Measure only what needs no compiler, skipping the instrumented builds.
     pub fast: bool,
@@ -102,6 +129,8 @@ chock init [--global] [--local] [--fast] [--downloads]
 ";
 
 /// No half named means both. `--fast` names neither half, so it leaves that choice alone.
+/// # Errors
+/// When an argument is not an option of `chock init`.
 pub fn scope_of(args: &[&str]) -> Result<Scope, Error> {
     let mut scope = Scope {
         global: false,
@@ -134,6 +163,12 @@ fn halves(mut scope: Scope) -> Scope {
     scope
 }
 
+/// Runs `chock init` with its arguments, prints its report, and returns the exit code.
+#[expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "this is the command's report, and a terminal reads it as each part ends"
+)]
 pub fn run(args: &[&str]) -> ExitCode {
     let scope = match scope_of(args) {
         Ok(s) => s,
@@ -154,7 +189,8 @@ pub fn run(args: &[&str]) -> ExitCode {
             eprintln!("chock init: {}", Error::NotARustProject);
             return ExitCode::from(2);
         };
-        match write_local(root, scope.fast) {
+        let pace = if scope.fast { Pace::Fast } else { Pace::Full };
+        match write_local(root, pace) {
             Ok(report) => print!("{report}"),
             Err(e) => {
                 eprintln!("chock init: {e}");
@@ -181,9 +217,10 @@ pub fn run(args: &[&str]) -> ExitCode {
     };
     // A dropped link is common on a laptop, and the next try often gets through.
     let patient = super::network::patiently(&crate::exec::run_env, &std::thread::sleep);
-    let installed = match scope.downloads {
-        true => Ok(()),
-        false => install_global(&parsed, &*patient, root.as_deref()),
+    let installed = if scope.downloads {
+        Ok(())
+    } else {
+        install_global(&parsed, &*patient, root.as_deref())
     };
     let tools = crate::gates::proofs::Tools::here();
     let failed = fetch_downloads(&downloads, root.as_deref(), &tools);
@@ -218,12 +255,15 @@ fn pins_for(root: Option<&Path>) -> Result<(String, String), Error> {
 /// What happened to one file `init --local` was asked to write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Written {
+    /// The file was not there, so chock wrote it.
     Created(String),
     /// The file was there and already held this content.
     Unchanged(String),
     /// The file was there and held something else, so ours landed beside it under `kept`.
     Conflict {
+        /// The file chock was asked to write.
         name: String,
+        /// The name chock's text landed under, beside it.
         kept: String,
     },
 }
@@ -388,7 +428,7 @@ fn switched_on_unmeasured(gate: &run::Gate, root: &Path) -> Option<&'static str>
 }
 
 /// Runs every candidate against the tree, which is why `init --local` is not instant.
-fn choose_gates(root: &Path, fast: bool) -> (Config, String) {
+fn choose_gates(root: &Path, pace: Pace) -> (Config, String) {
     let baseline = crate::project::document::read::<Baseline>(root)
         .ok()
         .flatten()
@@ -402,10 +442,10 @@ fn choose_gates(root: &Path, fast: bool) -> (Config, String) {
         .and_then(|set| set.coverage.clone())
         .or_else(|| coverage_command(root));
     let ctx = Ctx {
-        coverage: found
-            .clone()
-            .map(crate::run::Coverage::from)
-            .unwrap_or_else(|| crate::run::coverage_for(said.as_ref())),
+        coverage: found.clone().map_or_else(
+            || crate::run::coverage_for(said.as_ref()),
+            crate::run::Coverage::from,
+        ),
         vcs: crate::project::vcs::holding(root, said.as_ref()),
         root: root.to_path_buf(),
         baseline,
@@ -413,7 +453,7 @@ fn choose_gates(root: &Path, fast: bool) -> (Config, String) {
     };
     let judged: Vec<(&str, Decision, Option<crate::run::report::GateReport>)> = gates::registry()
         .iter()
-        .filter(|gate| measured(gate, fast))
+        .filter(|gate| measured(gate, pace))
         .map(|gate| {
             let (decision, report) = judge(gate, &ctx);
             (gate.name, decision, report)
@@ -428,7 +468,12 @@ fn choose_gates(root: &Path, fast: bool) -> (Config, String) {
         .iter()
         .map(|(name, decision, _)| (*name, decision.clone()))
         .collect();
-    let (config, mut report) = decided(&rows, ctx.vcs.is_some(), found.as_deref());
+    let tracked = if ctx.vcs.is_some() {
+        Tracked::InRepository
+    } else {
+        Tracked::Untracked
+    };
+    let (config, mut report) = decided(&rows, tracked, found.as_deref());
     if let Some(argv) = &found {
         // chock cannot know another program's options, so it prints the one it chose: a fuller
         // mode can change the debt it counts.
@@ -443,8 +488,8 @@ fn choose_gates(root: &Path, fast: bool) -> (Config, String) {
 }
 
 /// Which gates `init` measures; `--fast` leaves out everything that needs a compiler.
-fn measured(gate: &run::Gate, fast: bool) -> bool {
-    !fast || !gate.builds
+fn measured(gate: &run::Gate, pace: Pace) -> bool {
+    pace == Pace::Full || !gate.builds
 }
 
 /// A project whose tests drive its own binary keeps a script that instruments every process and
@@ -475,21 +520,25 @@ fn is_program(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|about| about.is_file())
 }
 
-fn write_local(root: &Path, fast: bool) -> Result<String, Error> {
+#[expect(
+    clippy::print_stderr,
+    reason = "the cost line must reach the user before the measuring starts"
+)]
+fn write_local(root: &Path, pace: Pace) -> Result<String, Error> {
     write_local_with(root, &gates::wiring::passing_and_off, &|at| {
         // Printed first: on a large workspace the measuring is the longest thing chock does.
-        eprintln!("{}", about_to_measure(fast, at));
-        choose_gates(at, fast)
+        eprintln!("{}", about_to_measure(pace, at));
+        choose_gates(at, pace)
     })
 }
 
 /// What the measuring will cost, said before it starts so a caller can choose `--fast` instead.
 #[must_use]
-fn about_to_measure(fast: bool, root: &Path) -> String {
+fn about_to_measure(pace: Pace, root: &Path) -> String {
     let counted = |building: bool| {
         gates::registry()
             .iter()
-            .filter(|gate| measured(gate, fast))
+            .filter(|gate| measured(gate, pace))
             .filter(|gate| matches!(gate.group, Group::Gates | Group::Quality))
             .filter(|gate| switched_on_unmeasured(gate, root).is_none())
             .filter(|gate| gate.builds == building)
@@ -617,7 +666,7 @@ fn add_ignores(root: &Path) -> Result<String, Error> {
         let added = add_ignores_to(&root.join(file))?;
         // The name without its dot, which is what the other lines of the report are keyed by.
         let label = file.trim_start_matches('.');
-        report.push_str(&format!("  {label:<9} {} added\n", plural(added, "line")));
+        let _ = writeln!(report, "  {label:<9} {} added", plural(added, "line"));
     }
     Ok(report)
 }
@@ -625,9 +674,10 @@ fn add_ignores(root: &Path) -> Result<String, Error> {
 /// A directory no repository holds gets git's name, which is what a clone of it will read.
 fn ignore_files(root: &Path) -> Vec<&'static str> {
     let held = crate::project::vcs::holders(root);
-    match held.is_empty() {
-        true => vec![".gitignore"],
-        false => held.iter().map(|kind| kind.ignore_file()).collect(),
+    if held.is_empty() {
+        vec![".gitignore"]
+    } else {
+        held.iter().map(|kind| kind.ignore_file()).collect()
     }
 }
 
@@ -717,11 +767,11 @@ fn manifest_notes_for(manifest: &str) -> Vec<String> {
 
 /// cargo-crap owns this baseline's format and reads it back; chock only records it. `false` means
 /// nothing was recorded, and the caller reports that rather than a success.
-pub fn record_crap(ctx: &Ctx, lower: bool, did: &str) -> bool {
+pub fn record_crap(ctx: &Ctx, keep: Keep, did: &str) -> bool {
     if let Err(why) = crate::gates::coverage::ensure(ctx) {
         return skipped(&why);
     }
-    match merged_crap(ctx, lower) {
+    match merged_crap(ctx, keep) {
         Ok(merged) => write_crap(&ctx.root, &merged, did),
         Err(why) => skipped(&why),
     }
@@ -729,18 +779,18 @@ pub fn record_crap(ctx: &Ctx, lower: bool, did: &str) -> bool {
 
 /// cargo-crap's report over the record. Paths are made relative first, because the record holds
 /// relative paths and cargo-crap reports absolute ones.
-fn merged_crap(ctx: &Ctx, lower: bool) -> Result<String, String> {
+fn merged_crap(ctx: &Ctx, keep: Keep) -> Result<String, String> {
     let measured = crate::gates::coverage::crap::whole_scores(ctx)?;
     let path = ctx.root.join(crate::gates::coverage::crap::baseline());
     let held = fs::read_to_string(path).unwrap_or_default();
-    crap_kept_higher(held_unless(lower, &held), &measured, &ctx.root)
+    crap_kept_higher(held_unless(keep, &held), &measured, &ctx.root)
 }
 
 /// The record a recording holds scores to: none where `--lower` asks for what was measured.
-fn held_unless(lower: bool, held: &str) -> &str {
-    match lower {
-        true => "",
-        false => held,
+fn held_unless(keep: Keep, held: &str) -> &str {
+    match keep {
+        Keep::Lower => "",
+        Keep::Record => held,
     }
 }
 
@@ -773,6 +823,10 @@ fn raise(entry: &mut serde_json::Value, was: f64) {
 }
 
 /// Always `false`, so a caller says why and gives up in one line.
+#[expect(
+    clippy::print_stderr,
+    reason = "a part of the report of `chock init`, said as it happens"
+)]
 fn skipped(why: &str) -> bool {
     eprintln!("  SKIPPED   crap         {why}");
     false
@@ -780,6 +834,10 @@ fn skipped(why: &str) -> bool {
 
 /// Under `.chock/` with chock's other committed state; `data/` is the project's own namespace.
 /// `did` is the caller's word for the write: `recorded` or `lowered`.
+#[expect(
+    clippy::print_stdout,
+    reason = "a part of the report of `chock init`, said as it happens"
+)]
 fn write_crap(root: &Path, json: &str, did: &str) -> bool {
     let file = crate::gates::coverage::crap::baseline();
     let path = root.join(&file);
@@ -796,214 +854,11 @@ fn write_crap(root: &Path, json: &str, did: &str) -> bool {
     true
 }
 
-/// A setup line is a command and its arguments split on whitespace. Quoting is unsupported: no
-/// pinned tool needs it, and splitting a quoted path wrongly would be worse than refusing.
-fn setup_command(line: &str) -> Option<(&str, Vec<&str>)> {
-    let mut parts = line.split_whitespace();
-    let program = parts.next()?;
-    Some((program, parts.collect()))
-}
-
-/// How often a setup line runs before its install counts as failed, and the wait that grows before
-/// each new attempt: the line downloads, and GitHub once answered Kani's bundle with a 500.
-const SETUP_ATTEMPTS: u32 = 3;
-const SETUP_PAUSE: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// The second half of installing a tool that fetches the rest of itself. A failure here leaves the
-/// tool on PATH but unusable, so it counts as the install failing rather than as a warning.
-fn run_setup(pin: &Pin, pause: &dyn Fn(u32)) -> bool {
-    let Some(line) = &pin.setup else {
-        return true;
-    };
-    let Some((program, args)) = setup_command(line) else {
-        println!(
-            "  FAILED    {} — {} pins an empty setup line",
-            pin.crate_name, pin.key
-        );
-        return false;
-    };
-    let finishes = |again: u32| {
-        pause(again);
-        let ran = Command::new(program).args(&args).status();
-        ran.is_ok_and(|status| status.success())
-    };
-    match (0..SETUP_ATTEMPTS).any(finishes) {
-        true => {
-            println!("  set up    {} — {line}", pin.crate_name);
-            true
-        }
-        false => {
-            println!("  FAILED    {} — `{line}` did not finish", pin.crate_name);
-            false
-        }
-    }
-}
-
-fn install_global(pins: &[Pin], start: Start, root: Option<&Path>) -> Result<(), Error> {
-    let installed = crate::setup::doctor::installed_on_this_machine();
-    // Asked per pin: the pin file installs cargo-binstall first, and every tool after it uses it.
-    let mut failed: Vec<String> = pins
-        .iter()
-        .filter(|pin| !installs(pin, &installed, start))
-        .map(|pin| pin.crate_name.clone())
-        .collect();
-    // Miri is no pin: it is a part of the `nightly` toolchain, so every machine gets it.
-    let miri = crate::setup::miri::install(start, Path::new("."));
-    failed.extend((!reported(&miri)).then(|| crate::setup::miri::NAME.to_string()));
-    // Nor is the oldest Rust the crate promises, which the `msrv` gate builds with.
-    let msrv = crate::setup::msrv::install(start, root);
-    failed.extend((!msrv.as_ref().is_none_or(reported)).then(|| crate::setup::msrv::NAME.into()));
-    if failed.is_empty() {
-        Ok(())
-    } else {
-        Err(Error::NotInstalled(failed))
-    }
-}
-
-/// The installs' result, with the download pins that failed added to it.
-fn joined(installed: Result<(), Error>, failed: Vec<String>) -> Result<(), Error> {
-    match installed {
-        Err(Error::NotInstalled(mut crates)) => {
-            crates.extend(failed);
-            Err(Error::NotInstalled(crates))
-        }
-        Ok(()) if !failed.is_empty() => Err(Error::NotInstalled(failed)),
-        other => other,
-    }
-}
-
-/// Download pins, each checked against its SHA-256. A gate's own tool comes only while the project
-/// has that gate on, so a project without `tla` never fetches 200 MB of Java.
-fn fetch_downloads(
-    downloads: &[crate::setup::downloads::Download],
-    root: Option<&Path>,
-    tools: &crate::gates::proofs::Tools,
-) -> Vec<String> {
-    let config = root.and_then(|root| project::document::read::<Config>(root).ok().flatten());
-    let on = |gate: &str| config.as_ref().is_some_and(|held| held.is_on(gate));
-    let wanted: Vec<_> = downloads
-        .iter()
-        .filter(|pin| match pin.gate().filter(|gate| !on(gate)) {
-            Some(gate) => {
-                println!("  skipped   {} — the `{gate}` gate is off", pin.name);
-                false
-            }
-            None => true,
-        })
-        .collect();
-    if wanted.is_empty() {
-        return Vec::new();
-    }
-    let Some(home) = tools.home.as_deref() else {
-        println!("  FAILED    downloads — no home directory holds them; set CHOCK_TOOLS");
-        return wanted.iter().map(|pin| pin.name.clone()).collect();
-    };
-    wanted
-        .into_iter()
-        .filter(|pin| {
-            !(reported(&crate::setup::downloads::fetch(pin, home, tools)) && set_up(pin, home))
-        })
-        .map(|pin| pin.name.clone())
-        .collect()
-}
-
-/// A download pin's `_SETUP` line, run in the directory that holds the fetched file.
-fn set_up(pin: &crate::setup::downloads::Download, home: &Path) -> bool {
-    let (Some(line), Ok(Some(file))) = (&pin.setup, pin.here()) else {
-        return true;
-    };
-    let dir = pin.dir(home, &file.sha256);
-    let ran = setup_command(line)
-        .map(|(program, args)| Command::new(program).args(&args).current_dir(&dir).status());
-    let done = ran.is_some_and(|status| status.is_ok_and(|status| status.success()));
-    match done {
-        true => println!("  set up    {} — {line}", pin.name),
-        false => println!("  FAILED    {} — `{line}` did not finish", pin.name),
-    }
-    done
-}
-
-/// One pin: Outpost's fork of mutest-rs is built from its repository, any other tool is fetched.
-fn installs(pin: &Pin, installed: &dyn Fn(&Pin) -> Option<String>, start: Start) -> bool {
-    if !crate::setup::mutest::is_pin(pin, std::env::consts::OS) {
-        return install_one(pin, installed, binstall_here());
-    }
-    println!("{}", crate::setup::mutest::starting());
-    reported(&crate::setup::mutest::install(start, &std::env::temp_dir()))
-}
-
-/// Prints what an install that is no crate fetch did; `false` is one that failed.
-fn reported(done: &Result<String, String>) -> bool {
-    let (Ok(line) | Err(line)) = done;
-    println!("{line}");
-    done.is_ok()
-}
-
-/// Whether `cargo binstall` answers here: it takes a tool's own prebuilt release, seconds where
-/// compiling the crate takes minutes.
-fn binstall_here() -> bool {
-    Command::new("cargo")
-        .args(["binstall", "-V"])
-        .output()
-        .is_ok_and(|out| out.status.success())
-}
-
-/// A binstall that fails for any reason falls back to the compile, whose errors `install_one`
-/// already knows how to read. binstall fetches releases, so a git pin always compiles.
-fn fetch(pin: &Pin, binstall: bool) -> std::io::Result<std::process::Output> {
-    let fetched = binstall.then_some(pin).filter(|pin| pin.git.is_none());
-    let fetched = fetched.map(|pin| Command::new("cargo").args(fetch_args(pin, true)).output());
-    match fetched {
-        Some(Ok(out)) if out.status.success() => Ok(out),
-        _ => Command::new("cargo").args(fetch_args(pin, false)).output(),
-    }
-}
-
-/// One tool, fetched and then set up. A tool that is not on crates.io has no coordinate to fetch,
-/// so it is reported rather than attempted, and that is not a failure.
-fn install_one(pin: &Pin, installed: &dyn Fn(&Pin) -> Option<String>, binstall: bool) -> bool {
-    if let Some(said) = not_fetched(pin, std::env::consts::OS) {
-        println!("{said}");
-        return true;
-    }
-    let have = installed(pin);
-    if let Some(said) = kept(pin, have.as_deref()) {
-        println!("{said}");
-        return run_setup(pin, &|again| std::thread::sleep(SETUP_PAUSE * again));
-    }
-    if let Some(said) = replacing(pin, have.as_deref()) {
-        println!("{said}");
-    }
-    println!("{}", starting(pin, binstall));
-    let Ok(out) = fetch(pin, binstall) else {
-        println!("  FAILED    {} {}", pin.crate_name, pin.want);
-        return false;
-    };
-    if !out.status.success() {
-        let said = String::from_utf8_lossy(&out.stderr);
-        if not_a_crate(&said) {
-            println!(
-                "  skipped   {} {} — crates.io does not have it, so chock did not install it",
-                pin.crate_name, pin.want
-            );
-            return true;
-        }
-        print!("{said}");
-        println!("  FAILED    {} {}", pin.crate_name, pin.want);
-        return false;
-    }
-    println!("  installed {} {}", pin.crate_name, pin.want);
-    run_setup(pin, &|again| std::thread::sleep(SETUP_PAUSE * again))
-}
-
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
-    use crate::setup::pins::version_pinned;
+    use crate::setup::pins::{Pin, version_pinned};
+    use std::process::Command;
 
     #[test]
     fn help_selects_no_installation_and_keeps_both_aliases() {
@@ -1182,9 +1037,9 @@ mod tests {
     fn a_recording_asked_to_lower_holds_no_score_to_the_record() {
         let held = r#"{"entries":[{"file":"src/a.rs","function":"f","line":1,"crap":20.0}]}"#;
         let measured = r#"{"entries":[{"file":"src/a.rs","function":"f","line":1,"crap":6.0}]}"#;
-        assert_eq!(held_unless(false, held), held);
+        assert_eq!(held_unless(Keep::Record, held), held);
         assert_eq!(
-            scores(held_unless(true, held), measured),
+            scores(held_unless(Keep::Lower, held), measured),
             [("f".to_string(), 6.0)]
         );
     }
@@ -1344,16 +1199,29 @@ mod tests {
         let dir = crate::testdir::make("init-crap-unwritable");
         let inside = dir.join(".chock");
         fs::create_dir_all(&inside).unwrap();
-        read_only(&inside, true);
+        set_access(&inside, Access::ReadOnly);
         let wrote = write_crap(&dir, "{}", "recorded");
-        read_only(&inside, false);
+        set_access(&inside, Access::Writable);
         assert!(!wrote);
     }
 
+    /// What a test lets the owner of a directory do.
     #[cfg(unix)]
-    fn read_only(dir: &Path, yes: bool) {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Access {
+        /// Read and enter, but not write.
+        ReadOnly,
+        /// Read, enter and write.
+        Writable,
+    }
+
+    #[cfg(unix)]
+    fn set_access(dir: &Path, access: Access) {
         use std::os::unix::fs::PermissionsExt as _;
-        let mode = if yes { 0o555 } else { 0o755 };
+        let mode = match access {
+            Access::ReadOnly => 0o555,
+            Access::Writable => 0o755,
+        };
         let mut perms = fs::metadata(dir).unwrap().permissions();
         perms.set_mode(mode);
         fs::set_permissions(dir, perms).unwrap();
@@ -1734,8 +1602,8 @@ mod tests {
     #[test]
     fn the_fast_measurement_leaves_out_every_gate_that_needs_a_compiler() {
         for gate in gates::registry() {
-            assert_eq!(measured(gate, true), !gate.builds, "{}", gate.name);
-            assert!(measured(gate, false), "{}", gate.name);
+            assert_eq!(measured(gate, Pace::Fast), !gate.builds, "{}", gate.name);
+            assert!(measured(gate, Pace::Full), "{}", gate.name);
         }
     }
 
@@ -1792,7 +1660,7 @@ mod tests {
         // A pass/fail gate is still run, because enabling it means it passes on this tree.
         assert!(building.contains(&"test"), "{building:?}");
         let expected = format!("{} of them build", building.len());
-        let said = about_to_measure(false, &dir);
+        let said = about_to_measure(Pace::Full, &dir);
         assert!(said.contains(&expected), "wanted `{expected}` in: {said}");
     }
 
@@ -1802,10 +1670,10 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn what_the_measuring_will_cost_is_said_before_it_starts() {
         let dir = crate::testdir::make("init-measuring-cost");
-        let full = about_to_measure(false, &dir);
+        let full = about_to_measure(Pace::Full, &dir);
         assert!(full.contains("build this project"), "{full}");
         assert!(full.contains("--fast"), "{full}");
-        let quick = about_to_measure(true, &dir);
+        let quick = about_to_measure(Pace::Fast, &dir);
         assert!(quick.contains("none of them build it"), "{quick}");
         // The full run names the gates that `--fast` keeps, as many as the fast run measures.
         let kept = quick.split_whitespace().nth(1).unwrap_or_default();
@@ -1838,7 +1706,7 @@ mod tests {
         // `crap` again: judging a binary gate runs it, and crap runs coverage, which runs this suite.
         fs::create_dir_all(dir.join(".chock")).unwrap();
         fs::write(dir.join(&file), "[]").unwrap();
-        assert!(!crate::gates::own_baseline("crap").is_some_and(|held| !dir.join(held).exists()));
+        assert!(crate::gates::own_baseline("crap").is_none_or(|held| dir.join(held).exists()));
     }
 
     /// A gate about chock's own wiring reads the config `init` has not written yet, so measuring it
@@ -1876,7 +1744,7 @@ mod tests {
         fs::write(dir.join("Cargo.toml"), manifest).unwrap();
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::write(dir.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
-        let (config, said) = choose_gates(&dir, true);
+        let (config, said) = choose_gates(&dir, Pace::Fast);
         for gate in ["hygiene", "commits"] {
             assert!(
                 config.enabled.contains(gate),
@@ -1897,7 +1765,7 @@ mod tests {
         let dir = crate::testdir::tree("init-crap-unmade", &files);
         let mut ctx = crate::run::Ctx::at(&dir);
         ctx.coverage = vec!["sh".to_string(), "coverage.sh".to_string()].into();
-        assert!(!record_crap(&ctx, false, "recorded"));
+        assert!(!record_crap(&ctx, Keep::Record, "recorded"));
         assert!(
             dir.join("lcov.info").is_file(),
             "the coverage step did not run"
@@ -1919,7 +1787,7 @@ mod tests {
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::write(dir.join("src/lib.rs"), "pub fn answer() -> u8 { 1 }\n").unwrap();
         write_program(&dir.join("bin/coverage"));
-        let (config, report) = choose_gates(&dir, true);
+        let (config, report) = choose_gates(&dir, Pace::Fast);
         assert_eq!(
             config.coverage,
             Some(vec![
@@ -1951,14 +1819,10 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_held_config_gains_a_passing_gate_only_where_it_turns_wiring_on() {
-        let lean = |_: &Path, _: &Config| vec!["lean".to_string()];
+        let lean: &dyn Fn(&Path, &Config) -> Vec<String> = &|_, _| vec!["lean".to_string()];
         let real: &dyn Fn(&Path, &Config) -> Vec<String> = &gates::wiring::passing_and_off;
         for (held, passing, gains) in [
-            (
-                Config::of(["slop", "wiring"]),
-                &lean as &dyn Fn(&Path, &Config) -> Vec<String>,
-                true,
-            ),
+            (Config::of(["slop", "wiring"]), lean, true),
             // With `wiring` off, the real check returns before it runs a gate.
             (Config::of(["slop"]), real, false),
         ] {
@@ -2047,7 +1911,7 @@ mod tests {
                  \x20 created   tool-versions.env\n\
                  \x20 created   deny.toml\n\
                  \x20 created   .chock/config.json\n\
-                 \x20 gitignore 10 lines added\n\
+                 \x20 gitignore 11 lines added\n\
                  \x20 editor    .claude/settings.json runs chock on every edit\n\
                  \x20 note      an editor session already open may not fire it until it reloads\n\
                  \x20 created   .chock/agents.md\n\
@@ -2189,7 +2053,7 @@ mod tests {
             let written = fs::read_to_string(dir.join(file)).unwrap();
             assert!(written.contains("lcov.info"), "{file}: {written}");
         }
-        assert!(said.contains("outpostignore 10 lines added"), "{said}");
+        assert!(said.contains("outpostignore 11 lines added"), "{said}");
     }
 
     /// `*` matches the empty string in a gitignore, so `*.chock` spells `.chock` and hides the whole
@@ -2212,14 +2076,14 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gitignore_gains_only_the_entries_it_lacks_and_is_rewritten_only_when_it_gains_one() {
         let all = "/target\nlcov.info\nkani-list.json\n.chock/last-run.json\n\
-                   .chock/run.lock\n.chock/verdicts.json\n.chock/last-edit\nrustc-ice-*.txt\n\
+                   .chock/run.lock\n.chock/mutest-kills.json\n.chock/verdicts.json\n.chock/last-edit\nrustc-ice-*.txt\n\
                    ?*.chock\n?*.chock.[0-9]*\n";
         let already = "target/\n/lcov.info\nkani-list.json\n.chock/last-run.json\n\
-                       .chock/run.lock\n.chock/verdicts.json\n.chock/last-edit\n\
+                       .chock/run.lock\n.chock/mutest-kills.json\n.chock/verdicts.json\n.chock/last-edit\n\
                        rustc-ice-*.txt\n?*.chock\n?*.chock.[0-9]*";
         for (name, before, added, want) in [
-            ("init-ignores-new", None, 10, all),
-            ("init-ignores-bare-last-line", Some("/target"), 9, all),
+            ("init-ignores-new", None, 11, all),
+            ("init-ignores-bare-last-line", Some("/target"), 10, all),
             ("init-ignores-covered", Some(already), 0, already),
         ] {
             let dir = crate::testdir::make(name);

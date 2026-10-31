@@ -15,18 +15,30 @@ use crate::project::{
     config::{Config, Stage},
     document, vcs,
 };
-use crate::run::report::{LAST_RUN, Rows, Run, Verdict};
-use crate::run::{self, Ctx, baseline::Baseline};
+use crate::run::baseline::{Baseline, Keep};
+use crate::run::report::{Format, Gating, Leaves, Rows, Run, Verdict};
+use crate::run::{self, Ctx, Host, Pace};
 use crate::setup::{doctor, init, pins};
 
+mod explain;
+#[cfg(test)]
+use explain::ago;
+use explain::{explain_or_owe, list_gates};
+
+mod told;
+use told::{leaves, reach_line, told_after};
+
+/// The version a run stamps into its report and into the records it writes.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What `enable`, `disable` and `stage` change for each gate they name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change<'a> {
+    /// On, so the gate runs at the stage the config gives it.
     On,
     /// Off, with the reason the config records in place of the default reason.
     Off(Option<&'a str>),
+    /// Moved to the stage that runs the gate.
     Stage(Stage),
 }
 
@@ -37,7 +49,7 @@ impl Change<'_> {
             Change::On => (config.enable(gate.name), "on".to_string()),
             Change::Off(why) => (config.disable(gate.name, why), "off".to_string()),
             Change::Stage(stage) => (
-                config.place(gate.name, gate.builds, stage),
+                config.place(gate.name, gate.needs(), stage),
                 format!("runs at {}", stage.name()),
             ),
         };
@@ -60,6 +72,7 @@ impl Change<'_> {
     }
 }
 
+/// Runs the command the arguments name, and returns the code the process exits with.
 pub fn dispatch(args: &[&str]) -> ExitCode {
     let joined = args::joined(args);
     let args: Vec<&str> = joined.iter().map(String::as_str).collect();
@@ -76,11 +89,10 @@ pub fn dispatch(args: &[&str]) -> ExitCode {
             scope,
         } => {
             let how = How {
-                json,
-                rows: Rows::asked(verbose, !names.is_empty()),
+                format: json,
+                rows: verbose.asked(&names),
                 no_cache,
-                hook: false,
-                commits: false,
+                asker: Asker::Person,
                 miri_part,
                 skip: &skip,
                 scope: Some(&scope),
@@ -115,6 +127,7 @@ fn emit(text: &str) {
 }
 
 /// The problem, then the lines of the command it came from; all of the usage when none was given.
+#[expect(clippy::print_stderr, reason = "the CLI tells the user on stderr")]
 fn usage(problem: &str, command: Option<&str>) -> ExitCode {
     let more = crate::usage::after_problem(command);
     eprintln!("chock: {problem}\n\n{more}");
@@ -126,6 +139,7 @@ fn cannot_run(message: &str) -> ExitCode {
 }
 
 /// The refusal as a `u8`, for callers that return a code.
+#[expect(clippy::print_stderr, reason = "the CLI tells the user on stderr")]
 fn refused(message: &str) -> u8 {
     eprintln!("chock: {message}");
     2
@@ -147,7 +161,7 @@ fn configured() -> Result<Option<Config>, String> {
         .map_err(|e| e.to_string())
 }
 
-fn context(ci: bool) -> Result<(Ctx, Option<Config>), String> {
+fn context(host: Host) -> Result<(Ctx, Option<Config>), String> {
     let root = root()?;
     let baseline = document::read::<Baseline>(&root)
         .map_err(|e| e.to_string())?
@@ -158,7 +172,7 @@ fn context(ci: bool) -> Result<(Ctx, Option<Config>), String> {
         vcs: vcs::holding(&root, config.as_ref()),
         root,
         baseline,
-        ci,
+        ci: host == Host::Ci,
         ..Ctx::from_config(config.as_ref())
     };
     crate::exec::budget::prime(ctx.jobs);
@@ -167,9 +181,9 @@ fn context(ci: bool) -> Result<(Ctx, Option<Config>), String> {
 
 /// The run lock, then the context. A run writes back the baseline it read, so it reads it under
 /// the lock: a `chock baseline` that ends while this run waits is then in the file it reads.
-fn locked_context(ci: bool) -> Result<(crate::run::lock::Held, Ctx, Option<Config>), String> {
+fn locked_context(host: Host) -> Result<(crate::run::lock::Held, Ctx, Option<Config>), String> {
     let held = crate::run::lock::take(&root()?)?;
-    let (ctx, config) = context(ci)?;
+    let (ctx, config) = context(host)?;
     Ok((held, ctx, config))
 }
 
@@ -218,6 +232,15 @@ impl Tier {
         matches!(self, Tier::Ci { .. })
     }
 
+    /// Where this tier runs: only the CI tiers run on a CI host.
+    fn host(self) -> Host {
+        if self.meets_an_absent_tool() {
+            Host::Ci
+        } else {
+            Host::Local
+        }
+    }
+
     /// The last stage this tier runs. CI's fast job mirrors the commit.
     fn reach(self) -> Stage {
         match self {
@@ -231,11 +254,13 @@ impl Tier {
 
 /// `--fast` selects the commit set. A separate fn, so a test can assert the mapping.
 #[must_use]
-pub(crate) fn tier_for(fast: bool, ci: bool) -> Tier {
-    match (fast, ci) {
-        (fast, true) => Tier::Ci { fast },
-        (true, false) => Tier::Committing,
-        (false, false) => Tier::Everything,
+pub(crate) fn tier_for(pace: Pace, host: Host) -> Tier {
+    match (pace, host) {
+        (pace, Host::Ci) => Tier::Ci {
+            fast: pace == Pace::Fast,
+        },
+        (Pace::Fast, Host::Local) => Tier::Committing,
+        (Pace::Full, Host::Local) => Tier::Everything,
     }
 }
 
@@ -317,8 +342,11 @@ pub(crate) fn project_named<'a>(
 
 fn hooked(tier: Tier, when: &str, fix: &str) -> ExitCode {
     let how = How {
-        hook: true,
-        commits: tier == Tier::Committing,
+        asker: if tier == Tier::Committing {
+            Asker::Commit
+        } else {
+            Asker::Hook
+        },
         ..How::default()
     };
     gated(run_gates_code(&[], tier, how), when, fix)
@@ -328,6 +356,7 @@ const EXPLAIN: &str = "Run `chock explain <gate>` for the findings of one.";
 const NO_VERIFY: &str = "Fix it, or push with --no-verify and say why.";
 
 /// Git blocks on any non-zero code, so keep chock's code: 2 still means nothing was measured.
+#[expect(clippy::print_stderr, reason = "the CLI tells the user on stderr")]
 fn gated(code: u8, when: &str, fix: &str) -> ExitCode {
     if code != 0 {
         eprintln!("{when}: see the line above. {fix}");
@@ -335,16 +364,25 @@ fn gated(code: u8, when: &str, fix: &str) -> ExitCode {
     ExitCode::from(code)
 }
 
+/// Who asked for a run: a person, a git hook, or the pre-commit hook.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Asker {
+    /// A person, for whom no gate left is a refusal.
+    #[default]
+    Person,
+    /// A git hook, for which no gate staged is not a refusal.
+    Hook,
+    /// The pre-commit hook, so a lower number goes into the record and into the commit.
+    Commit,
+}
+
 /// How a run was asked for, beyond the gates it names and the tier that asks.
 #[derive(Debug, Clone, Copy, Default)]
 struct How<'a> {
-    json: bool,
+    format: Format,
     /// The gates the text report gives a row.
     rows: Rows,
-    /// A git hook asked, for which no gate staged is not a refusal.
-    hook: bool,
-    /// The pre-commit hook asked, so a lower number goes into the record and into the commit.
-    commits: bool,
+    asker: Asker,
     /// Every gate is judged again; no kept verdict answers.
     no_cache: bool,
     /// The part of the Miri suite this run takes; `None` is all of it.
@@ -355,9 +393,13 @@ struct How<'a> {
     scope: Option<&'a crate::run::Scope>,
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "the CLI shows each gate's progress on stderr"
+)]
 fn run_gates_code(names: &[&str], tier: Tier, how: How<'_>) -> u8 {
     // Two runs in one tree would write the same coverage report and run the same suite.
-    let (_held, ctx, config) = match locked_context(tier.meets_an_absent_tool()) {
+    let (_held, ctx, config) = match locked_context(tier.host()) {
         Ok((held, ctx, config)) => (
             held,
             Ctx {
@@ -375,19 +417,31 @@ fn run_gates_code(names: &[&str], tier: Tier, how: How<'_>) -> u8 {
         Err(e) => return refused(&e),
     };
     if chosen.is_empty() {
-        return no_work(how.hook);
+        return no_work(how.asker);
     }
+    // Read before this run's record replaces it.
+    let before = run::since::before(&ctx.root);
     let result = run::run_all(&chosen, &ctx, VERSION, &|done| {
-        eprintln!("{}", done.progress())
+        eprintln!("{}", done.progress());
     });
-    emit_run(&result, how.json, how.rows);
+    emit_run(&result, how.format, how.rows, leaves(how.asker));
+    told_after(&before, &result, &ctx);
+    if how.asker != Asker::Person
+        && let Some(line) = reach_line(tier, &chosen, config.as_ref())
+    {
+        eprintln!("{line}");
+    }
     run::github::tell(&result, &ctx.root);
     run::report::settle(
         &ctx.root,
         &ctx.baseline,
         &result.gates,
         VERSION,
-        how.commits,
+        if how.asker == Asker::Commit {
+            Gating::Commit
+        } else {
+            Gating::Other
+        },
     );
     let code = result.verdict().code();
     crate::run::evidence::record(&ctx.root, &invocation(names), code);
@@ -415,16 +469,16 @@ fn cleared() -> Result<usize, String> {
         .map_err(|e| format!("cannot remove {}: {e}", crate::run::verdicts::FILE))
 }
 
-fn emit_run(result: &Run, json: bool, rows: Rows) {
-    emit(&if json {
-        result.render_json()
-    } else {
-        result.render(rows)
+fn emit_run(result: &Run, format: Format, rows: Rows, leaves: Leaves) {
+    emit(&match format {
+        Format::Json => result.render_json(),
+        Format::Text => result.render(rows, leaves),
     });
 }
 
-fn no_work(hook: bool) -> u8 {
-    if hook {
+#[expect(clippy::print_stderr, reason = "the CLI tells the user on stderr")]
+fn no_work(asker: Asker) -> u8 {
+    if asker != Asker::Person {
         eprintln!("chock: no gate is assigned to this hook; nothing was measured");
         return 0;
     }
@@ -449,13 +503,16 @@ fn skipping(
 }
 
 /// Refuses when a filter drops a gate the caller named.
+#[expect(clippy::print_stderr, reason = "the CLI tells the user on stderr")]
 fn selection(
     names: &[&str],
     tier: Tier,
     config: Option<&Config>,
 ) -> Result<Vec<&'static run::Gate>, String> {
     let (kept, elsewhere) = here(for_tier(select(names, config)?, tier, config), OS);
-    elsewhere.iter().for_each(|said| eprintln!("{said}"));
+    if let Some(said) = &elsewhere {
+        eprintln!("{said}");
+    }
     let excluded: Vec<&str> = names
         .iter()
         .copied()
@@ -486,14 +543,14 @@ fn here(chosen: Vec<&'static run::Gate>, os: &str) -> (Vec<&'static run::Gate>, 
 }
 
 /// Writes nothing: a survey is pointed at trees chock does not own.
-fn run_survey(json: bool) -> ExitCode {
-    let (ctx, _config) = match context(false) {
+fn run_survey(format: Format) -> ExitCode {
+    let (ctx, _config) = match context(Host::Local) {
         Ok(pair) => pair,
         Err(e) => return ExitCode::from(refused(&e)),
     };
     let result = run::survey_all(&gates::surveyable(), &ctx, VERSION);
     // A survey reports what each gate measures here, so a passing gate keeps its row.
-    emit_run(&result, json, Rows::Every);
+    emit_run(&result, format, Rows::Every, Leaves::default());
     ExitCode::from(result.verdict().code())
 }
 
@@ -514,8 +571,8 @@ fn for_tier(
 }
 
 fn stage_of(gate: &run::Gate, config: Option<&Config>) -> Stage {
-    config.map_or(Stage::default_for(gate.builds), |set| {
-        set.stage_of(gate.name, gate.builds)
+    config.map_or(Stage::default_for(gate.needs()), |set| {
+        set.stage_of(gate.name, gate.needs())
     })
 }
 
@@ -578,7 +635,7 @@ fn held_where_touched(config: &Config) -> Result<(), String> {
 
 /// Changes each named gate in the config, says what changed, and writes the config back. It
 /// refuses an unknown name before it writes.
-fn reconfigure(names: &[&str], change: Change) -> Result<(), ExitCode> {
+fn reconfigure(names: &[&str], change: Change<'_>) -> Result<(), ExitCode> {
     let root = root().map_err(|e| cannot_run(&e))?;
     let mut config = document::read::<Config>(&root)
         .map_err(|e| cannot_run(&e.to_string()))?
@@ -588,11 +645,11 @@ fn reconfigure(names: &[&str], change: Change) -> Result<(), ExitCode> {
                 project::config::FILE
             ))
         })?;
-    let named = names
+    let targets = names
         .iter()
         .map(|name| gates::find(name).ok_or_else(|| cannot_run(&unknown_gate(name))))
         .collect::<Result<Vec<_>, _>>()?;
-    for gate in named {
+    for gate in targets {
         let done = change.apply(&mut config, gate);
         emit(&format!("  {:<12} {done}\n", gate.name));
     }
@@ -603,7 +660,7 @@ fn reconfigure(names: &[&str], change: Change) -> Result<(), ExitCode> {
 }
 
 /// Switches gates on or off, or moves them to a stage, then says what to do next.
-fn configure(names: &[&str], change: Change) -> ExitCode {
+fn configure(names: &[&str], change: Change<'_>) -> ExitCode {
     if let Err(code) = reconfigure(names, change) {
         return code;
     }
@@ -612,6 +669,7 @@ fn configure(names: &[&str], change: Change) -> ExitCode {
 }
 
 /// Checks a commit message before the commit exists, while a fix costs nothing.
+#[expect(clippy::print_stderr, reason = "the CLI tells the user on stderr")]
 fn check_message(file: &str) -> ExitCode {
     let (stored, limits) = match message_and_limits(file) {
         Ok(read) => read,
@@ -641,9 +699,10 @@ fn message_and_limits(file: &str) -> Result<(String, commits::Limits), String> {
 }
 
 /// Returns `false` when it records nothing, so the caller can say so. `crap` keeps its own file.
-fn record_one(gate: &run::Gate, ctx: &run::Ctx, into: &mut Baseline, lower: bool) -> bool {
+#[expect(clippy::print_stderr, reason = "the CLI tells the user on stderr")]
+fn record_one(gate: &run::Gate, ctx: &run::Ctx, into: &mut Baseline, keep: Keep) -> bool {
     if gate.name == crate::gates::coverage::crap::GATE.name {
-        return crate::setup::init::record_crap(ctx, lower, kept_as(lower));
+        return crate::setup::init::record_crap(ctx, keep, kept_as(keep));
     }
     let read = match run::measured(gate, ctx) {
         Ok(read) => read,
@@ -660,16 +719,19 @@ fn record_one(gate: &run::Gate, ctx: &run::Ctx, into: &mut Baseline, lower: bool
     }
     emit(&format!(
         "  {:<9} {:<12} {}\n",
-        kept_as(lower),
+        kept_as(keep),
         gate.name,
         run::report::plural(series.len(), "item")
     ));
-    into.keep(gate.name, unit_of(gate), series, lower);
+    into.keep(gate.name, unit_of(gate), series, keep);
     true
 }
 
-fn kept_as(lower: bool) -> &'static str {
-    if lower { "lowered" } else { "recorded" }
+fn kept_as(keep: Keep) -> &'static str {
+    match keep {
+        Keep::Lower => "lowered",
+        Keep::Record => "recorded",
+    }
 }
 
 /// `Baseline::record` needs a unit; a pass/fail check gives its kind, which no ratchet uses.
@@ -687,151 +749,21 @@ fn invocation(names: &[&str]) -> String {
     spelled
 }
 
-fn list_gates(json: bool) -> ExitCode {
-    // Off a project or with no config, list the default set as on, as a run would.
-    match configured() {
-        Ok(config) => listed(json, config.as_ref()),
-        Err(e) => cannot_run(&e),
-    }
-}
-
-/// Each gate with its state, group, kind, stage and what it checks.
-fn listed(json: bool, config: Option<&Config>) -> ExitCode {
-    if json {
-        let rows: Vec<serde_json::Value> = gates::registry()
-            .iter()
-            .map(|gate| {
-                serde_json::json!({
-                    "gate": gate.name,
-                    "about": gate.about,
-                    "group": format!("{:?}", gate.group).to_lowercase(),
-                    "ratchet": gate.counts_in().is_some(),
-                    "enabled": switched_on(gate, config),
-                    "stage": stage_of(gate, config).name(),
-                    "rerun": run::rerun(gate.name),
-                })
-            })
-            .collect();
-        let doc = serde_json::json!({ "chock": VERSION, "gates": rows });
-        emit(&format!(
-            "{}\n",
-            serde_json::to_string_pretty(&doc).unwrap_or_default()
-        ));
-        return ExitCode::SUCCESS;
-    }
-    for gate in gates::registry() {
-        let kind = if gate.counts_in().is_some() {
-            "ratchet"
-        } else {
-            "pass/fail"
-        };
-        emit(&format!(
-            "  {:<4} {:<12} {:<10} {:<9} {:<6} {}\n",
-            if switched_on(gate, config) {
-                "on"
-            } else {
-                "off"
-            },
-            gate.name,
-            format!("{:?}", gate.group).to_lowercase(),
-            kind,
-            stage_of(gate, config).name(),
-            gate.about
-        ));
-    }
-    ExitCode::SUCCESS
-}
-
-/// Whether `chock run` would include this gate. Without a config, a run uses the enforced set.
-fn switched_on(gate: &run::Gate, config: Option<&Config>) -> bool {
-    match config {
-        Some(config) => config.is_on(gate.name),
-        None => gates::enforced().iter().any(|held| held.name == gate.name),
-    }
-}
-
-fn explain_or_owe(name: Option<&str>, json: bool) -> ExitCode {
-    let Some(name) = name else {
-        return match root().and_then(|root| run::debt::shown(&root, json)) {
-            Ok(said) => {
-                emit(&said);
-                ExitCode::SUCCESS
-            }
-            Err(e) => cannot_run(&e),
-        };
-    };
-    explain(name)
-}
-
-fn explain(name: &str) -> ExitCode {
-    if gates::find(name).is_none() {
-        return cannot_run(&unknown_gate(name));
-    }
-    let root = match root() {
-        Ok(r) => r,
-        Err(e) => return cannot_run(&e),
-    };
-    let path = root.join(LAST_RUN);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return cannot_run(&format!(
-            "no record of a run at {} — run `chock run` first",
-            path.display()
-        ));
-    };
-    let Ok(last) = serde_json::from_str::<Run>(&text) else {
-        return cannot_run(&format!("{} is not a chock run record", path.display()));
-    };
-    let Some(report) = last.gates.iter().find(|g| g.gate == name) else {
-        return cannot_run(&format!("the last run did not include `{name}`"));
-    };
-    emit(&format!("{}\n", report.summary()));
-    // How long ago this gate ran, so nobody reads an old report as a fresh pass.
-    if let Some(ago) = ago(report.ran_at, std::time::SystemTime::now()) {
-        emit(&format!("  measured {ago}\n"));
-    }
-    for line in report.explained(&root) {
-        emit(&format!("  {line}\n"));
-    }
-    emit(&crate::edited::told(&crate::edited::behind_held(
-        &root, report,
-    )));
-    emit(&format!("\nre-run with: {}\n", report.rerun));
-    ExitCode::from(report.verdict.code())
-}
-
-/// `now` is a parameter so a test can fix it. A record from a clock that is ahead gives `None`.
-fn ago(ran_at: Option<u64>, now: std::time::SystemTime) -> Option<String> {
-    let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(ran_at?);
-    Some(crate::setup::doctor::how_long(now.duration_since(at).ok()?))
-}
-
 /// Records without judging: a baseline from a failing tree is debt accepted in a readable commit.
+#[expect(clippy::print_stderr, reason = "the CLI tells the user on stderr")]
 fn record_baseline(asked: &[&str]) -> ExitCode {
     // Recording measures the tree too, so it takes the same lock a run does.
-    let (_held, ctx, config) = match locked_context(false) {
+    let (_held, ctx, config) = match locked_context(Host::Local) {
         // A record holds the whole tree, never one change.
         Ok((held, ctx, config)) => (held, run::Ctx { whole: true, ..ctx }, config),
         Err(e) => return cannot_run(&e),
     };
     let mut recorded = ctx.baseline.clone();
-    let failed = match keys::moves(asked) {
-        // A moved file takes its keys and measures nothing, so no total goes up.
-        Some(moves) => {
-            let config = config.as_ref();
-            match moves.and_then(|moves| keys::moved(&moves, &ctx, config, &mut recorded)) {
-                Ok(()) => Vec::new(),
-                Err(e) => return cannot_run(&e),
-            }
-        }
-        None => match keys::chosen(asked, config.as_ref()) {
-            Ok((asked, chosen)) => match keys::written(&asked, &chosen, &ctx, &mut recorded) {
-                Ok(failed) => failed,
-                Err(code) => return code,
-            },
-            Err(e) => return cannot_run(&e),
-        },
+    let (failed, whole) = match recorded_keys(asked, &ctx, config.as_ref(), &mut recorded) {
+        Ok(written) => written,
+        Err(code) => return code,
     };
-    recorded.chock = VERSION.to_string();
+    recorded.chock = recorded.stamp(VERSION, &whole);
     let dir = ctx.root.join(".chock");
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return cannot_run(&format!("cannot create {}: {e}", dir.display()));
@@ -854,7 +786,29 @@ fn record_baseline(asked: &[&str]) -> ExitCode {
     }
 }
 
+/// Writes the keys `asked` names into `recorded`: the gates that could not measure, and the
+/// gates whose whole record was written.
+fn recorded_keys(
+    asked: &[&str],
+    ctx: &run::Ctx,
+    config: Option<&Config>,
+    recorded: &mut Baseline,
+) -> Result<(Vec<&'static str>, Vec<String>), ExitCode> {
+    // A moved file takes its keys and measures nothing, so no total goes up.
+    if let Some(moves) = keys::moves(asked) {
+        let moved = moves.and_then(|moves| keys::moved(&moves, ctx, config, recorded));
+        return moved
+            .map(|()| (Vec::new(), Vec::new()))
+            .map_err(|e| cannot_run(&e));
+    }
+    let (asked, chosen) = keys::chosen(asked, config).map_err(|e| cannot_run(&e))?;
+    let failed = keys::written(&asked, &chosen, ctx, recorded)?;
+    let whole = keys::whole(&asked, &chosen, &failed);
+    Ok((failed, whole))
+}
+
 /// A record that measured a change the commit leaves out fails in CI, which measures the commit.
+#[expect(clippy::print_stderr, reason = "the CLI tells the user on stderr")]
 fn counted_unstaged(root: &std::path::Path, asked: &[&str]) {
     let left = crate::run::baseline::left_out(root);
     if keys::moves(asked).is_none() && !left.is_empty() {
@@ -873,7 +827,8 @@ fn recordable(config: Option<&Config>) -> Vec<&'static run::Gate> {
     gates
 }
 
-fn run_doctor(json: bool) -> ExitCode {
+#[expect(clippy::print_stderr, reason = "the CLI tells the user on stderr")]
+fn run_doctor(format: Format) -> ExitCode {
     let root = match root() {
         Ok(r) => r,
         Err(e) => return cannot_run(&e),
@@ -897,7 +852,7 @@ fn run_doctor(json: bool) -> ExitCode {
         }
     };
     let rows = doctor::gathered(&root, &pins, &extra);
-    if json {
+    if format == Format::Json {
         emit(&format!("{}\n", doctor::render_json(&rows, VERSION)));
     } else {
         emit(&doctor::render(&rows));
@@ -907,18 +862,22 @@ fn run_doctor(json: bool) -> ExitCode {
 
 /// Checks single files for an edit hook. No baseline and no build: each rule reads only the file.
 fn run_edited(args: &[&str]) -> ExitCode {
-    let (rest, json) = split_json(args);
+    let (rest, format) = split_json(args);
     let paths = match named(&rest) {
         Ok(paths) if paths.is_empty() => return ExitCode::SUCCESS,
         Ok(paths) => paths,
         Err(code) => return code,
     };
-    let hook = rest.first() == Some(&"--hook");
+    let caller = if rest.first() == Some(&"--hook") {
+        Caller::EditorHook
+    } else {
+        Caller::Person
+    };
     let mut found = Vec::new();
     for path in &paths {
         let root = crate::edited::project_of(path);
         // A hook skips a file outside an adopted project; a call by hand checks it.
-        if hook && !root.as_deref().is_some_and(crate::edited::adopted) {
+        if caller == Caller::EditorHook && !root.as_deref().is_some_and(crate::edited::adopted) {
             continue;
         }
         // Record each firing, so `doctor` can tell "never fired" from "found nothing".
@@ -936,15 +895,25 @@ fn run_edited(args: &[&str]) -> ExitCode {
             Err(why) => return cannot_run(&format!("cannot read {why}")),
         }
     }
-    answered(&found, json, hook)
+    answered(&found, format, caller)
+}
+
+/// Who called `chock edited`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Caller {
+    /// The editor's hook, which reads only stderr and exit code 2.
+    EditorHook,
+    /// A person, or a script that reads stdout.
+    Person,
 }
 
 /// A hook's findings go to stderr with exit 2, the only output Claude Code gives the model.
-fn answered(found: &[crate::run::report::Finding], json: bool, hook: bool) -> ExitCode {
-    if json {
+#[expect(clippy::print_stderr, reason = "the CLI tells the user on stderr")]
+fn answered(found: &[crate::run::report::Finding], format: Format, caller: Caller) -> ExitCode {
+    if format == Format::Json {
         let report = crate::run::report::Run::new(VERSION, vec![crate::edited::report(found)]);
         emit(&format!("{}\n", report.render_json()));
-    } else if hook && !found.is_empty() {
+    } else if caller == Caller::EditorHook && !found.is_empty() {
         eprint!("{}", crate::edited::told(found));
         return ExitCode::from(2);
     } else {
@@ -980,13 +949,10 @@ fn named(rest: &[&str]) -> Result<Vec<String>, ExitCode> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::run::{coverage_for, runner_for};
+    use std::fmt::Write as _;
 
     /// A shared unit would let a gate that changed kind raise the old numbers.
     #[test]
@@ -1010,7 +976,7 @@ mod tests {
             Some("just now".to_string())
         );
         assert_eq!(
-            ago(Some(1_000_000), at + std::time::Duration::from_secs(1_800)),
+            ago(Some(1_000_000), at + std::time::Duration::from_mins(30)),
             Some("30 minutes ago".to_string())
         );
         // No stamp, or a clock behind the record, gives `None`.
@@ -1135,9 +1101,12 @@ mod tests {
     #[test]
     fn explain_takes_one_gate_or_none_for_all_the_debt() {
         let asked = |name, json| Command::Explain { name, json };
-        assert_eq!(parse(&["explain", "crap"]), asked(Some("crap"), false));
-        assert_eq!(parse(&["explain"]), asked(None, false));
-        assert_eq!(parse(&["explain", "--json"]), asked(None, true));
+        assert_eq!(
+            parse(&["explain", "crap"]),
+            asked(Some("crap"), Format::Text)
+        );
+        assert_eq!(parse(&["explain"]), asked(None, Format::Text));
+        assert_eq!(parse(&["explain", "--json"]), asked(None, Format::Json));
         assert_eq!(
             parse(&["explain", "a", "b"]),
             Command::Usage("explain takes one gate, or none for all the debt".to_string())
@@ -1353,15 +1322,15 @@ mod tests {
 
     #[test]
     fn the_fast_flag_asks_for_exactly_what_a_commit_waits_for() {
-        assert_eq!(tier_for(true, false), Tier::Committing);
-        assert_eq!(tier_for(false, false), Tier::Everything);
+        assert_eq!(tier_for(Pace::Fast, Host::Local), Tier::Committing);
+        assert_eq!(tier_for(Pace::Full, Host::Local), Tier::Everything);
     }
 
     /// Both CI jobs lack the `local_only` tools, so `--ci` must reach the commit set too.
     #[test]
     fn the_ci_flag_reaches_both_of_cis_jobs() {
-        assert_eq!(tier_for(false, true), Tier::Ci { fast: false });
-        assert_eq!(tier_for(true, true), Tier::Ci { fast: true });
+        assert_eq!(tier_for(Pace::Full, Host::Ci), Tier::Ci { fast: false });
+        assert_eq!(tier_for(Pace::Fast, Host::Ci), Tier::Ci { fast: true });
     }
 
     /// The hooks still run `local_only` checks, so the option cannot hide a red check.
@@ -1398,6 +1367,29 @@ mod tests {
             let named = names_of(&for_tier(every.clone(), tier, Some(&config)));
             assert!(!named.contains(&"slop"), "{tier:?}: {named:?}");
         }
+    }
+
+    /// "32 gates ok" at the commit read as a pass, and the push then tripped coverage.
+    #[test]
+    fn a_hook_names_its_chock_and_each_gate_the_next_stage_adds() {
+        let config = Config::of(["slop", "coverage"]);
+        let all = select(&[], Some(&config)).unwrap();
+        let committing = for_tier(all.clone(), Tier::Committing, Some(&config));
+        assert_eq!(names_of(&committing), ["slop"]);
+        let said = reach_line(Tier::Committing, &committing, Some(&config)).unwrap();
+        assert!(said.starts_with(&format!("chock {VERSION} at ")), "{said}");
+        assert!(
+            said.ends_with(" judged the commit's 1 gate; the push adds 1: coverage"),
+            "{said}"
+        );
+
+        let pushing = for_tier(all, Tier::Pushing, Some(&config));
+        let said = reach_line(Tier::Pushing, &pushing, Some(&config)).unwrap();
+        assert!(
+            said.ends_with(" judged the push's 2 gates; `chock run` adds none"),
+            "{said}"
+        );
+        assert_eq!(reach_line(Tier::Everything, &pushing, Some(&config)), None);
     }
 
     #[test]
@@ -1490,6 +1482,10 @@ mod tests {
         assert_eq!(asked(&[]), Asked::Unnamed);
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a gate's `measure` returns a `Result`"
+    )]
     fn outside(_: &Ctx) -> Result<run::baseline::Series, String> {
         Ok(run::baseline::Series(
             [("/home/a.rs".to_string(), 1)].into(),
@@ -1499,7 +1495,10 @@ mod tests {
     /// What `chock baseline` says it did to each record.
     #[test]
     fn a_recording_says_whether_it_lowered_or_recorded() {
-        assert_eq!([kept_as(true), kept_as(false)], ["lowered", "recorded"]);
+        assert_eq!(
+            [kept_as(Keep::Lower), kept_as(Keep::Record)],
+            ["lowered", "recorded"]
+        );
     }
 
     /// A crap recording keeps each function's higher score, and `--lower` writes what cargo-crap
@@ -1512,15 +1511,18 @@ mod tests {
         let files = [("Cargo.toml", manifest), ("src/lib.rs", code)];
         let dir = crate::testdir::tree("cli-crap-lower", &files);
         let record = dir.join(crate::gates::coverage::crap::baseline());
-        let score = |hits: u8, lower: bool| {
-            let lines: String = (1..=3).map(|n| format!("DA:{n},{hits}\n")).collect();
+        let score = |hits: u8, keep: Keep| {
+            let lines = (1..=3).fold(String::new(), |mut lines, n| {
+                let _ = writeln!(lines, "DA:{n},{hits}");
+                lines
+            });
             let report = format!("SF:src/lib.rs\n{lines}end_of_record\n");
             std::fs::write(dir.join("measured.info"), report).unwrap();
             std::fs::write(dir.join("coverage.sh"), "cp measured.info lcov.info").unwrap();
             let mut ctx = Ctx::at(&dir);
             ctx.coverage = vec!["sh".to_string(), "coverage.sh".to_string()].into();
             let gate = &crate::gates::coverage::crap::GATE;
-            let kept = record_one(gate, &ctx, &mut Baseline::empty("0.1.0"), lower);
+            let kept = record_one(gate, &ctx, &mut Baseline::empty("0.1.0"), keep);
             assert!(
                 kept,
                 "nothing recorded: `chock init --global` installs cargo-crap"
@@ -1530,10 +1532,13 @@ mod tests {
             let crap = parsed.pointer("/entries/0/crap");
             crap.and_then(serde_json::Value::as_f64).unwrap()
         };
-        let untested = score(0, false);
+        let untested = score(0, Keep::Record);
         // A test now runs every line, and only `--lower` lets the score go down.
-        assert_eq!(score(1, false).to_string(), untested.to_string());
-        assert!(score(1, true) < untested, "`--lower` kept {untested}");
+        assert_eq!(score(1, Keep::Record).to_string(), untested.to_string());
+        assert!(
+            score(1, Keep::Lower) < untested,
+            "`--lower` kept {untested}"
+        );
     }
 
     /// A gate that cannot measure, or that measures a path outside the project, records nothing.
@@ -1544,7 +1549,7 @@ mod tests {
         ctx.coverage.report = std::sync::Arc::new(none);
         let mut held = Baseline::empty("0.1.0");
         let crap = &gates::coverage::crap::GATE;
-        assert!(!record_one(crap, &ctx, &mut held, false));
+        assert!(!record_one(crap, &ctx, &mut held, Keep::Record));
         let gate = run::Gate {
             kind: run::Kind::Ratchet {
                 measure: outside,
@@ -1553,7 +1558,7 @@ mod tests {
             },
             ..gates::metrics::admits::GATE
         };
-        assert!(!record_one(&gate, &ctx, &mut held, false));
+        assert!(!record_one(&gate, &ctx, &mut held, Keep::Record));
         assert_eq!(held.recorded(gate.name), None);
     }
 }

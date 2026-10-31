@@ -14,6 +14,8 @@ use crate::exec;
 
 /// Parse Outpost's JSON; a failed command or an unknown shape is an error, never an empty answer.
 /// Outpost exits non-zero on findings, so only output that does not parse asks how it exited.
+/// # Errors
+/// A failed command, a partial output, or a shape chock does not know.
 pub fn read<T: DeserializeOwned>(out: &exec::Output, what: &str) -> Result<T, String> {
     if out.truncated {
         return Err(format!(
@@ -33,6 +35,8 @@ pub fn read<T: DeserializeOwned>(out: &exec::Output, what: &str) -> Result<T, St
 }
 
 /// Run `outpost` in the root. Every gate goes through here, so a missing binary reads the same.
+/// # Errors
+/// An `outpost` that cannot start, such as one not on PATH.
 pub fn spawn(root: &std::path::Path, args: &[&str]) -> Result<exec::Output, String> {
     exec::run("outpost", args, root).map_err(|e| format!("{e} — this gate needs `outpost` on PATH"))
 }
@@ -43,9 +47,12 @@ pub const CONTRACT: u32 = 1;
 /// One `outpost check --json` shared by every gate in a run, so the tree is read once.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct Check {
+    /// The output contract Outpost wrote, checked against `CONTRACT`.
     pub contract: u32,
+    /// Each measure Outpost took of the tree.
     #[serde(default)]
     pub measures: Vec<Measure>,
+    /// Regions Outpost's grammar could not model, each as `path:line` or a bare path.
     #[serde(default)]
     pub read_around: Vec<String>,
     /// The bar a `relative` measure was judged against; `None` from an outpost too old to say.
@@ -56,20 +63,28 @@ pub struct Check {
 /// The density padding findings are measured against: a pinned value, or the tree's own median.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct Bar {
+    /// The median density of the tree's entities.
     pub tree_median: f64,
+    /// How many entities the median was taken over.
     pub population: u64,
+    /// Whether the bar is pinned, so it does not move with the tree.
     pub pinned: bool,
 }
 
+/// One measure in a check: its verdict and what it found.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct Measure {
+    /// The measure's name, such as `padding`.
     pub measure: String,
+    /// Outpost's verdict; `cannot_run` means the measure did not run.
     pub verdict: String,
+    /// Why the measure could not run, when Outpost says.
     #[serde(default)]
     pub cannot_run_reason: Option<String>,
     /// Outpost's own total, which a census reads because a measure at zero has no findings.
     #[serde(default)]
     pub measured: Option<u64>,
+    /// Each place the measure flags.
     #[serde(default)]
     pub findings: Vec<Finding>,
     /// Whether this was judged against a tree-wide statistic, so a verdict can move with unrelated
@@ -84,9 +99,12 @@ pub struct Measure {
     pub modularity: Option<f64>,
 }
 
+/// One place a measure flags.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct Finding {
+    /// The file, from the root.
     pub file: String,
+    /// The item in the file, such as a function, when the measure names one.
     #[serde(default)]
     pub item: Option<String>,
     /// The size this finding counts, such as excess lines; `None` for a measure of occurrences.
@@ -95,8 +113,10 @@ pub struct Finding {
     /// A hazard's `note`, `warn` or `deny`. When absent, the finding counts as debt.
     #[serde(default)]
     pub severity: Option<String>,
+    /// The line of the place, counted from 1.
     #[serde(default)]
     pub line: Option<u32>,
+    /// What Outpost says about the place.
     #[serde(default)]
     pub message: Option<String>,
 }
@@ -138,6 +158,8 @@ impl Check {
     }
 
     /// The named measure, or an error if Outpost no longer reports it or it could not run.
+    /// # Errors
+    /// A measure that Outpost no longer reports or that could not run.
     pub fn measure(&self, name: &str) -> Result<&Measure, String> {
         self.measures
             .iter()
@@ -148,6 +170,8 @@ impl Check {
 
     /// One measure's findings as a ratchet series, keyed by file and item so a key survives edits
     /// above it. Each value is the largest `measured` at that key, or one.
+    /// # Errors
+    /// A measure that Outpost no longer reports or that could not run.
     pub fn series(&self, name: &str) -> Result<crate::run::baseline::Series, String> {
         let mut series = crate::run::baseline::Series::new();
         for found in &self.measure(name)?.findings {
@@ -185,6 +209,8 @@ impl Check {
 
 impl Measure {
     /// This measure, or an error carrying Outpost's reason if it could not run.
+    /// # Errors
+    /// A measure with the `cannot_run` verdict.
     pub fn ran(&self) -> Result<&Self, String> {
         match self.verdict.as_str() {
             "cannot_run" => Err(format!(
@@ -200,6 +226,8 @@ impl Measure {
 }
 
 /// The run's one `outpost check --json`, started by whichever gate asks first and held on `Ctx`.
+/// # Errors
+/// An `outpost check` that cannot run or that chock cannot read.
 pub fn once(ctx: &crate::run::Ctx) -> Result<&Check, String> {
     ctx.checked
         .get_or_init(|| {
@@ -211,6 +239,8 @@ pub fn once(ctx: &crate::run::Ctx) -> Result<&Check, String> {
 }
 
 /// Read one `outpost check --json`, refusing a contract this chock does not know.
+/// # Errors
+/// Output that does not parse, or a contract newer than `CONTRACT`.
 pub fn checked(out: &exec::Output) -> Result<Check, String> {
     let read: Check = read(out, "check")?;
     if read.contract > CONTRACT {
@@ -228,10 +258,6 @@ pub fn nothing_read(what: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -274,7 +300,9 @@ mod tests {
         .unwrap();
         let series = |rows: &[(&str, u64)]| {
             let mut series = crate::run::baseline::Series::new();
-            rows.iter().for_each(|(key, count)| series.set(key, *count));
+            for (key, count) in rows {
+                series.set(key, *count);
+            }
             series
         };
         let now = series(&[("hazard_loop", 1), ("mixed", 9), ("held", 1)]);

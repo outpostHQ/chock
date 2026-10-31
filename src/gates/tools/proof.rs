@@ -17,6 +17,7 @@ mod mutants;
 
 pub(in crate::gates) use mutants::target_dir;
 
+/// Verifies each Kani harness, and checks that each mutant patch makes it fail.
 pub const GATE: Gate = Gate {
     name: "proof",
     about: "every kani harness still verifies, per harness, and fails on each mutant patch; a \
@@ -53,17 +54,31 @@ struct Contract {
 
 fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     ctx.default_build("cargo kani")?;
-    let unstable = listing_features(&ctx.root)?;
+    let (unstable, skipped) = listing_features(&ctx.root)?;
     let packages = ctx.proof.packages.as_deref().unwrap_or_default();
     let listing = invocation(packages, &ctx.features, &list_with(&unstable));
     let listed = exec::run("cargo", &listing, &ctx.root).map_err(|e| e.to_string())?;
-    let harnesses = read_harnesses(&listed, || read_listing(&ctx.root))?;
+    let harnesses =
+        read_harnesses(&listed, || read_listing(&ctx.root)).map_err(|e| advised(e, &skipped))?;
     let jobs = jobs(crate::exec::budget::cap(), ctx.proof_jobs).to_string();
     let argv = invocation(packages, &ctx.features, &verify(&jobs));
     let limit = limit(ctx.proof.timeout_s);
     let run = exec::run_paced("cargo", &argv, &ctx.root, &[], (|_| false, limit));
     let refute = || mutants::refuted(ctx, &harnesses, limit.as_secs(), &kani(limit));
-    mutated(judged(run, &harnesses, &ctx.proof), refute)
+    let mut read =
+        mutated(judged(run, &harnesses, &ctx.proof), refute).map_err(|e| advised(e, &skipped))?;
+    read.findings.extend(skipped);
+    Ok(read)
+}
+
+/// The reason a run failed, with each `metadata.kani` table Kani skipped, since a feature that
+/// table turns on can be the cause.
+fn advised(reason: String, skipped: &[Finding]) -> String {
+    let tables: Vec<&str> = skipped.iter().map(|one| one.file.as_str()).collect();
+    if tables.is_empty() {
+        return reason;
+    }
+    format!("{reason}; {SKIPPED}: {}", tables.join(", "))
 }
 
 /// One run of kani: its arguments, the directory it runs in, and the target directory it uses.
@@ -113,7 +128,14 @@ fn judged(
     proof: &Proof,
 ) -> Result<Measurement, String> {
     match run {
-        Ok(out) => read_verdict(&out, listed, proof.require_cover.unwrap_or_default()),
+        Ok(out) => {
+            let cover = if proof.require_cover.unwrap_or_default() {
+                Cover::Required
+            } else {
+                Cover::Optional
+            };
+            read_verdict(&out, listed, cover)
+        }
         Err(e) if e.hung() => Ok(timed_out(listed, limit(proof.timeout_s).as_secs())),
         Err(e) => Err(e.to_string()),
     }
@@ -133,19 +155,23 @@ pub(in crate::gates) fn list_with(unstable: &[String]) -> Vec<&str> {
         .collect()
 }
 
-/// Removes the old listing, then reads each unstable feature that `cargo kani list` must turn on.
-fn listing_features(root: &std::path::Path) -> Result<Vec<String>, String> {
+/// Removes the old listing, then reads each unstable feature that `cargo kani list` must turn on,
+/// and a note on each `metadata.kani` table Kani skips.
+fn listing_features(root: &std::path::Path) -> Result<(Vec<String>, Vec<Finding>), String> {
     clear_listing(root)?;
-    unstable(&crate::project::metadata(root)?)
+    let metadata = crate::project::metadata(root)?;
+    Ok((unstable(&metadata)?, skipped(&metadata, root)?))
 }
 
-/// Each unstable Kani feature that `[workspace.metadata.kani.unstable]` or a package's table
-/// turns on, from `cargo metadata`.
+const SKIPPED: &str = "Kani reads `metadata.kani` only from the root manifest and skips this \
+                       table; move it to `[workspace.metadata.kani]`";
+
+/// Each unstable Kani feature that the root manifest turns on, in `[workspace.metadata.kani]` or,
+/// where the root is a package, in `[package.metadata.kani]`. Kani reads no other manifest.
 pub(in crate::gates) fn unstable(metadata: &str) -> Result<Vec<String>, String> {
-    let read: serde_json::Value = serde_json::from_str(metadata)
-        .map_err(|e| format!("cargo metadata wrote what chock cannot read: {e}"))?;
-    let packages = read["packages"].as_array().into_iter().flatten();
-    let tables = std::iter::once(&read["metadata"]).chain(packages.map(|one| &one["metadata"]));
+    let read = read_metadata(metadata)?;
+    let tables =
+        std::iter::once(&read["metadata"]).chain(root_package(&read).map(|one| &one["metadata"]));
     let on: BTreeSet<String> = tables
         .filter_map(|table| table["kani"]["unstable"].as_object())
         .flatten()
@@ -153,6 +179,37 @@ pub(in crate::gates) fn unstable(metadata: &str) -> Result<Vec<String>, String> 
         .map(|(feature, _)| feature.clone())
         .collect();
     Ok(on.into_iter().collect())
+}
+
+/// A note on each member's `metadata.kani` table, which Kani skips.
+fn skipped(metadata: &str, root: &std::path::Path) -> Result<Vec<Finding>, String> {
+    let read = read_metadata(metadata)?;
+    let at_root = root_package(&read).and_then(|one| one["id"].as_str());
+    let packages = read["packages"].as_array().into_iter().flatten();
+    Ok(packages
+        .filter(|one| one["id"].as_str() != at_root && !one["metadata"]["kani"].is_null())
+        .filter_map(|one| one["manifest_path"].as_str())
+        .map(|at| {
+            Finding::at(
+                &crate::project::relative(root, std::path::Path::new(at)),
+                SKIPPED,
+            )
+        })
+        .collect())
+}
+
+fn read_metadata(metadata: &str) -> Result<serde_json::Value, String> {
+    serde_json::from_str(metadata)
+        .map_err(|e| format!("cargo metadata wrote what chock cannot read: {e}"))
+}
+
+/// The package whose manifest is the workspace root's; `None` for a virtual workspace.
+fn root_package(read: &serde_json::Value) -> Option<&serde_json::Value> {
+    let manifest = std::path::Path::new(read["workspace_root"].as_str()?).join("Cargo.toml");
+    let packages = read["packages"].as_array()?;
+    packages
+        .iter()
+        .find(|one| one["manifest_path"].as_str().map(std::path::Path::new) == Some(&manifest))
 }
 
 /// Each harness is one solver on one core: eight at most, within this lane's share of the cores,
@@ -222,10 +279,10 @@ fn listed_harnesses(text: &str) -> Result<BTreeSet<String>, String> {
 fn read_verdict(
     out: &exec::Output,
     expected: &BTreeSet<String>,
-    covered: bool,
+    cover: Cover,
 ) -> Result<Measurement, String> {
     let harnesses = verified_summaries(out, expected)?;
-    let judged = findings(&harnesses, covered);
+    let judged = findings(&harnesses, cover);
     finished_unless_failed(out, &judged)?;
     let failed = judged
         .iter()
@@ -238,9 +295,10 @@ fn read_verdict(
 
 /// Exit zero counts only for a run that names no failed harness; one that names some is read.
 fn finished_unless_failed(out: &exec::Output, judged: &[Finding]) -> Result<(), String> {
-    match judged.is_empty() {
-        true => finished(out),
-        false => Ok(()),
+    if judged.is_empty() {
+        finished(out)
+    } else {
+        Ok(())
     }
 }
 
@@ -274,12 +332,21 @@ fn verified_summaries(
     Ok(harnesses)
 }
 
-/// Each harness at fault, and with `covered` each with no cover. If none is, each failed check,
-/// except the panic that a `should_panic` harness expects.
-pub(in crate::gates) fn findings(harnesses: &[Harness], covered: bool) -> Vec<Finding> {
+/// Whether each harness must declare a cover property: `proof.require_cover`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::gates) enum Cover {
+    /// A harness with no cover property is at fault.
+    Required,
+    /// A harness needs no cover property.
+    Optional,
+}
+
+/// Each harness at fault, and with `Cover::Required` each with no cover. If none is, each failed
+/// check, except the panic that a `should_panic` harness expects.
+pub(in crate::gates) fn findings(harnesses: &[Harness], cover: Cover) -> Vec<Finding> {
     let judged: Vec<Finding> = harnesses
         .iter()
-        .filter_map(|held| held.fault(covered))
+        .filter_map(|held| held.fault(cover))
         .collect();
     if !judged.is_empty() {
         return judged;
@@ -339,9 +406,18 @@ struct Checks {
     unreachable: u64,
 }
 
+/// Whether a harness's panic is the verdict it expects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Panic {
+    /// A `should_panic` harness panicked as expected: failed checks do not count.
+    Expected,
+    /// Any other harness: failed checks count.
+    Unexpected,
+}
+
 impl Checks {
-    fn failure(&self, expected_panic: bool) -> Option<String> {
-        if self.failed > 0 && !expected_panic {
+    fn failure(&self, panic: Panic) -> Option<String> {
+        if self.failed > 0 && panic == Panic::Unexpected {
             return Some(format!("{} of {} checks failed", self.failed, self.total));
         }
         if self.total > 0 && self.unreachable == self.total {
@@ -359,13 +435,18 @@ impl Checks {
 }
 
 impl Harness {
-    fn fault(&self, covered: bool) -> Option<Finding> {
+    fn fault(&self, cover: Cover) -> Option<Finding> {
         let summary = self.summary.as_ref()?;
+        let panic = if self.panicked_as_expected() {
+            Panic::Expected
+        } else {
+            Panic::Unexpected
+        };
         summary
-            .failure(self.panicked_as_expected())
+            .failure(panic)
             .or_else(|| self.refused())
             .or_else(|| self.uncovered())
-            .or_else(|| self.coverless(covered))
+            .or_else(|| self.coverless(cover))
             .or_else(|| summary.empty())
             .map(|message| Finding::at("", &message).item(&self.name))
     }
@@ -393,12 +474,14 @@ impl Harness {
 
     /// With `proof.require_cover`, a harness with no cover property: nothing shows that its
     /// assumptions leave a case to check.
-    fn coverless(&self, covered: bool) -> Option<String> {
-        (covered && self.covers.is_none_or(|(_, declared)| declared == 0)).then(|| {
-            "no `kani::cover!` shows that a case gets past its assumptions, and \
+    fn coverless(&self, cover: Cover) -> Option<String> {
+        (cover == Cover::Required && self.covers.is_none_or(|(_, declared)| declared == 0)).then(
+            || {
+                "no `kani::cover!` shows that a case gets past its assumptions, and \
              `proof.require_cover` asks each harness for one"
-                .to_string()
-        })
+                    .to_string()
+            },
+        )
     }
 
     fn read(&mut self, said: &str) -> Result<(), String> {
@@ -617,11 +700,6 @@ fn listed_name(item: &serde_json::Value, names: &mut BTreeSet<String>) -> Result
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap or panic in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -642,7 +720,7 @@ mod tests {
             total: 0,
             unreachable: 0,
         };
-        assert_eq!(empty.failure(false), None);
+        assert_eq!(empty.failure(Panic::Unexpected), None);
         assert_eq!(
             empty.empty().as_deref(),
             Some("nothing was checked, so verifying proved nothing")
@@ -653,7 +731,7 @@ mod tests {
             unreachable: 2,
         };
         assert_eq!(
-            unreachable.failure(false).as_deref(),
+            unreachable.failure(Panic::Unexpected).as_deref(),
             Some("vacuous: all 2 checks unreachable, so its assumptions cannot hold")
         );
         assert_eq!(unreachable.empty(), None);
@@ -685,6 +763,11 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
     const HONEST: &str =
         "Checking harness one...\nSUMMARY:\n ** 0 of 2 failed\nVERIFICATION:- SUCCESSFUL\n";
 
+    /// What a Kani run with this exit code and output proves of the expected harnesses.
+    fn verdict(code: i32, stdout: &str, names: &BTreeSet<String>, cover: Cover) -> Measurement {
+        read_verdict(&exec::Output::of(Some(code), stdout, ""), names, cover).unwrap()
+    }
+
     fn expected(names: &[&str]) -> BTreeSet<String> {
         names.iter().map(|name| (*name).to_string()).collect()
     }
@@ -693,7 +776,7 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
         read_verdict(
             &exec::Output::of(Some(code), stdout, ""),
             &expected(&["one"]),
-            false,
+            Cover::Optional,
         )
     }
 
@@ -761,12 +844,11 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
             "proofs::vacuous_by_a_false_assumption",
             "proofs::doubling_never_exceeds_the_range",
         ]);
-        let outcome =
-            read_verdict(&exec::Output::of(Some(0), MEASURED, ""), &names, false).unwrap();
+        let outcome = verdict(0, MEASURED, &names, Cover::Optional);
         let faulted: BTreeSet<&str> = outcome
             .faults
             .iter()
-            .flat_map(|it| it.item.as_deref())
+            .filter_map(|it| it.item.as_deref())
             .collect();
         assert_eq!(failed(&outcome), Vec::from_iter(faulted));
         let said: Vec<String> = outcome.faults.iter().map(Finding::render).collect();
@@ -786,7 +868,7 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
         let why = read_verdict(
             &exec::Output::of(Some(0), HONEST, ""),
             &expected(&["one", "two"]),
-            false,
+            Cover::Optional,
         )
         .unwrap_err();
         assert!(why.contains("missing: [two]"), "{why}");
@@ -799,7 +881,14 @@ Complete - 4 successfully verified harnesses, 0 failures, 4 total.
     fn no_output_is_not_proof_even_when_kani_exits_zero() {
         let why = verdict_of("", 0).unwrap_err();
         assert!(why.contains("missing: [one]"), "{why}");
-        assert!(read_verdict(&exec::Output::of(Some(0), "", ""), &BTreeSet::new(), false).is_err());
+        assert!(
+            read_verdict(
+                &exec::Output::of(Some(0), "", ""),
+                &BTreeSet::new(),
+                Cover::Optional
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -845,8 +934,7 @@ Complete - 2 successfully verified harnesses, 2 failures, 4 total.
             "proofs::never_panics",
             "proofs::panics_as_expected",
         ]);
-        let outcome =
-            read_verdict(&exec::Output::of(Some(1), SHOULD_PANIC, ""), &names, false).unwrap();
+        let outcome = verdict(1, SHOULD_PANIC, &names, Cover::Optional);
         let unexpected =
             "kani's verdict is FAILED (encountered no panics, but at least one was expected)";
         assert_eq!(
@@ -869,8 +957,7 @@ Complete - 2 successfully verified harnesses, 2 failures, 4 total.
             .unwrap();
         let passing = format!("{HONEST}{}", &SHOULD_PANIC[witness..]);
         let names = expected(&["one", "proofs::panics_as_expected"]);
-        let outcome =
-            read_verdict(&exec::Output::of(Some(0), &passing, ""), &names, false).unwrap();
+        let outcome = verdict(0, &passing, &names, Cover::Optional);
         assert_eq!(outcome, verified(&["one", "proofs::panics_as_expected"]));
     }
 
@@ -882,10 +969,10 @@ Complete - 2 successfully verified harnesses, 2 failures, 4 total.
             unreachable: 0,
         };
         assert_eq!(
-            failing.failure(false).as_deref(),
+            failing.failure(Panic::Unexpected).as_deref(),
             Some("1 of 2 checks failed")
         );
-        assert_eq!(failing.failure(true), None);
+        assert_eq!(failing.failure(Panic::Expected), None);
         let mut witness = Harness {
             name: "w".to_string(),
             summary: Some(failing),
@@ -895,7 +982,7 @@ Complete - 2 successfully verified harnesses, 2 failures, 4 total.
             .noted(&format!("VERIFICATION:- {EXPECTED_PANIC}"))
             .unwrap();
         assert!(witness.panicked_as_expected());
-        assert_eq!(witness.fault(false), None);
+        assert_eq!(witness.fault(Cover::Optional), None);
         assert!(
             witness
                 .noted("VERIFICATION:- SUCCESSFUL")
@@ -910,7 +997,7 @@ Complete - 2 successfully verified harnesses, 2 failures, 4 total.
         plain.noted("VERIFICATION:- SUCCESSFUL").unwrap();
         assert!(!plain.panicked_as_expected());
         assert_eq!(
-            plain.fault(false),
+            plain.fault(Cover::Optional),
             Some(Finding::at("", "1 of 2 checks failed").item("p"))
         );
     }
@@ -937,8 +1024,7 @@ VERIFICATION:- SUCCESSFUL
     #[test]
     fn a_result_verified_side_by_side_belongs_to_the_harness_its_thread_started() {
         let names = expected(&["fails", "holds", "later"]);
-        let outcome =
-            read_verdict(&exec::Output::of(Some(1), SIDE_BY_SIDE, ""), &names, false).unwrap();
+        let outcome = verdict(1, SIDE_BY_SIDE, &names, Cover::Optional);
         assert_eq!(
             outcome.faults,
             [Finding::at("", "1 of 2 checks failed").item("fails")]
@@ -1022,14 +1108,14 @@ VERIFICATION:- SUCCESSFUL
         let mut out = exec::Output::of(Some(0), HONEST, "");
         out.truncated = true;
         assert!(
-            read_verdict(&out, &expected(&["one"]), false)
+            read_verdict(&out, &expected(&["one"]), Cover::Optional)
                 .unwrap_err()
                 .contains("truncated")
         );
         let why = read_verdict(
             &exec::Output::of(None, HONEST, "solver stopped"),
             &expected(&["one"]),
-            false,
+            Cover::Optional,
         )
         .unwrap_err();
         assert!(why.contains("solver stopped"), "{why}");
@@ -1070,14 +1156,14 @@ VERIFICATION:- SUCCESSFUL
         let said = "no `kani::cover!` shows that a case gets past its assumptions, and \
                     `proof.require_cover` asks each harness for one";
         let coverless = Some(Finding::at("", said).item("one"));
-        assert_eq!(held.fault(false), None);
-        assert_eq!(held.fault(true), coverless);
+        assert_eq!(held.fault(Cover::Optional), None);
+        assert_eq!(held.fault(Cover::Required), coverless);
         held.covers = Some((0, 0));
-        assert_eq!(held.fault(true), coverless);
+        assert_eq!(held.fault(Cover::Required), coverless);
         held.covers = Some((1, 1));
-        assert_eq!(held.fault(true), None);
+        assert_eq!(held.fault(Cover::Required), None);
         let names = expected(&["one"]);
-        let read = read_verdict(&exec::Output::of(Some(0), HONEST, ""), &names, true).unwrap();
+        let read = verdict(0, HONEST, &names, Cover::Required);
         assert_eq!(read.series.get("one"), Some(1));
     }
 
@@ -1085,7 +1171,7 @@ VERIFICATION:- SUCCESSFUL
     fn progress_before_the_first_harness_and_satisfied_covers_are_not_failures() {
         let text = format!("Compiling fixture\n{HONEST} ** 1 of 1 cover properties satisfied\n");
         assert_eq!(verdict_of(&text, 0).unwrap(), verified(&["one"]));
-        assert_eq!(Harness::default().fault(false), None);
+        assert_eq!(Harness::default().fault(Cover::Optional), None);
     }
 
     #[test]
@@ -1141,11 +1227,17 @@ VERIFICATION:- SUCCESSFUL
 
     #[test]
     fn a_listing_turns_on_each_unstable_feature_a_manifest_turns_on() {
-        let metadata = r#"{"metadata":{"kani":{"unstable":{"stubbing":true,"off":false}}},
-            "packages":[{"metadata":{"kani":{"unstable":{"function-contracts":true,
-            "stubbing":true}}}},{"metadata":null}]}"#;
+        let metadata = r#"{"workspace_root":"/w",
+            "metadata":{"kani":{"unstable":{"stubbing":true,"off":false}}},
+            "packages":[{"id":"root","manifest_path":"/w/Cargo.toml","metadata":{"kani":{
+            "unstable":{"function-contracts":true,"stubbing":true}}}},
+            {"id":"side","manifest_path":"/w/side/Cargo.toml",
+            "metadata":{"kani":{"unstable":{"loop-contracts":true}}}},{"metadata":null}]}"#;
         let on = unstable(metadata).unwrap();
         assert_eq!(on, ["function-contracts", "stubbing"]);
+        let notes = skipped(metadata, std::path::Path::new("/w")).unwrap();
+        let files: Vec<&str> = notes.iter().map(|one| one.file.as_str()).collect();
+        assert_eq!(files, ["side/Cargo.toml"]);
         let listed = [
             "list",
             "-Z",
@@ -1174,8 +1266,56 @@ VERIFICATION:- SUCCESSFUL
             "proof-listing-features",
             &[("Cargo.toml", manifest), ("src/lib.rs", ""), (LISTING, ONE)],
         );
-        assert_eq!(listing_features(&root).unwrap(), ["function-contracts"]);
+        let (on, notes) = listing_features(&root).unwrap();
+        assert_eq!(on, ["function-contracts"]);
+        assert!(notes.is_empty(), "{notes:?}");
         assert!(!root.join(LISTING).exists());
+    }
+
+    /// Kani reads `metadata.kani` only from the root manifest, so a member's own table turns on no
+    /// feature and gives one note. Mutant: read every package's table again.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_member_table_turns_on_no_feature_and_gives_one_note_to_move_it() {
+        let member = "[package]\nname = \"side\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+        let skipped_table =
+            format!("{member}\n[package.metadata.kani.unstable]\nstubbing = true\n");
+        let workspace = "[workspace]\nmembers = [\"side\"]\nresolver = \"2\"\n";
+        let root = crate::testdir::tree(
+            "proof-member-table",
+            &[
+                ("Cargo.toml", workspace),
+                ("side/Cargo.toml", &skipped_table),
+                ("side/src/lib.rs", ""),
+            ],
+        );
+        let (on, notes) = listing_features(&root).unwrap();
+        assert!(on.is_empty(), "{on:?}");
+        let files: Vec<&str> = notes.iter().map(|one| one.file.as_str()).collect();
+        assert_eq!(files, ["side/Cargo.toml"]);
+        assert!(
+            notes[0]
+                .message
+                .contains("move it to `[workspace.metadata.kani]`")
+        );
+        let why = advised("cargo kani list failed".to_string(), &notes);
+        assert!(
+            why.ends_with("[workspace.metadata.kani]`: side/Cargo.toml"),
+            "{why}"
+        );
+
+        let moved = format!("{workspace}\n[workspace.metadata.kani.unstable]\nstubbing = true\n");
+        let root = crate::testdir::tree(
+            "proof-root-table",
+            &[
+                ("Cargo.toml", &moved),
+                ("side/Cargo.toml", member),
+                ("side/src/lib.rs", ""),
+            ],
+        );
+        let (on, notes) = listing_features(&root).unwrap();
+        assert_eq!(on, ["stubbing"]);
+        assert!(notes.is_empty(), "{notes:?}");
     }
 
     #[test]

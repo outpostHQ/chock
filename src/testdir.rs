@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
 /// A scratch directory that removes itself on drop, unless its test panicked.
+#[derive(Debug)]
 pub struct Scratch(PathBuf);
 
 impl std::ops::Deref for Scratch {
@@ -35,12 +36,14 @@ impl Drop for Scratch {
 }
 
 /// A `Ctx` that owns the scratch directory it points at, so the directory lives as long as it does.
+#[derive(Debug)]
 pub struct Held {
     ctx: crate::run::Ctx,
     _dir: Scratch,
 }
 
 impl Held {
+    /// Ties `dir` to `ctx`, so the directory is removed only when the `Ctx` is dropped.
     #[must_use]
     pub fn new(dir: Scratch, ctx: crate::run::Ctx) -> Self {
         Self { ctx, _dir: dir }
@@ -103,11 +106,9 @@ fn fence(root: &Path) {
 }
 
 /// A scratch directory that holds `files`; a path that names directories gets them made.
+/// # Panics
+/// When a file or a directory cannot be written.
 #[must_use]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a fixture that was not written is the test failing"
-)]
 pub fn tree(name: &str, files: &[(&str, &str)]) -> Scratch {
     let dir = make(name);
     for (path, text) in files {
@@ -119,11 +120,9 @@ pub fn tree(name: &str, files: &[(&str, &str)]) -> Scratch {
 }
 
 /// A git repository with one commit that holds `files`.
+/// # Panics
+/// When git cannot run, or a git command fails.
 #[must_use]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a repository that git did not make is the test failing"
-)]
 pub fn repo(name: &str, files: &[(&str, &str)]) -> Scratch {
     let root = tree(name, files);
     let identity = ["-c", "user.email=t@example.com", "-c", "user.name=t"];
@@ -137,11 +136,9 @@ pub fn repo(name: &str, files: &[(&str, &str)]) -> Scratch {
 
 /// A proof gate's tools in `dir`, with `sh` running `script` in place of each program; the script
 /// reads the program as `$1`, and its arguments after it.
+/// # Panics
+/// When the fake script cannot be written.
 #[must_use]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a fake that was not written is the test failing"
-)]
 pub fn faked(dir: &Path, script: &str) -> crate::gates::proofs::Tools {
     let fake = dir.join("fake.sh");
     std::fs::write(&fake, script).unwrap();
@@ -152,11 +149,9 @@ pub fn faked(dir: &Path, script: &str) -> crate::gates::proofs::Tools {
 }
 
 /// The pin lines of a download that holds `file`, fetched and stamped in the tools of `dir`.
+/// # Panics
+/// When the pin does not parse or the download's files cannot be written.
 #[must_use]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a download that was not made is the test failing"
-)]
 pub fn fetched(dir: &Path, stem: &str, file: &str) -> String {
     let sha = "b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4";
     let pin = format!("{stem}_VERSION=1\n{stem}_URL=https://x/{file}\n{stem}_SHA256={sha}\n");
@@ -172,11 +167,6 @@ pub fn rows(series: &crate::run::baseline::Series) -> Vec<(&str, u64)> {
     series.0.iter().map(|(key, n)| (key.as_str(), *n)).collect()
 }
 
-#[allow(
-    clippy::panic,
-    clippy::unwrap_used,
-    reason = "the panic is the subject: only a panicking thread reaches the branch under test"
-)]
 mod tests {
     use super::*;
 

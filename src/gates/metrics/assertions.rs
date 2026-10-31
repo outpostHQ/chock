@@ -10,6 +10,7 @@ use crate::gates::metrics::prodlines::{for_each_source, keyed, parse_rust};
 use crate::run::baseline::{Keys, Series};
 use crate::run::{Ctx, Gate, Group, Kind};
 
+/// The `assertions` gate: tests that check how many items a result has, not which.
 pub const GATE: Gate = Gate {
     name: "assertions",
     about: "tests asserting a length or a count rather than the values, per test",
@@ -198,7 +199,7 @@ fn is_test(attrs: &[syn::Attribute]) -> bool {
 fn counts(macro_name: &str, tokens: proc_macro2::TokenStream, given: &Given) -> bool {
     let name = macro_name.strip_prefix("debug_").unwrap_or(macro_name);
     assertion_kind(name).is_some_and(|(arity, judge)| {
-        (|input: syn::parse::ParseStream| assertion_args(input, arity))
+        (|input: syn::parse::ParseStream<'_>| assertion_args(input, arity))
             .parse2(tokens)
             .is_ok_and(|compared| compared.iter().any(judge) && !set_up_size(&compared, given))
     })
@@ -214,7 +215,7 @@ fn assertion_kind(name: &str) -> Option<(usize, ExprPredicate)> {
     }
 }
 
-fn assertion_args(input: syn::parse::ParseStream, arity: usize) -> syn::Result<Vec<syn::Expr>> {
+fn assertion_args(input: syn::parse::ParseStream<'_>, arity: usize) -> syn::Result<Vec<syn::Expr>> {
     let mut compared = vec![input.parse()?];
     if arity == 2 {
         input.parse::<syn::Token![,]>()?;
@@ -261,10 +262,6 @@ fn count_equality(expr: &syn::Expr) -> bool {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -372,7 +369,7 @@ mod tests {
                 vec!["actual", "expected"],
             ),
         ] {
-            let compared = (|input: syn::parse::ParseStream| assertion_args(input, arity))
+            let compared = (|input: syn::parse::ParseStream<'_>| assertion_args(input, arity))
                 .parse2(source.parse().unwrap())
                 .unwrap();
             let names = compared
@@ -395,7 +392,7 @@ mod tests {
         for source in ["", "v.len() 2", "v.len(),"] {
             let tokens: proc_macro2::TokenStream = source.parse().unwrap();
             assert!(
-                (|input: syn::parse::ParseStream| assertion_args(input, 2))
+                (|input: syn::parse::ParseStream<'_>| assertion_args(input, 2))
                     .parse2(tokens.clone())
                     .is_err(),
                 "{source}"
@@ -442,7 +439,7 @@ mod tests {
             for _ in 0..3 {
                 expr = syn::Expr::Group(syn::ExprGroup {
                     attrs: Vec::new(),
-                    group_token: Default::default(),
+                    group_token: syn::token::Group::default(),
                     expr: Box::new(expr),
                 });
                 assert_eq!(count_value(&expr), value, "{source}");

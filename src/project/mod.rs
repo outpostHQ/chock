@@ -10,7 +10,9 @@ pub mod workspace;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
+/// The file, at the project root, that pins the version of each tool the gates run.
 pub const PIN_FILE: &str = "tool-versions.env";
+/// The manifest whose directory is a project root.
 pub const MANIFEST: &str = "Cargo.toml";
 
 /// The nearest ancestor of `start` holding a `Cargo.toml`, `start` included.
@@ -20,6 +22,8 @@ pub fn find(start: &Path) -> Option<PathBuf> {
 }
 
 /// The project around the current directory: the nearest `Cargo.toml` at or above it.
+/// # Errors
+/// When the current directory does not read, or no `Cargo.toml` is at or above it.
 pub fn here() -> Result<PathBuf, String> {
     let cwd =
         std::env::current_dir().map_err(|e| format!("cannot read the current directory: {e}"))?;
@@ -118,6 +122,8 @@ pub fn unportable<'a>(mut keys: impl Iterator<Item = &'a str>) -> Option<&'a str
 }
 
 /// `cargo metadata --no-deps` for the workspace. It omits `[profile]` and `[lints]`.
+/// # Errors
+/// When cargo cannot run, or fails.
 pub fn metadata(root: &Path) -> Result<String, String> {
     let out = crate::exec::run(
         "cargo",
@@ -149,6 +155,8 @@ fn cargo_failure(out: &crate::exec::Output) -> String {
 }
 
 /// The whole resolved dependency graph, with `--all-features` so feature-gated dependencies count.
+/// # Errors
+/// When cargo cannot run, or cannot resolve the graph.
 pub fn resolved(root: &Path) -> Result<String, String> {
     let out = crate::exec::run(
         "cargo",
@@ -289,6 +297,22 @@ impl Listing {
             Some(hasher.finish())
         })
     }
+
+    /// Each file the digest reads that was modified at or after `at`, by its path from the root.
+    /// A file whose time cannot be read is named, since it may have changed.
+    #[must_use]
+    pub fn modified_since(&self, at: std::time::SystemTime) -> Vec<String> {
+        let changed = |path: &&PathBuf| {
+            let modified = std::fs::metadata(path).and_then(|about| about.modified());
+            modified.ok().is_none_or(|modified| modified >= at)
+        };
+        self.files
+            .iter()
+            .filter(changed)
+            .map(|path| relative(&self.root, path))
+            .filter(|shown| !PRODUCED.contains(&shown.as_str()))
+            .collect()
+    }
 }
 
 /// The run's listing, walked on first ask.
@@ -317,6 +341,8 @@ pub fn listed_once<'a>(
 }
 
 /// `walk`, answered from the run's shared listing instead of walking again.
+/// # Errors
+/// When a directory under `root` cannot be listed.
 pub fn walked(
     held: &std::sync::OnceLock<Result<Listing, String>>,
     root: &Path,
@@ -345,6 +371,8 @@ pub fn walked(
 
 /// Every file under `root` that `keep` accepts, sorted; `enter` picks the directories descended.
 /// A directory that cannot be listed is an error, not a skip.
+/// # Errors
+/// When a directory under `root` cannot be listed.
 pub fn walk(
     root: &Path,
     enter: &dyn Fn(&str) -> bool,
@@ -380,6 +408,8 @@ pub fn walk(
 }
 
 /// `walk`, with every file read and keyed relative to the root.
+/// # Errors
+/// When a directory cannot be listed, or a file does not read for a reason other than its bytes.
 pub fn read_tree(
     root: &Path,
     enter: &dyn Fn(&str) -> bool,
@@ -462,7 +492,7 @@ pub fn is_crate_code(path: &str, crates: &[String]) -> bool {
 #[must_use]
 pub fn only_included(root: &Path, shown: &str) -> bool {
     let read: Vec<String> = walk(root, &|name| !SKIPPED.contains(&name), &|name, _| {
-        name.ends_with(".rs")
+        Path::new(name).extension().is_some_and(|ext| ext == "rs")
     })
     .unwrap_or_default()
     .iter()
@@ -500,10 +530,6 @@ pub fn includes_by_name(src: &str, name: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
 
@@ -581,6 +607,27 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot set a file's time")]
+    fn only_a_file_modified_at_or_after_the_time_is_named_and_never_a_gate_s_output() {
+        let dir = crate::testdir::make("project-modified-since");
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        for (name, secs) in [
+            ("old.rs", 999_999),
+            ("same.rs", 1_000_000),
+            ("new.rs", 1_000_001),
+        ] {
+            let file = std::fs::File::create(dir.join(name)).unwrap();
+            let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+            file.set_modified(stamp).unwrap();
+        }
+        std::fs::write(dir.join(PRODUCED[0]), "a gate wrote this just now").unwrap();
+        let held = std::sync::OnceLock::new();
+        let mut named = listed_once(&held, &dir).unwrap().modified_since(at);
+        named.sort();
+        assert_eq!(named, ["new.rs", "same.rs"]);
+    }
+
+    #[test]
     fn a_fragment_another_file_includes_is_not_a_module_that_failed_to_parse() {
         let holder = "include!(\"palette_literals.rs\");\n";
         assert!(includes_by_name(holder, "palette_literals.rs"));
@@ -607,7 +654,7 @@ mod tests {
 
     #[test]
     fn only_a_crates_own_source_and_build_script_are_code_cargo_compiles() {
-        let crates = ["".to_string(), "vendored/grammar".to_string()];
+        let crates = [String::new(), "vendored/grammar".to_string()];
         assert!(is_crate_code("src/lib.rs", &crates));
         assert!(is_crate_code("build.rs", &crates));
         assert!(is_crate_code("vendored/grammar/src/lib.rs", &crates));
@@ -624,7 +671,10 @@ mod tests {
 
     /// The `.rs` files the walk reaches under `dir`, shown from it.
     fn reached(dir: &Path) -> Vec<String> {
-        let found = walk(dir, &|_| true, &|name, _| name.ends_with(".rs")).unwrap();
+        let found = walk(dir, &|_| true, &|name, _| {
+            Path::new(name).extension().is_some_and(|ext| ext == "rs")
+        })
+        .unwrap();
         found.iter().map(|p| relative(dir, p)).collect()
     }
 
@@ -720,7 +770,7 @@ mod tests {
         std::fs::write(dir.join("b_passed_over.md"), "").unwrap();
         std::fs::write(dir.join("c_kept.rs"), "").unwrap();
         let found = walk(&dir, &|name| name != "a_skipped", &|name, _| {
-            name.ends_with(".rs")
+            Path::new(name).extension().is_some_and(|ext| ext == "rs")
         })
         .unwrap();
         let names: Vec<String> = found.iter().map(|p| relative(&dir, p)).collect();
@@ -734,7 +784,10 @@ mod tests {
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src/one.rs"), "").unwrap();
         std::os::unix::fs::symlink(&dir, dir.join("src/back")).unwrap();
-        let found = walk(&dir, &|_| true, &|name, _| name.ends_with(".rs")).unwrap();
+        let found = walk(&dir, &|_| true, &|name, _| {
+            Path::new(name).extension().is_some_and(|ext| ext == "rs")
+        })
+        .unwrap();
         let names: Vec<String> = found.iter().map(|p| relative(&dir, p)).collect();
         assert_eq!(names, vec!["src/one.rs".to_string()]);
     }
@@ -745,7 +798,10 @@ mod tests {
         let dir = crate::testdir::make("project-walk-symlink-file");
         std::fs::write(dir.join("real.rs"), "").unwrap();
         std::os::unix::fs::symlink(dir.join("real.rs"), dir.join("linked.rs")).unwrap();
-        let found = walk(&dir, &|_| true, &|name, _| name.ends_with(".rs")).unwrap();
+        let found = walk(&dir, &|_| true, &|name, _| {
+            Path::new(name).extension().is_some_and(|ext| ext == "rs")
+        })
+        .unwrap();
         let names: Vec<String> = found.iter().map(|p| relative(&dir, p)).collect();
         assert_eq!(names, vec!["linked.rs".to_string(), "real.rs".to_string()]);
     }
@@ -867,7 +923,10 @@ mod tests {
         let dir = crate::testdir::make("project-undecodable");
         std::fs::write(dir.join("good.rs"), "fn f() {}\n").unwrap();
         std::fs::write(dir.join("bad.rs"), [0xff, 0xfe, 0x00]).unwrap();
-        let tree = read_tree(&dir, &|_| true, &|name, _| name.ends_with(".rs")).unwrap();
+        let tree = read_tree(&dir, &|_| true, &|name, _| {
+            Path::new(name).extension().is_some_and(|ext| ext == "rs")
+        })
+        .unwrap();
         assert_eq!(tree.get("good.rs"), Some(&Some("fn f() {}\n".to_string())));
         assert_eq!(tree.get("bad.rs"), Some(&None));
     }

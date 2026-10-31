@@ -35,7 +35,7 @@ pub(super) fn refuted(
     ctx: &Ctx,
     listed: &BTreeSet<String>,
     limit: u64,
-    kani: &Kani,
+    kani: &Kani<'_>,
 ) -> Result<Refuted, String> {
     let root = patch::normalized(&ctx.root);
     let dir = root.join(ctx.proof.mutants.as_deref().unwrap_or(MUTANTS));
@@ -62,12 +62,13 @@ pub(super) fn refuted(
                 continue;
             }
         };
-        let why = match listed.contains(&mutant.name) {
-            true => tried(ctx, &mutant, &copy, limit, kani)?,
-            false => Some(format!(
+        let why = if listed.contains(&mutant.name) {
+            tried(ctx, &mutant, &copy, limit, kani)?
+        } else {
+            Some(format!(
                 "names the harness {}, which kani does not list",
                 mutant.name
-            )),
+            ))
         };
         faults.extend(why.map(|why| Finding::at(&shown, &why).item(&mutant.name)));
     }
@@ -84,7 +85,7 @@ fn tried(
     mutant: &patch::Mutant,
     copy: &Path,
     limit: u64,
-    kani: &Kani,
+    kani: &Kani<'_>,
 ) -> Result<Option<String>, String> {
     let harness = mutant.name.as_str();
     let root = patch::normalized(&ctx.root);
@@ -127,7 +128,11 @@ fn verdict(
     let held = summaries.iter().find(|held| held.name == harness);
     Ok(match held {
         // A mutant asks only whether a harness fails, so a missing cover answers nothing.
-        Some(held) if !super::findings(std::slice::from_ref(held), false).is_empty() => None,
+        Some(held)
+            if !super::findings(std::slice::from_ref(held), super::Cover::Optional).is_empty() =>
+        {
+            None
+        }
         Some(_) => Some(VERIFIES.into()),
         None => Some(format!(
             "the mutant stops kani before it checks {harness}, which refutes nothing: {}",
@@ -137,10 +142,6 @@ fn verdict(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use std::cell::RefCell;
 
@@ -251,7 +252,7 @@ mod tests {
                 ),
             ]
         );
-        assert!(refuted.notes.is_empty());
+        assert_eq!(refuted.notes, Vec::new());
         // Each run holds its own fault and no other: the copy got the file back after each run.
         let runs = runs.into_inner();
         let held: Vec<(bool, bool)> = runs.iter().map(|(_, faults, _)| *faults).collect();
@@ -319,7 +320,7 @@ mod tests {
             Err(exec::ExecError::of("cargo", exec::Stage::Spawn, "ran"))
         };
         let refuted = refuted(&ctx, &listed(&["proofs::adds"]), 9, &never).unwrap();
-        assert!(refuted.faults.is_empty());
+        assert_eq!(refuted.faults, Vec::new());
         let notes: Vec<String> = refuted.notes.iter().map(Finding::render).collect();
         assert_eq!(
             notes,

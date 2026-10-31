@@ -8,6 +8,8 @@ use std::path::Path;
 use crate::setup::init::{Error, held_or_empty, install_file, unwritable};
 
 /// Adds chock's hook to `.claude/settings.json`, merged into any settings already there.
+/// # Errors
+/// When the heartbeat or the settings file cannot be written.
 pub fn install_editor_hook(root: &Path) -> Result<String, Error> {
     let heartbeat = root.join(crate::edited::HEARTBEAT);
     crate::edited::note_wiring(root).map_err(|e| unwritable(&heartbeat, &e))?;
@@ -126,6 +128,8 @@ fn refreshed(root: &Path) -> Result<String, Error> {
 }
 
 /// Writes the agent contract and appends a pointer to it in each host file the project has.
+/// # Errors
+/// When the contract cannot be read or written, or a host file cannot be written.
 pub fn write_agent_contract(root: &Path) -> Result<String, Error> {
     let mut report = format!("{}\n", refreshed(root)?);
     let mut pointed = Vec::new();
@@ -153,11 +157,6 @@ pub fn write_agent_contract(root: &Path) -> Result<String, Error> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

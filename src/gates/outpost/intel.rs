@@ -8,6 +8,7 @@ use crate::run::baseline::{Keys, Series};
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind, Measurement, Outcome};
 
+/// Counts syntax that is about to be wrong, as outpost's hazard lenses read it.
 pub const HAZARDS: Gate = Gate {
     name: "hazards",
     about: "syntax that is about to be wrong — a value spliced into a command, a comparison whose \
@@ -23,6 +24,7 @@ pub const HAZARDS: Gate = Gate {
     },
 };
 
+/// Counts shipped Rust that nothing reaches, or that only its own tests reach.
 pub const UNREFERENCED: Gate = Gate {
     name: "unreferenced",
     about: "shipped Rust that nothing reaches, or that only its own tests reach; needs `outpost`",
@@ -36,6 +38,7 @@ pub const UNREFERENCED: Gate = Gate {
     },
 };
 
+/// Counts the regions outpost could not read, where no lens judged the code.
 pub const UNREAD: Gate = Gate {
     name: "unread",
     about: "regions outpost could not read, so no lens judged them; an advisory that never fails, \
@@ -68,6 +71,7 @@ fn gap(at: &str) -> Finding {
     }
 }
 
+/// Keeps a retired hazard lens from reading as hazards that someone fixed.
 pub const LENSES: Gate = Gate {
     name: "lenses",
     about: "every hazard lens outpost still reports, so one retired does not read as the hazards \
@@ -105,9 +109,30 @@ fn lenses(ctx: &Ctx) -> Result<Measurement, String> {
 /// The prefix of every hazard lens; the roster comes from Outpost's response, not a list here.
 const LENS: &str = "hazard_";
 
+/// The lenses neither gate here counts. A comment run over two lines is for `slop`, which owns
+/// comment length and passes a rustdoc section heading that this lens counts.
+const LEFT_OUT: [&str; 1] = ["hazard_long_comment_block"];
+
+/// Whether a measure is a hazard lens that `hazards` and `lenses` count.
+fn counted(name: &str) -> bool {
+    name.starts_with(LENS) && !LEFT_OUT.contains(&name)
+}
+
+/// Whether a record key of `gate` is a row an older chock wrote for a lens the gate now leaves out.
+/// A run ignores such a row and the next record drops it, so an upgrade asks for no new record.
+#[must_use]
+pub fn leaves_out(gate: &str, key: &str) -> bool {
+    let lens = match key.rsplit_once('#') {
+        Some((_, lens)) if gate == HAZARDS.name => lens,
+        None if gate == LENSES.name => key,
+        _ => return false,
+    };
+    LEFT_OUT.contains(&lens)
+}
+
 fn read_hazards(check: &super::Check) -> Result<Series, String> {
     let mut series = Series::new();
-    for lens in check.measures(&|name| name.starts_with(LENS)) {
+    for lens in check.measures(&counted) {
         for found in lens
             .ran()?
             .findings
@@ -123,7 +148,7 @@ fn read_hazards(check: &super::Check) -> Result<Series, String> {
 
 /// One row per lens, zeros included, so a retired lens differs from a quiet one. No `note` counts.
 fn read_lenses(check: &super::Check) -> Result<Series, String> {
-    let roster = check.measures(&|name| name.starts_with(LENS));
+    let roster = check.measures(&counted);
     if roster.is_empty() {
         return Err(super::nothing_read("lens"));
     }
@@ -175,7 +200,10 @@ fn read_unreferenced(out: &exec::Output, ctx: &Ctx) -> Result<Series, String> {
     }
     keyed(&read.found, &|path, name| {
         // chock reads entry points only in Rust, so an entity in another language is left alone.
-        if !path.ends_with(".rs") {
+        if std::path::Path::new(path)
+            .extension()
+            .is_none_or(|ext| ext != "rs")
+        {
             return Ok(true);
         }
         let src = std::fs::read_to_string(ctx.root.join(path))
@@ -204,14 +232,26 @@ fn keyed(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
+    use crate::run::baseline::Keep;
     use crate::testdir::Held;
 
+    #[test]
+    fn a_left_out_lens_is_left_out_in_the_key_shape_of_its_own_gate() {
+        let left_out = "hazard_long_comment_block";
+        let in_file = format!("src/a.rs#{left_out}");
+        assert!(leaves_out(HAZARDS.name, &in_file));
+        assert!(leaves_out(LENSES.name, left_out));
+        assert!(!leaves_out(LENSES.name, &in_file));
+        assert!(!leaves_out(HAZARDS.name, "src/a.rs#hazard_flag_never_read"));
+        assert!(!leaves_out(LENSES.name, "hazard_flag_never_read"));
+    }
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "it fits the check that `keyed` takes"
+    )]
     fn never(_path: &str, _name: &str) -> Result<bool, String> {
         Ok(false)
     }
@@ -342,12 +382,12 @@ mod tests {
     fn a_region_outpost_read_around_is_no_part_of_the_hazard_count() {
         let check = checked_from(
             r#"{"contract": 1, "measures": [
-              {"measure": "hazard_long_comment_block", "verdict": "passed",
+              {"measure": "hazard_interpolated_command", "verdict": "passed",
                "findings": [{"file": "crates/a/src/x.rs", "item": "f"}]}],
               "read_around": ["crates/a/src/y.rs:412", "crates/b/src/z.rs:9"]}"#,
         );
         let mut only = Series::new();
-        only.set("crates/a/src/x.rs#hazard_long_comment_block", 1);
+        only.set("crates/a/src/x.rs#hazard_interpolated_command", 1);
         assert_eq!(read_hazards(&check).unwrap(), only);
     }
 
@@ -397,13 +437,13 @@ mod tests {
         let check = checked_from(
             r#"{"contract": 1, "measures": [
               {"measure": "hazard_half_an_inverse", "verdict": "passed", "findings": []},
-              {"measure": "hazard_long_comment_block", "verdict": "passed",
+              {"measure": "hazard_flag_never_read", "verdict": "passed",
                "findings": [{"file": "a.rs"}, {"file": "b.rs"}]},
               {"measure": "duplicate_groups", "verdict": "passed", "findings": [{"file": "c.rs"}]}]}"#,
         );
         let series = read_lenses(&check).unwrap();
         assert_eq!(series.get("hazard_half_an_inverse"), Some(0));
-        assert_eq!(series.get("hazard_long_comment_block"), Some(2));
+        assert_eq!(series.get("hazard_flag_never_read"), Some(2));
         // A measure that is not a hazard lens belongs to another gate, not this roster.
         assert_eq!(series.get("duplicate_groups"), None);
     }
@@ -496,15 +536,106 @@ mod tests {
     fn two_hazards_of_one_lens_in_one_file_are_counted_twice() {
         let check = checked_from(
             r#"{"contract": 1, "measures": [
-              {"measure": "hazard_long_comment_block", "verdict": "passed", "findings": [
+              {"measure": "hazard_flag_never_read", "verdict": "passed", "findings": [
                 {"file": "src/a.rs", "item": "f"}, {"file": "src/a.rs", "item": "g"}]}]}"#,
         );
         assert_eq!(
             read_hazards(&check)
                 .unwrap()
-                .get("src/a.rs#hazard_long_comment_block"),
+                .get("src/a.rs#hazard_flag_never_read"),
             Some(2)
         );
+    }
+
+    /// `slop` owns comment length, so a long-comment-block finding counts in neither `hazards` nor
+    /// `lenses`, and every other lens counts as before. Mutant: drop the exclusion in `counted`.
+    #[test]
+    fn a_long_comment_block_counts_in_neither_gate_since_slop_owns_comment_length() {
+        let check = checked_from(
+            r#"{"contract": 1, "measures": [
+              {"measure": "hazard_long_comment_block", "verdict": "passed",
+               "findings": [{"file": "src/a.rs", "item": "f"}]},
+              {"measure": "hazard_flag_never_read", "verdict": "passed",
+               "findings": [{"file": "src/a.rs", "item": "g"}]}]}"#,
+        );
+        let mut hazards = Series::new();
+        hazards.set("src/a.rs#hazard_flag_never_read", 1);
+        assert_eq!(read_hazards(&check).unwrap(), hazards);
+        let mut lenses = Series::new();
+        lenses.set("hazard_flag_never_read", 1);
+        assert_eq!(read_lenses(&check).unwrap(), lenses);
+    }
+
+    /// The report on a record of `rows`, and what `chock baseline` and `--lower` then write, for a
+    /// response that runs the left-out lens. It stands in for outpost, so no tool is looked for.
+    fn ruled_on(gate: Gate, rows: &[(&str, u64)]) -> (crate::run::report::GateReport, [Series; 2]) {
+        let gate = Gate {
+            reads: None,
+            ..gate
+        };
+        let mut held = crate::run::baseline::Baseline::empty("0.1.0");
+        held.set(
+            gate.name,
+            Series(rows.iter().map(|(k, n)| ((*k).to_string(), *n)).collect()),
+        );
+        let ctx = Ctx::for_root(std::path::PathBuf::from("/nowhere"), held.clone());
+        let check = checked_from(
+            r#"{"contract": 1, "measures": [
+              {"measure": "hazard_long_comment_block", "verdict": "passed",
+               "findings": [{"file": "src/a.rs", "item": "f"}]},
+              {"measure": "hazard_flag_never_read", "verdict": "passed",
+               "findings": [{"file": "src/a.rs", "item": "g"}]}]}"#,
+        );
+        assert!(ctx.checked.set(Ok(check)).is_ok());
+        let report = crate::run::run_one(&gate, &ctx);
+        let written = [Keep::Record, Keep::Lower].map(|keep| {
+            let mut record = held.clone();
+            let now = crate::run::measured(&gate, &ctx).unwrap().series;
+            record.keep(gate.name, "hazard(s)", now, keep);
+            record.gate(gate.name)
+        });
+        (report, written)
+    }
+
+    /// An older chock wrote a row for the lens left out now. No upgrade may ask for a new record,
+    /// so a run ignores that row at any count and the next record drops it.
+    #[test]
+    fn a_record_row_for_a_lens_left_out_is_ignored_and_the_next_record_drops_it() {
+        let kept = Series([("hazard_flag_never_read".to_string(), 1)].into());
+        for count in [0, 4] {
+            let rows = [
+                ("hazard_flag_never_read", 1),
+                ("hazard_long_comment_block", count),
+            ];
+            let (report, written) = ruled_on(LENSES, &rows);
+            let why = report.cannot_run_reason.clone();
+            assert_eq!(report.verdict, crate::run::report::Verdict::Pass, "{why:?}");
+            assert_eq!(Finding::rendered(&report.findings), Vec::<String>::new());
+            assert_eq!(written, [kept.clone(), kept.clone()]);
+        }
+        let rows = [
+            ("src/a.rs#hazard_flag_never_read", 1),
+            ("src/b.rs#hazard_long_comment_block", 2),
+        ];
+        let (report, written) = ruled_on(HAZARDS, &rows);
+        assert_eq!(report.verdict, crate::run::report::Verdict::Pass);
+        assert_eq!(report.baseline, Some(1));
+        let kept = Series([("src/a.rs#hazard_flag_never_read".to_string(), 1)].into());
+        assert_eq!(written, [kept.clone(), kept]);
+    }
+
+    /// Only a lens the gate leaves out is ignored: any other row gone is a check that stopped.
+    #[test]
+    fn a_record_row_for_any_other_lens_gone_still_stopped_measuring() {
+        let rows = [("hazard_flag_never_read", 1), ("hazard_retired", 0)];
+        let (report, _) = ruled_on(LENSES, &rows);
+        assert_eq!(report.verdict, crate::run::report::Verdict::Tripped);
+        assert_eq!(
+            Finding::rendered(&report.findings),
+            ["hazard_retired: not measured this run; the baseline records 0 hazard(s)"]
+        );
+        assert!(!leaves_out(HAZARDS.name, "hazard_long_comment_block"));
+        assert!(!leaves_out("measures", "hazard_long_comment_block"));
     }
 
     #[test]
@@ -575,7 +706,12 @@ mod tests {
             12,
             SHIPPED,
         )];
-        let series = keyed(&found, &|path, _| Ok(!path.ends_with(".rs"))).unwrap();
+        let series = keyed(&found, &|path, _| {
+            Ok(std::path::Path::new(path)
+                .extension()
+                .is_none_or(|ext| ext != "rs"))
+        })
+        .unwrap();
         assert_eq!(series, Series::new());
     }
 

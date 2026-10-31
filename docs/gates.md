@@ -25,7 +25,7 @@ A gate is one of two kinds.
 | `msrv` | | the crate stops building on the oldest Rust it declares |
 | `crap` | | a function's complexity-times-uncoverage score goes up, or a new function scores over 30 |
 | `commits` | | an unpushed commit's subject or a body line is too wide, its body repeats the diff, or a tool is credited as author |
-| `profile` | | the release profile skips a free win or silences a compiler check, or, under `"lint_floor": true`, a lint table is below the [lint floor](#the-lint-floor) |
+| `profile` | | the release profile skips a free win or silences a compiler check, or, under `"lint_floor": true`, a lint table is below the [lint floor](#the-lint-floor); a release profile with no `overflow-checks` key gets an advisory, because a release build then lets integer overflow wrap silently |
 | `toolchain` | | a `rust-toolchain` file names a channel that moves, such as `stable` or `nightly`, not a release or a dated nightly, or names a toolchain at a local `path`; a release before `1.96.0` gets an advisory for its Cargo security faults |
 | `hygiene` | | the repository tracks a secret, a credential or build output, a character that no reader sees, a `.gitmodules` value that git reads as an option or another path, or a link into `.git` |
 | `workflows` | | a GitHub Actions workflow or action runs an action by a tag, a branch or a short SHA, or an image without its `sha256` digest |
@@ -47,12 +47,12 @@ A gate is one of two kinds.
 | `lean` | ✓ | a file gains lines that one function, one table, one call or one loop over test cases would remove: code repeated in one shape, tests included, or a function that only passes its parameters on |
 | `complexity` | ✓ | a function's cognitive complexity rises |
 | `nesting` | ✓ | a function nests deeper, past four levels |
-| `codeslop` | ✓ | one of clippy's code-shape lints fires more often, or fires for the first time |
+| `codeslop` | ✓ | one of clippy's code-shape lints, or one of chock's own two measures, fires more often or for the first time: `chock::long_literal`, a string literal over 300 characters on one line, and `chock::short_name`, a name of one or two characters read more than 5 lines below its binding |
 | `duplication` | ✓ | one more function body is a copy, or close enough to merge |
 | `coverage` | ✓ | a file gains lines no test executes; the run names every line of that file no test ran |
 | `binsize` | ✓ | a release binary grows by more than 1% or 256 KiB, whichever is larger |
 | `unsafety` | ✓ | a file gains an `unsafe` block, function, trait, impl or `extern` |
-| `admits` | ✓ | a proof gains a step that nothing checks: `sorry`, `admit`, `native_decide` or `axiom` in Lean code; `assume(`, `admit(`, `assume_specification` or `verifier::external` in a Verus file; `kani::assume`; or a TLA+ `ASSUME`, `ASSUMPTION` or `AXIOM` that names no constant. `.chock/escapes.json` keeps one with its reason. Lake's `.lake` and `lakefile.lean` do not count, and a tree with no proof passes |
+| `admits` | ✓ | a proof gains a step that nothing checks: `sorry`, `admit`, `native_decide` or `axiom` in Lean code; `assume(`, `admit(`, `assume_specification` or `verifier::external` in a Verus file; `kani::assume`; or a TLA+ `ASSUME`, `ASSUMPTION` or `AXIOM` that names no constant. `.chock/escapes.json` keeps one with its reason, and a `// checked: <crate> <test>` cover keeps a Rust one with a test. Lake's `.lake` and `lakefile.lean` do not count, and a tree with no proof passes |
 | `citations` | ✓ | a doc comment names one more path the repository does not have |
 | `assertions` | ✓ | a test gains an assertion about *how many* instead of *what* |
 | `testlint` | ✓ | a file gains a test that asserts nothing, cannot fail, returns before it checks, is skipped with no reason or has a name that states no claim |
@@ -235,11 +235,13 @@ Next == ...
 
 In a Rust file under a `proofs` directory that holds a `verus!` block, the comment starts with
 `// code:`. A link comment goes on over the comment lines after it, up to a line of code, an empty
-comment or another label, such as `bad:`.
+comment or another label, such as `bad:`. A link never names an item of the model file that holds
+it.
 
 | you write | it names |
 |---|---|
 | `lock.rs::once` | the item `once` in the one source file whose path ends in `lock.rs` |
+| `src/run/lock.rs Lock::release` | the item `Lock::release` in that file: a file word just before a path limits the path to the file |
 | `Lock::release` | the one item with that path in the code |
 | `lock.rs` | the whole file |
 | `code: none; why` | no code, on purpose; the text after `;` says why |
@@ -306,6 +308,22 @@ chock keeps the files in `CHOCK_TOOLS`, else in `chock-tools` in cargo's home, s
   analysis, so a new public function with no caller trips `measures` and not `unreferenced`.
   `echoes` reads what a comment says, and `slop` only its length. `lean` counts a function that
   passes its parameters on unchanged; `wrappers` counts one that changes them, such as `g(&x)`.
+- **What `codeslop` counts beside clippy.** It warns on clippy's restriction lints
+  `indexing_slicing`, `arithmetic_side_effects`, `wildcard_enum_match_arm`, `string_slice` and
+  `missing_asserts_for_indexing`, too many to deny, so their count can only go down. It also
+  parses each Rust file, tests included and fixture directories left out. `chock::long_literal`
+  counts a plain, raw, byte or C string literal with over 300 characters on one line, in macro
+  calls too and never in a doc comment: keep such text in a file of its own language and read it
+  with `include_str!`. `chock::short_name` counts a `let`, closure, `match`, `if let`, `while let`
+  or `for` binding of one or two characters whose last read, in its scope, is more than 5 lines
+  below it. `tx`, `rx`, `cx`, `io`, `id` and `ok` never count, `i`, `j` and `k` do not count as
+  the binding of a `for` loop, and a name that starts with `_` never counts.
+- **A measure that a newer chock adds.** A record that an older chock wrote lacks the keys that
+  chock did not measure yet. The first local run records each such key at what it measured, as
+  it records a new gate, and says `wrote the first record of a new measure for …`. A key that the
+  chock named in the record already measured still fails when it is new, and CI writes no record.
+  A write for other gates keeps the older chock in the record until each gate with such keys has
+  run, so a first `chock run fmt` or commit after the upgrade loses none of them.
 - **What `echoes` counts.** A comment block counts when every word it says stands in the code line
   under it, past attributes. Filler words such as `the`, `returns` and `get` say nothing, a word in
   a string is not said, a name splits where its case turns, and a plural reads as its singular. So
@@ -455,11 +473,31 @@ chock keeps the files in `CHOCK_TOOLS`, else in `chock-tools` in cargo's home, s
   `text` is the whole line; chock trims its spaces. An entry keeps one step, so two equal lines in
   one file need two entries. An entry that keeps no step trips the gate, so a reason cannot outlive
   its line. An entry with a blank reason stops the gate.
+- **`// checked: <crate> <test>` keeps a Rust escape with a test.** Write the cover in the run of
+  `//` lines right above the escape:
+
+  ```rust
+  // checked: core-law double_matches_the_spec
+  #[verifier::external_body]
+  fn double(x: u32) -> u32 { x * 2 }
+  ```
+
+  The cover keeps the escape when the crate `<crate>` of the workspace defines a test function
+  named `<test>`, under `#[test]`, `#[tokio::test]` or the like. Write the name of the function,
+  not its module path. A `-` and a `_` in the crate name are the same. A blank line or a line of
+  code between the cover and the escape breaks the run, so the cover keeps nothing. Each cover
+  keeps one escape of its line. An escape that still counts says why at its place: no cover, no
+  such crate, or no such test. chock asks `cargo metadata` for the crates only when a cover is
+  there.
 - **How `proof` keeps each harness.** Kani lists the harnesses of `proof.packages`, or of the whole
   workspace, and verifies them in one run. Each harness is one row of the record, 0 when it
   verifies. A harness that fails trips the gate whatever the record holds, and chock records
   nothing from that run. A harness that leaves the code trips the gate until `chock baseline proof`
   records that change. A run past `proof.timeout_s` trips with every harness unproven.
+- **Where `proof` reads Kani's settings.** Kani reads `metadata.kani`, such as its `unstable`
+  features, only from the root manifest: `[workspace.metadata.kani]`, or `[package.metadata.kani]`
+  when the root is a package. chock reads the same tables. A member's own `metadata.kani` table
+  turns on nothing, and the gate adds a note that asks you to move it to `[workspace.metadata.kani]`.
 - **`proof.require_cover` asks each harness for a cover.** When it is true, a harness with no
   `kani::cover!` trips the gate. A satisfied cover shows that some case gets past the harness's
   `kani::assume` calls. A cover that no case satisfies trips the gate whatever the setting.
@@ -534,6 +572,8 @@ Under `[lints.clippy]`:
 | `todo` | a `todo!` that panics when the unfinished path runs |
 | `print_stdout` | a `print!` or `println!` that writes to standard output where the program did not mean to |
 | `print_stderr` | an `eprint!` or `eprintln!` in place of an error that the caller gets |
+| `panic_in_result_fn` | a panic or an assertion in a function that returns a `Result`, where the caller expects an `Err` |
+| `as_conversions` | an `as` cast, which can change a value with no sign; `From` or `TryFrom` says what happens |
 | `missing_panics_doc` | a public function that can panic, with no `# Panics` section that says when |
 | `missing_errors_doc` | a public function that returns a `Result`, with no `# Errors` section that says which |
 | `fn_params_excessive_bools` | a function whose `bool` parameters a call site cannot read |
@@ -545,9 +585,10 @@ The `pedantic` group meets each of its six lints at the end of the table, unless
 that lint to `allow`. An `allow` on another pedantic lint, such as `module_name_repetitions` or
 `must_use_candidate`, is not a gap.
 
-The floor leaves out two lints. `as_conversions` names each `as`, and the pedantic `cast_*` lints
-already name each `as` that can lose a value. `panic_in_result_fn` names each test that returns a
-`Result` and asserts, and clippy has no setting that keeps it out of tests.
+`as_conversions` names each `as`, also one that cannot lose a value; the pedantic `cast_*` lints
+name only an `as` that can. `panic_in_result_fn` also names a test that returns a `Result` and
+asserts, and clippy has no setting that keeps it out of tests. Such a test can return `()` and use
+`unwrap`.
 
 Clippy reads `unwrap_used` in tests too. Its gap says so, and names the fix: `allow-unwrap-in-tests
 = true` and `allow-expect-in-tests = true` in `clippy.toml`.
@@ -729,10 +770,12 @@ A gate leaves these out on purpose. Each one has a place that shows it.
 | gate | what it leaves out | where you see it |
 |---|---|---|
 | `hazards`, `lenses` | an Outpost finding with the severity `note` | `outpost check` |
+| `hazards`, `lenses` | the lens `hazard_long_comment_block`: `slop` owns comment length, and passes a `/// # Errors`, `/// # Panics` or `/// # Safety` heading that the lens counts. A run ignores a record row for this lens, and the next record that chock writes drops it | `slop`; `outpost check` |
 | `history` | a leak that `history.accepted` names in the config | the config entry, with its reason |
 | `source` | a line that has `<tool>: ignore[<rule>] <why>` on it or on the line above | the comment, with its reason |
 | `deps` | a `cargo deny` check that has no section in `deny.toml` | the run names each absent section |
 | `unused` | a dependency that a source file of the crate names as a whole word, also in a comment or a string | `cargo machete`; `unused-deep` compiles and finds it |
+| `unused`, `unused-deep` | an entry with `features` whose package the crate also reaches through another dependency, such as `proc-macro2` with `span-locations` beside `syn`. Cargo unifies features, so the entry turns them on | the resolved graph of `cargo metadata`; an entry with no `features` stays unused |
 | `supply` | a new version of a crate that the record already holds | the diff of `Cargo.lock` |
 | `features` | a `.rs` file that does not parse and is outside `src/` or read by `include!` | the compiler, where a build uses the file |
 | `placement` | a path dependency outside the tree, where the tree is in no repository | the `path` in `Cargo.toml` |

@@ -9,13 +9,14 @@ use serde::de::IgnoredAny;
 
 use super::patch::{self, Mutant, copied, normalized, patches};
 
-use crate::exec;
+use crate::exec::{self, Exit};
 use crate::project;
 use crate::run::Measurement;
 use crate::run::baseline::{Keys, Series};
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind};
 
+/// Runs Verus on each proof file, and on each mutant patch, which must fail.
 pub const GATE: Gate = Gate {
     name: "verus",
     about: "Verus verifies each proof file, and finds the fault each mutant patch puts in one",
@@ -63,6 +64,10 @@ struct Report {
     results: Results,
     /// Each function Verus checked, by its path from the crate.
     #[serde(default, rename = "func-details")]
+    #[expect(
+        clippy::zero_sized_map_values,
+        reason = "serde reads a JSON object here, and only its keys"
+    )]
     functions: BTreeMap<String, IgnoredAny>,
 }
 
@@ -101,20 +106,20 @@ impl Said {
         // Verus writes its report to stdout and its errors to stderr.
         let error = super::tla::first_error(&exec::strip_colour(&out.stderr), out.code);
         Ok(match serde_json::from_str::<Report>(&out.stdout) {
-            Ok(report) => Self::read(report, out.success(), &error),
+            Ok(report) => Self::read(report, out.exit(), &error),
             Err(_) => Self::Stopped(error),
         })
     }
 
     /// A report verifies only when Verus checked a function, found no error and exited 0.
-    fn read(report: Report, exited: bool, error: &str) -> Self {
+    fn read(report: Report, exit: Exit, error: &str) -> Self {
         let Results {
             verified,
             errors,
             erred,
         } = report.results;
         let line = format!("{RESULTS} {verified} verified, {errors} errors");
-        match (errors, verified, exited && !erred) {
+        match (errors, verified, exit == Exit::Success && !erred) {
             (1.., _, _) => Self::Failed(format!("{line}; {error}")),
             (0, 1.., true) => Self::Verified(report.functions.into_keys().collect()),
             (0, 0, true) => Self::Stopped(format!("{line}, so the run proves no function")),
@@ -130,21 +135,30 @@ fn toolchain_missing(text: &str) -> Option<String> {
     rest.split_whitespace().next().map(str::to_string)
 }
 
+/// What one Verus run checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Checked {
+    /// A proof file, which must verify.
+    ProofFile,
+    /// A mutant, which must fail to verify.
+    Mutant,
+}
+
 /// Whether Verus said what the run must; `Some` says why not. A mutant must fail to verify.
-fn judged(mutant: bool, said: &Said, limit: u64) -> Option<String> {
-    match (mutant, said) {
-        (false, Said::Verified(_)) | (true, Said::Failed(_)) => None,
+fn judged(checked: Checked, said: &Said, limit: u64) -> Option<String> {
+    match (checked, said) {
+        (Checked::ProofFile, Said::Verified(_)) | (Checked::Mutant, Said::Failed(_)) => None,
         (_, Said::TimedOut) => Some(format!(
             "Verus ran past its {limit} s limit; raise `verus.timeout_s` if it needs longer"
         )),
-        (false, Said::Failed(why)) => Some(format!("does not verify: {why}")),
-        (false, Said::Stopped(why)) => Some(format!("Verus gave no verdict: {why}")),
-        (true, Said::Verified(_)) => Some(
+        (Checked::ProofFile, Said::Failed(why)) => Some(format!("does not verify: {why}")),
+        (Checked::ProofFile, Said::Stopped(why)) => Some(format!("Verus gave no verdict: {why}")),
+        (Checked::Mutant, Said::Verified(_)) => Some(
             "the mutant verifies, so no proof sees the fault it puts in; make the proof \
              stronger, or the mutant break what the proof states"
                 .into(),
         ),
-        (true, Said::Stopped(why)) => Some(format!(
+        (Checked::Mutant, Said::Stopped(why)) => Some(format!(
             "the mutant gets no verdict from Verus, which refutes nothing: {why}"
         )),
     }
@@ -219,12 +233,13 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
         let row = |function: String| (format!("{}#{function}", job.shown), 0);
         rows.0.extend(verified.into_iter().map(row));
     }
-    let notes = match patches.is_empty() {
-        true => vec![Finding::at(
+    let notes = if patches.is_empty() {
+        vec![Finding::at(
             &project::relative(&root, &mutants),
             "holds no mutant patch, so nothing shows that Verus can fail on these proofs",
-        )],
-        false => Vec::new(),
+        )]
+    } else {
+        Vec::new()
     };
     Ok(Measurement {
         faults,
@@ -245,7 +260,12 @@ impl Job {
             Err(e) if e.hung() => Said::TimedOut,
             Err(e) => return Err(e.to_string()),
         };
-        let why = judged(self.function.is_some(), &said, limit);
+        let checked = if self.function.is_some() {
+            Checked::Mutant
+        } else {
+            Checked::ProofFile
+        };
+        let why = judged(checked, &said, limit);
         let found = why.map(|why| Finding::at(&self.shown, &why));
         let found = found.map(|found| match &self.function {
             Some(function) => found.item(function),
@@ -278,7 +298,7 @@ fn entries(ctx: &Ctx, files: &[String]) -> Result<Vec<PathBuf>, String> {
     let named = |_: &str, path: &Path| {
         let shown = project::relative(&ctx.root, path);
         let globbed = |pattern: &String| crate::gates::text::phrases::globbed(pattern, &shown);
-        shown.ends_with(".rs") && files.iter().any(globbed)
+        Path::new(&shown).extension().is_some_and(|ext| ext == "rs") && files.iter().any(globbed)
     };
     let entered = |dir: &str| !project::SKIPPED.contains(&dir);
     let found = project::walked(&ctx.listing, &ctx.root, &entered, &named)?;
@@ -369,10 +389,6 @@ fn holder<'a>(entries: &'a [PathBuf], target: &'a Path) -> &'a Path {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -388,8 +404,18 @@ mod tests {
         }
     }
 
+    /// Whether Verus's report says it met an error that is not a failed proof.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Met {
+        /// `encountered-error` is false.
+        NoError,
+        /// `encountered-error` is true.
+        AnError,
+    }
+
     /// Verus's `--output-json` report of a run of one function, which holds no `success`.
-    fn report(verified: u64, errors: u64, erred: bool, functions: &[&str]) -> String {
+    fn report(verified: u64, errors: u64, met: Met, functions: &[&str]) -> String {
+        let erred = met == Met::AnError;
         let functions: serde_json::Map<String, serde_json::Value> = functions
             .iter()
             .map(|name| ((*name).to_string(), serde_json::json!({})))
@@ -411,7 +437,7 @@ mod tests {
 
     #[test]
     fn verus_s_report_is_its_verdict_and_a_missing_toolchain_is_no_verdict() {
-        let clean = report(4, 0, false, &["law::put"]);
+        let clean = report(4, 0, Met::NoError, &["law::put"]);
         assert_eq!(
             Said::of(&output(0, &clean, "")),
             Ok(Said::Verified(vec!["law::put".into()]))
@@ -424,7 +450,7 @@ mod tests {
             Said::of(&output(0, whole, "")),
             Ok(Said::Verified(vec!["law::put".into()]))
         );
-        let failed = report(3, 10, true, &["law::put"]);
+        let failed = report(3, 10, Met::AnError, &["law::put"]);
         let error = "\u{1b}[1merror\u{1b}[0m: postcondition not satisfied\n --> a.rs:3:5\n";
         let why = match Said::of(&output(1, &failed, error)) {
             Ok(Said::Failed(why)) => why,
@@ -433,7 +459,7 @@ mod tests {
         let shown = "verification results:: 3 verified, 10 errors; exit 1: error: postcondition";
         assert!(why.starts_with(shown), "{why}");
         // Verus reports a file that does not compile as one that checked nothing and erred nowhere.
-        let broken = report(0, 0, true, &[]);
+        let broken = report(0, 0, Met::AnError, &[]);
         let broken = Said::of(&output(
             1,
             &broken,
@@ -456,12 +482,12 @@ mod tests {
 
     #[test]
     fn a_clean_report_verifies_only_after_a_function_was_checked_and_verus_exited_0() {
-        let none = Said::of(&output(0, &report(0, 0, false, &[]), ""));
+        let none = Said::of(&output(0, &report(0, 0, Met::NoError, &[]), ""));
         assert!(matches!(none, Ok(Said::Stopped(why)) if why.ends_with("proves no function")));
-        let clean = report(2, 0, false, &["law::put"]);
+        let clean = report(2, 0, Met::NoError, &["law::put"]);
         let failed = Said::of(&output(101, &clean, "error: aborting\n"));
         assert!(matches!(failed, Ok(Said::Stopped(why)) if why.contains(", yet exit 101")));
-        let unsure = Said::of(&output(0, &report(2, 0, true, &["law::put"]), ""));
+        let unsure = Said::of(&output(0, &report(2, 0, Met::AnError, &["law::put"]), ""));
         assert!(matches!(unsure, Ok(Said::Stopped(why)) if why.contains("0 errors, yet ")));
     }
 
@@ -474,7 +500,7 @@ mod tests {
             "my_law::put",
             "my_law::inner::min",
         ];
-        let clean = || Ok(output(0, &report(3, 0, false, &named), ""));
+        let clean = || Ok(output(0, &report(3, 0, Met::NoError, &named), ""));
         let file = Job {
             shown: "proofs/verus/my-law.rs".into(),
             function: None,
@@ -494,25 +520,28 @@ mod tests {
     fn a_proof_file_must_verify_and_a_mutant_must_fail_to() {
         let failed = Said::Failed("1 errors".into());
         let stopped = Said::Stopped("exit 1: error: expected `;`".into());
-        assert_eq!(judged(false, &Said::Verified(Vec::new()), 9), None);
-        assert_eq!(judged(true, &failed, 9), None);
+        assert_eq!(
+            judged(Checked::ProofFile, &Said::Verified(Vec::new()), 9),
+            None
+        );
+        assert_eq!(judged(Checked::Mutant, &failed, 9), None);
         assert!(
-            judged(true, &Said::Verified(Vec::new()), 9)
+            judged(Checked::Mutant, &Said::Verified(Vec::new()), 9)
                 .unwrap()
                 .starts_with("the mutant verifies")
         );
         assert!(
-            judged(true, &stopped, 9)
+            judged(Checked::Mutant, &stopped, 9)
                 .unwrap()
                 .contains("refutes nothing")
         );
         assert!(
-            judged(false, &failed, 9)
+            judged(Checked::ProofFile, &failed, 9)
                 .unwrap()
                 .starts_with("does not verify")
         );
         assert!(
-            judged(false, &Said::TimedOut, 9)
+            judged(Checked::ProofFile, &Said::TimedOut, 9)
                 .unwrap()
                 .contains("its 9 s limit")
         );
@@ -665,7 +694,7 @@ esac
             format!("does not verify: {failed}"),
             format!("Verus gave no verdict: {stopped}"),
         );
-        let verifies = judged(true, &Said::Verified(Vec::new()), 0).unwrap();
+        let verifies = judged(Checked::Mutant, &Said::Verified(Vec::new()), 0).unwrap();
         let expected: [(&str, Option<&str>, &str); 8] = [
             (
                 &patches[0],
@@ -696,9 +725,9 @@ esac
         ctx.tools = crate::testdir::faked(&ctx.root, FAKE);
         let root = ctx.root.clone();
         assert_eq!(verus(&ctx, &root).unwrap(), "verus");
-        let noted = measure(&ctx).unwrap();
-        assert!(noted.faults.is_empty());
-        let notes: Vec<(&str, &str)> = noted
+        let measured = measure(&ctx).unwrap();
+        assert_eq!(measured.faults, Vec::new());
+        let notes: Vec<(&str, &str)> = measured
             .findings
             .iter()
             .map(|it| (it.file.as_str(), it.message.as_str()))
@@ -731,7 +760,7 @@ esac
         let error = |stage| exec::ExecError::of("verus", stage, "gone");
         let (hung, verified) = job.read(Err(error(exec::Stage::Hung)), 9).unwrap();
         let hung = hung.unwrap();
-        assert!(verified.is_empty());
+        assert_eq!(verified, Vec::<String>::new());
         let past = "Verus ran past its 9 s limit; raise `verus.timeout_s` if it needs longer";
         assert_eq!(
             (hung.item.as_deref(), hung.message.as_str()),

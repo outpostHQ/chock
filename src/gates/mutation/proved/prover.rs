@@ -25,6 +25,15 @@ pub(super) struct Prover<'a> {
     packages: Vec<Package>,
 }
 
+/// Where one Kani job ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// After every harness ran.
+    AfterAll,
+    /// At the first harness that fails: `--fail-fast`.
+    AtFirstFailure,
+}
+
 impl<'a> Prover<'a> {
     /// Lists the harnesses in the copy, so the listing Kani writes stays out of the tree. Each
     /// run of Kani goes through `kani`.
@@ -94,7 +103,7 @@ impl<'a> Prover<'a> {
         let (true, Some(asked), Some(package)) = (inside, asked, package) else {
             return Ok(None);
         };
-        let verified = match self.run(&package.name, asked, false) {
+        let verified = match self.run(&package.name, asked, Stop::AfterAll) {
             Ok(out) => verified(&out, asked),
             Err(e) if e.hung() => BTreeSet::new(),
             Err(e) => return Err(e.to_string()),
@@ -141,7 +150,7 @@ impl<'a> Prover<'a> {
             })
         };
         put(|change| &change.1)?;
-        let run = self.run(&held.package, &held.harnesses, true);
+        let run = self.run(&held.package, &held.harnesses, Stop::AtFirstFailure);
         put(|change| &change.2)?;
         verdict(run, &held.harnesses)
     }
@@ -179,13 +188,12 @@ impl<'a> Prover<'a> {
         Ok(changes)
     }
 
-    /// One Kani job on `harnesses` of `package` in the copy. With `fail_fast`, the first harness
-    /// that fails ends it.
+    /// One Kani job on `harnesses` of `package` in the copy, which ends where `stop` says.
     fn run(
         &self,
         package: &str,
         harnesses: &BTreeSet<String>,
-        fail_fast: bool,
+        stop: Stop,
     ) -> Result<exec::Output, exec::ExecError> {
         let jobs = proof::jobs(exec::budget::cap(), self.ctx.proof_jobs).to_string();
         let named = harnesses
@@ -199,7 +207,7 @@ impl<'a> Prover<'a> {
             "--jobs",
             jobs.as_str(),
         ]);
-        then.extend(fail_fast.then_some("--fail-fast"));
+        then.extend((stop == Stop::AtFirstFailure).then_some("--fail-fast"));
         let packages = [package.to_string()];
         let argv = proof::invocation(&packages, &self.ctx.features, &then);
         (self.kani)(&argv, self.copy, &self.target)
@@ -216,10 +224,6 @@ struct Held {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::gates::mutation::survivors::{Edit, Location, Span, Substitute};
@@ -274,15 +278,18 @@ mod tests {
             };
             let said: String = names
                 .iter()
-                .map(|name| match fails(name) {
-                    true => format!(
-                        "Checking harness {name}...\nSUMMARY:\n ** 1 of 2 failed\n\
-                         Failed Checks: assertion failed\nVERIFICATION:- FAILED\n"
-                    ),
-                    false => format!(
-                        "Checking harness {name}...\nSUMMARY:\n ** 0 of 2 failed\n\
-                         VERIFICATION:- SUCCESSFUL\n"
-                    ),
+                .map(|name| {
+                    if fails(name) {
+                        format!(
+                            "Checking harness {name}...\nSUMMARY:\n ** 1 of 2 failed\n\
+                             Failed Checks: assertion failed\nVERIFICATION:- FAILED\n"
+                        )
+                    } else {
+                        format!(
+                            "Checking harness {name}...\nSUMMARY:\n ** 0 of 2 failed\n\
+                             VERIFICATION:- SUCCESSFUL\n"
+                        )
+                    }
                 })
                 .collect();
             let code = i32::from(said.contains("FAILED"));

@@ -19,6 +19,10 @@ const OFFLINE: [&str; 6] = [
 
 /// `start`, but a run the network failed is tried again after each of `PAUSES`; one the network
 /// fails each time is an `Offline` error that says what to check.
+#[expect(
+    clippy::print_stdout,
+    reason = "the waiting line is progress the user must see before the pause starts"
+)]
 pub fn patiently<'a>(start: Start<'a>, wait: &'a dyn Fn(Duration)) -> Box<Starter<'a>> {
     Box::new(move |program, args, cwd, env| {
         let mut out = start(program, args, cwd, env)?;
@@ -34,9 +38,8 @@ pub fn patiently<'a>(start: Start<'a>, wait: &'a dyn Fn(Duration)) -> Box<Starte
             wait(pause);
             out = start(program, args, cwd, env)?;
         }
-        match offline(&out) {
-            false => Ok(out),
-            true => Err(ExecError {
+        if offline(&out) {
+            Err(ExecError {
                 program: program.to_string(),
                 stage: Stage::Offline,
                 reason: format!(
@@ -47,7 +50,9 @@ pub fn patiently<'a>(start: Start<'a>, wait: &'a dyn Fn(Duration)) -> Box<Starte
                     out.why_it_failed()
                 ),
                 printed: None,
-            }),
+            })
+        } else {
+            Ok(out)
         }
     })
 }

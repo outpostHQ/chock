@@ -23,16 +23,21 @@ pub enum Tool {
     Usable,
     /// Upstream, or a build of the fork from before the flag.
     Foreign,
+    /// No `cargo mutest` at all.
     Absent,
 }
 
 /// Asks the tool for the help of its `run`. An error is a cargo that could not answer.
+/// # Errors
+/// A cargo that cannot answer for the tool.
 pub fn found(root: &Path) -> Result<Tool, String> {
     asked(&exec::run_env, root)
 }
 
 /// `found` through `start`, so an install can ask before and after it builds.
-pub fn asked(start: exec::Start, root: &Path) -> Result<Tool, String> {
+/// # Errors
+/// A cargo that cannot answer for the tool.
+pub fn asked(start: exec::Start<'_>, root: &Path) -> Result<Tool, String> {
     let help =
         start("cargo", &["mutest", "run", "--help"], root, &[]).map_err(|e| e.to_string())?;
     told(&help)
@@ -51,11 +56,15 @@ fn told(help: &exec::Output) -> Result<Tool, String> {
 }
 
 /// `Ok` for a tool the gate can drive, else the reason it cannot run.
+/// # Errors
+/// The reason the gate cannot drive the tool.
 pub fn usable(root: &Path) -> Result<(), String> {
     found(root).and_then(refusal)
 }
 
 /// Why the gate cannot drive this tool; `Ok` for one it can.
+/// # Errors
+/// A tool that is upstream, too old, or absent.
 pub fn refusal(tool: Tool) -> Result<(), String> {
     match tool {
         Tool::Usable => Ok(()),
@@ -65,10 +74,6 @@ pub fn refusal(tool: Tool) -> Result<(), String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -117,7 +122,7 @@ mod tests {
 
     #[test]
     fn the_tool_is_asked_for_the_help_of_its_run_in_the_project() {
-        let start: exec::Start = &|program, args, cwd, env| {
+        let start: exec::Start<'_> = &|program, args, cwd, env| {
             assert_eq!((program, args), ("cargo", &["mutest", "run", "--help"][..]));
             assert_eq!((cwd, env.len()), (Path::new("/project"), 0));
             Ok(said(0, MARK, ""))

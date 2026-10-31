@@ -11,11 +11,14 @@ use super::workspace::Metadata;
 /// as `1.81`. The order is by number: `1.9` comes before `1.81`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Release {
+    /// The major number, `1` in `1.81`.
     pub major: u32,
+    /// The minor number, `81` in `1.81`.
     pub minor: u32,
 }
 
 impl Release {
+    /// The release with these numbers.
     #[must_use]
     pub const fn new(major: u32, minor: u32) -> Self {
         Self { major, minor }
@@ -27,7 +30,7 @@ impl Release {
         let mut parts = text.split('.').map(number);
         let release = Self::new(parts.next()??, parts.next()??);
         match (parts.next(), parts.next()) {
-            (None, None) | (Some(Some(_)), None) => Some(release),
+            (None | Some(Some(_)), None) => Some(release),
             _ => None,
         }
     }
@@ -48,7 +51,9 @@ fn number(part: &str) -> Option<u32> {
 /// Something chock's advice can ask a crate to write, and the release that first builds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Feature {
+    /// What the advice asks for, as the advice names it.
     pub what: &'static str,
+    /// The first release that builds it.
     pub since: Release,
 }
 
@@ -95,10 +100,6 @@ pub fn promises(metadata: &Metadata) -> BTreeMap<String, Release> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
 

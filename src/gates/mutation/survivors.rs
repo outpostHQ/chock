@@ -33,6 +33,7 @@ const TELLING: [&str; 11] = [
     "unary_op_delete",
 ];
 
+/// What a survivor of this mutation operator says about the suite.
 #[must_use]
 pub fn signal_of(operator: &str) -> Signal {
     if TELLING.contains(&operator) {
@@ -45,9 +46,13 @@ pub fn signal_of(operator: &str) -> Signal {
 /// One mutation the suite let through.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Survivor {
+    /// The mutation operator, such as `eq_op_invert`.
     pub operator: String,
+    /// The file the mutation changed, from the workspace root.
     pub file: String,
+    /// The line of the change, counted from 1.
     pub line: u32,
+    /// What the mutation did, in mutest's words.
     pub what: String,
     /// What the mutation changes, from which a proof's copy of the file is rebuilt.
     pub edits: Vec<Edit>,
@@ -56,21 +61,27 @@ pub struct Survivor {
 /// One change a mutation makes, as mutest writes it: where it goes, and the code it puts there.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Edit {
+    /// Where the change goes.
     pub location: Location,
+    /// The code the change puts there.
     pub substitute: Substitute,
 }
 
 /// Where an edit goes: `kind` is `replace`, `insert_before` or `insert_after`, of `span`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Location {
+    /// How the code goes in: `replace`, `insert_before` or `insert_after`.
     pub kind: String,
+    /// The code the edit replaces or sits next to.
     pub span: Span,
 }
 
 /// The code an edit puts in: `kind` is `expr`, `stmt` or `local`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Substitute {
+    /// The syntax of the new code: `expr`, `stmt` or `local`.
     pub kind: String,
+    /// The new code itself.
     pub replacement: String,
 }
 
@@ -78,12 +89,16 @@ pub struct Substitute {
 /// line and a column in characters, counted from 1.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Span {
+    /// The file, from the workspace root.
     pub path: String,
+    /// The line and column of the first character.
     pub begin: (u32, u32),
+    /// The line and column just past the last character.
     pub end: (u32, u32),
 }
 
 impl Survivor {
+    /// What this survivor says about the suite, from its operator.
     #[must_use]
     pub fn signal(&self) -> Signal {
         signal_of(&self.operator)
@@ -144,10 +159,6 @@ pub fn sites_over(survivors: &[Survivor], was: &Series) -> Vec<Finding> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

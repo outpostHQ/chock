@@ -12,6 +12,36 @@ use syn::{AttrStyle, Attribute, ItemMod, Meta};
 use crate::project;
 use crate::run::baseline::Series;
 
+/// Whether code ships in the build or only tests build it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Code {
+    /// Code the build ships.
+    Production,
+    /// Code that only tests build.
+    Test,
+}
+
+impl Code {
+    /// Test code where `attrs` build an item only for tests, else this code.
+    #[must_use]
+    pub fn within(self, attrs: &[Attribute]) -> Self {
+        if is_test_gated(attrs) {
+            Self::Test
+        } else {
+            self
+        }
+    }
+}
+
+/// Which sources a walk keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kept {
+    /// Production sources only.
+    Production,
+    /// Every source, test files and `tests` directories too.
+    Every,
+}
+
 /// Whether a file name marks a whole-file test module. The walk drops these by name, since their
 /// `#[cfg(test)]` sits on the parent's `mod` line.
 #[must_use]
@@ -37,6 +67,8 @@ pub(crate) fn parse_rust(src: &str) -> Result<syn::File, String> {
 pub type Counted = Vec<(PathBuf, usize)>;
 
 /// Every production file with its line count, or the first crate file that does not parse.
+/// # Errors
+/// When the tree cannot be walked, a source cannot be read, or a crate file does not parse.
 pub fn measure(ctx: &crate::run::Ctx) -> Result<Counted, String> {
     let (counted, unread) = parsed(ctx)?;
     unread.into_iter().next().map_or(Ok(counted), Err)
@@ -44,9 +76,11 @@ pub fn measure(ctx: &crate::run::Ctx) -> Result<Counted, String> {
 
 /// Every production file that parses with its line count, and `path: reason` for each crate file
 /// that does not. Files gated `#[cfg(test)]` from another file go once every file is scanned.
+/// # Errors
+/// When the tree cannot be walked or a source cannot be read.
 pub fn parsed(ctx: &crate::run::Ctx) -> Result<(Counted, Vec<String>), String> {
     let root = &ctx.root;
-    let (paths, crates) = walked(ctx, false)?;
+    let (paths, crates) = walked(ctx, Kept::Production)?;
     let mut counted: Vec<(PathBuf, usize, Vec<PathBuf>)> = Vec::new();
     let mut unread = Vec::new();
     for path in paths {
@@ -79,6 +113,8 @@ pub fn parsed(ctx: &crate::run::Ctx) -> Result<(Counted, Vec<String>), String> {
 
 /// One source split into (production text, test text): `#[cfg(test)]` modules, or a whole file
 /// gated test-only, go to the second.
+/// # Errors
+/// When `src` does not parse as Rust.
 pub fn split(src: &str) -> Result<(String, String), String> {
     let file = parse_rust(src)?;
     if file.attrs.iter().any(is_test_gate) {
@@ -175,6 +211,7 @@ fn last_line(node: &ItemMod) -> usize {
     )
 }
 
+/// Whether any of `attrs` is a `cfg` that turns its item on for tests.
 #[must_use]
 pub fn is_test_gated(attrs: &[Attribute]) -> bool {
     attrs.iter().any(is_test_gate)
@@ -299,12 +336,14 @@ pub(crate) fn skip_dir(name: &str) -> bool {
 
 /// Runs `of` over every source the walk keeps, including files gated test-only from a parent. An
 /// error is fatal only for a file some crate compiles.
+/// # Errors
+/// When the tree cannot be walked, a source cannot be read, or `of` fails on a compiled file.
 pub fn for_each_source<T>(
     ctx: &crate::run::Ctx,
     of: &dyn Fn(&str) -> Result<T, String>,
 ) -> Result<Vec<(String, T)>, String> {
     let root = &ctx.root;
-    let (paths, crates) = walked(ctx, false)?;
+    let (paths, crates) = walked(ctx, Kept::Production)?;
     let mut out = Vec::new();
     for path in &paths {
         let shown = project::relative(root, path);
@@ -340,13 +379,16 @@ where
 }
 
 /// Every Rust source, test files and `tests` directories too; fixture crates are left out.
+/// # Errors
+/// When the tree cannot be walked.
 pub fn sources(ctx: &crate::run::Ctx) -> Result<Vec<PathBuf>, String> {
-    Ok(walked(ctx, true)?.0)
+    Ok(walked(ctx, Kept::Every)?.0)
 }
 
-/// The production sources, or with `tests` every source, and every crate directory, from one
-/// walk; fixture crates are left out.
-fn walked(ctx: &crate::run::Ctx, tests: bool) -> Result<(Vec<PathBuf>, Vec<String>), String> {
+/// The sources `kept` names, and every crate directory, from one walk; fixture crates are left
+/// out.
+fn walked(ctx: &crate::run::Ctx, kept: Kept) -> Result<(Vec<PathBuf>, Vec<String>), String> {
+    let tests = kept == Kept::Every;
     let root = &ctx.root;
     let found = project::walked(
         &ctx.listing,
@@ -354,7 +396,7 @@ fn walked(ctx: &crate::run::Ctx, tests: bool) -> Result<(Vec<PathBuf>, Vec<Strin
         &|name| !skip_dir(name) || (tests && name == "tests"),
         &|name, path| {
             name == "Cargo.toml"
-                || (name.ends_with(".rs")
+                || (Path::new(name).extension().is_some_and(|ext| ext == "rs")
                     && (tests || !is_test_file(name))
                     && !project::is_compile_fail_fixture(path))
         },
@@ -376,7 +418,9 @@ fn walked(ctx: &crate::run::Ctx, tests: bool) -> Result<(Vec<PathBuf>, Vec<Strin
     let sources = found
         .into_iter()
         .zip(&shown)
-        .filter(|(_, shown)| shown.ends_with(".rs") && outside(shown))
+        .filter(|(_, shown)| {
+            Path::new(shown).extension().is_some_and(|ext| ext == "rs") && outside(shown)
+        })
         .map(|(path, _)| path)
         .collect();
     let crates = dirs.into_iter().filter(|dir| outside(dir)).collect();
@@ -384,11 +428,6 @@ fn walked(ctx: &crate::run::Ctx, tests: bool) -> Result<(Vec<PathBuf>, Vec<Strin
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::testdir::tree;

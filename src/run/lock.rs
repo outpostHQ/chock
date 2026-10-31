@@ -26,7 +26,9 @@ impl Drop for Held {
 const TURNS: u32 = 50;
 const BETWEEN: std::time::Duration = std::time::Duration::from_millis(200);
 
-/// Takes the tree's run lock, waiting briefly for a running holder; `Err` says who holds it.
+/// Takes the tree's run lock, waiting briefly for a running holder.
+/// # Errors
+/// The text says who holds the lock, or why the lock file could not be used.
 pub fn take(root: &Path) -> Result<Held, String> {
     trying(root, TURNS, &std::thread::sleep)
 }
@@ -136,18 +138,15 @@ fn told(pid: &str, command: &str, age: Option<std::time::Duration>) -> String {
         seconds @ 0..60 => format!("for {seconds} s"),
         seconds => format!("for {} min", seconds / 60),
     }));
-    let named = match named.is_empty() {
-        true => String::new(),
-        false => format!(" ({})", named.join(", ")),
+    let named = if named.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", named.join(", "))
     };
     format!("another chock run holds this tree{named} and is still running; run again when it ends")
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

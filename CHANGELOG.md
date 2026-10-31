@@ -5,6 +5,63 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-31
+
+- **A hook names the chock that ran it, and the gates that the next stage adds.** After the
+  pre-commit hook: `chock 0.20.0 at <path> judged the commit's 33 gates; the push adds 9: binsize,
+  coverage, crap, …`. A pass at the commit no longer reads as a pass at the push. The path shows an
+  older chock earlier on the hook's `PATH`.
+- **A gate whose verdict changed since the last run says what changed.** For example: `chock:
+  testlint was ok 4 min ago and is TRIPPED now; changed since then: src/a.rs`. Where no file
+  changed, the line says so, since then a tool, the config, the record or git changed the verdict.
+- **A recalled verdict says `recalled`.** The progress line said `ok after 0 s`, which read as a
+  gate that judged the tree again.
+- **The report does not print a tripped gate's findings a second time.** When stdout and stderr
+  reach one terminal, file or pipe, as in a git hook, the progress line showed them already. The
+  table keeps the gate's row. When the two streams go apart, each stream keeps the findings.
+- **In a hook, a passing gate counts its advisories in one line.** For example: ``2 findings not
+  shown in a hook, since this gate passed: `chock explain profile` lists each one``. `lean` counts
+  its candidates the same way. `chock run` still lists each advisory.
+- **`codeslop` finds minified code and short names.** The gate also counts `chock::long_literal`,
+  a string literal of more than 300 characters on one line, and `chock::short_name`, a binding of
+  one or two characters that the code reads more than 5 lines below it. It also warns on five
+  clippy restriction lints, among them `indexing_slicing` and `arithmetic_side_effects`. A record
+  that an older chock wrote takes a first record of each new measure from a local run, and does
+  not fail. CI writes no record, so there a new measure fails until a local run records it.
+- **The lint floor also holds `panic_in_result_fn` and `as_conversions`.** Both are clippy
+  restriction lints, so only a lint table turns them on. A project with `"lint_floor": true` fails
+  `profile` after the upgrade until its lint table names both.
+- **`profile` advises when `[profile.release]` does not set `overflow-checks`.** Release builds
+  then wrap on integer overflow silently. The advisory never fails the gate; `false` still fails.
+- **chock meets its own lint floor.** chock's `Cargo.toml` holds the whole floor, and `clippy.toml`
+  allows `unwrap`, `expect`, `panic` and printing in tests only.
+- **`mutest` keeps the tests that killed each mutation.** Each run writes
+  `.chock/mutest-kills.json`: each evaluated mutation with its function, its verdict, the tests
+  that killed it (with `mutest_exhaustive`) and a hash of the function's body. Git ignores the
+  file, and `chock init` adds the ignore line.
+- **`admits` keeps a Rust escape that a test covers.** A `// checked: <crate> <test>` comment right
+  above a Rust escape keeps it, when that workspace crate defines that test. An escape that still
+  counts says why.
+- **A record that the pre-commit hook writes goes into the commit of `git commit --only`.** With
+  `--only`, git gives the hook a separate index. The baseline record and the crap record now go
+  into that index too, so the commit holds them.
+- **`links` can limit a link to one file.** Write `<file> <Type::fn>`. A link never names an item
+  of the model that holds the link.
+- **`splits` never moves the item that a module is named for.** A file's kept lines count only
+  its items.
+- **`testlint` counts a call with a turbofish.** A test helper called as `twin::<M>(x)` is a call.
+- **`hazards` leaves out the lens `hazard_long_comment_block`.** The `slop` gate owns comment
+  length. chock ignores a record row for the lens, and drops it at the next write.
+- **`measures` judges again when HEAD or its upstream moves.**
+- **`doc` passes `--keep-going`.** cargo otherwise stops at the first package that fails and hides
+  the rest.
+- **A `commands` entry can name `cannot_run_codes`.** For such an exit code the gate says
+  `CANNOT RUN`. Any other non-zero code still fails the gate.
+- **`unused` and `unused-deep` count a dependency that only turns on features as used.**
+- **`proof` reads `metadata.kani` only from the root manifest.** It notes each member table that
+  Kani skips.
+- **The publish workflow is safe to run twice for the same tag.**
+
 ## [0.19.0] - 2026-10-27
 
 - **On a CI runner, only `CHOCK_MEMORY` stops a tool for its memory.** With no limit set, chock

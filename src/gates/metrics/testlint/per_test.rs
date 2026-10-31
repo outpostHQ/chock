@@ -135,8 +135,8 @@ fn escape(s: &FileScan, t: &TestItem) -> Option<String> {
     let lexed = &s.lexed;
     let called = |path: &&str| {
         let (owner, call) = path.rsplit_once("::").unwrap_or(("", *path));
-        let owned = |i: usize| owner.is_empty() || ends_in_path(&lexed.toks[..i], owner);
-        let calls = |i: usize| lexed.ident(i) == call && lexed.opens(i + 1, '(') && owned(i);
+        let of_owner = |i: usize| owner.is_empty() || ends_in_path(&lexed.toks[..i], owner);
+        let calls = |i: usize| lexed.ident(i) == call && lexed.opens(i + 1, '(') && of_owner(i);
         t.body.clone().any(calls)
     };
     let path = ESCAPES.into_iter().find(called)?;

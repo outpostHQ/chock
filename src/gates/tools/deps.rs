@@ -38,9 +38,10 @@ fn checked(
     deny: &dyn Fn(&[&str]) -> Result<Outcome, String>,
 ) -> Result<Outcome, String> {
     let whole = deny(asked)?;
-    match unread(&whole) && asked.len() > 1 {
-        true => alone(asked, whole, deny),
-        false => Ok(whole),
+    if unread(&whole) && asked.len() > 1 {
+        alone(asked, whole, deny)
+    } else {
+        Ok(whole)
     }
 }
 
@@ -223,10 +224,6 @@ fn declares(manifest: &str, section: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use std::path::Path;
 

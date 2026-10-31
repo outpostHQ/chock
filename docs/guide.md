@@ -57,8 +57,9 @@ Then commit the files that chock wrote.
 | `.chock/hooks/*` | one stub for each git hook, on git older than 2.54 only |
 | `.outposthooks.toml` | the `pre-commit` hook, in an Outpost repository |
 
-A run also writes two files that git ignores: `.chock/last-run.json` holds the last findings for
-`chock explain`, and `.chock/verdicts.json` holds the kept verdicts. Do not commit them.
+A run also writes files that git ignores: `.chock/last-run.json` holds the last findings for
+`chock explain`, `.chock/verdicts.json` holds the kept verdicts, and `.chock/mutest-kills.json`
+holds what the last `mutest` run killed. Do not commit them.
 
 Three facts about `chock init --local`:
 
@@ -83,7 +84,8 @@ Two facts about the first `chock run`:
 
 - **It writes each gate's first record.** The run prints `wrote the first record for …` on stderr
   and leaves `.chock/baseline.json` for you to commit. A gate that you switch on later gets its
-  first record in the same way, from the next run.
+  first record in the same way, from the next run, and so does a measure that a newer chock
+  adds to a gate that has a record.
 - **CI writes no record.** In `chock run --ci`, a ratchet whose record no change committed is
   `CANNOT RUN`, and the reason names the command to run outside CI.
 
@@ -120,6 +122,8 @@ file `verdicts.json` in `.chock`, under a key of everything the gate reads:
 - A tool or chock is known by its version and the size and mtime of its binary, so a new build
   judges each gate again, even at the same version.
 - `CANNOT RUN` is never kept, and a run that wrote a record judges that gate once more.
+- `measures` also reads the messages of the commits above the upstream, so its key holds HEAD
+  and the upstream commit. A reworded commit with the same files judges it again.
 - Not every gate keeps a verdict. `deps` asks the network and `commands` runs your own program,
   so each run judges them again, as it does the gates that chock computes itself.
 - A `runner` or `coverage` command of your own hides its tools from chock. Name them under

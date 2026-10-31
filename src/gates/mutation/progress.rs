@@ -585,6 +585,10 @@ impl Progress {
 }
 
 #[inline(never)]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "a guard takes the condition it checks, not a mode"
+)]
 fn require(condition: bool, message: &str) -> Result<(), String> {
     if condition {
         Ok(())
@@ -602,13 +606,10 @@ pub(super) fn hex_id(value: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed fixture decode is the test failing"
-)]
 mod tests {
     use super::*;
     use serde_json::{Value, json};
+    use std::fmt::Write as _;
 
     const NONCE: &str = "0123456789abcdef0123456789abcdef";
     const INSTANCE: &str = "abcdef0123456789abcdef0123456789";
@@ -657,7 +658,7 @@ mod tests {
             0,
             0,
             json!({"pid":42,"process_start":{"kind":"linux-proc-starttime","ticks":123},
-            "exe":"/tmp/harness", "record_limit_bytes":16384,"file_limit_bytes":67108864}),
+            "exe":"/tmp/harness", "record_limit_bytes":16384,"file_limit_bytes":67_108_864}),
         )
     }
 
@@ -921,7 +922,7 @@ mod tests {
         .unwrap();
         ingest(&mut progress, end(4, 20, 1, "ignored", "complete"), 90_000).unwrap();
         ingest(&mut progress, terminal(5, 30, "completed", 0), 90_000).unwrap();
-        assert_eq!(progress.check(Duration::from_millis(90_000)), Ok(()));
+        assert_eq!(progress.check(Duration::from_secs(90)), Ok(()));
         assert_eq!(progress.complete(), Ok(()));
     }
 
@@ -1175,7 +1176,7 @@ mod tests {
     fn wire_rows_require_objects_and_accept_the_discriminator_last() {
         let positional = json!([
             "mutest-progress", 1, NONCE, INSTANCE, 0, 0, "header", 42,
-            {"kind":"linux-proc-starttime","ticks":123}, "/tmp/harness", 16384, 67108864
+            {"kind":"linux-proc-starttime","ticks":123}, "/tmp/harness", 16384, 67_108_864
         ]);
         assert_eq!(
             Row::parse(&positional.to_string()).err().unwrap(),
@@ -1191,7 +1192,7 @@ mod tests {
             let event = next.as_object_mut().unwrap().remove("event").unwrap();
             let mut text = next.to_string();
             text.pop();
-            text.push_str(&format!(",\"event\":{event}}}"));
+            write!(text, ",\"event\":{event}}}").unwrap();
             assert!(Row::parse(&text).is_ok(), "{text}");
         }
     }
@@ -1251,7 +1252,7 @@ mod tests {
         .unwrap();
         assert_eq!(progress.check(Duration::from_millis(78_999)), Ok(()));
         assert_eq!(
-            progress.check(Duration::from_millis(79_000)),
+            progress.check(Duration::from_secs(79)),
             Err("invocation 1 exceeded its deadline; test=\"a test\"; mutation_ids=[1]".into())
         );
     }
@@ -1278,7 +1279,7 @@ mod tests {
             ("startup_timeout_ms", json!(0)),
             ("execution_timeout_ms", json!(-1)),
             ("mutation_ids", json!([-1])),
-            ("mutation_ids", json!([4294967296_u64])),
+            ("mutation_ids", json!([4_294_967_296_u64])),
             ("test_name", json!("")),
             ("strategy", json!("unknown")),
         ] {

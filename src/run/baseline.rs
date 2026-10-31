@@ -12,6 +12,7 @@ use crate::project::document::{self, Versioned};
 /// rather than half-read. See `document::parse`.
 pub const SCHEMA: u32 = 1;
 
+/// Where the baseline lives, from the root of the tree.
 pub const FILE: &str = ".chock/baseline.json";
 
 /// Ratchets whose count depends on the system that measured it: each system builds its own binary
@@ -21,9 +22,10 @@ const PER_SYSTEM: [&str; 4] = ["binsize", "bsize", "coverage", "mutest"];
 /// The name a gate's record is kept under on `system`. Linux keeps the plain name, as every record
 /// did before each system kept its own.
 fn kept_as(gate: &str, system: &str) -> String {
-    match PER_SYSTEM.contains(&gate) && system != "linux" {
-        true => format!("{gate}@{system}"),
-        false => gate.to_string(),
+    if PER_SYSTEM.contains(&gate) && system != "linux" {
+        format!("{gate}@{system}")
+    } else {
+        gate.to_string()
     }
 }
 
@@ -53,7 +55,12 @@ pub enum Keys {
     Items,
     /// Items whose number moves with every change, such as a binary's bytes. A key fails past the
     /// larger of `basis_points` of its record and `floor`; only a new baseline moves the record.
-    Sizes { basis_points: u64, floor: u64 },
+    Sizes {
+        /// How far past its record a key may grow, in hundredths of a percent.
+        basis_points: u64,
+        /// The least a key may grow past its record, however small the record.
+        floor: u64,
+    },
 }
 
 impl Keys {
@@ -79,6 +86,7 @@ fn schema_url() -> String {
 }
 
 impl Series {
+    /// A series with no rows.
     #[must_use]
     pub fn new() -> Self {
         Self(BTreeMap::new())
@@ -90,20 +98,24 @@ impl Series {
         self.0.values().sum()
     }
 
+    /// Sets the row of `key` to `value`.
     pub fn set(&mut self, key: &str, value: u64) {
         self.0.insert(key.to_string(), value);
     }
 
+    /// The row of `key`, if the series has one.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<u64> {
         self.0.get(key).copied()
     }
 
+    /// Whether the series has no rows.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    /// How many rows the series has.
     #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
@@ -179,7 +191,9 @@ impl Series {
     #[must_use]
     pub fn zeroed(&self) -> Self {
         let mut zeroed = self.0.clone();
-        zeroed.values_mut().for_each(|count| *count = 0);
+        for count in zeroed.values_mut() {
+            *count = 0;
+        }
         Self(zeroed)
     }
 
@@ -248,12 +262,25 @@ fn by_item<'a>(keys: impl Iterator<Item = &'a String>) -> BTreeMap<&'a str, Vec<
 #[serde(tag = "change", rename_all = "lowercase")]
 pub enum Change {
     /// Known to the baseline and higher than it.
-    Grew { key: String, was: u64, now: u64 },
+    Grew {
+        /// The key that grew.
+        key: String,
+        /// The key's number in the baseline.
+        was: u64,
+        /// The key's number in this run.
+        now: u64,
+    },
     /// Not in the baseline at all, and above zero.
-    New { key: String, now: u64 },
+    New {
+        /// The key the baseline never saw.
+        key: String,
+        /// The key's number in this run.
+        now: u64,
+    },
 }
 
 impl Change {
+    /// The key that moved.
     #[must_use]
     pub fn key(&self) -> &str {
         match self {
@@ -261,12 +288,22 @@ impl Change {
         }
     }
 
+    /// The key's number in this run.
     #[must_use]
     pub fn now(&self) -> u64 {
         match self {
             Self::Grew { now, .. } | Self::New { now, .. } => *now,
         }
     }
+}
+
+/// How `chock baseline` keeps a measurement: it raises the record, or lowers it with `--lower`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keep {
+    /// The record goes up to the measurement and never goes down.
+    Record,
+    /// The record goes down to the measurement and never goes up, from `--lower`.
+    Lower,
 }
 
 /// The committed file. It carries no date: git records when a baseline moved, and a self-reported
@@ -276,8 +313,11 @@ pub struct Baseline {
     /// Recomputed on every write and never read back, so an older chock's URL never carries over.
     #[serde(rename = "$schema", skip_deserializing, default = "schema_url")]
     pub schema_url: String,
+    /// The schema of the file, which `SCHEMA` must match.
     pub version: u32,
+    /// The chock that wrote the file, which decides the keys a later chock waits for.
     pub chock: String,
+    /// Each gate's record, by the name `kept_as` gives it.
     pub gates: BTreeMap<String, Series>,
     /// What each gate counted when recorded. A unit change keeps the keys, so only this field shows
     /// it. Older files lack it, which is not a mismatch.
@@ -299,6 +339,7 @@ impl Versioned for Baseline {
 }
 
 impl Baseline {
+    /// A baseline with no records, written by `chock_version`.
     #[must_use]
     pub fn empty(chock_version: &str) -> Self {
         Self {
@@ -320,24 +361,42 @@ impl Baseline {
     /// beside it, so a later run can tell a gate that counts something else from a tree that got worse.
     pub fn record(&mut self, name: &str, unit: &str, series: Series) {
         // A record in another unit measures a different thing, so it is replaced, not raised.
-        let held = match self.unit(name).is_some_and(|was| was != unit) {
-            true => Series::new(),
-            false => self.gate(name),
+        let held = if self.unit(name).is_some_and(|was| was != unit) {
+            Series::new()
+        } else {
+            self.gate(name)
         };
         self.set(name, series.kept_higher(&held));
         self.units.insert(name.to_string(), unit.to_string());
     }
 
+    /// The chock a write by `running` names in this record. It keeps the older one while a recorded
+    /// gate that `measured` leaves out still lacks the first record of a key a later chock counts.
+    #[must_use]
+    pub fn stamp(&self, running: &str, measured: &[String]) -> String {
+        let waits = |name: &String| {
+            let gate = name.split_once('@').map_or(name.as_str(), |(gate, _)| gate);
+            !measured.contains(name) && crate::gates::counts_after(gate, &self.chock)
+        };
+        if self.gates.keys().any(waits) {
+            self.chock.clone()
+        } else {
+            running.to_string()
+        }
+    }
+
     /// `record` for `chock baseline`, or `lower` for `chock baseline --lower`.
-    pub fn keep(&mut self, name: &str, unit: &str, series: Series, lower: bool) {
-        match lower {
-            true => self.lower(name, &series),
-            false => self.record(name, unit, series),
+    pub fn keep(&mut self, name: &str, unit: &str, series: Series, keep: Keep) {
+        match keep {
+            Keep::Lower => self.lower(name, &series),
+            Keep::Record => self.record(name, unit, series),
         }
     }
 
     /// What `chock baseline --keys` writes: only the `named` keys change, each to this measurement
-    /// or out where it is gone, and none goes up. `Err` names each one that would.
+    /// or out where it is gone, and none goes up.
+    /// # Errors
+    /// Names each key that would go up, or the unit the record holds when it is another.
     pub fn write_keys(
         &mut self,
         name: &str,
@@ -385,24 +444,29 @@ impl Baseline {
     }
 
     /// The series recorded for `gate`, or `None` where it has none yet.
+    /// The record of gate `name` on this system, if it has one.
     #[must_use]
     pub fn recorded(&self, name: &str) -> Option<&Series> {
         self.gates.get(&kept_here(name))
     }
 
+    /// Whether gate `name` has a record on this system.
     #[must_use]
     pub fn has(&self, name: &str) -> bool {
         self.gates.contains_key(&kept_here(name))
     }
 
+    /// Replaces the record of gate `name` on this system with `series`.
     pub fn set(&mut self, name: &str, series: Series) {
         self.gates.insert(kept_here(name), series);
     }
 
     /// Each key of file `old` renamed to `new`, in the record of each gate `names` lists (all when
     /// empty), on every system: how many moved. A key `new` already holds stops it, unchanged.
+    /// # Errors
+    /// The text names the key that `new` already holds; nothing moves then.
     pub fn moved_file(&mut self, names: &[&str], old: &str, new: &str) -> Result<usize, String> {
-        let named = |kept: &str| {
+        let chosen = |kept: &str| {
             let gate = kept.split_once('@').map_or(kept, |(gate, _)| gate);
             names.is_empty() || names.contains(&gate)
         };
@@ -413,7 +477,7 @@ impl Baseline {
         };
         let mut gates = self.gates.clone();
         let mut moved = 0;
-        for (kept, series) in gates.iter_mut().filter(|(kept, _)| named(kept)) {
+        for (kept, series) in gates.iter_mut().filter(|(kept, _)| chosen(kept)) {
             let mut was = std::mem::take(&mut series.0);
             for (key, value) in was.clone() {
                 let Some(to) = renamed(&key) else { continue };
@@ -449,7 +513,9 @@ fn relative_in(value: &mut serde_json::Value, root: &Path) {
             *text = crate::project::relative(root, Path::new(text.as_str()));
         }
         serde_json::Value::Array(items) => {
-            items.iter_mut().for_each(|item| relative_in(item, root));
+            for item in items.iter_mut() {
+                relative_in(item, root);
+            }
         }
         serde_json::Value::Object(fields) => {
             fields
@@ -514,10 +580,6 @@ fn own_held(root: &Path, name: &str) -> Option<Vec<String>> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

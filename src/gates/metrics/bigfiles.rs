@@ -8,6 +8,7 @@ use crate::run::{Ctx, Gate, Group, Kind, Measurement};
 /// Production lines a file may hold before it is listed and held to its own count.
 pub const BUDGET: usize = 1000;
 
+/// The `bigfiles` gate: no Rust file grows past its size budget.
 pub const GATE: Gate = Gate {
     name: "bigfiles",
     about: "a Rust file over 1000 production lines grew, or a new one crossed the budget",
@@ -32,11 +33,6 @@ fn read(ctx: &Ctx, budget: usize) -> Result<Measurement, String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::run::baseline::Series;

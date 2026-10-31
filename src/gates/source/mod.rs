@@ -10,20 +10,24 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use proc_macro2::LineColumn;
-use syn::punctuated::Punctuated;
+use syn::Meta;
 use syn::visit::Visit;
-use syn::{AttrStyle, Attribute, Expr, ExprLit, Lit, Meta, Token};
 
+use crate::gates::metrics::prodlines::Code;
 use crate::project;
-use crate::project::release::{LINT_REASONS, Release};
+use crate::project::release::Release;
 use crate::run::baseline::{Keys, Series};
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind};
-use interpolation::{dynamic, is_true, only, text};
 use targets::TARGET_DIRS;
 use testonly::{test_gate, test_modules};
 
+mod scan;
+use scan::Scan;
+#[cfg(test)]
+use scan::is_crate_root;
+
+/// The `source` gate: lints switched off with no reason, and two security shapes.
 pub const GATE: Gate = Gate {
     name: "source",
     about: "lints blanket-disabled or suppressed without a reason, and two security shapes",
@@ -81,7 +85,7 @@ fn found_in(ctx: &Ctx) -> Result<Vec<Finding>, String> {
     let mut read: Vec<&(String, String)> = Vec::new();
     for text in &texts {
         let (shown, src) = text;
-        match judge.of(shown, src, false) {
+        match judge.of(shown, src, Code::Production) {
             Ok(found) => {
                 gated.extend(judge.test_modules(shown, src));
                 read.push(text);
@@ -96,7 +100,7 @@ fn found_in(ctx: &Ctx) -> Result<Vec<Finding>, String> {
     }
     for (shown, src) in read.into_iter().filter(|(shown, _)| gated.contains(shown)) {
         findings.retain(|found| &found.file != shown);
-        findings.extend(judge.of(shown, src, true)?);
+        findings.extend(judge.of(shown, src, Code::Test)?);
     }
     Finding::sort_by_place(&mut findings);
     Ok(findings)
@@ -217,13 +221,17 @@ impl<'a> Judge<'a> {
         move |name: &str| held.is_some_and(|held| !held.contains(name))
     }
 
-    fn of(&self, path: &str, src: &str, gated: bool) -> Result<Vec<Finding>, String> {
-        let ships = project::ships(path, self.not_shipped);
+    fn of(&self, path: &str, src: &str, gated: Code) -> Result<Vec<Finding>, String> {
+        let delivery = if project::ships(path, self.not_shipped) {
+            Delivery::Shipped
+        } else {
+            Delivery::Unshipped
+        };
         let owner = Owner {
             test_only: &self.test_only(path),
             promise: self.promises.get(&owning_crate(path, self.crates)).copied(),
         };
-        judged_with(path, src, ships, gated, &owner)
+        judged_with(path, src, delivery, gated, &owner)
     }
 
     fn test_modules(&self, path: &str, src: &str) -> Vec<String> {
@@ -241,40 +249,63 @@ fn owning_crate(path: &str, crates: &[String]) -> String {
         .unwrap_or_default()
 }
 
+/// Whether anybody receives a file's code, so the shipped-code rules apply to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// Somebody receives the code: every rule applies.
+    Shipped,
+    /// Nobody receives the code, such as a fuzz target: no shipped-code rule applies.
+    Unshipped,
+}
+
 /// The findings in one file's source, whose crate promises `promise` as its `rust-version`.
-/// `ships` is false for code nobody receives, such as a fuzz target: no shipped-code rule applies.
+/// # Errors
+/// When `src` does not parse as Rust.
 pub fn judged(
     path: &str,
     src: &str,
-    ships: bool,
+    delivery: Delivery,
     promise: Option<Release>,
 ) -> Result<Vec<Finding>, String> {
     let owner = Owner {
         test_only: &|_| false,
         promise,
     };
-    judged_with(path, src, ships, false, &owner)
+    judged_with(path, src, delivery, Code::Production, &owner)
 }
 
 /// What the crate that owns a file tells the rules: which features are test-only, and the
 /// `rust-version` it promises.
 pub struct Owner<'a> {
+    /// Whether a feature of that name is one only tests turn on.
     pub test_only: &'a dyn Fn(&str) -> bool,
+    /// The crate's `rust-version`, where its manifest names one.
     pub promise: Option<Release>,
+}
+
+impl std::fmt::Debug for Owner<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A closure has no `Debug`, so `test_only` is left out.
+        f.debug_struct("Owner")
+            .field("promise", &self.promise)
+            .finish_non_exhaustive()
+    }
 }
 
 /// `judged`, given whether a parent's `mod x;` already made this file test code (`gated`), and what
 /// its `owner` tells.
+/// # Errors
+/// When `src` does not parse as Rust.
 pub fn judged_with(
     path: &str,
     src: &str,
-    ships: bool,
-    gated: bool,
+    delivery: Delivery,
+    gated: Code,
     owner: &Owner<'_>,
 ) -> Result<Vec<Finding>, String> {
     let file = syn::parse_file(src).map_err(|e| format!("line {}: {e}", e.span().start().line))?;
-    let mut scan = Scan::new(path, src, Imports::of(&file), ships, owner.test_only);
-    scan.test_file |= gated || test_gate(&file.attrs, owner.test_only);
+    let mut scan = Scan::new(path, src, Imports::of(&file), delivery, owner.test_only);
+    scan.test_file |= gated == Code::Test || test_gate(&file.attrs, owner.test_only);
     scan.promise = owner.promise;
     scan.visit_file(&file);
     Ok(scan.into_findings())
@@ -300,247 +331,6 @@ struct Seen {
     /// Every lint this attribute switches off, through `allow`, `expect` or `cfg_attr`.
     suppresses: Vec<String>,
     in_tests: bool,
-}
-
-struct Scan<'a> {
-    path: &'a str,
-    src: &'a str,
-    starts: Vec<usize>,
-    imports: Imports,
-    attrs: Vec<Seen>,
-    /// How many `#[cfg(test)]` items or `#[test]` functions enclose the node being visited.
-    tests: usize,
-    test_file: bool,
-    /// Whether anybody receives this file; see `judged`.
-    ships: bool,
-    test_only: TestOnly<'a>,
-    /// The `rust-version` of the file's crate, which decides how an `allow` gives its reason.
-    promise: Option<Release>,
-    findings: Vec<Finding>,
-}
-
-/// Whether a named feature is one no shipped build enables, read from the workspace manifests.
-type TestOnly<'a> = &'a dyn Fn(&str) -> bool;
-
-impl<'a> Scan<'a> {
-    fn new(path: &'a str, src: &'a str, imports: Imports, ships: bool, only: TestOnly<'a>) -> Self {
-        Self {
-            path,
-            src,
-            starts: std::iter::once(0)
-                .chain(src.match_indices('\n').map(|(index, _)| index + 1))
-                .collect(),
-            imports,
-            attrs: Vec::new(),
-            tests: 0,
-            test_file: test_path(path),
-            ships,
-            test_only: only,
-            promise: None,
-            findings: Vec::new(),
-        }
-    }
-
-    fn into_findings(mut self) -> Vec<Finding> {
-        self.attrs.sort_by_key(|seen| seen.from);
-        let mut found = self.findings;
-        found.extend(unreasoned(self.path, self.src, &self.attrs, self.promise));
-        if self.ships {
-            found.extend(shipped(self.path, &self.attrs));
-        }
-        found.extend(stacked(self.path, self.src, &self.attrs));
-        Finding::sort_by_place(&mut found);
-        found
-    }
-
-    /// Reports an inner `#![allow(...)]` at a crate root, which covers the whole crate. In a module
-    /// file only the reason rule applies.
-    fn blanket(&mut self, attrs: &[Attribute], scope: &str) {
-        // A test target has no scope narrower than its own file to ask for.
-        if self.in_tests() || !is_crate_root(self.path) {
-            return;
-        }
-        for attr in attrs.iter().filter(|a| is_inner(a)) {
-            let Some(reading) = allow_reading(attr) else {
-                continue;
-            };
-            let message = format!("#![allow({})] covers {scope}", reading.lints.join(", "));
-            self.findings.push(
-                Finding::at(self.path, &message)
-                    .line(line_of(attr.pound_token.span.start()))
-                    .item(CRATE_LEVEL),
-            );
-        }
-    }
-
-    fn record(&mut self, attr: &Attribute) {
-        self.attrs.push(Seen {
-            inner: is_inner(attr),
-            from: offset(self.src, &self.starts, attr.pound_token.span.start()),
-            to: offset(
-                self.src,
-                &self.starts,
-                attr.bracket_token.span.close().end(),
-            ),
-            line: line_of(attr.pound_token.span.start()),
-            allow: allow_reading(attr),
-            suppresses: suppressed_lints(attr),
-            in_tests: self.in_tests(),
-        });
-    }
-
-    fn in_tests(&self) -> bool {
-        self.tests > 0 || self.test_file
-    }
-
-    fn report(&mut self, at: LineColumn, rule: &str, message: &str) {
-        let line = line_of(at);
-        // A deliberate shape has no attribute to carry a reason, so a comment naming the rule and
-        // saying why waives it.
-        if waived(self.src, line, rule) {
-            return;
-        }
-        self.findings
-            .push(Finding::at(self.path, message).line(line).item(rule));
-    }
-
-    /// reqwest's builder told to accept an unverified certificate or hostname. Test code is exempt:
-    /// a local test server's certificate is usually self-signed.
-    fn tls(&mut self, call: &syn::ExprMethodCall) {
-        let message = match call.method.to_string().as_str() {
-            "tls_danger_accept_invalid_certs" | "danger_accept_invalid_certs" => {
-                "reqwest client builder disables TLS certificate verification"
-            }
-            "tls_danger_accept_invalid_hostnames" | "danger_accept_invalid_hostnames" => {
-                "reqwest client builder disables TLS hostname verification"
-            }
-            _ => return,
-        };
-        if self.in_tests() || !only(&call.args).is_some_and(is_true) {
-            return;
-        }
-        let mut base = &*call.receiver;
-        while let Expr::MethodCall(inner) = base {
-            base = &*inner.receiver;
-        }
-        let Expr::Call(builder) = base else {
-            return;
-        };
-        if !builder.args.is_empty()
-            || !TLS_BUILDERS
-                .iter()
-                .any(|item| calls(&builder.func, &self.imports, item))
-        {
-            return;
-        }
-        self.report(call.method.span().start(), DISABLED_TLS, message);
-    }
-
-    /// A value built at run time handed to a shell as its `-c` script. Test code is not exempt.
-    fn shell(&mut self, call: &syn::ExprMethodCall) {
-        if call.method != "arg" || !only(&call.args).is_some_and(dynamic) {
-            return;
-        }
-        let Expr::MethodCall(script) = &*call.receiver else {
-            return;
-        };
-        if script.method != "arg" || only(&script.args).and_then(text).as_deref() != Some("-c") {
-            return;
-        }
-        let Expr::Call(command) = &*script.receiver else {
-            return;
-        };
-        if !calls(&command.func, &self.imports, COMMAND_NEW) {
-            return;
-        }
-        if !only(&command.args)
-            .and_then(text)
-            .is_some_and(|shell| SHELLS.contains(&shell.as_str()))
-        {
-            return;
-        }
-        let message = "a dynamic value is interpolated into a shell command";
-        self.report(call.method.span().start(), DYNAMIC_SHELL, message);
-    }
-}
-
-impl<'ast> Visit<'ast> for Scan<'_> {
-    fn visit_file(&mut self, node: &'ast syn::File) {
-        self.blanket(&node.attrs, "this whole file");
-        syn::visit::visit_file(self, node);
-    }
-
-    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
-        let gated = test_gate(&node.attrs, self.test_only);
-        self.tests += usize::from(gated);
-        self.blanket(&node.attrs, &format!("the whole module `{}`", node.ident));
-        syn::visit::visit_item_mod(self, node);
-        self.tests -= usize::from(gated);
-    }
-
-    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        let gated = test_gate(&node.attrs, self.test_only);
-        self.tests += usize::from(gated);
-        syn::visit::visit_item_fn(self, node);
-        self.tests -= usize::from(gated);
-    }
-
-    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
-        let gated = test_gate(&node.attrs, self.test_only);
-        self.tests += usize::from(gated);
-        syn::visit::visit_impl_item_fn(self, node);
-        self.tests -= usize::from(gated);
-    }
-
-    fn visit_attribute(&mut self, node: &'ast Attribute) {
-        self.record(node);
-    }
-
-    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-        self.tls(node);
-        self.shell(node);
-        syn::visit::visit_expr_method_call(self, node);
-    }
-}
-
-/// Every `#[allow]` that switches a lint off without a `reason`. A crate whose `rust-version`
-/// cannot build `reason = "…"` gives the reason in a `//` comment beside the attribute instead.
-fn unreasoned(path: &str, src: &str, attrs: &[Seen], promise: Option<Release>) -> Vec<Finding> {
-    let below = promise.filter(|promise| !LINT_REASONS.open_to(Some(*promise)));
-    attrs
-        .iter()
-        .filter_map(|seen| {
-            let reading = seen.allow.as_ref().filter(|reading| !reading.reasoned)?;
-            if below.is_some() && commented(src, seen) {
-                return None;
-            }
-            let bang = if seen.inner { "!" } else { "" };
-            let lints = reading.lints.join(", ");
-            let mut message =
-                format!("#{bang}[allow({lints})] switches a lint off with no stated reason");
-            if let Some(promise) = below {
-                message.push_str(&format!(
-                    "; rust-version {promise} cannot build `reason = \"…\"`, so write the reason in a \
-                     `//` comment on the line above"
-                ));
-            }
-            Some(Finding::at(path, &message).line(seen.line).item(UNREASONED))
-        })
-        .collect()
-}
-
-/// Whether a `//` comment of `LEAST_REASON` characters or more fills the line above the attribute
-/// or follows it on its last line. A doc comment documents the item, so it is no reason.
-fn commented(src: &str, seen: &Seen) -> bool {
-    let above = src
-        .get(..seen.from)
-        .and_then(|before| before.rsplit('\n').nth(1));
-    let after = src.get(seen.to..).and_then(|rest| rest.split('\n').next());
-    [above, after].into_iter().flatten().any(|line| {
-        let text = line.trim_start().strip_prefix("//");
-        text.filter(|rest| !rest.starts_with(['/', '!']))
-            .is_some_and(|rest| rest.trim().chars().count() >= LEAST_REASON)
-    })
 }
 
 /// The lints that keep panics and `unsafe` out of shipped code. Allowing one outside test code is a
@@ -581,14 +371,6 @@ fn shipped(path: &str, attrs: &[Seen]) -> Vec<Finding> {
         .collect()
 }
 
-/// Items carrying two or more `#[allow]` attributes, or one naming four or more lints.
-fn stacked(path: &str, src: &str, attrs: &[Seen]) -> Vec<Finding> {
-    runs(src, attrs)
-        .into_iter()
-        .filter_map(|run| stack(path, run))
-        .collect()
-}
-
 fn stack(path: &str, run: &[Seen]) -> Option<Finding> {
     let allows: Vec<(&Seen, &Reading)> = run
         .iter()
@@ -619,151 +401,6 @@ fn stack(path: &str, run: &[Seen]) -> Option<Finding> {
     Some(Finding::at(path, &message).line(first.line).item(STACKED))
 }
 
-/// Groups of attributes separated only by whitespace and comments: those on the same item.
-fn runs<'a>(src: &str, attrs: &'a [Seen]) -> Vec<&'a [Seen]> {
-    let mut out = Vec::new();
-    let mut start = 0;
-    for index in 1..attrs.len() {
-        let joined = src
-            .get(attrs[index - 1].to..attrs[index].from)
-            .is_some_and(only_trivia);
-        if joined {
-            continue;
-        }
-        out.push(&attrs[start..index]);
-        start = index;
-    }
-    if start < attrs.len() {
-        out.push(&attrs[start..]);
-    }
-    out
-}
-
-/// Whether the text is only whitespace and comments. A doc comment is an attribute, so it is never
-/// in a gap.
-fn only_trivia(text: &str) -> bool {
-    let mut rest = text.trim_start();
-    loop {
-        if let Some(tail) = rest.strip_prefix("//") {
-            rest = tail
-                .split_once('\n')
-                .map_or("", |(_, after)| after)
-                .trim_start();
-            continue;
-        }
-        let Some(tail) = rest.strip_prefix("/*") else {
-            return rest.is_empty();
-        };
-        let Some(after) = past_block(tail) else {
-            return false;
-        };
-        rest = after.trim_start();
-    }
-}
-
-/// Past the `*/` closing a block comment, counting nesting the way rustc counts it.
-fn past_block(mut rest: &str) -> Option<&str> {
-    let mut depth = 1usize;
-    while depth > 0 {
-        let close = rest.find("*/")?;
-        match rest.find("/*") {
-            Some(open) if open < close => {
-                depth += 1;
-                rest = rest.get(open + 2..)?;
-            }
-            _ => {
-                depth -= 1;
-                rest = rest.get(close + 2..)?;
-            }
-        }
-    }
-    Some(rest)
-}
-
-/// What a plain `allow(...)` names. `expect` is skipped since it fails once the lint stops firing,
-/// and `cfg_attr` is left to `suppressed_lints`.
-fn allow_reading(attr: &Attribute) -> Option<Reading> {
-    let Meta::List(list) = &attr.meta else {
-        return None;
-    };
-    if !list.path.is_ident("allow") {
-        return None;
-    }
-    let (lints, reasoned) = listed(list)?;
-    (!lints.is_empty()).then_some(Reading { lints, reasoned })
-}
-
-/// Every lint this attribute switches off outside a test build: `allow`, `expect`, or either inside
-/// a `cfg_attr` whose predicate is not `test`.
-fn suppressed_lints(attr: &Attribute) -> Vec<String> {
-    let Meta::List(list) = &attr.meta else {
-        return Vec::new();
-    };
-    if switches_off(&list.path) {
-        return lint_names(list);
-    }
-    if !list.path.is_ident("cfg_attr") {
-        return Vec::new();
-    }
-    let Ok(args) = list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated) else {
-        return Vec::new();
-    };
-    let mut reading = args.into_iter();
-    // Only `cfg_attr(test, …)` is test-only; any other predicate can reach a shipped build.
-    match reading.next() {
-        Some(Meta::Path(pred)) if pred.is_ident("test") => return Vec::new(),
-        Some(_) => {}
-        None => return Vec::new(),
-    }
-    reading
-        .filter_map(|inner| match inner {
-            Meta::List(inner) if switches_off(&inner.path) => Some(lint_names(&inner)),
-            _ => None,
-        })
-        .flatten()
-        .collect()
-}
-
-fn switches_off(path: &syn::Path) -> bool {
-    path.is_ident("allow") || path.is_ident("expect")
-}
-
-/// The lints an `allow(...)` or `expect(...)` names, with `reason = "…"` left out.
-fn lint_names(list: &syn::MetaList) -> Vec<String> {
-    listed(list).map(|(lints, _)| lints).unwrap_or_default()
-}
-
-/// The sorted, deduplicated lints a list names and whether it states a reason; `None` if the
-/// arguments do not parse.
-fn listed(list: &syn::MetaList) -> Option<(Vec<String>, bool)> {
-    let args = list
-        .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
-        .ok()?;
-    let mut lints: Vec<String> = args
-        .iter()
-        .filter(|arg| !is_reason(arg))
-        .map(named)
-        .collect();
-    lints.sort();
-    lints.dedup();
-    Some((lints, args.iter().any(is_reason)))
-}
-
-/// Whether this argument is `reason = "…"` with a string literal value.
-fn is_reason(meta: &Meta) -> bool {
-    let Meta::NameValue(pair) = meta else {
-        return false;
-    };
-    pair.path.is_ident("reason")
-        && matches!(
-            &pair.value,
-            Expr::Lit(ExprLit {
-                lit: Lit::Str(_),
-                ..
-            })
-        )
-}
-
 fn named(meta: &Meta) -> String {
     meta.path()
         .segments
@@ -771,15 +408,6 @@ fn named(meta: &Meta) -> String {
         .map(|segment| segment.ident.to_string())
         .collect::<Vec<_>>()
         .join("::")
-}
-
-/// Whether a file sits under a `tests`, `benches` or `examples` directory, judged by path alone.
-fn test_path(path: &str) -> bool {
-    let mut parts: Vec<&str> = path.split('/').collect();
-    parts.pop();
-    parts
-        .iter()
-        .any(|part| matches!(*part, "tests" | "benches" | "examples"))
 }
 
 /// The file's `use` bindings, so an imported name and its full path resolve to the same item.
@@ -817,55 +445,6 @@ impl Imports {
     }
 }
 
-/// Whether this callee resolves to the item these segments name. A path with generics, a qualified
-/// self type, or a `crate`, `self` or `super` head never matches.
-fn calls(callee: &Expr, imports: &Imports, item: &[&str]) -> bool {
-    let Expr::Path(path) = callee else {
-        return false;
-    };
-    if path.qself.is_some() {
-        return false;
-    }
-    let Some(written) = plain(&path.path) else {
-        return false;
-    };
-    let resolved = match path.path.leading_colon {
-        Some(_) => Some(written),
-        None => imports.resolve(&written),
-    };
-    resolved.is_some_and(|found| found.iter().map(String::as_str).eq(item.iter().copied()))
-}
-
-fn plain(path: &syn::Path) -> Option<Vec<String>> {
-    path.segments
-        .iter()
-        .map(|segment| {
-            matches!(segment.arguments, syn::PathArguments::None).then(|| segment.ident.to_string())
-        })
-        .collect()
-}
-
-fn is_inner(attr: &Attribute) -> bool {
-    matches!(attr.style, AttrStyle::Inner(_))
-}
-
-fn line_of(at: LineColumn) -> u32 {
-    u32::try_from(at.line).unwrap_or(u32::MAX)
-}
-
-/// A span's byte offset. The column counts characters, not bytes, so its line is walked.
-fn offset(src: &str, starts: &[usize], at: LineColumn) -> usize {
-    let Some(&from) = starts.get(at.line.saturating_sub(1)) else {
-        return src.len();
-    };
-    let to = starts.get(at.line).copied().unwrap_or(src.len());
-    let line = src.get(from..to).unwrap_or_default();
-    from + line
-        .char_indices()
-        .nth(at.column)
-        .map_or(line.len(), |(index, _)| index)
-}
-
 /// Every `.rs` file cargo compiles outside fixture crates, in a stable order, and the crate
 /// directories found on the same walk.
 fn sources(ctx: &Ctx) -> Result<(Vec<PathBuf>, Vec<String>), String> {
@@ -875,7 +454,7 @@ fn sources(ctx: &Ctx) -> Result<(Vec<PathBuf>, Vec<String>), String> {
         root,
         &|name| !project::SKIPPED.contains(&name),
         &|name, path| {
-            (name == "Cargo.toml" || name.ends_with(".rs"))
+            (name == "Cargo.toml" || Path::new(name).extension().is_some_and(|ext| ext == "rs"))
                 && !project::is_compile_fail_fixture(path)
         },
     )?;
@@ -891,7 +470,9 @@ fn sources(ctx: &Ctx) -> Result<(Vec<PathBuf>, Vec<String>), String> {
     let kept = found
         .into_iter()
         .zip(shown)
-        .filter(|(_, shown)| shown.ends_with(".rs") && compiled(shown, &dirs))
+        .filter(|(_, shown)| {
+            Path::new(shown).extension().is_some_and(|ext| ext == "rs") && compiled(shown, &dirs)
+        })
         .filter(|(_, shown)| {
             !fixtures
                 .iter()
@@ -902,28 +483,6 @@ fn sources(ctx: &Ctx) -> Result<(Vec<PathBuf>, Vec<String>), String> {
     Ok((kept, dirs))
 }
 
-/// Whether `<tool>: ignore[<rule>] <why>` on the line or the one above waives the rule. Any tool's
-/// name counts, so a site another checker already waives needs no second marker.
-fn waived(src: &str, line: u32, rule: &str) -> bool {
-    let at = line as usize;
-    let lines: Vec<&str> = src.lines().collect();
-    [at.checked_sub(1), at.checked_sub(2)]
-        .into_iter()
-        .flatten()
-        .filter_map(|i| lines.get(i))
-        .any(|text| also_known_as(rule).iter().any(|name| reasoned(text, name)))
-}
-
-/// The waiver names a rule accepts: its own, and another checker's name for exactly the same shape.
-fn also_known_as(rule: &str) -> Vec<String> {
-    let mut names = vec![format!("ignore[{rule}]")];
-    if rule == DYNAMIC_SHELL {
-        // Outpost's name for this shape.
-        names.push("ignore[interpolated-command]".to_string());
-    }
-    names
-}
-
 /// Whether the text names the waiver followed by a reason of at least `LEAST_REASON` characters.
 fn reasoned(text: &str, want: &str) -> bool {
     text.find(want)
@@ -932,15 +491,6 @@ fn reasoned(text: &str, want: &str) -> bool {
 
 /// Short enough to allow a terse reason, long enough that a stray word is not one.
 const LEAST_REASON: usize = 8;
-
-/// Whether this path is a crate root: `lib.rs`, `main.rs` or a file directly in `src/bin`.
-fn is_crate_root(path: &str) -> bool {
-    let Some(tail) = path.rsplit_once("src/").map(|(_, rest)| rest) else {
-        return false;
-    };
-    matches!(tail, "lib.rs" | "main.rs")
-        || (tail.starts_with("bin/") && tail.matches('/').count() == 1)
-}
 
 fn compiled(shown: &str, crates: &[String]) -> bool {
     crates
@@ -984,22 +534,18 @@ fn is_target(rest: &str) -> bool {
     }
     // Anything deeper compiles only if a target declares it, which `declared_beyond` follows.
     match (parts.next(), parts.next(), parts.next()) {
-        (Some(name), None, _) => name.ends_with(".rs"),
+        (Some(name), None, _) => Path::new(name).extension().is_some_and(|ext| ext == "rs"),
         (Some(_), Some("main.rs"), None) => true,
         _ => false,
     }
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
     fn faults(path: &str, src: &str) -> Result<Vec<Finding>, String> {
-        judged(path, src, true, None)
+        judged(path, src, Delivery::Shipped, None)
     }
 
     fn rendered(src: &str) -> Vec<String> {
@@ -1796,19 +1342,24 @@ mod tests {
         let excused = judged_with(
             "src/lib.rs",
             src,
-            true,
-            false,
+            Delivery::Shipped,
+            Code::Production,
             &features(&|f| f == "test-utils"),
         );
         let excused = excused.unwrap();
         assert_eq!(excused, Vec::new());
         // The same feature, reachable from something shipped: it is a suppression that ships.
-        let reported: Vec<String> =
-            judged_with("src/lib.rs", src, true, false, &features(&|_| false))
-                .unwrap()
-                .iter()
-                .filter_map(|f| f.item.clone())
-                .collect();
+        let reported: Vec<String> = judged_with(
+            "src/lib.rs",
+            src,
+            Delivery::Shipped,
+            Code::Production,
+            &features(&|_| false),
+        )
+        .unwrap()
+        .iter()
+        .filter_map(|f| f.item.clone())
+        .collect();
         assert_eq!(reported, vec![SHIPPED_SAFETY.to_string()]);
     }
 
@@ -1825,9 +1376,15 @@ mod tests {
         let src = format!(
             "#[cfg({cfg})]\n#[allow(clippy::panic, reason = \"deliberate\")]\nfn f() {{}}\n"
         );
-        judged_with("src/lib.rs", &src, true, false, &features(test_only))
-            .unwrap()
-            .is_empty()
+        judged_with(
+            "src/lib.rs",
+            &src,
+            Delivery::Shipped,
+            Code::Production,
+            &features(test_only),
+        )
+        .unwrap()
+        .is_empty()
     }
 
     #[test]
@@ -1981,7 +1538,13 @@ mod tests {
                    #[allow(dead_code)]\nfn c() {}\n\
                    // short\n#[allow(unused)]\nfn d() {}\n";
         let unreasoned = |promise| {
-            let found = judged("src/lib.rs", src, true, Release::parse(promise)).unwrap();
+            let found = judged(
+                "src/lib.rs",
+                src,
+                Delivery::Shipped,
+                Release::parse(promise),
+            )
+            .unwrap();
             let lines = found
                 .iter()
                 .filter(|f| f.item.as_deref() == Some(UNREASONED));
@@ -1989,12 +1552,12 @@ mod tests {
         };
         assert_eq!(unreasoned("1.70"), [7, 10]);
         assert_eq!(unreasoned("1.81"), [2, 4, 7, 10]);
-        let newest = judged("src/lib.rs", src, true, None).unwrap();
+        let newest = judged("src/lib.rs", src, Delivery::Shipped, None).unwrap();
         assert_eq!(
             newest.iter().filter_map(|f| f.line).collect::<Vec<u32>>(),
             [2, 4, 7, 10]
         );
-        let below = judged("src/lib.rs", src, true, Release::parse("1.70")).unwrap();
+        let below = judged("src/lib.rs", src, Delivery::Shipped, Release::parse("1.70")).unwrap();
         assert!(
             below[0].message.ends_with(
                 "; rust-version 1.70 cannot build `reason = \"…\"`, so write the reason in a `//` \
@@ -2008,7 +1571,7 @@ mod tests {
     #[test]
     fn a_member_nobody_receives_still_has_to_say_why_it_suppresses() {
         let src = "#[allow(clippy::unwrap_used)]\nfn f() {}\n";
-        let unshipped: Vec<String> = judged("benchmark/src/lib.rs", src, false, None)
+        let unshipped: Vec<String> = judged("benchmark/src/lib.rs", src, Delivery::Unshipped, None)
             .unwrap()
             .iter()
             .filter_map(|f| f.item.clone())
@@ -2016,9 +1579,39 @@ mod tests {
         assert_eq!(unshipped, vec![UNREASONED.to_string()]);
         let reasoned = "#[allow(clippy::unwrap_used, reason = \"a bench panics\")]\nfn f() {}\n";
         assert_eq!(
-            judged("benchmark/src/lib.rs", reasoned, false, None).unwrap(),
+            judged("benchmark/src/lib.rs", reasoned, Delivery::Unshipped, None).unwrap(),
             Vec::new()
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_crate_file_that_only_include_reads_may_not_parse() {
+        let files = [
+            ("Cargo.toml", MANIFEST),
+            (
+                "src/lib.rs",
+                "#[allow(dead_code)]\npub const T: [u8; 2] = include!(\"table.rs\");\n",
+            ),
+            ("src/table.rs", "[1, 2]\n"),
+        ];
+        let series = measure(&ctx_of(&files)).unwrap();
+        assert_eq!(series.get(&format!("src/lib.rs#{UNREASONED}")), Some(1));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_module_that_its_parent_gates_on_test_is_test_code() {
+        let unverified = "fn c() {\n    let _ = reqwest::Client::builder().danger_accept_invalid_certs(true);\n}\n";
+        let files = [
+            ("Cargo.toml", MANIFEST),
+            ("src/lib.rs", "mod net;\n#[cfg(test)]\nmod helpers;\n"),
+            ("src/net.rs", unverified),
+            ("src/helpers.rs", unverified),
+        ];
+        let series = measure(&ctx_of(&files)).unwrap();
+        assert_eq!(series.get(&format!("src/net.rs#{DISABLED_TLS}")), Some(1));
+        assert_eq!(series.get(&format!("src/helpers.rs#{DISABLED_TLS}")), None);
     }
 
     #[test]

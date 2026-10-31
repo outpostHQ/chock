@@ -5,13 +5,14 @@ use std::process::ExitCode;
 
 use super::{cannot_run, emit, unit_of};
 use crate::project::config::Config;
-use crate::run::{self, baseline::Baseline};
+use crate::run;
+use crate::run::baseline::{Baseline, Keep};
 
 /// What `chock baseline` was asked: the gates, `--lower`, and the keys after `--keys`.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Recording<'a> {
     pub(super) names: Vec<&'a str>,
-    pub(super) lower: bool,
+    pub(super) keep: Keep,
     pub(super) keys: Option<Vec<&'a str>>,
 }
 
@@ -20,19 +21,23 @@ pub(super) fn recording<'a>(asked: &[&'a str]) -> Result<Recording<'a>, String> 
     let mut parts = asked.splitn(2, |word| *word == "--keys");
     let before = parts.next().unwrap_or_default();
     let keys = parts.next().map(<[&str]>::to_vec);
-    let lower = before.contains(&"--lower");
+    let keep = if before.contains(&"--lower") {
+        Keep::Lower
+    } else {
+        Keep::Record
+    };
     let names: Vec<&str> = before.iter().copied().filter(|a| *a != "--lower").collect();
     let crap = crate::gates::coverage::crap::GATE.name;
     let refused = match &keys {
         Some(keys) if keys.is_empty() => "`--keys` names no key: put each key to write after it",
-        Some(_) if lower => "`--keys` never raises a key, so it takes no `--lower`",
+        Some(_) if keep == Keep::Lower => "`--keys` never raises a key, so it takes no `--lower`",
         Some(_) if names.is_empty() => {
             "`--keys` needs the gates whose records it writes: `chock baseline GATE... --keys KEY...`"
         }
         Some(_) if names.contains(&crap) => {
             "`crap` keeps its own record file, which `--keys` does not write"
         }
-        _ => return Ok(Recording { names, lower, keys }),
+        _ => return Ok(Recording { names, keep, keys }),
     };
     Err(refused.to_string())
 }
@@ -43,9 +48,10 @@ pub(super) fn chosen<'a>(
     config: Option<&Config>,
 ) -> Result<(Recording<'a>, Vec<&'static run::Gate>), String> {
     let asked = recording(asked)?;
-    let gates = match asked.names.is_empty() {
-        true => super::recordable(config),
-        false => super::select(&asked.names, config)?,
+    let gates = if asked.names.is_empty() {
+        super::recordable(config)
+    } else {
+        super::select(&asked.names, config)?
     };
     Ok((asked, gates))
 }
@@ -53,7 +59,7 @@ pub(super) fn chosen<'a>(
 /// Without `--keys`, each gate's whole record, and the gates that could not measure. With it, see
 /// [`keys_written`].
 pub(super) fn written(
-    asked: &Recording,
+    asked: &Recording<'_>,
     chosen: &[&run::Gate],
     ctx: &run::Ctx,
     into: &mut Baseline,
@@ -61,14 +67,27 @@ pub(super) fn written(
     let Some(keys) = &asked.keys else {
         let failed = chosen
             .iter()
-            .filter(|gate| !super::record_one(gate, ctx, into, asked.lower));
+            .filter(|gate| !super::record_one(gate, ctx, into, asked.keep));
         return Ok(failed.map(|gate| gate.name).collect());
     };
     keys_written(chosen, ctx, into, keys)
 }
 
+/// The gates this command recorded whole, without `--lower` or `--keys`: their record is this
+/// chock's, every key it counts included.
+pub(super) fn whole(asked: &Recording<'_>, chosen: &[&run::Gate], failed: &[&str]) -> Vec<String> {
+    let whole = asked.keys.is_none() && asked.keep == Keep::Record;
+    chosen
+        .iter()
+        .map(|gate| gate.name)
+        .filter(|name| whole && !failed.contains(name))
+        .map(String::from)
+        .collect()
+}
+
 /// `--keys` writes each key into every named gate that measures or records it, or writes nothing:
 /// a key no gate knows, a gate that cannot measure, or a key that would go up stops it.
+#[expect(clippy::print_stderr, reason = "the CLI tells the user on stderr")]
 fn keys_written(
     chosen: &[&run::Gate],
     ctx: &run::Ctx,
@@ -114,7 +133,9 @@ fn keys_written(
         return Ok(Vec::new());
     }
     eprintln!("chock: `--keys` never raises a key, so it wrote nothing; these went up:");
-    refused.iter().for_each(|it| eprintln!("  {it}"));
+    for it in &refused {
+        eprintln!("  {it}");
+    }
     Err(ExitCode::from(1))
 }
 
@@ -148,7 +169,7 @@ pub(super) fn moves<'a>(asked: &[&'a str]) -> Option<Result<Moves<'a>, String>> 
 /// Renames the keys of each moved file in `into`, or writes nothing: the old path must be gone
 /// from the tree, the new one a file in it, and some record named here must hold the old one.
 pub(super) fn moved(
-    (names, pairs): &Moves,
+    (names, pairs): &Moves<'_>,
     ctx: &run::Ctx,
     config: Option<&Config>,
     into: &mut Baseline,
@@ -175,13 +196,26 @@ pub(super) fn moved(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::run::baseline::Series;
+
+    #[test]
+    fn only_a_gate_recorded_whole_and_without_failing_counts_as_measured() {
+        let gates = [
+            &crate::gates::tools::codeslop::GATE,
+            &crate::gates::text::slop::GATE,
+        ];
+        let whole = |asked: &[&str], failed: &[&str]| {
+            super::whole(&recording(asked).unwrap(), &gates, failed)
+        };
+        assert_eq!(whole(&["codeslop", "slop"], &["slop"]), vec!["codeslop"]);
+        assert_eq!(whole(&["--lower", "codeslop"], &[]), Vec::<String>::new());
+        assert_eq!(
+            whole(&["codeslop", "--keys", "k"], &[]),
+            Vec::<String>::new()
+        );
+    }
 
     #[test]
     fn every_word_after_keys_is_a_key_and_a_request_that_cannot_hold_is_refused() {
@@ -191,7 +225,7 @@ mod tests {
             asked,
             Recording {
                 names: vec!["admits"],
-                lower: false,
+                keep: Keep::Record,
                 keys
             }
         );
@@ -200,7 +234,7 @@ mod tests {
             asked,
             Recording {
                 names: vec!["slop"],
-                lower: true,
+                keep: Keep::Lower,
                 keys: None
             }
         );
@@ -244,8 +278,9 @@ mod tests {
         let names: Vec<&str> = gates.iter().map(|gate| gate.name).collect();
         assert_eq!(names, ["admits"]);
         let (_, every) = chosen(&[], None).unwrap();
-        let named = |gates: Vec<&run::Gate>| gates.iter().map(|gate| gate.name).collect::<Vec<_>>();
-        assert_eq!(named(every), named(super::super::recordable(None)));
+        let listed =
+            |gates: Vec<&run::Gate>| gates.iter().map(|gate| gate.name).collect::<Vec<_>>();
+        assert_eq!(listed(every), listed(super::super::recordable(None)));
         assert!(chosen(&["no-such-gate"], None).is_err());
         assert!(chosen(&["admits", "--keys"], None).is_err());
     }
@@ -326,7 +361,7 @@ mod tests {
         let mut held = Baseline::empty("0.1.0");
         let whole = Recording {
             names: vec![gate.name],
-            lower: false,
+            keep: Keep::Record,
             keys: None,
         };
         assert_eq!(written(&whole, &[gate], &proofs, &mut held), Ok(Vec::new()));

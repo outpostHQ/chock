@@ -7,6 +7,7 @@ use std::fmt;
 
 use crate::setup::version;
 
+/// One crate pin of the pin file: the tool `cargo install` fetches, and the version it must have.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pin {
     /// The key as written, e.g. `CARGO_NEXTEST_VERSION`.
@@ -32,7 +33,9 @@ pub struct Pin {
 /// A crate built as `cargo install --git URL --rev REV` builds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Git {
+    /// The https repository to build from.
     pub url: String,
+    /// The commit to build.
     pub rev: String,
 }
 
@@ -78,33 +81,47 @@ impl Pin {
     }
 }
 
+/// Why a pin file cannot be read. Each error names the line it found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
     /// A line that is neither blank, a comment, nor `KEY=VALUE`.
     Unreadable {
+        /// The 1-based line number.
         line: usize,
+        /// The text of the line.
         text: String,
     },
     /// `KEY_VERSION=` with nothing after it.
     EmptyVersion {
+        /// The 1-based line number.
         line: usize,
+        /// The key of the line.
         key: String,
     },
     /// `FOO_BIN=bar` or `FOO_SETUP=…` with no `FOO_VERSION` anywhere in the file.
     Orphan {
+        /// The 1-based line number.
         line: usize,
+        /// The key of the line.
         key: String,
+        /// The qualifier the key ends with, such as `_BIN`.
         suffix: &'static str,
     },
+    /// A `_NIGHTLY` key with no stem, or a value that does not name a nightly toolchain.
     InvalidToolchain {
+        /// The 1-based line number.
         line: usize,
+        /// The key of the line.
         key: String,
     },
     /// A value chock refuses, and why: a space with no quotes, a `${NAME}` that no earlier line
     /// sets, or a `_GIT` or `_REV` key that does not pin one commit of one https repository.
     Refused {
+        /// The 1-based line number.
         line: usize,
+        /// The key of the line.
         key: String,
+        /// Why chock refuses the value.
         why: String,
     },
 }
@@ -176,20 +193,29 @@ fn qualifier(key: &str) -> Option<(&'static str, &str)> {
         .find_map(|suffix| Some((*suffix, key.strip_suffix(suffix)?)))
 }
 
+/// A toolchain the pin file names with a `_NIGHTLY` key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolchainPin {
+    /// The key as written, such as `MUTEST_NIGHTLY`.
     pub key: String,
+    /// The toolchain, `nightly` or `nightly-` and a date.
     pub want: String,
 }
 
 /// Non-crate assignments must not become `cargo install` inputs or disappear from doctor.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct AdditionalPins {
+    /// The `_NIGHTLY` toolchain pins.
     pub toolchains: Vec<ToolchainPin>,
+    /// Each key chock does not read, as `line N: KEY`.
     pub unchecked: Vec<String>,
+    /// The download pins.
     pub downloads: Vec<crate::setup::downloads::Download>,
 }
 
+/// The pins of a pin file that are not crates: toolchains, downloads, and the keys chock skips.
+/// # Errors
+/// When a line does not parse, or a `_NIGHTLY` value does not name a nightly toolchain.
 pub fn additional(text: &str) -> Result<AdditionalPins, ParseError> {
     let mut found = AdditionalPins {
         downloads: crate::setup::downloads::parse(text)?,
@@ -236,8 +262,11 @@ fn known_key(key: &str) -> bool {
 /// and a line per change for `init` to report.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Repinned {
+    /// The chock version the old text named.
     pub from: String,
+    /// The new text of the pin file.
     pub text: String,
+    /// One line for each change, for `init` to report.
     pub changes: Vec<String>,
 }
 
@@ -389,12 +418,11 @@ fn before_comment(line: &str) -> &str {
     for (i, &b) in bytes.iter().enumerate() {
         match quote {
             Some(open) if b == open => quote = None,
-            Some(_) => {}
             None if b == b'"' || b == b'\'' => quote = Some(b),
             None if b == b'#' && (i == 0 || bytes[i - 1].is_ascii_whitespace()) => {
                 return line[..i].trim_end();
             }
-            None => {}
+            Some(_) | None => {}
         }
     }
     line
@@ -428,6 +456,8 @@ pub(super) fn assignment(raw: &str, line: usize) -> Result<Option<(&str, &str)>,
 
 /// `*_VERSION` pins, `*_BIN` overrides the executable name, `*_SETUP` names a command to run after
 /// installing. Data here rather than a table, so a new tool needs no chock release.
+/// # Errors
+/// When a line is unreadable, a version is empty, a qualifier has no version, or a value is refused.
 pub fn parse(text: &str) -> Result<Vec<Pin>, ParseError> {
     let mut versions: Vec<(usize, String, String)> = Vec::new();
     let mut qualified = Qualified::new();
@@ -616,10 +646,6 @@ pub const SHIPPED: [&str; 14] = [
 ];
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
 

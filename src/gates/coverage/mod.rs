@@ -13,8 +13,10 @@ use crate::run::report::Finding;
 use crate::run::verdicts::Reads;
 use crate::run::{Ctx, Gate, Group, Kind, Measurement};
 
+/// The LCOV report that the coverage command writes at the root and the gate reads.
 pub const FILE: &str = "lcov.info";
 
+/// Holds the lines that no test runs, per file, to the count on record.
 pub const GATE: Gate = Gate {
     name: "coverage",
     about: "lines no test executed, per file, against the count recorded",
@@ -64,6 +66,8 @@ fn listed(root: &Path, lines: &BTreeMap<String, Vec<u32>>) -> Option<&'static st
 
 /// The LCOV report for this run, produced once and shared by every gate that reads it, failure
 /// included. A report from an earlier invocation is never reused.
+/// # Errors
+/// Returns `Err` when the coverage command fails or its report changed after it ran.
 pub fn ensure(ctx: &Ctx) -> Result<std::path::PathBuf, String> {
     let report = ctx.coverage.report.get_or_init(|| write_report(ctx));
     match report {
@@ -106,8 +110,8 @@ fn report_digest(path: &Path) -> Result<u64, String> {
 
 fn write_report(ctx: &Ctx) -> Result<Report, String> {
     let path = ctx.root.join(FILE);
-    let argv = substituted(&ctx.coverage.argv, FILE);
-    let (program, args) = argv
+    let command = substituted(&ctx.coverage.argv, FILE);
+    let (program, args) = command
         .split_first()
         .ok_or("the configured `coverage` names no command")?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -143,9 +147,10 @@ fn write_report(ctx: &Ctx) -> Result<Report, String> {
 /// The flags for llvm-profdata, which then leaves out a profile it cannot read (one cut short) and
 /// merges the rest. A failure mode that the project set stays.
 fn profdata_flags(set: &str) -> String {
-    match set.contains("failure-mode") {
-        true => set.to_string(),
-        false => format!("{set} -failure-mode=all").trim_start().to_string(),
+    if set.contains("failure-mode") {
+        set.to_string()
+    } else {
+        format!("{set} -failure-mode=all").trim_start().to_string()
     }
 }
 
@@ -172,11 +177,14 @@ pub fn unmerged(ctx: &Ctx) -> Vec<String> {
 }
 
 /// Refuses a record from a run that left a profile out: what that profile ran would read as debt.
+/// # Errors
+/// Returns `Err` that names each profile the merge left out.
 pub fn merged_whole(ctx: &Ctx) -> Result<(), String> {
     let left = unmerged(ctx);
-    match left.is_empty() {
-        true => Ok(()),
-        false => Err(crate::run::unread_of(&left)),
+    if left.is_empty() {
+        Ok(())
+    } else {
+        Err(crate::run::unread_of(&left))
     }
 }
 
@@ -253,9 +261,10 @@ fn runs(lines: &[u32]) -> String {
 }
 
 fn span((from, to): (u32, u32)) -> String {
-    match from == to {
-        true => from.to_string(),
-        false => format!("{from}-{to}"),
+    if from == to {
+        from.to_string()
+    } else {
+        format!("{from}-{to}")
     }
 }
 
@@ -325,10 +334,6 @@ fn unreadable(line: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -475,7 +480,7 @@ mod tests {
         let read = uncovered(TWO, Path::new("/w")).unwrap();
         let read = read.held_to(&Series::new());
         assert_eq!(read.series.get("src/a.rs"), Some(20));
-        assert!(read.findings.is_empty());
+        assert_eq!(read.findings, Vec::new());
     }
 
     #[test]
@@ -586,7 +591,7 @@ mod tests {
         let mut was = Series::new();
         was.set("src/lib.rs", 1);
         dir.baseline.record(GATE.name, "uncovered line(s)", was);
-        assert!(measure(&dir).unwrap().findings.is_empty());
+        assert_eq!(measure(&dir).unwrap().findings, Vec::new());
     }
 
     #[test]

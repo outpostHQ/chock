@@ -26,9 +26,10 @@ pub(super) fn compared(
         Keys::Measures | Keys::Census => now.new_at_zero(was),
         Keys::Items | Keys::Sizes { .. } => Vec::new(),
     };
-    let verdict = match regressions.is_empty() && dropped.is_empty() {
-        true => Verdict::Pass,
-        false => Verdict::Tripped,
+    let verdict = if regressions.is_empty() && dropped.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Tripped
     };
     let findings = regressions
         .iter()

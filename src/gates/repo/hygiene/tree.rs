@@ -1,7 +1,7 @@
 //! Every rule over the tracked tree: secret-bearing names, credential literals, hidden
 //! characters, `.gitmodules` values, links into `.git`, and tracked build output.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{Credential, credential_in, git, hidden, holds};
 use crate::run::report::Finding;
@@ -80,8 +80,8 @@ fn is_secret_name(name: &str) -> bool {
     }
     name == ".env"
         || name.starts_with(".env.")
-        || name.ends_with(".pem")
-        || name.ends_with(".key")
+        || Path::new(name).extension().is_some_and(|ext| ext == "pem")
+        || Path::new(name).extension().is_some_and(|ext| ext == "key")
         || name == "id_rsa"
         || name == "credentials.json"
         || name == ".git-credentials"

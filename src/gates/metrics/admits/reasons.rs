@@ -73,10 +73,6 @@ impl Kept {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -107,7 +103,7 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn no_file_keeps_nothing_and_a_bad_file_or_a_blank_reason_judges_nothing() {
         let none = crate::testdir::Held::tree("gate-admits-no-reasons", &[("a.rs", "")]);
-        assert!(Kept::read(&none.root).unwrap().unused().is_empty());
+        assert_eq!(Kept::read(&none.root).unwrap().unused(), []);
         let blank = r#"[{"path": "a.rs", "text": "x", "reason": " "}]"#;
         assert!(kept(blank).unwrap_err().contains("gives no reason"));
         let unknown = r#"[{"path": "a.rs", "text": "x", "reason": "r", "why": "w"}]"#;

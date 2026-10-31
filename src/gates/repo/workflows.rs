@@ -1,6 +1,8 @@
 //! The `workflows` gate: each GitHub Actions workflow and action runs code that its owner cannot
 //! change after review, so a takeover of an action's tag or an image's name reaches no build.
 
+use std::path::Path;
+
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
 
@@ -9,6 +11,7 @@ use yaml::Node;
 mod pin;
 mod yaml;
 
+/// The `workflows` gate: actions and images that a workflow names by a movable name.
 pub const GATE: Gate = Gate {
     name: "workflows",
     about: "a GitHub Actions workflow or action runs an action or an image by a name that its owner \
@@ -34,7 +37,8 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
 /// Whether GitHub runs the file: a workflow directly in `.github/workflows`, or an action's
 /// metadata file in any directory.
 fn read_by_github(name: &str, path: &std::path::Path) -> bool {
-    let yaml = name.ends_with(".yml") || name.ends_with(".yaml");
+    let yaml = Path::new(name).extension().is_some_and(|ext| ext == "yml")
+        || Path::new(name).extension().is_some_and(|ext| ext == "yaml");
     let workflow = path
         .parent()
         .is_some_and(|dir| dir.ends_with(".github/workflows"));

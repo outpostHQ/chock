@@ -20,13 +20,21 @@ use side::Side;
 /// The command line of `chock oracle`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Asked<'a> {
+    /// `--old`: the build whose answers are the reference.
     pub old: &'a str,
+    /// `--new`: the build compared with the old one.
     pub new: &'a str,
+    /// `--corpus`: the scenarios file, one JSON object on each line.
     pub corpus: &'a str,
+    /// `--fixture`: a directory that each build gets its own copy of, as its working directory.
     pub fixture: Option<&'a str>,
+    /// `--probe`: each command that each build runs after the last step.
     pub probes: Vec<&'a str>,
+    /// `--normalize`: the rules file for text that two honest runs print differently.
     pub normalize: Option<&'a str>,
+    /// `--allow`: the file of differences that a person accepted.
     pub allow: Option<&'a str>,
+    /// `--timeout`: the limit for one command, in seconds.
     pub timeout: u64,
 }
 
@@ -53,6 +61,8 @@ fn seconds(value: &str) -> Result<u64, String> {
 }
 
 /// Each flag with the value after it; the two builds and the corpus are required.
+/// # Errors
+/// When a flag is unknown, lacks its value or a valid value, or a required flag is missing.
 pub fn asked<'a>(args: &[&'a str]) -> Result<Asked<'a>, String> {
     let mut asked = Asked {
         timeout: 60,
@@ -198,14 +208,15 @@ struct Plan {
 /// The absolute path of a build, which must be a file: each command runs in another directory.
 fn build(path: &str) -> Result<PathBuf, String> {
     let whole = std::path::absolute(path).map_err(|e| format!("cannot find {path}: {e}"))?;
-    match whole.is_file() {
-        true => Ok(whole),
-        false => Err(format!("{path} is not a file")),
+    if whole.is_file() {
+        Ok(whole)
+    } else {
+        Err(format!("{path} is not a file"))
     }
 }
 
 impl Plan {
-    fn of(asked: &Asked) -> Result<Self, String> {
+    fn of(asked: &Asked<'_>) -> Result<Self, String> {
         let (old, new) = (build(asked.old)?, build(asked.new)?);
         let rules: Vec<Rule> = optional(asked.normalize)?;
         if let Some(why) = rules.iter().find_map(refused) {
@@ -494,6 +505,7 @@ impl Report {
         }
     }
 
+    /// The report as one JSON document, stamped with chock's `version`.
     #[must_use]
     pub fn render_json(&self, version: &str) -> String {
         let whole = json!({
@@ -547,8 +559,10 @@ fn line(row: &Value) -> String {
     )
 }
 
-/// Runs each scenario of the corpus on both builds. An `Err` is a run that could not start.
-pub fn run(asked: &Asked) -> Result<Report, String> {
+/// Runs each scenario of the corpus on both builds.
+/// # Errors
+/// When the run could not start: a build, the fixture or a file a flag names is missing or wrong.
+pub fn run(asked: &Asked<'_>) -> Result<Report, String> {
     let plan = Plan::of(asked)?;
     // outpost: ignore[rust-path-traversal] each side works under the scratch path chock made.
     let row = |(n, scenario)| compared(&plan, n, scenario);
@@ -560,11 +574,6 @@ pub fn run(asked: &Asked) -> Result<Report, String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -716,7 +725,7 @@ mod tests {
     #[test]
     fn the_parts_of_an_answer_that_differ_are_named_and_a_timeout_never_matches() {
         let base = answer("0", "out", "err");
-        assert!(unlike(&base, &base).is_empty());
+        assert_eq!(unlike(&base, &base), Vec::<&str>::new());
         assert_eq!(unlike(&base, &answer("1", "out", "err")), ["exit"]);
         assert_eq!(unlike(&base, &answer("0", "other", "err")), ["stdout"]);
         assert_eq!(unlike(&base, &answer("0", "out", "other")), ["stderr"]);

@@ -11,6 +11,7 @@ use crate::project::vcs;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
 
+/// The `history` gate: credentials in any commit of the history.
 pub const GATE: Gate = Gate {
     name: "history",
     about: "a credential in a commit, whether or not it is still in the tree; needs `outpost`",
@@ -272,10 +273,6 @@ fn finding(leak: &Leak) -> Finding {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -609,7 +606,7 @@ mod tests {
             secrets: acme(),
             ..Ctx::at(&root)
         };
-        assert!(declared_leaks(&Ctx::at(&root)).unwrap().is_empty());
+        assert_eq!(declared_leaks(&Ctx::at(&root)).unwrap(), []);
         let refused = declared_leaks(&ctx).unwrap_err();
         assert!(refused.contains("git does not hold this tree"), "{refused}");
         git(&["init", "--quiet"]);

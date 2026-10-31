@@ -12,6 +12,7 @@ use crate::run::{Ctx, Gate, Group, Kind, Outcome};
 
 mod groups;
 
+/// Runs the suite under Miri, which detects undefined behaviour.
 pub const GATE: Gate = Gate {
     name: "miri",
     about: "the suite runs clean under an interpreter that detects undefined behaviour",
@@ -25,12 +26,16 @@ pub const GATE: Gate = Gate {
 /// One part of the suite, from `--miri-partition=K/N`, so CI can run the parts at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Part {
+    /// Which part this is, K, from 1.
     pub index: u32,
+    /// How many parts the suite is split into, N.
     pub of: u32,
 }
 
 impl Part {
     /// `K/N` with K from 1 to N, the form of nextest's `count:` partition.
+    /// # Errors
+    /// Text that is not K/N with K from 1 to N.
     pub fn parse(text: &str) -> Result<Self, String> {
         let wrong = || format!("`--miri-partition` takes K/N with K from 1 to N, not `{text}`");
         let (index, of) = text.split_once('/').ok_or_else(wrong)?;
@@ -56,15 +61,24 @@ type Interpret<'a> =
 
 /// Runs one command under miri; opt-in, since interpreting costs tens of times a normal run.
 fn interpret(ctx: &Ctx, args: &[String], idle: Duration) -> Result<exec::Output, exec::ExecError> {
-    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let flags = miriflags(&ctx.miri);
     let env = [("MIRIFLAGS", flags.as_str())];
-    exec::run_paced("cargo", &argv, &ctx.root, &env, (moving, idle))
+    exec::run_paced("cargo", &words, &ctx.root, &env, (moving, idle))
 }
 
 /// The suite in groups, one interpreter each, as many at once as the lane's cores. nextest runs a
 /// failed group again and names each test. With no list to group, one nextest run.
-fn suite(ctx: &Ctx, asked: &[String], args: &[String], run: &Interpret) -> Result<Outcome, String> {
+#[expect(
+    clippy::print_stderr,
+    reason = "the timing line goes to stderr while the run goes on"
+)]
+fn suite(
+    ctx: &Ctx,
+    asked: &[String],
+    args: &[String],
+    run: &Interpret<'_>,
+) -> Result<Outcome, String> {
     let started = std::time::Instant::now();
     let listed = run(&groups::listing(args), exec::deadline())
         .ok()
@@ -103,13 +117,14 @@ fn suite(ctx: &Ctx, asked: &[String], args: &[String], run: &Interpret) -> Resul
         grouped.len(),
         tests_ms.values().sum::<u64>() / 1000
     );
-    let outcome = match failed.is_empty() {
-        true => super::verdict(&listed, &ctx.root),
-        false => judge(
+    let outcome = if failed.is_empty() {
+        super::verdict(&listed, &ctx.root)
+    } else {
+        judge(
             &ctx.root,
             &run(&groups::rerun(args, &failed), exec::deadline())
                 .map_err(|failed| advice(&failed))?,
-        )?,
+        )?
     };
     Ok(Outcome {
         tests_ms,
@@ -168,6 +183,10 @@ fn per_test(deadline: Duration) -> String {
 struct Limit(PathBuf);
 
 impl Drop for Limit {
+    #[expect(
+        clippy::print_stderr,
+        reason = "a drop has no caller to hand the error to"
+    )]
     fn drop(&mut self) {
         if let Err(error) = std::fs::remove_file(&self.0) {
             let path = self.0.display();
@@ -353,10 +372,6 @@ fn miriflags(scope: &crate::project::config::Scope) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

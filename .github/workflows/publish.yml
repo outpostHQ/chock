@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# A second run for the same tag waits for the first, so two runs never race on one release.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -111,10 +116,21 @@ jobs:
           echo "$said"
           test "$said" = "chock ${GITHUB_REF_NAME#v}"
 
+      # A draft takes the new archive. A public release keeps the archive it has, so a second run
+      # never changes what users already downloaded.
       - name: Attach to the draft
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" chock-${{ matrix.target }}.* --clobber
+        run: |
+          for archive in chock-${{ matrix.target }}.*; do
+            held=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft,assets \
+              --jq "(.isDraft | not) and any(.assets[]; .name == \"$archive\")")
+            if [ "$held" = true ]; then
+              echo "$archive is already on the public release $GITHUB_REF_NAME; it stays as it is"
+              continue
+            fi
+            gh release upload "$GITHUB_REF_NAME" "$archive" --repo "$GITHUB_REPOSITORY" --clobber
+          done
 
   publish:
     name: crates.io
@@ -147,17 +163,31 @@ jobs:
       - name: Is this version on crates.io already?
         id: published
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' -A 'chock-publish (github.com/outpostHQ/chock)' \
-            "https://crates.io/api/v1/crates/chock/${GITHUB_REF_NAME#v}")
+          code=$(curl -s --retry 3 -o /dev/null -w '%{http_code}' -A "$AGENT" "$CRATE_URL/${GITHUB_REF_NAME#v}")
           echo "exists=$([ "$code" = 200 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        env:
+          AGENT: chock-publish (github.com/outpostHQ/chock)
+          CRATE_URL: https://crates.io/api/v1/crates/chock
 
       - name: Ask crates.io for a token
         if: steps.published.outputs.exists != 'true'
         uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
         id: auth
 
+      # A publish that fails because the version arrived since the check above has nothing to do.
       - name: cargo publish
         if: steps.published.outputs.exists != 'true'
-        run: cargo publish --locked
+        run: |
+          if cargo publish --locked; then
+            exit 0
+          fi
+          code=$(curl -s --retry 3 -o /dev/null -w '%{http_code}' -A "$AGENT" "$CRATE_URL/${GITHUB_REF_NAME#v}")
+          if [ "$code" = 200 ]; then
+            echo "::notice::chock ${GITHUB_REF_NAME#v} is on crates.io already"
+            exit 0
+          fi
+          exit 1
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          AGENT: chock-publish (github.com/outpostHQ/chock)
+          CRATE_URL: https://crates.io/api/v1/crates/chock

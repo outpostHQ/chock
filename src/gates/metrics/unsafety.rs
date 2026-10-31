@@ -9,6 +9,7 @@ use crate::gates::metrics::prodlines::{for_each_source, keyed, parse_rust};
 use crate::run::baseline::{Keys, Series};
 use crate::run::{Ctx, Gate, Group, Kind};
 
+/// The `unsafety` gate: the count of `unsafe` uses in each file may only fall.
 pub const GATE: Gate = Gate {
     name: "unsafety",
     about: "`unsafe` outside test code, counted per file and shape",
@@ -117,10 +118,6 @@ impl<'ast> Visit<'ast> for Count {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

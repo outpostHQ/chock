@@ -31,8 +31,11 @@ pub const NO_FILE: &str = ", so it cannot run on this machine";
 /// One file of a download pin: for every system when `platform` is empty, else for those it names.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct File {
+    /// The system suffix of its keys, such as `x86_linux`, or empty for every system.
     pub platform: String,
+    /// The `_URL` value, where the pin sets one.
     pub url: Option<String>,
+    /// The `_SHA256` value, where the pin sets one.
     pub sha256: Option<String>,
 }
 
@@ -40,18 +43,24 @@ pub struct File {
 /// with a platform suffix, such as `X_URL_x86_linux`, once for each system.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Download {
+    /// The key before `_VERSION`, such as `TLA_TOOLS`.
     pub stem: String,
     /// The stem as a command is named, `tla-tools` for `TLA_TOOLS`.
     pub name: String,
+    /// The `_VERSION` value.
     pub want: String,
+    /// The files of the pin, one for each system it names.
     pub files: Vec<File>,
+    /// The `_SETUP` command that runs after the download, where the pin sets one.
     pub setup: Option<String>,
 }
 
 /// The file this machine takes: its URL and the hash it must have.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chosen {
+    /// Where the file is fetched from, always `https://`.
     pub url: String,
+    /// The hash the file must have, in lowercase hex.
     pub sha256: String,
 }
 
@@ -95,6 +104,8 @@ fn expanded(value: &str, set: &BTreeMap<&str, String>) -> Result<String, String>
 
 /// Every download pin in a pin file, in the order of their `_VERSION` lines. A hash with no
 /// `_URL`, or a stem with no `_VERSION`, is for the project's own scripts unless a gate claims it.
+/// # Errors
+/// When a line of the pin file is wrong.
 pub fn parse(text: &str) -> Result<Vec<Download>, ParseError> {
     let mut versions: Vec<(String, String)> = Vec::new();
     let mut setups: BTreeMap<String, String> = BTreeMap::new();
@@ -199,6 +210,8 @@ fn names_machine(platform: &str, os: &str, arch: &str) -> Result<bool, String> {
 
 impl Download {
     /// The file for a machine; `Ok(None)` where the pin has none for it.
+    /// # Errors
+    /// When a platform name is unknown, two files name the machine, or the file's keys are wrong.
     pub fn chosen(&self, os: &str, arch: &str) -> Result<Option<Chosen>, String> {
         let mut ours = Vec::new();
         for file in &self.files {
@@ -240,6 +253,8 @@ impl Download {
     }
 
     /// The file for the machine that runs.
+    /// # Errors
+    /// When `chosen` fails for this machine.
     pub fn here(&self) -> Result<Option<Chosen>, String> {
         self.chosen(std::env::consts::OS, std::env::consts::ARCH)
     }
@@ -250,12 +265,13 @@ impl Download {
         let want: String = self
             .want
             .chars()
-            .map(
-                |c| match c.is_ascii_alphanumeric() || matches!(c, '.' | '-') {
-                    true => c,
-                    false => '-',
-                },
-            )
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '.' | '-') {
+                    c
+                } else {
+                    '-'
+                }
+            })
             .collect();
         home.join(format!("{}-{want}-{}", self.name, &sha256[..12]))
     }
@@ -309,6 +325,8 @@ fn unset_url(key: &str) -> String {
 }
 
 /// The path of `wanted`, a file name such as `tla2tools.jar`, inside the download a gate needs.
+/// # Errors
+/// When the pin is missing or wrong, has no file here, or its download is not fetched or lacks it.
 pub fn located(
     root: &Path,
     home: Option<&Path>,
@@ -374,20 +392,18 @@ fn find(dir: &Path, wanted: &str, depth: u32) -> Option<PathBuf> {
     if let Some(hit) = entries.iter().find(named) {
         return Some(hit.clone());
     }
-    let deeper = entries
+    let mut deeper = entries
         .iter()
         .filter(|path| crate::project::descends_into(path));
     (depth > 0)
-        .then(|| {
-            deeper
-                .filter_map(|path| find(path, wanted, depth - 1))
-                .next()
-        })
+        .then(|| deeper.find_map(|path| find(path, wanted, depth - 1)))
         .flatten()
 }
 
 /// Fetches one pin's file for this machine with curl, checks its hash, and unpacks it. The line it
-/// returns says what happened; `Err` is a failed fetch.
+/// returns says what happened.
+/// # Errors
+/// When the fetch, the hash check or the unpack fails; the `Err` holds the line to print.
 pub fn fetch(pin: &Download, home: &Path, tools: &Tools) -> Result<String, String> {
     let failed = |why: String| format!("  FAILED    {} {} — {why}", pin.name, pin.want);
     let Some(file) = pin.here().map_err(failed)? else {
@@ -461,11 +477,12 @@ fn unpack(path: &Path, into: &Path, tools: &Tools) -> Result<(), String> {
             .run(program, args, into)
             .is_ok_and(|out| out.success())
     };
-    let done = if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+    let ext = name.rsplit_once('.').map_or("", |(_, ext)| ext);
+    let done = if name.ends_with(".tar.gz") || ext == "tgz" {
         run("tar", &["-xzf", &archive])
     } else if name.ends_with(".tar.xz") {
         run("tar", &["-xJf", &archive])
-    } else if name.ends_with(".zip") {
+    } else if ext == "zip" {
         // Windows and macOS tar read a zip; Linux tar does not, and unzip does.
         run("unzip", &["-q", &archive]) || run("tar", &["-xf", &archive])
     } else {
@@ -478,10 +495,6 @@ fn unpack(path: &Path, into: &Path, tools: &Tools) -> Result<(), String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
 
@@ -500,7 +513,10 @@ mod tests {
         let crates = pins::parse(&text).unwrap();
         let crates: Vec<String> = crates.into_iter().map(|pin| pin.crate_name).collect();
         assert_eq!(crates, ["cargo-deny"]);
-        assert!(pins::additional(&text).unwrap().unchecked.is_empty());
+        assert_eq!(
+            pins::additional(&text).unwrap().unchecked,
+            Vec::<String>::new()
+        );
     }
 
     #[test]

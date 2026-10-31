@@ -1,5 +1,6 @@
 //! The `slop` gate: finds comment blocks longer than `MAX_BLOCK` lines.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -34,8 +35,11 @@ const SECTIONS: [&str; 3] = ["/// # Errors", "/// # Panics", "/// # Safety"];
 /// A block over the limit: its first line and its length.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
+    /// The file that holds the block.
     pub file: PathBuf,
+    /// The 1-based line the block starts on.
     pub line: usize,
+    /// How many comment lines the block runs.
     pub length: usize,
 }
 
@@ -47,7 +51,10 @@ pub fn markers_for(path: &str) -> Option<&'static [&'static str]> {
     const SLASH2: &[&str] = &["//"];
     const HASH: &[&str] = &["#"];
     let name = path.rsplit('/').next().unwrap_or(path);
-    if name == "justfile" || name == "Justfile" || name.ends_with(".just") {
+    if name == "justfile"
+        || name == "Justfile"
+        || name.rsplit_once('.').is_some_and(|(_, ext)| ext == "just")
+    {
         return Some(HASH);
     }
     match name.rsplit_once('.')?.1 {
@@ -115,16 +122,13 @@ pub fn over_length_blocks(text: &str, marks: &[&str]) -> Vec<(usize, usize)> {
         if run > MAX_BLOCK {
             out.push((start, run));
         }
-        match mark {
-            Some(m) => {
-                run = 1;
-                run_mark = Some(m);
-                start = n;
-            }
-            None => {
-                run = 0;
-                run_mark = None;
-            }
+        if let Some(m) = mark {
+            run = 1;
+            run_mark = Some(m);
+            start = n;
+        } else {
+            run = 0;
+            run_mark = None;
         }
     }
     if run > MAX_BLOCK {
@@ -135,6 +139,8 @@ pub fn over_length_blocks(text: &str, marks: &[&str]) -> Vec<(usize, usize)> {
 
 /// Every over-length block under `root`, sorted. An unreadable file or directory is an error, since
 /// skipping it would read as fewer blocks.
+/// # Errors
+/// When a file or a directory under `root` cannot be read.
 pub fn scan(root: &Path) -> Result<Vec<Block>, String> {
     let mut hits = Vec::new();
     for path in crate::project::walk(root, &|name| !skipped(name), &|_, _| true)? {
@@ -162,6 +168,8 @@ fn blocks_in(path: &Path) -> Result<Vec<Block>, String> {
 
 /// A file's text and comment markers; none for an unknown language, a non-text file or an exempt
 /// one.
+/// # Errors
+/// When the file exists but cannot be read for a reason other than its bytes not being text.
 pub fn commented(path: &Path) -> Result<Option<(String, &'static [&'static str])>, String> {
     let Some(marks) = markers_for(&path.to_string_lossy()) else {
         return Ok(None);
@@ -173,6 +181,7 @@ pub fn commented(path: &Path) -> Result<Option<(String, &'static [&'static str])
     }
 }
 
+/// The text report: a count line, then one line per block, or nothing when there is no block.
 #[must_use]
 pub fn render(hits: &[Block], root: &Path) -> String {
     if hits.is_empty() {
@@ -183,12 +192,13 @@ pub fn render(hits: &[Block], root: &Path) -> String {
         plural(hits.len(), "comment block")
     );
     for h in hits {
-        out.push_str(&format!(
-            "{}:{}: comment block of {} lines, over {MAX_BLOCK}\n",
+        let _ = writeln!(
+            out,
+            "{}:{}: comment block of {} lines, over {MAX_BLOCK}",
             crate::project::relative(root, &h.file),
             h.line,
             h.length
-        ));
+        );
     }
     out
 }
@@ -202,7 +212,7 @@ pub fn render_json(hits: &[Block], root: &Path, chock_version: &str) -> String {
         Verdict::Tripped
     };
     let mut report = GateReport::new("slop", verdict, "chock slop");
-    report.measured = Some(hits.len() as u64);
+    report.measured = Some(u64::try_from(hits.len()).unwrap_or(u64::MAX));
     report.unit = Some("over-long comment block(s)".to_string());
     report.findings = hits
         .iter()
@@ -219,10 +229,6 @@ pub fn render_json(hits: &[Block], root: &Path, chock_version: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

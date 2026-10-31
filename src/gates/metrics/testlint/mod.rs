@@ -2,6 +2,7 @@
 //! assertion that cannot fail, a skip with no reason, a name that states no claim.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -17,6 +18,7 @@ pub(crate) mod scan;
 
 use scan::{FileScan, Helper, TestItem};
 
+/// The `testlint` gate: defects in tests that the compiler cannot see.
 pub const GATE: Gate = Gate {
     name: "testlint",
     about: "tests that assert nothing, cannot fail, return before they check, are skipped with no reason or are named for no claim, per file and rule",
@@ -195,17 +197,42 @@ fn fails_by_macro(lexed: &Lexed, body: Range<usize>) -> bool {
 }
 
 /// Whether the tokens name one of `helpers`: a call, or the name alone as one argument, which
-/// hands the helper to a runner.
+/// hands the helper to a runner. A turbofish after the name changes neither: `f::<T>(x)` calls `f`.
 fn names_one(lexed: &Lexed, body: Range<usize>, helpers: &BTreeSet<&str>) -> bool {
     let comma = |i: usize| lexed.is_punct(i, ',');
-    let alone = |i: usize| {
+    let alone = |i: usize, next: usize| {
         let starts = lexed.opens(i - 1, '(') || comma(i - 1);
-        let ends = lexed.toks.get(i + 1) == Some(&Tok::Close(')')) || comma(i + 1);
+        let ends = lexed.toks.get(next) == Some(&Tok::Close(')')) || comma(next);
         starts && ends
     };
-    let named = |i: usize| lexed.opens(i + 1, '(') || alone(i);
+    let named = |i: usize| {
+        let next = past_turbofish(lexed, i + 1);
+        lexed.opens(next, '(') || alone(i, next)
+    };
     body.into_iter()
         .any(|i| helpers.contains(lexed.ident(i)) && named(i))
+}
+
+/// The token after the turbofish `::<…>` that starts at `i`, or `i` when none starts there.
+fn past_turbofish(lexed: &Lexed, i: usize) -> usize {
+    let starts = lexed.is_punct(i, ':') && lexed.is_punct(i + 1, ':') && lexed.is_punct(i + 2, '<');
+    let (mut cursor, mut depth) = (i + 2, 0_usize);
+    while starts && cursor < lexed.toks.len() {
+        // The `>` of an `->` closes no angle bracket.
+        let arrow = matches!(lexed.toks[cursor - 1], Tok::Punct('-', true));
+        match lexed.toks[cursor] {
+            Tok::Punct('<', _) => depth += 1,
+            Tok::Punct('>', _) if !arrow => depth = depth.saturating_sub(1),
+            Tok::Open(_) => cursor = lexed.pair[cursor],
+            Tok::Close(_) => return i,
+            Tok::Punct(..) | Tok::Ident(_) | Tok::Literal(_) => {}
+        }
+        cursor += 1;
+        if depth == 0 {
+            return cursor;
+        }
+    }
+    i
 }
 
 /// Whether the identifier at `i` is a macro call: a `!` with nothing between.
@@ -238,7 +265,10 @@ fn ambiguous_names(scans: &[FileScan]) -> Vec<Finding> {
         let cut = root.map_or(0, |at| at + 1 + usize::from(parts.get(at) != Some(&"src")));
         let mut modules: Vec<&str> = parts.into_iter().skip(cut).collect();
         modules.pop_if(|last| matches!(*last, "lib" | "main" | "mod"));
-        modules.iter().map(|part| format!("{part}::")).collect()
+        modules.iter().fold(String::new(), |mut out, part| {
+            let _ = write!(out, "{part}::");
+            out
+        })
     };
     let mut by_path: BTreeMap<String, Vec<(&str, &TestItem)>> = BTreeMap::new();
     for s in scans {
@@ -254,7 +284,10 @@ fn ambiguous_names(scans: &[FileScan]) -> Vec<Finding> {
             let ends = [t.attrs.start, t.body.end];
             let holds = |i: &&usize| ends.iter().all(|at| within(**i).contains(at));
             let around = mods.iter().filter(holds).map(|i| lexed.ident(i + 1));
-            let inner: String = around.map(|name| format!("{name}::")).collect();
+            let inner = around.fold(String::new(), |mut out, name| {
+                let _ = write!(out, "{name}::");
+                out
+            });
             let named = by_path.entry(format!("{file}{inner}{}", t.name));
             named.or_default().push((s.file.as_str(), t));
         }
@@ -293,13 +326,13 @@ fn hidden_pipe(text: &str) -> Option<&'static str> {
     // A `case` pattern such as `x86_64 | amd64)` separates its alternatives with a bar: no pipe.
     let bare = |part: &str| !part.trim().contains([' ', '(']);
     let piped = |run: &str| run.contains(" | ") || run.trim_end().ends_with(" |");
-    let pipes = code.any(|line| match line.split_once(')') {
+    let any_pipe = code.any(|line| match line.split_once(')') {
         Some((pattern, run)) if pattern.split(" | ").all(bare) => piped(run),
         _ => piped(line),
     });
     let plain = matches!(shell, "sh" | "dash");
     let advice = if plain { PLAIN_SH } else { NO_PIPEFAIL };
-    (pipes && !text.contains("pipefail")).then_some(advice)
+    (any_pipe && !text.contains("pipefail")).then_some(advice)
 }
 
 /// Each harness script whose pipe hides a failure. One that is not text is a compiled tool,
@@ -315,10 +348,6 @@ fn shell_harnesses(ctx: &Ctx) -> Result<Vec<Finding>, String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -432,6 +461,31 @@ mod tests {
         for body in ["run(says).await", "run(1, says, 2)", "run(says, 2)"] {
             let src = format!("{says}#[test]\nfn reads_a_file() {{ {body} }}\n");
             assert_eq!(found_in(&[("tests/it.rs", &src)]), [""; 0], "{body}");
+        }
+    }
+
+    /// `f::<T>(x)` and `f(x)` are the same call to `f`, and `run(f::<T>)` hands `f` on as `run(f)`
+    /// does. Mutant: drop the turbofish case in `names_one`.
+    #[test]
+    fn a_helper_called_with_a_turbofish_is_the_same_call() {
+        let twin = "fn twin<M: Default + PartialEq>(x: M) { assert!(x == M::default()); }\n";
+        let read = |body: &str| {
+            let src = format!("{twin}#[test]\nfn reads_a_file() {{ {body}; }}\n");
+            found_in(&[("tests/it.rs", &src)])
+        };
+        for body in [
+            "twin(0_u8)",
+            "twin::<u8>(0)",
+            "twin::<Vec<Vec<u8>>>(Vec::new())",
+            "twin::<fn() -> u8>(f)",
+            "run(twin::<u8>)",
+            "run(1, twin::<u8>, 2)",
+        ] {
+            assert_eq!(read(body), [""; 0], "{body}");
+        }
+        let expected = "tests/it.rs:2: no-assertion: `reads_a_file` asserts nothing";
+        for body in ["twin::<u8>", "run(twin::<u8>.x)", "twin::<(u8)"] {
+            assert_eq!(read(body), [expected], "{body}");
         }
     }
 
@@ -662,8 +716,8 @@ mod tests {
     fn a_failure_line_is_shared_only_at_one_module_path_in_two_files() {
         const T: &str = "#[test]\nfn t() {}\n";
         type Src<'a> = (&'a str, &'a str);
-        let scan = |(file, src): Src| scan::scan_source(file, src);
-        let shared = |a: Src, b: Src| !ambiguous_names(&[scan(a), scan(b)]).is_empty();
+        let scan = |(file, src): Src<'_>| scan::scan_source(file, src);
+        let shared = |a: Src<'_>, b: Src<'_>| !ambiguous_names(&[scan(a), scan(b)]).is_empty();
         let files = |a: &str, b: &str| shared((a, T), (b, T));
         assert!(files("a/src/s3.rs", "b/src/s3.rs"));
         assert!(files("a/src/s3/mod.rs", "b/src/s3.rs"));

@@ -1,6 +1,7 @@
 //! Wires chock into commits: a declared git hook where git supports one, a one-line stub file
 //! where it does not, and an entry in Outpost's versioned hook file.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -28,9 +29,10 @@ pub fn command(name: &str) -> String {
 #[must_use]
 pub fn command_below(name: &str, below: &str) -> String {
     let safe = |c: char| c.is_ascii_alphanumeric() || "/._-".contains(c);
-    let word = match below.chars().all(safe) {
-        true => below.to_string(),
-        false => format!("'{}'", below.replace('\'', r"'\''")),
+    let word = if below.chars().all(safe) {
+        below.to_string()
+    } else {
+        format!("'{}'", below.replace('\'', r"'\''"))
     };
     format!("{} --project {word}", command(name))
 }
@@ -65,11 +67,16 @@ fn named(below: Option<&str>) -> String {
 /// only a file that is entirely its own.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Declaring {
+    /// The file needs this text written.
     Write {
+        /// The whole text the file should hold.
         text: String,
+        /// Whether chock wrote all of it.
         ours: bool,
     },
+    /// The file already declares chock as it runs now.
     Declared {
+        /// Whether the file holds nothing but chock's entry.
         ours: bool,
     },
     /// Names chock, but not what chock runs now: a hand edit or an older chock.
@@ -135,7 +142,9 @@ pub fn installed_hooks(root: &Path) -> Vec<(String, Option<String>)> {
 }
 
 /// Whether `program` resolves to an executable file, without running it. A missing file is
-/// `Ok(false)`; one that cannot be inspected is `Err`.
+/// `Ok(false)`.
+/// # Errors
+/// When a candidate file exists but cannot be inspected.
 pub fn executable(root: &Path, program: &str, path: &std::ffi::OsStr) -> Result<bool, String> {
     if program.contains(['/', '\\']) {
         return runnable(&root.join(program));
@@ -175,11 +184,14 @@ pub fn outgrown(name: &str, held: &str) -> bool {
 
 /// Wires chock into every repository holding this tree, git and Outpost alike, or into the
 /// repository above a project that sits below its top.
+/// # Errors
+/// When a hook file or `.outposthooks.toml` cannot be read or written.
 pub fn install_hooks(root: &Path) -> Result<String, crate::setup::init::Error> {
     let held = crate::project::vcs::holders(root);
-    match held.is_empty() {
-        true => install_from_above(root),
-        false => install_where_held(root, held),
+    if held.is_empty() {
+        install_from_above(root)
+    } else {
+        install_where_held(root, held)
     }
 }
 
@@ -190,9 +202,7 @@ fn install_where_held(
     let mut report = String::new();
     for kind in held {
         report.push_str(&match kind {
-            crate::project::vcs::Kind::Git => {
-                install_git_hooks(root, crate::project::vcs::runs_declared_hooks(root))?
-            }
+            crate::project::vcs::Kind::Git => install_git_hooks(root, GitRuns::at(root))?,
             crate::project::vcs::Kind::Outpost => install_outpost_hook(root, None)?,
         });
     }
@@ -205,22 +215,48 @@ fn install_from_above(root: &Path) -> Result<String, crate::setup::init::Error> 
     let Some((top, below)) = crate::project::vcs::enclosing_git(root) else {
         return Ok(String::new());
     };
-    let mut report = from_above(&top, &below, crate::project::vcs::runs_declared_hooks(&top));
+    let mut report = from_above(&top, &below, GitRuns::at(&top));
     if crate::project::vcs::holders(&top).contains(&crate::project::vcs::Kind::Outpost) {
         report.push_str(&install_outpost_hook(&top, Some(&below))?);
     }
     Ok(report)
 }
 
+/// Which hooks the git of a project runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitRuns {
+    /// Hooks declared in its config, beside `.git/hooks`: git 2.54 or later.
+    Declared,
+    /// Only the hook files of one directory, `.git/hooks` or `core.hooksPath`.
+    Files,
+}
+
+impl GitRuns {
+    /// What the git that holds `root` runs.
+    fn at(root: &Path) -> Self {
+        Self::answered(crate::exec::run("git", &["--version"], root).ok().as_ref())
+    }
+
+    /// What a git runs, by its answer to `git --version`; `None` where it did not start.
+    fn answered(version: Option<&crate::exec::Output>) -> Self {
+        if version.is_some_and(crate::project::vcs::declares_hooks) {
+            Self::Declared
+        } else {
+            Self::Files
+        }
+    }
+}
+
 /// The git hooks of a project at `below`, declared at `top` where git can run them from there.
-fn from_above(top: &Path, below: &str, declared: bool) -> String {
-    match declared {
-        true => declare_each(top, Some(below)),
+fn from_above(top: &Path, below: &str, runs: GitRuns) -> String {
+    if runs == GitRuns::Declared {
+        declare_each(top, Some(below))
+    } else {
         // A stub directory would replace the hooks of every other project in the repository.
-        false => format!(
+        format!(
             "  note      {below} sits below its repository's top, and only git 2.54 or later can \
              run its hooks from there; chock wired none\n"
-        ),
+        )
     }
 }
 
@@ -277,9 +313,9 @@ fn wired_into_outpost(plan: &Declaring, trusted: Option<bool>, below: Option<&st
 }
 
 /// Wires the git hooks: declared where git can, otherwise stub files in `DIR` and `core.hooksPath`.
-fn install_git_hooks(root: &Path, declared: bool) -> Result<String, crate::setup::init::Error> {
+fn install_git_hooks(root: &Path, runs: GitRuns) -> Result<String, crate::setup::init::Error> {
     // A declaring git needs no stub files, so any old ones are retired.
-    if declared {
+    if runs == GitRuns::Declared {
         return Ok(retire(root)? + &declare_each(root, None));
     }
     let dir = root.join(DIR);
@@ -299,23 +335,29 @@ fn install_git_hooks(root: &Path, declared: bool) -> Result<String, crate::setup
     }
     let mut report = String::new();
     if !written.is_empty() {
-        report.push_str(&format!("  git hook  {}\n", written.join(", ")));
+        let _ = writeln!(report, "  git hook  {}", written.join(", "));
     }
-    report.push_str(&point_git_at_the_hooks(root, declared));
+    report.push_str(&point_git_at_the_hooks(root, runs));
     Ok(report)
 }
 
 /// Sets `core.hooksPath`, which is per clone. Setting it silences `.git/hooks`, so a project with
 /// hooks there is left alone.
-fn point_git_at_the_hooks(root: &Path, declared: bool) -> String {
+fn point_git_at_the_hooks(root: &Path, runs: GitRuns) -> String {
     let how = wiring(
-        declared,
+        runs,
         crate::project::vcs::hooks_path(root),
         hooks_already_in_git(root),
     );
     match how {
         Wiring::Declare => declare_and_clear(root),
-        Wiring::PointAt => pointed(crate::project::vcs::point_hooks_at(root, DIR)),
+        Wiring::PointAt => {
+            if crate::project::vcs::point_hooks_at(root, DIR) {
+                pointed()
+            } else {
+                not_pointed()
+            }
+        }
         settled => said(&settled),
     }
 }
@@ -324,9 +366,7 @@ fn point_git_at_the_hooks(root: &Path, declared: bool) -> String {
 fn declare_and_clear(root: &Path) -> String {
     let mut report = declare_each(root, None);
     if crate::project::vcs::clear_hooks_path(root, DIR) {
-        report.push_str(&format!(
-            "  git       core.hooksPath no longer names {DIR}\n"
-        ));
+        let _ = writeln!(report, "  git       core.hooksPath no longer names {DIR}");
     }
     report
 }
@@ -345,13 +385,14 @@ fn said(how: &Wiring) -> String {
     }
 }
 
-/// What `init` says once it has tried to point `core.hooksPath` at chock's hooks.
-fn pointed(done: bool) -> String {
-    if done {
-        format!("  git       core.hooksPath -> {DIR}\n")
-    } else {
-        format!("  note      could not set core.hooksPath; run: git config core.hooksPath {DIR}\n")
-    }
+/// What `init` says once it has pointed `core.hooksPath` at chock's hooks.
+fn pointed() -> String {
+    format!("  git       core.hooksPath -> {DIR}\n")
+}
+
+/// What `init` says when git refused to point `core.hooksPath` at chock's hooks.
+fn not_pointed() -> String {
+    format!("  note      could not set core.hooksPath; run: git config core.hooksPath {DIR}\n")
 }
 
 /// How chock's git hooks get run.
@@ -369,8 +410,8 @@ enum Wiring {
 }
 
 /// Picks the wiring. Declaring wins where git supports it, since it displaces no other hooks.
-fn wiring(declared: bool, set: Option<String>, theirs: Option<String>) -> Wiring {
-    if declared {
+fn wiring(runs: GitRuns, set: Option<String>, theirs: Option<String>) -> Wiring {
+    if runs == GitRuns::Declared {
         return Wiring::Declare;
     }
     match (set, theirs) {
@@ -461,11 +502,6 @@ fn make_executable(path: &Path) -> Result<(), crate::setup::init::Error> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap or panic in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
 
@@ -499,18 +535,42 @@ mod tests {
         assert!(!outgrown("pre-commit", "exec cargo fmt --check\n"));
     }
 
+    #[test]
+    fn only_a_git_that_declares_hooks_in_config_runs_them_from_there() {
+        let said = |version: &str| crate::exec::Output::of(Some(0), version, "");
+        let new = said("git version 2.55.0\n");
+        assert_eq!(GitRuns::answered(Some(&new)), GitRuns::Declared);
+        assert_eq!(
+            GitRuns::answered(Some(&said("git version 2.43.0\n"))),
+            GitRuns::Files
+        );
+        assert_eq!(GitRuns::answered(None), GitRuns::Files);
+    }
+
+    /// A config that another git holds locked cannot take `core.hooksPath`, so `init` says how
+    /// to set it.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_git_that_refuses_the_hooks_path_is_told_how_to_set_it() {
+        let dir = git_repo("hooks-config-locked");
+        fs::write(dir.join(".git").join("config.lock"), "").unwrap();
+        let said = install_git_hooks(&dir, GitRuns::Files).unwrap();
+        assert!(said.ends_with(&not_pointed()), "{said}");
+        assert_eq!(crate::project::vcs::hooks_path(&dir), None);
+    }
+
     /// A second `init` neither rewrites it nor reports it.
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_hook_file_already_current_is_left_where_it_is() {
         let dir = git_repo("hooks-already-current");
-        let first = install_git_hooks(&dir, false).unwrap();
+        let first = install_git_hooks(&dir, GitRuns::Files).unwrap();
         assert!(
             first.ends_with(&format!("  git       core.hooksPath -> {DIR}\n")),
             "{first}"
         );
         let path = dir.join(DIR).join("pre-commit");
-        let again = install_git_hooks(&dir, false).unwrap();
+        let again = install_git_hooks(&dir, GitRuns::Files).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), stub("pre-commit"));
         assert!(!again.contains("git hook"), "it was rewritten: {again}");
     }
@@ -520,9 +580,9 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_hooks_path_chock_set_is_kept_for_an_older_git_and_cleared_once_hooks_are_declared() {
         let dir = hooks_path_set("hooks-path-ours", DIR);
-        assert_eq!(point_git_at_the_hooks(&dir, false), String::new());
+        assert_eq!(point_git_at_the_hooks(&dir, GitRuns::Files), String::new());
         assert_eq!(crate::project::vcs::hooks_path(&dir).as_deref(), Some(DIR));
-        let said = point_git_at_the_hooks(&dir, true);
+        let said = point_git_at_the_hooks(&dir, GitRuns::Declared);
         assert_eq!(
             said,
             format!(
@@ -537,7 +597,10 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_hooks_path_somebody_else_set_survives_declaring() {
         let dir = hooks_path_set("hooks-path-theirs", "tools/hooks");
-        assert_eq!(point_git_at_the_hooks(&dir, true), declare_each(&dir, None));
+        assert_eq!(
+            point_git_at_the_hooks(&dir, GitRuns::Declared),
+            declare_each(&dir, None)
+        );
         assert_eq!(
             crate::project::vcs::hooks_path(&dir).as_deref(),
             Some("tools/hooks")
@@ -558,9 +621,9 @@ mod tests {
         let theirs = said(&Wiring::Theirs("pre-commit".to_string()));
         assert!(theirs.contains(".git/hooks holds pre-commit"), "{theirs}");
         assert!(theirs.contains("git config core.hooksPath"), "{theirs}");
-        let set = pointed(true);
+        let set = pointed();
         assert!(set.contains("core.hooksPath -> .chock/hooks"), "{set}");
-        let refused = pointed(false);
+        let refused = not_pointed();
         assert!(
             refused.contains("could not set core.hooksPath"),
             "{refused}"
@@ -601,7 +664,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_git_that_cannot_declare_a_hook_gets_a_file_for_each_of_them() {
         let dir = git_repo("hooks-older-git");
-        let report = install_git_hooks(&dir, false).unwrap();
+        let report = install_git_hooks(&dir, GitRuns::Files).unwrap();
         for (name, _) in wired() {
             let path = dir.join(DIR).join(name);
             assert_eq!(fs::read_to_string(&path).unwrap(), stub(name), "{name}");
@@ -872,11 +935,11 @@ mod tests {
     #[test]
     fn a_git_that_can_declare_a_hook_displaces_nothing() {
         assert_eq!(
-            wiring(true, None, Some("pre-commit".to_string())),
+            wiring(GitRuns::Declared, None, Some("pre-commit".to_string())),
             Wiring::Declare
         );
         assert_eq!(
-            wiring(true, Some("elsewhere".to_string()), None),
+            wiring(GitRuns::Declared, Some("elsewhere".to_string()), None),
             Wiring::Declare
         );
     }
@@ -884,17 +947,20 @@ mod tests {
     #[test]
     fn an_older_git_leaves_the_projects_own_hooks_alone_and_says_so() {
         assert_eq!(
-            wiring(false, None, Some("pre-commit".to_string())),
+            wiring(GitRuns::Files, None, Some("pre-commit".to_string())),
             Wiring::Theirs("pre-commit".to_string())
         );
-        assert_eq!(wiring(false, None, None), Wiring::PointAt);
+        assert_eq!(wiring(GitRuns::Files, None, None), Wiring::PointAt);
     }
 
     #[test]
     fn a_hooks_path_already_set_is_read_rather_than_overwritten() {
-        assert_eq!(wiring(false, Some(DIR.to_string()), None), Wiring::Ours);
         assert_eq!(
-            wiring(false, Some("other/hooks".to_string()), None),
+            wiring(GitRuns::Files, Some(DIR.to_string()), None),
+            Wiring::Ours
+        );
+        assert_eq!(
+            wiring(GitRuns::Files, Some("other/hooks".to_string()), None),
             Wiring::Elsewhere("other/hooks".to_string())
         );
     }
@@ -1006,7 +1072,7 @@ mod tests {
             declaration(Some("sub"))
         );
         // Declared as git 2.54 would, whatever git this machine has.
-        let report = from_above(&dir, "sub", true);
+        let report = from_above(&dir, "sub", GitRuns::Declared);
         assert!(report.contains("at the top for sub"), "{report}");
         for (name, _) in wired() {
             let key = format!("hook.chock-{name}@sub.command");
@@ -1024,7 +1090,7 @@ mod tests {
 
     #[test]
     fn a_git_too_old_to_run_hooks_from_the_top_leaves_every_projects_hooks_alone() {
-        let said = from_above(Path::new("never-read"), "crates/a", false);
+        let said = from_above(Path::new("never-read"), "crates/a", GitRuns::Files);
         assert!(said.contains("crates/a sits below"), "{said}");
         assert!(said.contains("only git 2.54 or later"), "{said}");
     }

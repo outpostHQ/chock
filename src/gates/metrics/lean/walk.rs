@@ -96,9 +96,14 @@ impl<'ast> Visit<'ast> for Lean<'_> {
         if prodlines::is_test_gated(&node.attrs) {
             return;
         }
+        let of = if node.trait_.is_some() {
+            ImplOf::Trait
+        } else {
+            ImplOf::Type
+        };
         for item in &node.items {
             match item {
-                ImplItem::Fn(method) => self.method(method, node.trait_.is_none()),
+                ImplItem::Fn(method) => self.method(method, of),
                 _ => visit::visit_impl_item(self, item),
             }
         }
@@ -117,13 +122,22 @@ impl<'ast> Visit<'ast> for Lean<'_> {
     }
 }
 
+/// What an `impl` block is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImplOf {
+    /// A type's own methods.
+    Type,
+    /// A trait, whose methods the type must have.
+    Trait,
+}
+
 impl Lean<'_> {
     /// A method outside test code: its body, and the method itself where it is no trait's.
-    fn method(&mut self, method: &ImplItemFn, own: bool) {
+    fn method(&mut self, method: &ImplItemFn, of: ImplOf) {
         if prodlines::is_test_gated(&method.attrs) {
             return;
         }
-        if own {
+        if of == ImplOf::Type {
             self.function(&Fun(&method.attrs, &method.vis, &method.sig, &method.block));
         }
         visit::visit_impl_item_fn(self, method);
@@ -324,10 +338,6 @@ fn line_of(line: usize) -> u32 {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

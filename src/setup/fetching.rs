@@ -67,8 +67,17 @@ fn for_another_system(pin: &Pin, os: &str) -> Option<String> {
     Some(format!("  skipped   {} — {why}", pin.crate_name))
 }
 
+/// How cargo fetches a tool that is on crates.io.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Fetch {
+    /// `cargo binstall`: the tool's own prebuilt release, else a compile.
+    Binstall,
+    /// `cargo install`: a compile from crates.io.
+    Compile,
+}
+
 /// Printed before each tool, because a compile takes minutes and silence reads as hung.
-pub(super) fn starting(pin: &Pin, binstall: bool) -> String {
+pub(super) fn starting(pin: &Pin, how: Fetch) -> String {
     if let Some(git) = &pin.git {
         return format!(
             "  installing {} — compiled from {} at {}",
@@ -77,16 +86,16 @@ pub(super) fn starting(pin: &Pin, binstall: bool) -> String {
             git.short()
         );
     }
-    let how = match binstall {
-        true => "its own prebuilt release where it has one, else compiled",
-        false => "compiled from crates.io",
+    let how = match how {
+        Fetch::Binstall => "its own prebuilt release where it has one, else compiled",
+        Fetch::Compile => "compiled from crates.io",
     };
     format!("  installing {} {} — {how}", pin.crate_name, pin.want)
 }
 
 /// What cargo is asked for one pin. binstall never takes a third-party build cache, only the
 /// release the tool publishes itself, and falls back to compiling when there is none.
-pub(super) fn fetch_args(pin: &Pin, binstall: bool) -> Vec<String> {
+pub(super) fn fetch_args(pin: &Pin, how: Fetch) -> Vec<String> {
     let at = format!("{}@{}", pin.crate_name, pin.want);
     // `--force`: cargo keeps a crates.io build of the same version, and the commit replaces it.
     let args = match &pin.git {
@@ -94,7 +103,7 @@ pub(super) fn fetch_args(pin: &Pin, binstall: bool) -> Vec<String> {
             let source = ["install", "--git", &git.url, "--rev", &git.rev];
             [&source[..], &["--locked", "--force", &pin.crate_name]].concat()
         }
-        None if binstall => vec![
+        None if how == Fetch::Binstall => vec![
             "binstall",
             "-y",
             "--locked",
@@ -114,10 +123,6 @@ pub(super) fn fetch_args(pin: &Pin, binstall: bool) -> Vec<String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
     use crate::setup::pins::{self, version_pinned};
@@ -126,7 +131,7 @@ mod tests {
     fn binstall_takes_the_tools_own_release_and_a_compile_takes_the_crate_at_its_pin() {
         let pin = &pins::parse("CARGO_DENY_VERSION=0.20.2\n").unwrap()[0];
         assert_eq!(
-            fetch_args(pin, true),
+            fetch_args(pin, Fetch::Binstall),
             [
                 "binstall",
                 "-y",
@@ -137,7 +142,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            fetch_args(pin, false),
+            fetch_args(pin, Fetch::Compile),
             ["install", "cargo-deny", "--version", "0.20.2", "--locked"]
         );
     }
@@ -184,11 +189,11 @@ mod tests {
     fn each_tool_is_announced_before_it_starts_with_how_it_will_arrive() {
         let pin = &pins::parse("CARGO_DENY_VERSION=0.20.2\n").unwrap()[0];
         assert_eq!(
-            starting(pin, true),
+            starting(pin, Fetch::Binstall),
             "  installing cargo-deny 0.20.2 — its own prebuilt release where it has one, else compiled"
         );
         assert_eq!(
-            starting(pin, false),
+            starting(pin, Fetch::Compile),
             "  installing cargo-deny 0.20.2 — compiled from crates.io"
         );
     }
@@ -238,9 +243,9 @@ mod tests {
         let pin = pins::parse(&text).unwrap().remove(0);
         let git = ["install", "--git", url, "--rev", rev];
         let args = [&git[..], &["--locked", "--force", "cargo-deny"]].concat();
-        assert_eq!(fetch_args(&pin, true), args);
+        assert_eq!(fetch_args(&pin, Fetch::Binstall), args);
         let installing = format!("  installing cargo-deny — compiled from {url} at 0123456789ab");
-        assert_eq!(starting(&pin, true), installing);
+        assert_eq!(starting(&pin, Fetch::Binstall), installing);
         let crates = "0.18.6 from crates.io";
         let replaced = format!(
             "  replacing cargo-deny {crates} with 0.18.6 from {url} at 0123456789ab, \

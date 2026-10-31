@@ -4,6 +4,7 @@ use crate::project::config::Forbidden;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Inspection, Kind};
 
+/// The `phrases` gate: forbidden phrases that a project lists, found in its source.
 pub const GATE: Gate = Gate {
     name: "phrases",
     about: "a phrase the project lists under `forbidden` appears in its source",
@@ -63,7 +64,12 @@ pub fn found(path: &str, src: &str, forbidden: &[Forbidden]) -> Vec<Finding> {
             .iter()
             .filter(|phrase| !phrase.text.trim().is_empty())
         {
-            if mentions(&lower, &phrase.text.to_lowercase(), phrase.word) {
+            let counts = if phrase.word {
+                Counts::AsWord
+            } else {
+                Counts::Anywhere
+            };
+            if mentions(&lower, &phrase.text.to_lowercase(), counts) {
                 let at = u32::try_from(index + 1).unwrap_or(u32::MAX);
                 hits.push(Finding::at(path, &phrase.why).item(&phrase.text).line(at));
             }
@@ -72,14 +78,24 @@ pub fn found(path: &str, src: &str, forbidden: &[Forbidden]) -> Vec<Finding> {
     hits
 }
 
+/// Where a phrase counts in a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Counts {
+    /// Only as a whole word.
+    AsWord,
+    /// Anywhere, also inside a longer word.
+    Anywhere,
+}
+
 /// As a word, a phrase counts only where no letter, digit, `_` or `-` touches it, and no `.` comes
 /// before it: `.dvc` is a file name, while `dvc.` ends a sentence.
-fn mentions(line: &str, phrase: &str, word: bool) -> bool {
+fn mentions(line: &str, phrase: &str, counts: Counts) -> bool {
     let joins = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
     line.match_indices(phrase).any(|(at, _)| {
         let before = line[..at].chars().next_back();
         let after = line[at + phrase.len()..].chars().next();
-        !word || !(before.is_some_and(|c| joins(c) || c == '.') || after.is_some_and(joins))
+        counts == Counts::Anywhere
+            || !(before.is_some_and(|c| joins(c) || c == '.') || after.is_some_and(joins))
     })
 }
 
@@ -127,33 +143,44 @@ fn segment(pattern: &str, name: &str) -> bool {
         return pattern == name;
     };
     let (head, wild) = pattern.split_at(at);
-    let (one, tail) = (wild.starts_with('?'), &wild[1..]);
+    let card = if wild.starts_with('?') {
+        Wildcard::One
+    } else {
+        Wildcard::Any
+    };
+    let tail = &wild[1..];
     name.strip_prefix(head).is_some_and(|rest| {
-        starts(rest, one)
+        starts(rest, card)
             .into_iter()
             .any(|at| segment(tail, &rest[at..]))
     })
 }
 
+/// The wildcard a segment pattern holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wildcard {
+    /// `?`: one character.
+    One,
+    /// `*`: any run of characters.
+    Any,
+}
+
 /// Where the rest of a name can go on after a wildcard: after its first character for `?`, and at
 /// each character and at the end for `*`.
-fn starts(rest: &str, one: bool) -> Vec<usize> {
+fn starts(rest: &str, card: Wildcard) -> Vec<usize> {
     let at: Vec<usize> = rest
         .char_indices()
         .map(|(at, _)| at)
         .chain([rest.len()])
         .collect();
-    match one {
-        true => at.into_iter().skip(1).take(1).collect(),
-        false => at,
+    if card == Wildcard::One {
+        at.into_iter().skip(1).take(1).collect()
+    } else {
+        at
     }
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

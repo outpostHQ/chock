@@ -1,6 +1,6 @@
 [package]
 name = "chock"
-version = "0.19.0"
+version = "0.20.0"
 edition = "2024"
 rust-version = "1.99.0"
 description = "Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers."
@@ -52,6 +52,7 @@ rustix = { version = "1.1.5", features = ["process"] }
 codegen-units = 1
 lto = true
 opt-level = "z"
+overflow-checks = true
 strip = true
 
 [profile.release.package.proc-macro2]
@@ -63,12 +64,34 @@ opt-level = 3
 [profile.dev]
 debug = "line-tables-only"
 
+# The lint floor that the `profile` gate holds a project to, and chock to it.
 [lints.rust]
 # mutest-rs and kani each set their own cfg while running; declaring them keeps cargo quiet.
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(mutest)", "cfg(kani)"] }
 unsafe_code = "deny"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
 
 [lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pedantic advice that fits a library's API more than a tool's own code.
+must_use_candidate = "allow"
+module_name_repetitions = "allow"
 expect_used = "deny"
 panic = "deny"
 unwrap_used = "deny"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+clone_on_ref_ptr = "warn"
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "warn"
+print_stderr = "warn"
+panic_in_result_fn = "warn"
+as_conversions = "warn"

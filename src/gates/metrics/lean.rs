@@ -18,12 +18,14 @@ use syn::{
     Signature,
 };
 
+use crate::gates::metrics::prodlines::Code;
 use crate::gates::metrics::{prodlines, splits};
 use crate::project;
 use crate::run::baseline::{Keys, Series};
 use crate::run::report::{Detail, Finding, Place};
 use crate::run::{Ctx, Gate, Group, Kind, Measurement};
 
+/// The `lean` gate: the lines a file could lose to forwarders and repeated code.
 pub const GATE: Gate = Gate {
     name: "lean",
     about: "a file gains lines that a call past a forwarder, or one function, closure or table \
@@ -41,9 +43,13 @@ pub const GATE: Gate = Gate {
 /// A function that only passes its parameters on, and the call it makes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Forwarder {
+    /// What the source calls the forwarding function.
     pub name: String,
+    /// The function it hands its parameters to, as the call writes it.
     pub callee: String,
+    /// Where the forwarder starts, counted from 1.
     pub line: u32,
+    /// Where its closing brace stands, counted from 1.
     pub last: u32,
 }
 
@@ -68,7 +74,9 @@ impl Forwarder {
 /// One file's forwarders, which count, and its candidates, which do not.
 #[derive(Debug, Default)]
 pub struct Read {
+    /// The functions that only pass their parameters on.
     pub forwarders: Vec<Forwarder>,
+    /// Shapes that the source alone cannot settle, shown but never counted.
     pub candidates: Vec<Finding>,
 }
 
@@ -99,14 +107,15 @@ fn read_tree(ctx: &Ctx) -> Result<Tree, String> {
         };
         let found = scan(&src, &shown, &splits::used_below(&words, &path));
         tree.candidates.extend(found.candidates);
-        tree.corpus.add(&shown, &src, false);
+        tree.corpus.add(&shown, &src, Code::Production);
         let here = found.forwarders.into_iter().map(|it| (shown.clone(), it));
         tree.forwarders.extend(here);
-        tree.lines.insert(shown, lines as u64);
+        tree.lines
+            .insert(shown, u64::try_from(lines).unwrap_or(u64::MAX));
     }
     for path in tests {
         if let Some((shown, src)) = source(ctx, &path)? {
-            tree.corpus.add(&shown, &src, true);
+            tree.corpus.add(&shown, &src, Code::Test);
             tree.tests.push(shown);
         }
     }
@@ -150,13 +159,13 @@ fn source(ctx: &Ctx, path: &Path) -> Result<Option<(String, String)>, String> {
 
 /// Adds `lines` to a file's removable lines, and the places and fix that show them. The file's
 /// line is its first place in that file, and a fix not given yet joins the fixes.
-fn charge(files: &mut BTreeMap<String, (u64, Detail)>, shown: &str, lines: u64, shows: Detail) {
+fn charge(files: &mut BTreeMap<String, (u64, Detail)>, shown: &str, lines: u64, added: Detail) {
     let (total, detail) = files.entry(shown.to_string()).or_default();
     *total += lines;
-    let here = shows.places.iter().find(|place| place.file == shown);
+    let here = added.places.iter().find(|place| place.file == shown);
     detail.line = detail.line.or(here.map(|place| place.line));
-    detail.places.extend(shows.places);
-    detail.fix = match (detail.fix.take(), shows.fix) {
+    detail.places.extend(added.places);
+    detail.fix = match (detail.fix.take(), added.fix) {
         (Some(given), Some(fix)) if !given.contains(&fix) => Some(format!("{given}; {fix}")),
         (given, fix) => given.or(fix),
     };
@@ -277,11 +286,9 @@ impl<'ast> Visit<'ast> for Uses {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
     use crate::run::report::Grade;
     use crate::testdir::Held;
@@ -308,7 +315,10 @@ mod tests {
 
     /// A caller for each name, so a forwarder's only use is a call.
     fn called_once(names: &[&str]) -> String {
-        let calls: String = names.iter().map(|name| format!("{name}(1); ")).collect();
+        let mut calls = String::new();
+        for name in names {
+            let _ = write!(calls, "{name}(1); ");
+        }
         format!("pub fn entry() {{ {calls} }}\n")
     }
 
@@ -454,7 +464,7 @@ mod tests {
     fn a_forwarder_a_file_below_its_module_names_is_a_candidate() {
         let src = format!("fn a(x: u8) {{ b(x) }}\n{}", called_once(&["a"]));
         let read = scan(&src, "src/a.rs", &|name| name == "a");
-        assert!(read.forwarders.is_empty());
+        assert_eq!(read.forwarders, []);
         assert!(
             read.candidates[0]
                 .message

@@ -7,6 +7,7 @@ use std::path::Path;
 use crate::run::baseline::{Keys, Series};
 use crate::run::{Ctx, Gate, Group, Kind};
 
+/// The `lines` gate: the line count of every tracked text file.
 pub const GATE: Gate = Gate {
     name: "lines",
     about: "the lines of every tracked text file, blank ones included, as `wc -l` counts them; the \
@@ -69,10 +70,6 @@ fn counted(mut reader: impl BufRead) -> std::io::Result<u64> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

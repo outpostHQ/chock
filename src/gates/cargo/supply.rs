@@ -7,6 +7,7 @@ use crate::project;
 use crate::run::baseline::{Keys, Series};
 use crate::run::{Ctx, Gate, Group, Kind};
 
+/// Counts the dependencies that run code during a build, by crate and kind.
 pub const GATE: Gate = Gate {
     name: "supply",
     about: "dependencies that execute code during a build, by crate and kind",
@@ -30,6 +31,8 @@ const PROC_MACRO: &str = "proc-macro";
 
 /// Counts each non-workspace crate with a build script or proc-macro, keyed by crate and kind.
 /// A ratchet, not a ban: real projects already have dozens, so only a new one fails.
+/// # Errors
+/// Returns `Err` when the `cargo metadata` text does not parse.
 pub fn running_code(metadata_json: &str) -> Result<Series, String> {
     let metadata: Metadata = serde_json::from_str(metadata_json)
         .map_err(|e| format!("cargo metadata printed a graph chock cannot read: {e}"))?;
@@ -60,10 +63,6 @@ fn keys_for(package: &Package) -> Vec<String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

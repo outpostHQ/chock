@@ -1,6 +1,7 @@
 //! Adds the keys chock ships to a TOML file the project already holds. No line of the project's
 //! changes, and a key the project sets keeps the project's value.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -72,12 +73,11 @@ fn nesting(code: &str) -> i32 {
     for c in code.chars() {
         match quote {
             Some(open) if c == open && before != '\\' => quote = None,
-            Some(_) => {}
             None if c == '#' => break,
             None if c == '"' || c == '\'' => quote = Some(c),
             None if c == '[' || c == '{' => depth += 1,
             None if c == ']' || c == '}' => depth -= 1,
-            None => {}
+            Some(_) | None => {}
         }
         before = c;
     }
@@ -141,13 +141,16 @@ fn layout(text: &str) -> Layout {
 /// Lines `from..to` of `lines`, each with its line end.
 fn text(lines: &[&str], from: usize, to: usize) -> String {
     let part = lines.get(from..to).unwrap_or_default();
-    part.iter().map(|line| format!("{line}\n")).collect()
+    part.iter().fold(String::new(), |mut out, line| {
+        let _ = writeln!(out, "{line}");
+        out
+    })
 }
 
 /// `held` with every key of `shipped` it does not set, and the name of each key added. A key goes
 /// after its table's last key; a table the project lacks goes at the end.
 #[must_use]
-pub fn merged(held: &str, shipped: &str) -> (String, Vec<String>) {
+pub(crate) fn merged(held: &str, shipped: &str) -> (String, Vec<String>) {
     let (ours, theirs) = (layout(shipped), layout(held));
     let lines: Vec<&str> = shipped.lines().collect();
     let mut inserts: Vec<(usize, String)> = Vec::new();
@@ -164,13 +167,12 @@ pub fn merged(held: &str, shipped: &str) -> (String, Vec<String>) {
         if block.is_empty() {
             continue;
         }
-        match theirs.tables.iter().find(|it| it.name == table.name) {
-            Some(found) => inserts.push((found.end, block)),
-            None => {
-                tail.push('\n');
-                tail.push_str(&text(&lines, table.from, table.head));
-                tail.push_str(&block);
-            }
+        if let Some(found) = theirs.tables.iter().find(|it| it.name == table.name) {
+            inserts.push((found.end, block));
+        } else {
+            tail.push('\n');
+            tail.push_str(&text(&lines, table.from, table.head));
+            tail.push_str(&block);
         }
     }
     (woven(held, &inserts, &tail), added)
@@ -197,7 +199,7 @@ fn add_at(out: &mut String, inserts: &[(usize, String)], at: usize) {
 
 /// Brings the project's `name` up to what chock ships, and says what happened in one line. A
 /// missing file is written; a held file gains the keys it lacks; a symlink is left as it is.
-pub fn install(root: &Path, name: &str, shipped: &str) -> Result<String, Error> {
+pub(crate) fn install(root: &Path, name: &str, shipped: &str) -> Result<String, Error> {
     let path = root.join(name);
     let kept = || format!("  kept      {name} is a symlink, so chock leaves it");
     let brought = || -> Result<String, Error> {
@@ -218,10 +220,6 @@ pub fn install(root: &Path, name: &str, shipped: &str) -> Result<String, Error> 
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -233,7 +231,7 @@ mod tests {
     fn a_file_that_sets_every_shipped_key_is_returned_as_it_is() {
         let (text, added) = merged(SHIPPED, SHIPPED);
         assert_eq!(text, SHIPPED);
-        assert!(added.is_empty());
+        assert_eq!(added, Vec::<String>::new());
     }
 
     #[test]

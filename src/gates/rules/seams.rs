@@ -13,6 +13,7 @@ use crate::project::config::Seam;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Inspection, Kind};
 
+/// The `seams` gate: paths and crates that only some files or packages may use.
 pub const GATE: Gate = Gate {
     name: "seams",
     about: "a path or crate listed under `seams` is used outside the files or packages it names",
@@ -291,10 +292,6 @@ pub fn found(path: &str, src: &str, seams: &[Seam]) -> Vec<Finding> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -367,7 +364,7 @@ mod tests {
             Vec::<String>::new()
         );
         let applies = applying(&[seam("iroh", &["src/net/**"])], "src/net/api.rs");
-        assert!(applies.is_empty());
+        assert_eq!(applies, []);
         let elsewhere = applying(&[seam("iroh", &["src/net/**"])], "src/lib.rs");
         assert_eq!(elsewhere, [seam("iroh", &["src/net/**"])]);
     }
@@ -532,7 +529,7 @@ mod tests {
             ],
         );
         held.seams = vec![cloud(&["x"])];
-        assert!(inspect(&held).unwrap().debt.is_empty());
+        assert_eq!(inspect(&held).unwrap().debt, []);
         held.seams = vec![cloud(&["y"])];
         assert_eq!(
             inspect(&held).err().unwrap(),

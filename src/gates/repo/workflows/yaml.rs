@@ -164,6 +164,8 @@ impl Fold {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
 
     fn scalar(text: &str, line: u32) -> Node {
@@ -232,7 +234,10 @@ mod tests {
         let mut text = String::from("a0: &a0 [x, x, x, x, x, x, x, x, x, x]\n");
         for level in 1..8 {
             let below = level - 1;
-            text.push_str(&format!("a{level}: &a{level} [*a{below}, *a{below}, *a{below}, *a{below}, *a{below}, *a{below}, *a{below}, *a{below}, *a{below}, *a{below}]\n"));
+            let _ = writeln!(
+                text,
+                "a{level}: &a{level} [*a{below}, *a{below}, *a{below}, *a{below}, *a{below}, *a{below}, *a{below}, *a{below}, *a{below}, *a{below}]"
+            );
         }
         let refused = within(&text, 1_000).err().unwrap_or_default();
         assert!(refused.contains("more than 1000 nodes"), "{refused}");

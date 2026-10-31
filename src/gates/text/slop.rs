@@ -5,6 +5,7 @@ use crate::run::baseline::{Keys, Series};
 use crate::run::{Ctx, Gate, Group, Kind};
 use crate::slop;
 
+/// The `slop` gate: comment blocks longer than two lines, counted per file.
 pub const GATE: Gate = Gate {
     name: "slop",
     about: "comment blocks longer than two lines, per file",
@@ -29,10 +30,6 @@ fn measure(ctx: &Ctx) -> Result<Series, String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

@@ -68,7 +68,11 @@ fn left_out(named: &[Unmutated], file: &str) -> bool {
 /// Every Rust source mutest can mutate, from the root.
 fn sources(ctx: &Ctx) -> Result<Vec<String>, String> {
     let entered = |dir: &str| !crate::project::SKIPPED.contains(&dir);
-    let named = |name: &str, _: &std::path::Path| name.ends_with(".rs");
+    let named = |name: &str, _: &std::path::Path| {
+        std::path::Path::new(name)
+            .extension()
+            .is_some_and(|ext| ext == "rs")
+    };
     let files = crate::project::walked(&ctx.listing, &ctx.root, &entered, &named)?;
     let shown = files
         .iter()
@@ -79,7 +83,10 @@ fn sources(ctx: &Ctx) -> Result<Vec<String>, String> {
 /// A `.rs` file under a `src` directory and in no `tests` one.
 fn mutable(path: &str) -> bool {
     let parts: Vec<&str> = path.split('/').collect();
-    path.ends_with(".rs") && parts.contains(&"src") && !parts.contains(&"tests")
+    let rust = std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext == "rs");
+    rust && parts.contains(&"src") && !parts.contains(&"tests")
 }
 
 /// The changed `.rs` files under `src`, or `None` for a change that can move a survivor anywhere: a
@@ -103,7 +110,9 @@ fn narrowed(changed: &[String]) -> Option<Vec<String>> {
 /// Prose and the repository's own records: no build reads them.
 fn reaches_no_mutation(path: &str, parts: &[&str]) -> bool {
     let in_dir = |dir: &str| parts.first() == Some(&dir);
-    path.ends_with(".md")
+    std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext == "md")
         || in_dir(".github")
         || (in_dir(".chock") && path != crate::project::config::FILE)
 }
@@ -175,10 +184,6 @@ fn local(text: &str) -> Finding {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

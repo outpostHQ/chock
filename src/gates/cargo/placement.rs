@@ -9,6 +9,7 @@ use crate::gates::tools::machete::names_crate;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Inspection, Kind};
 
+/// Counts the dependencies declared where a fresh clone cannot build them.
 pub const GATE: Gate = Gate {
     name: "placement",
     about: "every dependency is declared where a clone can build it, for the builds that use it",
@@ -32,6 +33,8 @@ fn inspect(ctx: &Ctx) -> Result<Inspection, String> {
 
 /// Path dependencies a clone cannot build: one outside the repository, which needs the sibling
 /// checkout, and one inside it that a manifest of `written` holds as an absolute path.
+/// # Errors
+/// Returns `Err` when the `cargo metadata` text does not parse.
 pub fn outside(
     metadata_json: &str,
     repository: Option<&Path>,
@@ -108,10 +111,15 @@ fn key(dependency: &Value) -> String {
 /// test code.
 #[derive(Debug, Default)]
 pub struct Crate {
+    /// The member's manifest, as a path from the workspace root.
     pub manifest: String,
+    /// The package name that the manifest declares.
     pub package: String,
+    /// The names under `[dependencies]`, which production code may use.
     pub normal: Vec<String>,
+    /// The text of each production source file.
     pub production: Vec<String>,
+    /// The text of each test source file and `#[cfg(test)]` module.
     pub tests: Vec<String>,
 }
 
@@ -140,6 +148,8 @@ pub fn test_only(crates: &[Crate]) -> Vec<Finding> {
 
 /// Every workspace member with its sources sorted: a file goes to the deepest crate holding it, and
 /// `tests/`, `benches/`, `examples/`, a test-only file and a `#[cfg(test)]` module are test code.
+/// # Errors
+/// Returns `Err` when the metadata does not parse or a source file cannot be read.
 pub fn crates(root: &Path, metadata_json: &str) -> Result<Vec<Crate>, String> {
     let metadata = parsed(metadata_json)?;
     let members: Vec<&Value> = members(&metadata).collect();
@@ -178,7 +188,7 @@ fn rust_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     crate::project::walk(
         root,
         &|name| !crate::project::SKIPPED.contains(&name),
-        &|name, _| name.ends_with(".rs"),
+        &|name, _| Path::new(name).extension().is_some_and(|ext| ext == "rs"),
     )
 }
 
@@ -212,10 +222,6 @@ fn sort(held: &mut Crate, dir: &Path, file: &Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -287,9 +293,12 @@ mod tests {
         let member = "fixed = { path = \"/work/app/crates/fixed\" }\nnear = { path = \"../near\" }\n\
                       nearby = { path = \"/work/app/crates/nearby\" }\n";
         let root = "[workspace.dependencies]\nshared = { path = '/work/app/crates/shared/' }\n";
-        let written = |manifest: &Path| match manifest.ends_with("demo/Cargo.toml") {
-            true => member.to_string(),
-            false => root.to_string(),
+        let written = |manifest: &Path| {
+            if manifest.ends_with("demo/Cargo.toml") {
+                member.to_string()
+            } else {
+                root.to_string()
+            }
         };
         let found = outside(text, Some(Path::new("/work/app")), &written).unwrap();
         let told = |dep: &str| {

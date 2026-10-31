@@ -138,11 +138,6 @@ pub(super) fn is_true(expr: &Expr) -> bool {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap or panic in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
 

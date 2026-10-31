@@ -19,6 +19,7 @@ use crate::run::{Ctx, Gate, Group, Kind, Measurement};
 /// Lines a part must hold, and lines the file must keep without it, before a move is worth a file.
 pub const PART: usize = 100;
 
+/// The `splits` gate: parts of a file that could move to a child module.
 pub const GATE: Gate = Gate {
     name: "splits",
     about: "a file gains a part of 100 lines or more that only one private item uses, so it could \
@@ -45,6 +46,8 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
 
 /// The files `sized` keeps, each counted by `count` and told whether a part could leave it; a file
 /// counted as `None` is left out.
+/// # Errors
+/// When the tree cannot be walked, or a production file cannot be read or parsed.
 pub fn measured(
     ctx: &Ctx,
     sized: &dyn Fn(usize) -> bool,
@@ -66,24 +69,32 @@ pub fn measured(
 /// A part of a file and the item that alone leads into it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Part {
+    /// The item that alone leads into the part, by its name.
     pub owner: String,
     /// The owner's own lines, where a reader starts.
     pub line: u32,
+    /// Where the owner ends, counted from 1.
     pub last: u32,
     /// Items the part holds, its owner among them, and the lines they span.
     pub items: usize,
+    /// How many lines the part's items span together.
     pub lines: usize,
 }
 
 /// A production file, its line count, and the parts that could leave it, largest first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parted {
+    /// The file, relative to the root.
     pub shown: String,
+    /// How long the file is, as `prodlines` counts it.
     pub lines: usize,
+    /// What could leave the file, largest first.
     pub parts: Vec<Part>,
 }
 
 /// Every production file whose line count `keep` accepts, with its parts.
+/// # Errors
+/// When the tree cannot be walked, or a production file cannot be read or parsed.
 pub fn files(ctx: &Ctx, keep: &dyn Fn(usize) -> bool) -> Result<Vec<Parted>, String> {
     let kept: Vec<(PathBuf, usize)> = prodlines::measure(ctx)?
         .into_iter()
@@ -98,7 +109,7 @@ pub fn files(ctx: &Ctx, keep: &dyn Fn(usize) -> bool) -> Result<Vec<Parted>, Str
     for (path, lines) in kept {
         let shown = project::relative(&ctx.root, &path);
         let src = std::fs::read_to_string(&path).map_err(|e| format!("{shown}: {e}"))?;
-        let parts = parts(&src, lines, &used_below(&words, &path));
+        let parts = parts(&src, module_name(&shown), &used_below(&words, &path));
         out.push(Parted {
             shown,
             lines,
@@ -129,7 +140,7 @@ pub(crate) fn words_by_file(ctx: &Ctx) -> Result<Words, String> {
         &ctx.listing,
         &ctx.root,
         &|name| !project::SKIPPED.contains(&name) && !name.starts_with('.'),
-        &|name, _| name.ends_with(".rs"),
+        &|name, _| Path::new(name).extension().is_some_and(|ext| ext == "rs"),
     )?;
     Ok(paths
         .into_iter()
@@ -185,6 +196,18 @@ fn target(shown: &str, owner: &str) -> String {
     }
 }
 
+/// The name of the module a file holds: its stem, or its directory's name for a `mod.rs`. A crate
+/// root has none.
+fn module_name(shown: &str) -> Option<&str> {
+    let stem = shown.strip_suffix(".rs").unwrap_or(shown);
+    let (parent, name) = stem.rsplit_once('/').unwrap_or(("", stem));
+    match name {
+        "lib" | "main" => None,
+        "mod" => parent.rsplit('/').next().filter(|name| !name.is_empty()),
+        name => Some(name),
+    }
+}
+
 /// `HttpClient` as a file name: `http_client`.
 fn snake(name: &str) -> String {
     let mut out = String::new();
@@ -199,18 +222,23 @@ fn snake(name: &str) -> String {
     out
 }
 
-/// The parts of one source that could leave it, largest first. `lines` is its production count,
-/// and `outside` says whether a file below it names a word.
-pub fn parts(src: &str, lines: usize, outside: &dyn Fn(&str) -> bool) -> Vec<Part> {
+/// The parts of one source that could leave it, largest first. `module` names the module the file
+/// holds, and `outside` says whether a file below it names a word.
+pub fn parts(src: &str, module: Option<&str>, outside: &dyn Fn(&str) -> bool) -> Vec<Part> {
     let Ok(file) = prodlines::parse_rust(src) else {
         return Vec::new();
     };
-    let nodes = nodes(&file, outside);
+    let mut nodes = nodes(&file, outside);
+    // The item the module is named for owns no part: its move would repeat the module's name.
+    for node in &mut nodes {
+        let named = node.names.first().map(|name| snake(name));
+        node.pinned |= named.is_some() && named.as_deref() == module;
+    }
     let root = nodes.len();
     let mut edges = edges(&nodes);
     reach_all(&mut edges, root);
     let idom = dominators(&edges, root);
-    let mut parts = owned(&nodes, &idom, lines);
+    let mut parts = owned(&nodes, &idom);
     parts.sort_by(|a, b| b.lines.cmp(&a.lines).then(a.line.cmp(&b.line)));
     parts
 }
@@ -222,7 +250,7 @@ struct Node {
     names: Vec<String>,
     /// Every word it names in code, macro input and attribute input.
     uses: HashSet<String>,
-    /// The first and last line of each of its items.
+    /// The first and last line of each of its items. A `use` has none: it holds no code.
     spans: Vec<(usize, usize)>,
     /// Reached from outside the file: it may own a part but never sit inside one.
     entered: bool,
@@ -336,10 +364,14 @@ fn node(item: &Item, seen: &Seen<'_>) -> Node {
     if let Item::Trait(it) = item {
         names.extend(it.items.iter().filter_map(trait_method));
     }
+    let spans = match item {
+        Item::Use(_) => Vec::new(),
+        _ => vec![span_of(item)],
+    };
     Node {
         names,
         uses: uses.0,
-        spans: vec![span_of(item)],
+        spans,
         entered: seen.entered,
         pinned: seen.pinned,
     }
@@ -361,16 +393,15 @@ fn impl_method(member: &ImplItem) -> Option<String> {
 
 /// Joins an `impl` to the local type it is for; an `impl` for any other type stays where it is.
 fn attach(nodes: &mut Vec<Node>, types: &HashMap<String, usize>, block: &ItemImpl) {
-    let index = match self_name(&block.self_ty).and_then(|name| types.get(&name)) {
-        Some(&index) => index,
-        None => {
-            nodes.push(Node {
-                entered: true,
-                pinned: true,
-                ..Node::default()
-            });
-            nodes.len().saturating_sub(1)
-        }
+    let index = if let Some(&index) = self_name(&block.self_ty).and_then(|name| types.get(&name)) {
+        index
+    } else {
+        nodes.push(Node {
+            entered: true,
+            pinned: true,
+            ..Node::default()
+        });
+        nodes.len().saturating_sub(1)
     };
     let mut uses = Names::default();
     uses.visit_item_impl(block);
@@ -558,8 +589,9 @@ fn chain(idom: &[usize], node: usize) -> impl Iterator<Item = usize> + '_ {
     std::iter::successors(Some(node), move |&at| Some(idom[at])).take_while(move |&at| at != root)
 }
 
-/// The parts whose owner may move and holds enough, where no larger such part holds them.
-fn owned(nodes: &[Node], idom: &[usize], lines: usize) -> Vec<Part> {
+/// The parts whose owner may move and holds enough, where no larger such part holds them. The file
+/// keeps the lines of the items outside a part, and no blank or comment line between them.
+fn owned(nodes: &[Node], idom: &[usize]) -> Vec<Part> {
     let mut held = vec![(0_usize, 0_usize); nodes.len()];
     for (index, node) in nodes.iter().enumerate() {
         for owner in chain(idom, index) {
@@ -567,6 +599,7 @@ fn owned(nodes: &[Node], idom: &[usize], lines: usize) -> Vec<Part> {
             held[owner].1 += node.lines();
         }
     }
+    let lines: usize = nodes.iter().map(Node::lines).sum();
     let movable = |index: usize| {
         let (items, size) = held[index];
         !nodes[index].pinned && items >= 2 && size >= PART && lines.saturating_sub(size) >= PART
@@ -593,12 +626,9 @@ fn line_of(line: usize) -> u32 {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
     use crate::testdir::Held;
 
@@ -607,7 +637,7 @@ mod tests {
     fn function(name: &str, calls: &[&str], lines: usize) -> String {
         let mut out = format!("fn {name}() {{\n");
         for call in calls {
-            out.push_str(&format!("    {call}();\n"));
+            let _ = writeln!(out, "    {call}();");
         }
         out.push_str(&"\n".repeat(lines.saturating_sub(calls.len() + 2)));
         out.push_str("}\n");
@@ -640,7 +670,7 @@ mod tests {
     }
 
     fn parted(src: &str) -> Vec<Part> {
-        parts(src, src.lines().count(), &|_| false)
+        parts(src, None, &|_| false)
     }
 
     fn owners(src: &str) -> Vec<String> {
@@ -681,7 +711,7 @@ mod tests {
 
     #[test]
     fn an_item_a_module_below_names_stays_in_the_file() {
-        let found = parts(&two_parts(""), 244, &|word| word == "b1");
+        let found = parts(&two_parts(""), None, &|word| word == "b1");
         assert_eq!(found, [part("a", 5, 24, 3, 120)]);
     }
 
@@ -726,19 +756,49 @@ mod tests {
         assert_eq!(owners(&src), ["a"]);
     }
 
-    #[test]
-    fn a_type_moves_with_its_impls_and_what_only_they_use() {
-        let src = [
+    /// `entry` calls `Toml::load` and `other`; only `Toml` calls `parse`.
+    fn toml() -> String {
+        [
             "pub fn entry() {\n    Toml::load();\n    other();\n}\n".to_string(),
             function("other", &[], 120),
             "struct Toml;\n".to_string(),
             "impl Toml {\n    fn load() {\n        parse();\n    }\n}\n".to_string(),
             function("parse", &[], 100),
         ]
-        .concat();
+        .concat()
+    }
+
+    #[test]
+    fn a_type_moves_with_its_impls_and_what_only_they_use() {
+        let src = toml();
         assert_eq!(parted(&src), [part("Toml", 125, 125, 3, 106)]);
         let probed = format!("{src}#[cfg(test)]\nimpl Toml {{\n    fn probe() {{}}\n}}\n");
         assert_eq!(parted(&probed), [part("Toml", 125, 125, 3, 106)]);
+    }
+
+    /// The item a module is named for owns no part: `Toml` in a file toml.rs would move to
+    /// toml/toml.rs. Mutant: drop the pin in `parts`.
+    #[test]
+    fn the_item_a_module_is_named_for_owns_no_part() {
+        assert_eq!(parts(&toml(), Some("toml"), &|_| false), []);
+        assert_eq!(
+            parts(&toml(), Some("config"), &|_| false),
+            [part("Toml", 125, 125, 3, 106)]
+        );
+        assert_eq!(module_name("src/json/read/reader.rs"), Some("reader"));
+        assert_eq!(module_name("src/json/read/mod.rs"), Some("read"));
+        assert_eq!(module_name("src/lib.rs"), None);
+        assert_eq!(module_name("mod.rs"), None);
+    }
+
+    /// The file keeps the lines of the items outside a part, and no blank, comment or `use` line.
+    /// Mutants: count up to the file's last line, or give a `use` its lines.
+    #[test]
+    fn a_file_keeps_the_lines_of_its_items_and_no_blank_comment_or_use_line() {
+        let loose = "use std::fmt;\nuse std::io;\n// a note\n\n";
+        let kept = |other: usize| owners(&format!("{loose}{}", beside(other, 50, 50)));
+        assert_eq!(kept(95), Vec::<String>::new());
+        assert_eq!(kept(96), ["a"]);
     }
 
     fn node(names: &[&str], uses: &[&str], spans: &[(usize, usize)]) -> Node {
@@ -816,12 +876,16 @@ mod tests {
 
     #[test]
     fn a_part_holds_what_its_owner_dominates_and_leaves_enough_behind() {
-        let nodes = [
-            node(&["a"], &[], &[(1, 10)]),
-            node(&["b"], &[], &[(11, 110)]),
-        ];
-        assert_eq!(owned(&nodes, &[2, 0, 2], 230), [part("a", 1, 10, 2, 110)]);
-        assert_eq!(owned(&nodes, &[2, 0, 2], 200), []);
+        let nodes = |kept: usize| {
+            [
+                node(&["a"], &[], &[(1, 10)]),
+                node(&["b"], &[], &[(11, 110)]),
+                node(&["c"], &[], &[(111, 110 + kept)]),
+            ]
+        };
+        let idom = [3, 0, 3, 3];
+        assert_eq!(owned(&nodes(100), &idom), [part("a", 1, 10, 2, 110)]);
+        assert_eq!(owned(&nodes(99), &idom), []);
     }
 
     #[test]

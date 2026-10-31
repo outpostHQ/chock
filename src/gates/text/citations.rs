@@ -1,9 +1,12 @@
 //! Doc comments citing a file the repository does not have.
 
+use std::path::Path;
+
 use crate::project;
 use crate::run::baseline::{Keys, Series};
 use crate::run::{Ctx, Gate, Group, Kind};
 
+/// The `citations` gate: doc comments that name a file the repository does not have.
 pub const GATE: Gate = Gate {
     name: "citations",
     about: "a doc comment naming a file this repository does not have, per file",
@@ -29,7 +32,7 @@ fn measure(ctx: &Ctx) -> Result<Series, String> {
         &ctx.listing,
         &ctx.root,
         &|name| !project::SKIPPED.contains(&name),
-        &|name, _| name.ends_with(".rs"),
+        &|name, _| Path::new(name).extension().is_some_and(|ext| ext == "rs"),
     )? {
         let shown = project::relative(&ctx.root, &path);
         let Ok(src) = std::fs::read_to_string(&path) else {
@@ -129,10 +132,6 @@ fn stands_in(token: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

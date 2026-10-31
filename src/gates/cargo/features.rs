@@ -15,6 +15,7 @@ use crate::project::{MANIFEST, crate_dir};
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Inspection, Kind};
 
+/// Fails a declared feature that nothing reaches, or a `cfg(feature)` the package never declares.
 pub const GATE: Gate = Gate {
     name: "features",
     about: "every declared feature is reached by something, and every `cfg(feature)` names a \
@@ -145,7 +146,10 @@ fn sources<'a>(
     let dirs = homes(tree);
     let mine: BTreeSet<&str> = members.iter().map(|(dir, _)| dir.as_str()).collect();
     let mut reads: BTreeMap<&str, Read> = BTreeMap::new();
-    for (path, src) in tree.iter().filter(|(path, _)| path.ends_with(".rs")) {
+    for (path, src) in tree
+        .iter()
+        .filter(|(path, _)| Path::new(path).extension().is_some_and(|ext| ext == "rs"))
+    {
         let Some((home, script)) = compiled_by(path, &dirs, &mine) else {
             continue;
         };
@@ -401,10 +405,6 @@ fn literals(tokens: TokenStream, out: &mut BTreeSet<String>) {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::run::baseline::Baseline;
@@ -821,7 +821,7 @@ mod tests {
     fn an_included_fragment_under_src_that_does_not_parse_is_skipped() {
         let include = ("src/lib.rs", "const N: u8 = include!(\"table.rs\");\n");
         let fragment = ("src/table.rs", "1 + 2\n");
-        assert!(rendered("", "", &[include, fragment]).is_empty());
+        assert_eq!(rendered("", "", &[include, fragment]), Vec::<String>::new());
     }
 
     #[test]

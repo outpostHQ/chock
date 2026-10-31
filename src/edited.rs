@@ -1,6 +1,7 @@
 //! `chock edited`: what the commit would refuse in one file, checked on each write without a build.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use crate::gates::metrics::{bigfiles, complexity, nesting, prodlines};
 use crate::gates::{source, tools};
@@ -19,7 +20,12 @@ pub fn faults(path: &str, src: &str, rules: &Rules) -> Vec<Finding> {
         return found;
     }
     // Judged as the `source` gate does: shipped unless `not_shipped`, unread if never compiled.
-    match source::judged(path, src, !rules.unshipped, rules.promise) {
+    let delivery = if rules.unshipped {
+        source::Delivery::Unshipped
+    } else {
+        source::Delivery::Shipped
+    };
+    match source::judged(path, src, delivery, rules.promise) {
         Ok(suppressions) => found.extend(rules.past("source", &|_| rules.uncompiled, suppressions)),
         Err(why) => return vec![Finding::at(path, &format!("does not parse: {why}"))],
     }
@@ -40,6 +46,7 @@ pub fn faults(path: &str, src: &str, rules: &Rules) -> Vec<Finding> {
 /// phrases that apply. The default is no project, where every rule applies.
 #[derive(Debug, Default)]
 pub struct Rules {
+    /// The forbidden phrases that apply to this file.
     pub forbidden: Vec<crate::project::config::Forbidden>,
     /// The path seams whose `only` does not name this file.
     pub seams: Vec<crate::project::config::Seam>,
@@ -233,10 +240,10 @@ fn not_production(part: &str) -> bool {
 /// Findings as the editor is shown them, one to a line.
 #[must_use]
 pub fn told(found: &[Finding]) -> String {
-    found
-        .iter()
-        .map(|finding| format!("  {}\n", finding.render()))
-        .collect()
+    found.iter().fold(String::new(), |mut out, finding| {
+        let _ = writeln!(out, "  {}", finding.render());
+        out
+    })
 }
 
 /// The findings as the one report `--json` prints; `edited` names the hook, not a registry gate.
@@ -360,6 +367,8 @@ pub fn since_firing(root: &std::path::Path) -> Option<std::time::Duration> {
 
 /// Marks the hook as wired with an empty heartbeat, unless one is there. Its time is when
 /// `chock init --local` wired the hook.
+/// # Errors
+/// When the heartbeat or its directory cannot be written.
 pub fn note_wiring(root: &std::path::Path) -> std::io::Result<()> {
     let path = root.join(HEARTBEAT);
     std::fs::create_dir_all(path.parent().unwrap_or(root))?;
@@ -400,7 +409,9 @@ pub fn awaiting_edit(root: &std::path::Path) -> bool {
 }
 
 /// The file an editor hook says was written, from the tool's JSON or a bare path. `None` for a file
-/// chock has no rules for; `Err` if the hook named no file.
+/// chock has no rules for.
+/// # Errors
+/// When the hook named no file.
 pub fn edited_path(stdin: &str) -> Result<Option<String>, String> {
     // A hook wired wrongly would otherwise pass every edit.
     let path = named_path(stdin).ok_or_else(|| misconfigured(stdin))?;
@@ -427,7 +438,7 @@ fn misconfigured(stdin: &str) -> String {
     )
 }
 
-/// The tool call a host sends, in snake_case (Claude Code) or camelCase (Copilot CLI).
+/// The tool call a host sends, in `snake_case` (Claude Code) or `camelCase` (Copilot CLI).
 #[derive(serde::Deserialize)]
 struct Call {
     #[serde(default, alias = "toolInput")]
@@ -489,10 +500,6 @@ fn line_of(line: usize) -> u32 {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -836,7 +843,7 @@ mod tests {
             ..crate::project::config::Forbidden::default()
         }];
         configured(&dir, &["phrases"], |config| {
-            config.forbidden = Some(listed.clone())
+            config.forbidden = Some(listed.clone());
         });
         assert_eq!(phrases(Some(&dir), &named("src/lib.rs")), listed);
         assert_eq!(phrases(Some(&dir), &named("plans/083.md")), Vec::new());
@@ -855,7 +862,7 @@ mod tests {
             ..crate::project::config::Seam::default()
         };
         configured(&dir, &["seams"], |config| {
-            config.seams = Some(vec![seam.clone()])
+            config.seams = Some(vec![seam.clone()]);
         });
         let src = "use iroh::Endpoint;\n";
         let faults_in = |path: &str| {
@@ -863,8 +870,8 @@ mod tests {
             found.iter().map(|found| found.line).collect::<Vec<_>>()
         };
         assert_eq!(faults_in("src/lib.rs"), [Some(1)]);
-        assert!(faults_in("src/net/api.rs").is_empty());
-        assert!(faults_in("tests/end.rs").is_empty());
+        assert_eq!(faults_in("src/net/api.rs"), Vec::<Option<u32>>::new());
+        assert_eq!(faults_in("tests/end.rs"), Vec::<Option<u32>>::new());
         configured(&dir, &[], |config| config.seams = Some(vec![seam.clone()]));
         assert!(faults_in("src/lib.rs").is_empty(), "the gate is off");
     }
@@ -998,7 +1005,7 @@ mod tests {
             .unwrap()
             .set_modified(long_ago)
             .unwrap();
-        assert!(since_firing(&dir).unwrap() > std::time::Duration::from_secs(60 * 60));
+        assert!(since_firing(&dir).unwrap() > std::time::Duration::from_hours(1));
 
         note_firing(&dir);
         assert!(

@@ -16,6 +16,7 @@ use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind};
 use text::uncommented;
 
+/// Runs TLC, Apalache and TLAPS on each TLA+ model, and TLC on each bad variant of it.
 pub const GATE: Gate = Gate {
     name: "tla",
     about: "each TLA+ model passes TLC, each bad variant of it fails, Apalache proves IndInv, and TLAPS each theorem",
@@ -433,7 +434,7 @@ fn uncovered(
     root: &Path,
     cfgs: &[Cfg],
     said: &[Said],
-    also: &[Ask],
+    also: &[Ask<'_>],
     inductive: &dyn Fn(&str) -> String,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
@@ -475,7 +476,7 @@ fn parts_of(own: &Cfg) -> BTreeMap<String, Vec<String>> {
 
 /// The invariants the bad variants of `own` violate: one that `said` names for each variant, and
 /// each that `also` gives one.
-fn refuted_of(own: &Cfg, cfgs: &[Cfg], said: &[Said], also: &[Ask]) -> BTreeSet<String> {
+fn refuted_of(own: &Cfg, cfgs: &[Cfg], said: &[Said], also: &[Ask<'_>]) -> BTreeSet<String> {
     let named = cfgs.iter().zip(said).filter(|(cfg, _)| bad_of(own, cfg));
     let named = named.filter_map(|(_, said)| match said {
         Said::Violated(Some(name)) => Some(name.clone()),
@@ -669,7 +670,7 @@ struct Tlc<'a> {
 
 /// One TLC run. `-metadir` and `-cleanup` keep its states out of the model directory, and the
 /// `traces` flag of `tool` keeps its trace spec out.
-fn tlc(tool: &Tlc, cfg: &Cfg, meta: &Path, workers: u32, limit: u64) -> Run {
+fn tlc(tool: &Tlc<'_>, cfg: &Cfg, meta: &Path, workers: u32, limit: u64) -> Run {
     let (jar, meta) = (tool.jar.to_string_lossy(), meta.to_string_lossy());
     let (workers, file, model) = (
         workers.to_string(),
@@ -708,10 +709,6 @@ fn read_tlc(out: Result<exec::Output, exec::ExecError>, limit: u64) -> Result<Sa
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::check::{check, lanes};
     use super::*;
@@ -852,7 +849,10 @@ mod tests {
             unrefuted("Both", &hits, &parts, &mut Vec::new()),
             ["NoTear"]
         );
-        assert!(unrefuted("TypeOK", &hits, &parts, &mut Vec::new()).is_empty());
+        assert_eq!(
+            unrefuted("TypeOK", &hits, &parts, &mut Vec::new()),
+            Vec::<String>::new()
+        );
         // A name that a part of it names again is one part, so the walk ends.
         let looped: BTreeMap<String, Vec<String>> = [
             ("A".to_string(), vec!["B".to_string()]),
@@ -904,19 +904,19 @@ mod tests {
         assert_eq!(asks, [("M_a", "Fresh"), ("M_b", "Fresh")]);
         let both = engines::Split::default();
         assert!(unnamed(&cfgs, &said, &both, &inductive).is_empty());
-        let named = |also: &[Ask]| {
+        let named = |also: &[Ask<'_>]| {
             let found = uncovered(Path::new(""), &cfgs, &said, also, &inductive);
             found.into_iter().map(|it| it.message).collect::<Vec<_>>()
         };
         let left = "lists Fresh, and no bad variant of M violates it";
         assert_eq!(named(&[]), [left]);
         let [own, _, variant, ..] = &cfgs;
-        assert!(named(&[(variant, "Fresh".into())]).is_empty());
+        assert_eq!(named(&[(variant, "Fresh".into())]), Vec::<String>::new());
         assert_eq!(named(&[(own, "Fresh".into())]), [left]);
         let pair = |name: &str, parts: &[&str]| {
             (
                 name.to_string(),
-                parts.iter().map(|it| it.to_string()).collect(),
+                parts.iter().map(std::string::ToString::to_string).collect(),
             )
         };
         let parts = BTreeMap::from([pair("Safe", &["A", "B"]), pair("A", &["Safe"])]);
@@ -1239,9 +1239,9 @@ exit 12
         assert_eq!(check(&ctx).unwrap_err(), unpinned("tla-tools"));
         let pin = crate::testdir::fetched(&ctx.root, "TLA_TOOLS", "tla2tools.jar");
         std::fs::write(ctx.root.join(crate::project::PIN_FILE), pin).unwrap();
-        let noted = check(&ctx).unwrap();
-        assert!(noted.passed);
-        let notes: Vec<(&str, &str)> = noted
+        let outcome = check(&ctx).unwrap();
+        assert!(outcome.passed);
+        let notes: Vec<(&str, &str)> = outcome
             .findings
             .iter()
             .map(|it| (it.file.as_str(), it.message.as_str()))
@@ -1302,7 +1302,10 @@ exit 12
         let limits = [("M_slow", "M"), ("M_x", "M"), ("N", "N")]
             .map(|(stem, model)| limit_of(&settings, stem, model));
         assert_eq!(limits, [1, 2, 3]);
-        assert_eq!(limit_of(&Default::default(), "N", "N"), TIMEOUT_S);
+        assert_eq!(
+            limit_of(&crate::project::config::Tla::default(), "N", "N"),
+            TIMEOUT_S
+        );
         assert_eq!(lanes(8, 2), 4);
     }
 }

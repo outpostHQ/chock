@@ -15,6 +15,7 @@ use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
 use tree::{Tree, faults_of};
 
+/// The `hygiene` gate: secrets, build output and hidden characters in tracked files.
 pub const GATE: Gate = Gate {
     name: "hygiene",
     about: "the repository tracks a secret-bearing file, a credential literal, build output, a \
@@ -190,7 +191,7 @@ fn credential_in(line: &str) -> Option<&'static str> {
 const DOCUMENTED: [&str; 2] = ["IOSFODNN7EXAMPLE", "16C7e42F292c6912E7710c838347Ae178B4a"];
 
 /// Whether the line holds this credential: its prefix at a word boundary, with a long enough tail.
-pub(crate) fn holds(line: &str, credential: &Credential) -> bool {
+pub(crate) fn holds(line: &str, credential: &Credential<'_>) -> bool {
     let bytes = line.as_bytes();
     let mut from = 0;
     while let Some(offset) = line[from..].find(credential.prefix) {
@@ -208,7 +209,7 @@ pub(crate) fn holds(line: &str, credential: &Credential) -> bool {
 }
 
 /// The length of the credential's tail at the start of `bytes`; 0 for a tail a vendor documents.
-fn undocumented_tail(bytes: &[u8], credential: &Credential) -> usize {
+fn undocumented_tail(bytes: &[u8], credential: &Credential<'_>) -> usize {
     let tail = bytes
         .iter()
         .take_while(|byte| (credential.admits)(**byte))
@@ -230,12 +231,9 @@ fn read_text(root: &Path, path: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
 
     /// Assembled at run time so this file holds no literal the gate would report.
@@ -263,8 +261,18 @@ mod tests {
         findings.iter().map(Finding::render).collect()
     }
 
-    /// The findings over paths whose files hold nothing, each `present` or not, in a tree `held`.
-    fn unread(paths: &[String], present: bool, held: crate::project::vcs::Kind) -> Vec<Finding> {
+    /// Whether the test's files are on disk.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum OnDisk {
+        /// Each file is on disk.
+        Present,
+        /// No file is on disk.
+        Missing,
+    }
+
+    /// The findings over paths whose files hold nothing, each `on_disk` or not, in a tree `held`.
+    fn unread(paths: &[String], on_disk: OnDisk, held: crate::project::vcs::Kind) -> Vec<Finding> {
+        let present = on_disk == OnDisk::Present;
         let tree = Tree {
             read: &|_| None,
             present: &|_| present,
@@ -518,11 +526,15 @@ mod tests {
     fn build_output_the_tree_no_longer_holds_is_a_removal_rather_than_debt() {
         let paths = tracked_paths(&["target/debug/a", "target/debug/b"]);
         assert_eq!(
-            unread(&paths, false, crate::project::vcs::Kind::Git),
+            unread(&paths, OnDisk::Missing, crate::project::vcs::Kind::Git),
             vec![]
         );
         assert_eq!(
-            rendered(&unread(&paths, true, crate::project::vcs::Kind::Git)),
+            rendered(&unread(
+                &paths,
+                OnDisk::Present,
+                crate::project::vcs::Kind::Git
+            )),
             vec![
                 "target: git tracks 2 file(s) under the directory cargo builds into: \
                  `git rm -r --cached target` and ignore it"
@@ -533,7 +545,11 @@ mod tests {
     #[test]
     fn the_command_a_finding_names_is_the_one_holding_this_tree() {
         let paths = tracked_paths(&["target/debug/a"]);
-        let said = rendered(&unread(&paths, true, crate::project::vcs::Kind::Outpost));
+        let said = rendered(&unread(
+            &paths,
+            OnDisk::Present,
+            crate::project::vcs::Kind::Outpost,
+        ));
         assert_eq!(
             said,
             vec![
@@ -546,7 +562,7 @@ mod tests {
     #[test]
     fn a_secret_file_finding_names_the_command_of_the_system_holding_the_tree() {
         let held = crate::project::vcs::Kind::Outpost;
-        let said = rendered(&unread(&tracked_paths(&[".env"]), true, held));
+        let said = rendered(&unread(&tracked_paths(&[".env"]), OnDisk::Present, held));
         let fix = "copy it out, then `outpost rm` it, rotate what it holds, and ignore the name";
         let want = format!(".env: tracked, and the name marks it as secret-bearing: {fix}");
         assert_eq!(said, [want]);
@@ -707,7 +723,7 @@ mod tests {
         let blob = hashed.stdout.trim();
         let mut entries = String::new();
         for n in 0..crate::project::vcs::MAX_TRACKED {
-            entries.push_str(&format!("100644 {blob} 0\tf/{n:05}.txt\n"));
+            let _ = writeln!(entries, "100644 {blob} 0\tf/{n:05}.txt");
         }
         std::fs::write(root.join("entries"), entries).unwrap();
         let listed = std::fs::File::open(root.join("entries")).unwrap();
@@ -789,7 +805,7 @@ mod tests {
             (declared[0].name(), declared[0].prefix()),
             ("Acme API key", "acme_")
         );
-        assert!(faults_of(&paths, &tree, git, &[]).is_empty());
+        assert_eq!(faults_of(&paths, &tree, git, &[]), []);
     }
 
     #[test]

@@ -150,10 +150,6 @@ fn edits(a: &str, b: &str) -> usize {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

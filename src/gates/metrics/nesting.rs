@@ -6,6 +6,7 @@ use crate::run::{Ctx, Gate, Group, Kind};
 /// Depth a function may reach before it is keyed; shallower nesting is too common to be signal.
 pub const SHALLOW: u32 = 4;
 
+/// The `nesting` gate: how deep the blocks of each function nest.
 pub const GATE: Gate = Gate {
     name: "nesting",
     about: "how deeply blocks nest inside a function, past a depth of four",
@@ -32,6 +33,8 @@ fn measure(ctx: &Ctx) -> Result<Series, String> {
 }
 
 /// Each named function and the depth of its deepest block; the body itself is depth one.
+/// # Errors
+/// When `src` does not parse as Rust.
 pub fn depths(src: &str) -> Result<Vec<(String, u32)>, String> {
     let file = crate::gates::metrics::prodlines::parse_rust(src)?;
     Ok(crate::gates::metrics::complexity::bodies(&file, &|_| false)
@@ -77,12 +80,12 @@ fn in_expr(expr: &syn::Expr, at: u32) -> u32 {
             .max()
             .unwrap_or(deeper)
             .max(in_expr(&inner.expr, at)),
-        // Not charged to the enclosing function, and `bodies` does not list a closure on its own.
-        syn::Expr::Closure(_) | syn::Expr::Async(_) => at,
         syn::Expr::Try(inner) => in_expr(&inner.expr, at),
         syn::Expr::Return(inner) => inner.expr.as_ref().map_or(at, |e| in_expr(e, at)),
         syn::Expr::Let(inner) => in_expr(&inner.expr, at),
         syn::Expr::MethodCall(inner) => in_expr(&inner.receiver, at),
+        // A closure or an async block lands here: not charged to the enclosing function, and
+        // `bodies` does not list a closure on its own.
         _ => at,
     }
 }
@@ -98,10 +101,6 @@ fn in_if(node: &syn::ExprIf, at: u32) -> u32 {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

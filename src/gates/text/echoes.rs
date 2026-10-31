@@ -10,6 +10,7 @@ use crate::run::report::{Detail, Place};
 use crate::run::{Ctx, Gate, Group, Kind, Measurement};
 use crate::slop;
 
+/// The `echoes` gate: comments that only say what their code line says.
 pub const GATE: Gate = Gate {
     name: "echoes",
     about: "comments that say only what the code line under them says, per file",
@@ -44,7 +45,10 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     for path in files {
         let shown = project::relative(&ctx.root, &path);
         if let Some(detail) = in_file(&path, &shown)? {
-            read.series.set(&shown, detail.places.len() as u64);
+            read.series.set(
+                &shown,
+                u64::try_from(detail.places.len()).unwrap_or(u64::MAX),
+            );
             read.details.insert(shown, detail);
         }
     }
@@ -56,7 +60,7 @@ fn in_file(path: &Path, shown: &str) -> Result<Option<Detail>, String> {
     let Some((src, marks)) = slop::commented(path)? else {
         return Ok(None);
     };
-    let quotes: &[char] = if shown.ends_with(".rs") {
+    let quotes: &[char] = if Path::new(shown).extension().is_some_and(|ext| ext == "rs") {
         &['"']
     } else {
         &['"', '\'', '`']
@@ -190,10 +194,6 @@ fn singular(word: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

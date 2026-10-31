@@ -267,7 +267,7 @@
       "uniqueItems": true
     },
     "commands": {
-      "description": "The project's own checks, run as gates. Each runs from the project root with no shell. One that only passes or fails is a blocker when it fails. One that `counts` must exit clean and print a JSON object of item to count on stdout, and each count is debt ratcheted per item, so a project's existing findings hold at their level and a new one fails. The `commands` gate runs those that need no compiler at every commit; `commands-build` runs those marked `builds` at push. A command's own output decides nothing else: the exit code, the printed counts and the files it names under `outputs` are the whole contract.",
+      "description": "The project's own checks, run as gates. Each runs from the project root with no shell. One that only passes or fails is a blocker when it fails. One that `counts` must exit clean and print a JSON object of item to count on stdout, and each count is debt ratcheted per item, so a project's existing findings hold at their level and a new one fails. The `commands` gate runs those that need no compiler at every commit; `commands-build` runs those marked `builds` at push. A command's own output decides nothing else: the exit code, the printed counts and the files it names under `outputs` are the whole contract. An exit code listed under `cannot_run_codes` says the command could not check, so the gate cannot run.",
       "type": "array",
       "items": {
         "type": "object",
@@ -305,6 +305,14 @@
               "type": "string",
               "minLength": 1
             }
+          },
+          "cannot_run_codes": {
+            "description": "Exit codes that mean the command could not check, such as a harness error that exits 2. The gate then cannot run; any other non-zero code fails it.",
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "uniqueItems": true
           }
         }
       }

@@ -131,10 +131,13 @@ pub fn available_from_number(text: &str) -> Option<u64> {
 }
 
 /// A command that prints the free memory where no file holds it, and how to read what it prints.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct Ask {
+    /// The program that prints the free memory.
     pub program: &'static str,
+    /// The arguments it takes for that.
     pub args: &'static [&'static str],
+    /// Reads the free bytes from what the program prints; `None` where the text holds no number.
     pub read: fn(&str) -> Option<u64>,
 }
 
@@ -193,10 +196,19 @@ pub const COURTESY: [&str; 8] = ["ionice", "-c", "2", "-n", "7", "nice", "-n", "
 /// The tools heavy enough to run at lower priority; for anything else the extra execs cost more.
 pub const HEAVY: [&str; 2] = ["cargo", "outpost"];
 
+/// Whether this machine lets a spawn run at a lower priority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Priority {
+    /// The `COURTESY` prefix works here.
+    Lowerable,
+    /// The prefix fails here, as in a container that refuses `ionice`.
+    Fixed,
+}
+
 /// The prefix for a spawn of `program`: `COURTESY` for a heavy tool where it works, else nothing.
 #[must_use]
-pub fn courtesy(program: &str, can_lower: bool) -> &'static [&'static str] {
-    if HEAVY.contains(&file_name(program)) && can_lower {
+pub fn courtesy(program: &str, priority: Priority) -> &'static [&'static str] {
+    if HEAVY.contains(&file_name(program)) && priority == Priority::Lowerable {
         &COURTESY
     } else {
         &[]
@@ -214,29 +226,35 @@ fn file_name(program: &str) -> &str {
 
 /// Whether the `COURTESY` prefix works here, tried once: a container can have `ionice` and still
 /// refuse the call.
-fn can_lower_priority() -> bool {
-    static WORKS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+fn priority_here() -> Priority {
+    static WORKS: std::sync::OnceLock<Priority> = std::sync::OnceLock::new();
     *WORKS.get_or_init(|| {
-        std::process::Command::new(COURTESY[0])
+        let works = std::process::Command::new(COURTESY[0])
             .args(&COURTESY[1..])
             .arg("true")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .is_ok_and(|done| done.success())
+            .is_ok_and(|done| done.success());
+        if works {
+            Priority::Lowerable
+        } else {
+            Priority::Fixed
+        }
     })
 }
 
 /// The prefix `exec` puts in front of a spawn of `program` on this machine.
 #[must_use]
 pub fn politely(program: &str) -> &'static [&'static str] {
-    courtesy(program, can_lower_priority())
+    courtesy(program, priority_here())
 }
 
 /// The job-cap variables cargo and nextest read. Set on each spawn, since setting them on chock's
 /// own process needs `unsafe`.
 pub const CARGO_JOBS: &str = "CARGO_BUILD_JOBS";
+/// The variable nextest reads for how many tests run at once.
 pub const NEXTEST_THREADS: &str = "NEXTEST_TEST_THREADS";
 /// What libtest and mutest's runtime read for how many tests or mutants run at once. Only a tool
 /// that runs many at once on its own carries it, so a test binary keeps its own default.
@@ -307,9 +325,11 @@ pub fn lanes(jobs: usize, wanted: usize) -> usize {
 static RUNNING: AtomicUsize = AtomicUsize::new(0);
 
 /// One running lane, counted while it is held, so each spawn takes its share of the cap.
+#[derive(Debug)]
 pub struct Lane;
 
 impl Lane {
+    /// Counts one more lane as running until the value drops.
     #[must_use]
     pub fn enter() -> Self {
         RUNNING.fetch_add(1, Ordering::Relaxed);
@@ -471,10 +491,6 @@ fn stopped(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -802,18 +818,21 @@ mod tests {
 
     #[test]
     fn only_the_tools_that_move_gigabytes_are_asked_to_yield() {
-        assert_eq!(courtesy("cargo", true), &COURTESY);
-        assert_eq!(courtesy("outpost", true), &COURTESY);
-        assert!(courtesy("git", true).is_empty());
+        assert_eq!(courtesy("cargo", Priority::Lowerable), &COURTESY);
+        assert_eq!(courtesy("outpost", Priority::Lowerable), &COURTESY);
+        assert_eq!(courtesy("git", Priority::Lowerable), Vec::<&str>::new());
         // Named by path, it is still the same tool.
-        assert_eq!(courtesy("/usr/bin/cargo", true), &COURTESY);
-        assert!(courtesy("/usr/bin/git", true).is_empty());
+        assert_eq!(courtesy("/usr/bin/cargo", Priority::Lowerable), &COURTESY);
+        assert_eq!(
+            courtesy("/usr/bin/git", Priority::Lowerable),
+            Vec::<&str>::new()
+        );
     }
 
     #[test]
     fn a_machine_that_cannot_lower_a_priority_still_runs_the_tool() {
-        assert!(courtesy("cargo", false).is_empty());
-        assert!(courtesy("git", false).is_empty());
+        assert_eq!(courtesy("cargo", Priority::Fixed), Vec::<&str>::new());
+        assert_eq!(courtesy("git", Priority::Fixed), Vec::<&str>::new());
     }
 
     #[test]
@@ -831,10 +850,14 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn the_courtesy_is_tried_before_it_is_relied_on() {
         // Either answer, as long as it is the same twice and the prefix follows it.
-        let tried = can_lower_priority();
-        assert_eq!(can_lower_priority(), tried);
+        let tried = priority_here();
+        assert_eq!(priority_here(), tried);
         let nothing: &[&str] = &[];
-        let want: &[&str] = if tried { &COURTESY } else { nothing };
+        let want: &[&str] = if tried == Priority::Lowerable {
+            &COURTESY
+        } else {
+            nothing
+        };
         assert_eq!(courtesy("cargo", tried), want);
     }
 }

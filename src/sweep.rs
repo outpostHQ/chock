@@ -1,6 +1,7 @@
 //! `chock sweep` and `chock moved`: proof by token that a change of comments, or a move of code
 //! between files, changed no code.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use crate::project::vcs;
@@ -11,6 +12,8 @@ const SHOWN: usize = 40;
 
 /// The revision to compare with and the paths after it. `moved` needs its paths: a move is
 /// between files the caller names.
+/// # Errors
+/// When an option is given, the revision is missing, or `moved` is given no path.
 pub fn asked<'a>(name: &str, rest: &'a [&'a str]) -> Result<(&'a str, &'a [&'a str]), String> {
     if let Some(flag) = rest.iter().find(|arg| arg.starts_with('-')) {
         return Err(format!("unknown option `{flag}`"));
@@ -64,6 +67,8 @@ impl Row {
 
 /// `chock sweep`: each file against its text at `rev`. The report, and whether any file's code
 /// changed. With no path, every Rust file that differs from `rev`.
+/// # Errors
+/// When git cannot list the changed files or read a file's text at `rev`.
 pub fn sweep(root: &Path, rev: &str, paths: &[&str]) -> Result<(String, bool), String> {
     let files: Vec<String> = match paths {
         [] => vcs::rust_changed_since(root, rev)?,
@@ -91,22 +96,30 @@ fn swept(rev: &str, rows: &[(String, Row)]) -> (String, bool) {
         .iter()
         .filter_map(|(path, row)| row.line(path))
         .collect();
-    text += &format!("\n{clean} clean, {docs} docs-only, {code} with code changes\n");
+    let _ = writeln!(
+        text,
+        "\n{clean} clean, {docs} docs-only, {code} with code changes"
+    );
     for (path, row) in rows {
         if let Row::Skipped(why) = row {
-            text += &format!("  skipped: {path} ({why})\n");
+            let _ = writeln!(text, "  skipped: {path} ({why})");
         }
     }
-    text += &match code {
-        0 => "\nNo code moved. A comment sweep over these files is proven, not asserted.\n"
-            .to_string(),
-        files => format!("\nCode changed in {files} file(s) — a comment sweep must not.\n"),
-    };
+    if code == 0 {
+        text += "\nNo code moved. A comment sweep over these files is proven, not asserted.\n";
+    } else {
+        let _ = writeln!(
+            text,
+            "\nCode changed in {code} file(s) — a comment sweep must not."
+        );
+    }
     (text, code > 0)
 }
 
 /// `chock moved`: the tokens of the paths now against their tokens at `rev`, pooled. The report,
 /// and whether a token was lost.
+/// # Errors
+/// When git cannot read a path at `rev`, or a file does not lex.
 pub fn moved(root: &Path, rev: &str, paths: &[&str]) -> Result<(String, bool), String> {
     let (mut before, mut after) = (Vec::new(), Vec::new());
     for path in paths {
@@ -134,9 +147,10 @@ fn pooled(paths: usize, before: &[Tok], after: &[Tok]) -> (String, bool) {
     let wiring = "ADDED — expected to be module wiring only (`mod`, `use`, `pub`, paths):";
     text += &listed(wiring, '+', &added);
     let lost = !removed.is_empty();
-    text += match lost {
-        true => "\nTokens were lost — this is not a pure move.\n",
-        false => "\nNothing was lost. Read the ADDED list above and confirm it is only wiring.\n",
+    text += if lost {
+        "\nTokens were lost — this is not a pure move.\n"
+    } else {
+        "\nNothing was lost. Read the ADDED list above and confirm it is only wiring.\n"
     };
     (text, lost)
 }
@@ -156,10 +170,6 @@ fn listed(title: &str, sign: char, counts: &TokenCounts) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::testdir::repo;

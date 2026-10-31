@@ -296,19 +296,16 @@ fn unproved(toolbox: &str) -> Option<Vec<(u32, String)>> {
             "" => "an obligation that no backend proved".to_string(),
             text => format!("no backend proved `{text}`"),
         };
-        match it.reasons.is_empty() {
-            true => (it.line, why),
-            false => (it.line, format!("{why} ({})", it.reasons.join(", "))),
+        if it.reasons.is_empty() {
+            (it.line, why)
+        } else {
+            (it.line, format!("{why} ({})", it.reasons.join(", ")))
         }
     });
     counted.then(|| said.collect())
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -336,13 +333,13 @@ character 1 ----\n    missing_proof_2 at line 11, characters 1-11\n  ====\n====\
         }
     }
 
-    fn ran(code: i32, stdout: &str, stderr: &str) -> Out {
-        Ok(exec::Output::of(Some(code), stdout, stderr))
+    fn ran(code: i32, stdout: &str, stderr: &str) -> exec::Output {
+        exec::Output::of(Some(code), stdout, stderr)
     }
 
     #[test]
     fn each_unproved_obligation_and_each_proof_left_out_is_named_by_its_line() {
-        let runs = vec![ran(0, SUMMARY, ""), ran(0, "", TOOLBOX)];
+        let runs = vec![Ok(ran(0, SUMMARY, "")), Ok(ran(0, "", TOOLBOX))];
         let found = judged_each(&[module()], runs).unwrap();
         let said: Vec<String> = found.iter().map(Finding::render).collect();
         assert_eq!(
@@ -356,7 +353,7 @@ character 1 ----\n    missing_proof_2 at line 11, characters 1-11\n  ====\n====\
         let clean = "@!!BEGIN\n@!!type:obligationsnumber\n@!!count:0\n@!!END\n";
         let summary = "---- summary of module \"A\" ----\n====\n";
         assert_eq!(
-            module().judged(ran(0, summary, ""), ran(0, "", clean)),
+            module().judged(Ok(ran(0, summary, "")), Ok(ran(0, "", clean))),
             Ok(Vec::new())
         );
     }
@@ -370,7 +367,7 @@ File \"<unknown>\":\nError: Could not parse \"./Probe.tla\" successfully.\n";
             found.iter().map(Finding::render).collect::<Vec<_>>()
         };
         assert_eq!(
-            reason(ran(3, "", broken), ran(3, "", broken)),
+            reason(Ok(ran(3, "", broken)), Ok(ran(3, "", broken))),
             [
                 "proofs/tla/Probe.tla:2: Probe: tlapm could not check it: exit 3: incomplete expression"
             ]
@@ -379,19 +376,25 @@ File \"<unknown>\":\nError: Could not parse \"./Probe.tla\" successfully.\n";
 Unix.Unix_error(Unix.ENOENT, \"mkdir\", \"c/P.tlaps\")\nCalled from Tlapm_lib.init\n";
         let abnormal = "proofs/tla/Probe.tla: Probe: tlapm could not check it: exit 3: tlapm \
 ending abnormally with Unix.Unix_error(Unix.ENOENT, \"mkdir\", \"c/P.tlaps\")";
-        assert_eq!(reason(ran(3, "", stopped), ran(0, "", "")), [abnormal]);
         assert_eq!(
-            reason(ran(0, SUMMARY, ""), ran(0, "", "no messages")),
+            reason(Ok(ran(3, "", stopped)), Ok(ran(0, "", ""))),
+            [abnormal]
+        );
+        assert_eq!(
+            reason(Ok(ran(0, SUMMARY, "")), Ok(ran(0, "", "no messages"))),
             ["proofs/tla/Probe.tla: Probe: tlapm gave no verdict on its proofs"]
         );
         let hung = Err(exec::ExecError::of("tlapm", exec::Stage::Hung, "gone"));
         assert_eq!(
-            reason(ran(0, SUMMARY, ""), hung),
+            reason(Ok(ran(0, SUMMARY, "")), hung),
             ["proofs/tla/Probe.tla: Probe: tlapm ran past its 300 s limit"]
         );
         let gone = exec::ExecError::of("tlapm", exec::Stage::Spawn, "gone");
         let said = gone.to_string();
-        assert_eq!(module().judged(ran(0, SUMMARY, ""), Err(gone)), Err(said));
+        assert_eq!(
+            module().judged(Ok(ran(0, SUMMARY, "")), Err(gone)),
+            Err(said)
+        );
     }
 
     #[test]
@@ -429,11 +432,11 @@ ending abnormally with Unix.Unix_error(Unix.ENOENT, \"mkdir\", \"c/P.tlaps\")";
         ctx.tools = crate::testdir::faked(&ctx.root, "exit 0\n");
         let dirs = ["proofs/tla".to_string()];
         let notes = theorems(&ctx, &dirs, 3).unwrap().notes;
-        let noted: Vec<(&str, &str)> = notes
+        let shown: Vec<(&str, &str)> = notes
             .iter()
             .map(|it| (it.file.as_str(), it.message.as_str()))
             .collect();
-        assert_eq!(noted, [(crate::project::PIN_FILE, UNPINNED)]);
+        assert_eq!(shown, [(crate::project::PIN_FILE, UNPINNED)]);
         let sha = "c".repeat(64);
         let other = if cfg!(windows) { "linux" } else { "windows" };
         let elsewhere = format!(

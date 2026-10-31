@@ -81,10 +81,6 @@ fn trees(tokens: &TokenStream) -> Vec<TokenTree> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -126,9 +122,9 @@ mod tests {
     fn an_arm_the_matcher_cannot_read_stops_the_search() {
         let stopped =
             |arm: &str| names(&format!("{arm} ($($m:ident)*) => {{ $(mod $m;)* }};"), "x");
-        assert!(stopped("($e:expr) => {};").is_empty());
-        assert!(stopped("($($e:expr),*) => {};").is_empty());
-        assert!(stopped("($($m:ident)) => {};").is_empty());
+        assert_eq!(stopped("($e:expr) => {};"), Vec::<String>::new());
+        assert_eq!(stopped("($($e:expr),*) => {};"), Vec::<String>::new());
+        assert_eq!(stopped("($($m:ident)) => {};"), Vec::<String>::new());
     }
 
     #[test]

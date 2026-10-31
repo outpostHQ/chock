@@ -17,6 +17,7 @@ use crate::run::baseline::{Keys, Series};
 use crate::run::report::{Detail, Place};
 use crate::run::{Ctx, Details, Gate, Group, Kind, Measurement};
 
+/// The `duplication` gate: function bodies that copy one another, exactly or nearly.
 pub const GATE: Gate = Gate {
     name: "duplication",
     about: "a function body copied elsewhere in the tree, exactly or near enough to merge",
@@ -44,11 +45,15 @@ pub const NEAR_THRESHOLD: u64 = 7_500;
 /// One function and the canonical form it is compared on; the baseline keys it by `file#name`.
 #[derive(Debug, Clone)]
 pub struct Function {
+    /// Where the function lives, as reports show the path.
     pub file: String,
+    /// What the source calls the function.
     pub name: String,
+    /// The form that two functions are compared on.
     pub shape: Shape,
     /// The lines from `fn` to the closing brace, for navigation; never part of a key.
     pub line: u32,
+    /// Where the closing brace stands, counted from 1.
     pub last: u32,
     /// The body's bytes in its file, read again only to say what two copies differ in.
     pub bytes: Range<usize>,
@@ -61,10 +66,12 @@ pub struct Shape {
     pub digest: u64,
     /// One hash per node, sorted, duplicates kept: the multiset a similarity score is taken over.
     pub nodes: Vec<u64>,
+    /// The top-level statements of the body, its tail expression included.
     pub statements: usize,
 }
 
 impl Shape {
+    /// How many syntax nodes the form holds.
     #[must_use]
     pub fn size(&self) -> usize {
         self.nodes.len()
@@ -126,12 +133,11 @@ fn detail(member: &Function, others: &[&Function], sources: &BTreeMap<String, St
     let places = others
         .iter()
         .map(|other| {
-            let role = match other.shape.digest == member.shape.digest {
-                true => "copy".to_string(),
-                false => {
-                    let alike = similarity(&member.shape.nodes, &other.shape.nodes) / 100;
-                    format!("near copy, {alike}% alike")
-                }
+            let role = if other.shape.digest == member.shape.digest {
+                "copy".to_string()
+            } else {
+                let alike = similarity(&member.shape.nodes, &other.shape.nodes) / 100;
+                format!("near copy, {alike}% alike")
             };
             Place::at(&role, &other.file, other.line)
                 .through(other.last)
@@ -370,6 +376,8 @@ impl Linked {
 
 /// Every production function in `source`, canonicalised; tests repeat their setup on purpose. `file`
 /// is only a label; an `Err` reads `line: reason` for the caller to prefix with the path.
+/// # Errors
+/// When `source` does not parse as Rust.
 pub fn functions(source: &str, file: &str) -> Result<Vec<Function>, String> {
     let parsed = syn::parse_file(source).map_err(|e| {
         format!(
@@ -710,11 +718,6 @@ mod proofs {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use std::path::Path;
 

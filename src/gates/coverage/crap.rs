@@ -4,11 +4,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::exec;
+use crate::exec::{self, Exit};
 use crate::run::debt::{Debt, Held};
-use crate::run::report::Finding;
+use crate::run::report::{Finding, Gating};
 use crate::run::verdicts::Reads;
-use crate::run::{Ctx, Gate, Group, Kind, Outcome};
+use crate::run::{Ctx, Gate, Group, Host, Kind, Outcome};
 
 /// Under `.chock/` with chock's other committed state, so it never overwrites a project's own file.
 /// Each system keeps its own, as each keeps its own records in `.chock/baseline.json`.
@@ -28,6 +28,7 @@ fn kept_on(system: &str) -> String {
 /// The lcov file the `coverage` gate writes, named once so both gates read the same file.
 pub use super::FILE as COVERAGE;
 
+/// Holds the complexity-times-uncoverage score of each function to its record.
 pub const GATE: Gate = Gate {
     name: "crap",
     about: "complexity x uncoverage per function, against this system's .chock/crap-baseline",
@@ -47,12 +48,12 @@ const UNIT: &str = "function(s) over CRAP 30";
 /// Both inputs are in place before cargo-crap runs, since it reads a missing lcov as an empty one.
 fn check(ctx: &Ctx) -> Result<Outcome, String> {
     let baseline = baseline();
-    let held = held_by(&ctx.root, &baseline, ctx.ci)?;
+    let held = held_by(&ctx.root, &baseline, ctx.host())?;
     crate::gates::coverage::ensure(ctx)?;
     let record = or_first(held, &ctx.root, &baseline, &|| whole_scores(ctx))?;
     let out = crap(&ctx.root, &["--baseline", &baseline, "--fail-regression"])?;
     let left = crate::gates::coverage::unmerged(ctx);
-    judged(&out.stdout, out.success(), &ctx.root, &record).map(|it| it.read_in_part(&left))
+    judged(&out.stdout, out.exit(), &ctx.root, &record).map(|it| it.read_in_part(&left))
 }
 
 /// What cargo-crap leaves out: a build script, which no coverage run reaches, and a file of test
@@ -69,15 +70,16 @@ fn crap(root: &Path, more: &[&str]) -> Result<exec::Output, String> {
 
 /// The record this run is held to, or `None` where a local run has none and writes the first one.
 /// CI writes no record, so there a missing one stops the gate before anything is built.
-fn held_by(root: &Path, name: &str, ci: bool) -> Result<Option<Vec<Scored>>, String> {
+fn held_by(root: &Path, name: &str, host: Host) -> Result<Option<Vec<Scored>>, String> {
     if root.join(name).is_file() {
         return recorded(root).map(Some);
     }
-    match ci {
-        true => Err(format!(
+    if host == Host::Ci {
+        Err(format!(
             "no {name} is committed — `chock run crap` outside CI writes the first one"
-        )),
-        false => Ok(None),
+        ))
+    } else {
+        Ok(None)
     }
 }
 
@@ -95,11 +97,15 @@ fn or_first(
 }
 
 /// Every function's score today as cargo-crap reports it, each path relative: what a record holds.
+/// # Errors
+/// Returns `Err` when cargo-crap fails or prints a report that does not parse.
 pub fn scores(ctx: &Ctx) -> Result<String, String> {
     as_record(&crap(&ctx.root, &["--sort", "file"])?, &ctx.root)
 }
 
 /// The scores, from a coverage run that merged every profile: only such scores make a record.
+/// # Errors
+/// Returns `Err` when the merge left a coverage profile out, or when `scores` fails.
 pub fn whole_scores(ctx: &Ctx) -> Result<String, String> {
     crate::gates::coverage::merged_whole(ctx).and_then(|()| scores(ctx))
 }
@@ -112,10 +118,11 @@ fn as_record(report: &exec::Output, root: &Path) -> Result<String, String> {
 /// At a commit, each record still in an older layout, written again in the compact one with the
 /// same scores and added to the commit. A record with a change nobody staged stays as it is.
 #[must_use]
-pub fn relaid(root: &Path, committing: bool) -> Vec<String> {
-    let systems: &[&str] = match committing {
-        true => &["linux", "macos", "windows"],
-        false => &[],
+pub fn relaid(root: &Path, gating: Gating) -> Vec<String> {
+    let systems: &[&str] = if gating == Gating::Commit {
+        &["linux", "macos", "windows"]
+    } else {
+        &[]
     };
     let index = crate::project::vcs::commit_index(root);
     systems
@@ -129,15 +136,21 @@ pub fn relaid(root: &Path, committing: bool) -> Vec<String> {
 fn relay(root: &Path, name: &str, index: Option<&Path>) -> Option<String> {
     let held = std::fs::read_to_string(root.join(name)).ok()?;
     let compact = compacted(&held).ok()?;
-    let git = |args: &[&str]| crate::project::vcs::git_on(root, index, args);
-    let tracked = git(&["ls-files", "--error-unmatch", "--", name]);
-    if compact == held || !tracked || !git(&["diff", "--quiet", "--", name]) {
+    let tracked = ["ls-files", "--error-unmatch", "--", name];
+    if compact == held || !crate::project::vcs::git_on(root, index, &tracked) {
         return None;
     }
+    let staging = crate::project::vcs::Staging::before(root, index, name)?;
     crate::project::document::write(&root.join(name), &compact).ok()?;
-    if git(&["add", "--", name]) {
-        let said = "again in the compact layout, with the same scores; it is in this commit";
-        return Some(format!("wrote {name} {said}"));
+    let said = "again in the compact layout, with the same scores; it is in this commit";
+    match staging.add(root, name) {
+        Some(true) => return Some(format!("wrote {name} {said}")),
+        Some(false) => {
+            return Some(format!(
+                "wrote {name} {said}; run `git add {name}` after the commit"
+            ));
+        }
+        None => {}
     }
     let kept = crate::project::document::write(&root.join(name), &held).map_or(
         "commit it with the next change",
@@ -176,9 +189,10 @@ pub fn compact(mut report: serde_json::Value) -> String {
         .flatten()
         .map(field)
         .collect();
-    let list = match rows.is_empty() {
-        true => "[]".to_string(),
-        false => format!("[\n{}\n  ]", rows.join(",\n")),
+    let list = if rows.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{}\n  ]", rows.join(",\n"))
     };
     format!("{{\n{head}  \"entries\": {list}\n}}\n")
 }
@@ -199,6 +213,10 @@ fn produced(out: &exec::Output, what: &str) -> Result<(), String> {
 
 /// Writes `scores` as the first record under `root` and reads it back. It says so on stderr, where
 /// the run's other record lines go.
+#[expect(
+    clippy::print_stderr,
+    reason = "the notice joins the run's other record lines on stderr"
+)]
 fn written(root: &Path, name: &str, scores: &str) -> Result<Vec<Scored>, String> {
     crate::project::document::write(&root.join(name), scores)
         .map_err(|e| format!("{name}: {e}"))?;
@@ -279,12 +297,13 @@ impl Inputs {
 
     /// For a function with no record to compare: full coverage leaves a score of its complexity.
     fn remedy(self) -> String {
-        match self.complexity > OVER {
-            true => format!(
+        if self.complexity > OVER {
+            format!(
                 "Split the function: at complexity {} full coverage still leaves it over CRAP {OVER}",
                 self.complexity
-            ),
-            false => "Test more of it, or split the function".to_string(),
+            )
+        } else {
+            "Test more of it, or split the function".to_string()
         }
     }
 
@@ -336,9 +355,10 @@ impl Scored {
     /// Judged as the recorded function that scored `was`.
     fn against(&mut self, was: f64) {
         self.baseline_crap = Some(was);
-        let status = match self.crap > was + EPSILON {
-            true => "regressed",
-            false => "unchanged",
+        let status = if self.crap > was + EPSILON {
+            "regressed"
+        } else {
+            "unchanged"
         };
         self.status = status.to_string();
     }
@@ -438,6 +458,8 @@ fn held_to(measured: &[Scored], record: &[Scored], root: &Path) -> BTreeMap<usiz
 
 /// `held_to` for `chock baseline crap`, which has both reports as text. A record that cannot be
 /// read holds nothing.
+/// # Errors
+/// Returns `Err` when the measured report does not parse.
 pub fn floors(measured: &str, record: &str, root: &Path) -> Result<BTreeMap<usize, f64>, String> {
     let record = read(record).map(|held| held.entries).unwrap_or_default();
     Ok(held_to(&read(measured)?.entries, &record, root))
@@ -500,6 +522,8 @@ fn recorded(root: &Path) -> Result<Vec<Scored>, String> {
 }
 
 /// The functions over the threshold in the record under `root`, worst first.
+/// # Errors
+/// Returns `Err` when the record under `root` cannot be read or does not parse.
 pub fn on_record(root: &Path) -> Result<Vec<(String, f64)>, String> {
     let mut over: Vec<(String, f64)> = recorded(root)?
         .iter()
@@ -513,8 +537,21 @@ pub fn on_record(root: &Path) -> Result<Vec<(String, f64)>, String> {
     Ok(over)
 }
 
+/// A score as a whole count: a float `as` saturates, and a score is never negative.
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a CRAP score is positive and far below u64::MAX, and `as` from a float saturates"
+)]
+fn rounded(score: f64) -> u64 {
+    score.round() as u64
+}
+
 /// That record as debt for `chock explain`: each function with its score, rounded. A project with
 /// no record file holds none.
+/// # Errors
+/// Returns `Err` when the record exists but cannot be read or does not parse.
 pub fn debt(root: &Path) -> Result<Option<Debt>, String> {
     if !root.join(baseline()).is_file() {
         return Ok(None);
@@ -523,12 +560,12 @@ pub fn debt(root: &Path) -> Result<Option<Debt>, String> {
     Ok((!held.is_empty()).then(|| Debt {
         gate: GATE.name.to_string(),
         unit: UNIT.to_string(),
-        total: held.len() as u64,
+        total: u64::try_from(held.len()).unwrap_or(u64::MAX),
         items: held
             .into_iter()
             .map(|(key, score)| Held {
                 key,
-                count: score.round() as u64,
+                count: rounded(score),
             })
             .collect(),
         fix: crate::gates::fixes::fix(GATE.name),
@@ -543,7 +580,7 @@ fn unread(report: &Delta) -> bool {
 
 /// The verdict from cargo-crap's report, with how many functions are over the threshold now and
 /// on record. cargo-crap exits zero over a new function at any score, so the report decides.
-fn judged(json: &str, succeeded: bool, root: &Path, record: &[Scored]) -> Result<Outcome, String> {
+fn judged(json: &str, exit: Exit, root: &Path, record: &[Scored]) -> Result<Outcome, String> {
     let report = read(json)?;
     if unread(&report) {
         return Err(
@@ -552,12 +589,13 @@ fn judged(json: &str, succeeded: bool, root: &Path, record: &[Scored]) -> Result
         );
     }
     // cargo-crap exits non-zero over a regression it names, which the record's order may clear.
-    let explained = succeeded
+    let explained = exit == Exit::Success
         || report
             .entries
             .iter()
             .any(|entry| entry.status == "regressed");
-    let held = record.iter().filter(|entry| entry.over()).count() as u64;
+    let held =
+        u64::try_from(record.iter().filter(|entry| entry.over()).count()).unwrap_or(u64::MAX);
     let delta = paired(report, record, root);
     // A function that only got shorter scores higher with no new branch and no new untested line.
     let no_worse = |now: Inputs, was: Inputs| {
@@ -577,7 +615,8 @@ fn judged(json: &str, succeeded: bool, root: &Path, record: &[Scored]) -> Result
         })
         .map(|(entry, was)| entry.finding(root, was))
         .collect();
-    let over = delta.entries.iter().filter(|entry| entry.over()).count() as u64;
+    let over = delta.entries.iter().filter(|entry| entry.over()).count();
+    let over = u64::try_from(over).unwrap_or(u64::MAX);
     let outcome = match (worse.is_empty(), explained) {
         (true, false) => {
             return Err(
@@ -591,10 +630,6 @@ fn judged(json: &str, succeeded: bool, root: &Path, record: &[Scored]) -> Result
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::run::baseline::Baseline;
@@ -603,12 +638,15 @@ mod tests {
         Ctx::for_root(dir, Baseline::empty("0.1.0"))
     }
 
-    fn ran(code: Option<i32>, stdout: &str, truncated: bool) -> exec::Output {
+    fn ran(code: Option<i32>, stdout: &str) -> exec::Output {
+        exec::Output::of(code, stdout, "")
+    }
+
+    /// `ran`, with the capture chock cut at its cap.
+    fn cut_off(code: Option<i32>, stdout: &str) -> exec::Output {
         exec::Output {
-            code,
-            stdout: stdout.to_string(),
-            stderr: String::new(),
-            truncated,
+            truncated: true,
+            ..ran(code, stdout)
         }
     }
 
@@ -643,7 +681,7 @@ mod tests {
     fn a_local_run_with_no_record_writes_the_first_one_and_is_held_to_it() {
         let dir = crate::testdir::make("crap-first-record");
         let name = baseline();
-        assert!(matches!(held_by(&dir, &name, false), Ok(None)));
+        assert!(matches!(held_by(&dir, &name, Host::Local), Ok(None)));
         std::fs::create_dir_all(dir.join(".chock")).unwrap();
         let scored = |held: &[Scored]| -> Vec<(String, f64)> {
             let one = |entry: &Scored| (entry.function.clone(), entry.crap);
@@ -656,8 +694,8 @@ mod tests {
             ONE_FUNCTION
         );
         // From here on the file is the record, in CI as on this machine.
-        for ci in [false, true] {
-            let held = held_by(&dir, &name, ci).unwrap().unwrap();
+        for host in [Host::Local, Host::Ci] {
+            let held = held_by(&dir, &name, host).unwrap().unwrap();
             assert_eq!(scored(&held), [("f".to_string(), 4.0)]);
         }
     }
@@ -702,10 +740,10 @@ mod tests {
             "entries": [{"file": file, "function": "f", "line": 1, "crap": 4.0}]
         })
         .to_string();
-        let record = as_record(&ran(Some(0), &report, false), &dir).unwrap();
+        let record = as_record(&ran(Some(0), &report), &dir).unwrap();
         assert_eq!(read(&record).unwrap().entries[0].file, "src/a.rs");
         assert_eq!(
-            as_record(&ran(Some(101), &report, false), &dir),
+            as_record(&ran(Some(101), &report), &dir),
             Err("cargo crap failed; the baseline would measure nothing".to_string())
         );
     }
@@ -735,13 +773,13 @@ mod tests {
         assert_eq!(files, ["src/a.rs", "src/b.rs"]);
         let none = compact(serde_json::json!({"entries": []}));
         assert_eq!(none, "{\n  \"entries\": []\n}\n");
-        let garbled = as_record(&ran(Some(0), "not json", false), Path::new("."));
+        let garbled = as_record(&ran(Some(0), "not json"), Path::new("."));
         assert!(garbled.unwrap_err().contains("cannot read"));
     }
 
     #[test]
     fn a_run_that_failed_produced_no_baseline() {
-        let out = ran(Some(101), "", false);
+        let out = ran(Some(101), "");
         assert_eq!(
             produced(&out, "cargo crap"),
             Err("cargo crap failed; the baseline would measure nothing".to_string())
@@ -750,7 +788,7 @@ mod tests {
 
     #[test]
     fn a_run_chock_had_to_cut_short_produced_no_baseline() {
-        let out = ran(Some(0), "{}", true);
+        let out = cut_off(Some(0), "{}");
         assert_eq!(
             produced(&out, "the coverage run"),
             Err("the coverage run printed more than chock keeps".to_string())
@@ -759,7 +797,7 @@ mod tests {
 
     #[test]
     fn a_clean_whole_run_produced_a_baseline() {
-        assert_eq!(produced(&ran(Some(0), "{}", false), "cargo crap"), Ok(()));
+        assert_eq!(produced(&ran(Some(0), "{}"), "cargo crap"), Ok(()));
     }
 
     #[test]
@@ -793,7 +831,7 @@ mod tests {
 
     #[test]
     fn a_function_that_got_worse_and_a_new_one_over_the_threshold_both_trip() {
-        let outcome = judged(REPORT, false, Path::new("/w"), &held(HELD)).unwrap();
+        let outcome = judged(REPORT, Exit::Failure, Path::new("/w"), &held(HELD)).unwrap();
         assert_eq!(
             Finding::rendered(&outcome.findings),
             [
@@ -811,7 +849,7 @@ mod tests {
     fn a_new_function_over_the_threshold_trips_though_cargo_crap_exited_zero() {
         let only_new = r#"{"entries":[{"file":"/w/src/d.rs","function":"added","line":5,
           "coverage":0.0,"crap":110.0,"status":"new","baseline_crap":null}]}"#;
-        let outcome = judged(only_new, true, Path::new("/w"), &[]).unwrap();
+        let outcome = judged(only_new, Exit::Success, Path::new("/w"), &[]).unwrap();
         assert!(!outcome.passed);
         assert_eq!(
             Finding::rendered(&outcome.findings),
@@ -826,7 +864,7 @@ mod tests {
            "baseline_crap":56.0},
           {"file":"/w/src/b.rs","function":"fresh","line":3,"coverage":0.0,"crap":30.0,"status":"new",
            "baseline_crap":null}]}"#;
-        let outcome = judged(steady, true, Path::new("/w"), &held(HELD)).unwrap();
+        let outcome = judged(steady, Exit::Success, Path::new("/w"), &held(HELD)).unwrap();
         assert_eq!(outcome, Outcome::passed().counting(1, 2, UNIT));
     }
 
@@ -836,7 +874,7 @@ mod tests {
     #[test]
     fn a_pass_with_every_function_on_record_says_nothing_more() {
         assert_eq!(
-            judged(QUIET, true, Path::new("/w"), &held(HELD)),
+            judged(QUIET, Exit::Success, Path::new("/w"), &held(HELD)),
             Ok(Outcome::passed().counting(1, 2, UNIT))
         );
     }
@@ -844,11 +882,11 @@ mod tests {
     #[test]
     fn a_failure_the_report_does_not_explain_is_a_gate_that_could_not_run() {
         assert_eq!(
-            judged(QUIET, false, Path::new("/w"), &held(HELD)),
+            judged(QUIET, Exit::Failure, Path::new("/w"), &held(HELD)),
             Err("cargo-crap failed but named no regression, so nothing was measured".to_string())
         );
         assert!(
-            judged("not json", true, Path::new("/w"), &[])
+            judged("not json", Exit::Success, Path::new("/w"), &[])
                 .unwrap_err()
                 .starts_with("cargo-crap produced a report chock cannot read")
         );
@@ -871,13 +909,13 @@ mod tests {
         let rest = r#","status":"new","baseline_crap":null"#;
         let report = entries(&[scored(930.0, 30.0, "null", rest)]);
         assert_eq!(
-            judged(&report, true, Path::new("/w"), &[]),
+            judged(&report, Exit::Success, Path::new("/w"), &[]),
             Err(
                 "the coverage report names no file cargo-crap scored, so nothing was measured"
                     .to_string()
             )
         );
-        let none = judged(&entries(&[]), true, Path::new("/w"), &[]);
+        let none = judged(&entries(&[]), Exit::Success, Path::new("/w"), &[]);
         assert_eq!(none, Ok(Outcome::passed().counting(0, 0, UNIT)));
     }
 
@@ -890,7 +928,7 @@ mod tests {
         let rest = format!(r#","status":"regressed","baseline_crap":{}"#, was.0);
         let report = entries(&[scored(now.0, now.1, now.2, &rest), COVERED.to_string()]);
         let record = held(&entries(&[scored(was.0, was.1, was.2, "")]));
-        let outcome = judged(&report, false, Path::new("/w"), &record).unwrap();
+        let outcome = judged(&report, Exit::Failure, Path::new("/w"), &record).unwrap();
         Finding::rendered(&outcome.findings).join("\n")
     }
 
@@ -975,7 +1013,7 @@ mod tests {
             )])
         };
         let judge = |report: &str, record: &[Scored]| {
-            judged(report, false, Path::new("/w"), record).unwrap()
+            judged(report, Exit::Failure, Path::new("/w"), record).unwrap()
         };
         let said = |report: &str, record: &[Scored]| {
             Finding::rendered(&judge(report, record).findings).join("\n")
@@ -1004,7 +1042,7 @@ mod tests {
                 COVERED.to_string(),
             ]);
             Finding::rendered(
-                &judged(&report, true, Path::new("/w"), &[])
+                &judged(&report, Exit::Success, Path::new("/w"), &[])
                     .unwrap()
                     .findings,
             )
@@ -1091,16 +1129,21 @@ mod tests {
     fn two_functions_of_one_name_in_one_file_are_held_to_the_record_in_file_order() {
         let (root, pair) = (Path::new("/w"), held(PAIR));
         assert_eq!(
-            judged(&twins(380.0, 2.0 + EPSILON, BOTH), true, root, &pair),
+            judged(
+                &twins(380.0, 2.0 + EPSILON, BOTH),
+                Exit::Success,
+                root,
+                &pair
+            ),
             Ok(Outcome::passed().counting(1, 1, UNIT))
         );
-        let risen = judged(&twins(380.0, 6.0, BOTH), true, root, &pair).unwrap();
+        let risen = judged(&twins(380.0, 6.0, BOTH), Exit::Success, root, &pair).unwrap();
         assert_eq!(
             Finding::rendered(&risen.findings),
             ["src/w.rs:203: Watch::poll: CRAP 6.0, was 2.0"]
         );
         // The two scores changed places: the worst is no worse, and the second function rose.
-        let swapped = judged(&twins(2.0, 380.0, BOTH), true, root, &pair).unwrap();
+        let swapped = judged(&twins(2.0, 380.0, BOTH), Exit::Success, root, &pair).unwrap();
         assert_eq!(
             Finding::rendered(&swapped.findings),
             ["src/w.rs:203: Watch::poll: CRAP 380.0, was 2.0"]
@@ -1117,7 +1160,7 @@ mod tests {
           {"file":"/w/src/w.rs","function":"Watch::poll","line":280,"coverage":50.0,"crap":2.0,
            "status":"improved","baseline_crap":380.0}]}"#;
         assert_eq!(
-            judged(moved, false, Path::new("/w"), &held(PAIR)),
+            judged(moved, Exit::Failure, Path::new("/w"), &held(PAIR)),
             Ok(Outcome::passed().counting(1, 1, UNIT))
         );
     }
@@ -1131,7 +1174,13 @@ mod tests {
           {"file":"src/w.rs","function":"Watch::poll","line":100,"crap":50.0},
           {"file":"src/other.rs","function":"Watch::poll","line":5,"crap":90.0}]}"#,
         );
-        let outcome = judged(&twins(40.0, 50.0, one), true, Path::new("/w"), &record).unwrap();
+        let outcome = judged(
+            &twins(40.0, 50.0, one),
+            Exit::Success,
+            Path::new("/w"),
+            &record,
+        )
+        .unwrap();
         assert_eq!(
             Finding::rendered(&outcome.findings),
             ["src/w.rs:115: Watch::poll: CRAP 40.0, not in the baseline"]
@@ -1148,7 +1197,7 @@ mod tests {
            "status":"regressed","baseline_crap":50.0},
           {"file":"/w/src/w.rs","function":"Watch::poll","line":203,"coverage":50.0,"crap":10.0,
            "status":"new","baseline_crap":null}]}"#;
-        let outcome = judged(report, false, Path::new("/w"), &record).unwrap();
+        let outcome = judged(report, Exit::Failure, Path::new("/w"), &record).unwrap();
         assert_eq!(
             Finding::rendered(&outcome.findings),
             ["src/w.rs:115: Watch::poll: CRAP 60.0, was 50.0"]
@@ -1168,7 +1217,7 @@ mod tests {
            "crap":5.0,"cyclomatic":5.0,"status":"regressed","baseline_crap":2.0},
           {"file":"/w/src/b.rs","function":"wait","line":3,"coverage":0.0,"crap":40.0,
            "status":"improved","baseline_crap":50.0}]}"#;
-        let outcome = judged(report, false, Path::new("/w"), &record).unwrap();
+        let outcome = judged(report, Exit::Failure, Path::new("/w"), &record).unwrap();
         assert_eq!(
             Finding::rendered(&outcome.findings),
             ["src/b.rs:3: wait: CRAP 40.0, not in the baseline"]
@@ -1256,11 +1305,11 @@ mod tests {
                    \"crap\": 2.0\n    }\n  ]\n}\n";
         let root = crate::testdir::repo("crap-relaid", &[(name.as_str(), old)]);
         let git = |args: &[&str]| crate::exec::run("git", args, &root).unwrap().stdout;
-        assert_eq!(relaid(&root, false), Vec::<String>::new());
+        assert_eq!(relaid(&root, Gating::Other), Vec::<String>::new());
         let said = format!(
             "wrote {name} again in the compact layout, with the same scores; it is in this commit"
         );
-        assert_eq!(relaid(&root, true), [said]);
+        assert_eq!(relaid(&root, Gating::Commit), [said]);
         assert_eq!(
             std::fs::read_to_string(root.join(&name)).unwrap(),
             "{\n  \"version\": 1,\n  \"entries\": [\n    {\"crap\":2.0}\n  ]\n}\n"
@@ -1270,7 +1319,7 @@ mod tests {
             format!("{name}\n")
         );
         assert_eq!(
-            relaid(&root, true),
+            relaid(&root, Gating::Commit),
             Vec::<String>::new(),
             "a compact record stays"
         );
@@ -1278,10 +1327,51 @@ mod tests {
         git(&["checkout", "--", &name]);
         let edited = old.replace("2.0", "3.0");
         std::fs::write(root.join(&name), &edited).unwrap();
-        assert_eq!(relaid(&root, true), Vec::<String>::new());
+        assert_eq!(relaid(&root, Gating::Commit), Vec::<String>::new());
         assert_eq!(std::fs::read_to_string(root.join(&name)).unwrap(), edited);
         std::fs::write(root.join("untracked.json"), old).unwrap();
         assert_eq!(relay(&root, "untracked.json", None), None);
+    }
+
+    /// Under `git commit --only` the record goes into `next-index-*` and into `index.lock`, which
+    /// the commit leaves behind. Mutant: drop the add to `index.lock`.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_commit_of_named_files_also_stages_the_record_into_the_index_it_leaves_behind() {
+        let name = kept_on("linux");
+        let old = "{\n  \"entries\": [\n    {\n      \"crap\": 2.0\n    }\n  ]\n}\n";
+        let root = crate::testdir::repo("crap-relaid-only", &[(name.as_str(), old)]);
+        let (next, real) = (
+            root.join(".git/next-index-1.lock"),
+            root.join(".git/index.lock"),
+        );
+        let holds = |index: &Path| {
+            crate::project::vcs::git_on(&root, Some(index), &["diff", "--quiet", "--", &name])
+        };
+        let said = format!(
+            "wrote {name} again in the compact layout, with the same scores; it is in this commit"
+        );
+        std::fs::copy(root.join(".git/index"), &next).unwrap();
+        std::fs::copy(root.join(".git/index"), &real).unwrap();
+        assert_eq!(relay(&root, &name, Some(&next)), Some(said.clone()));
+        assert!(
+            holds(&next) && holds(&real),
+            "both indexes hold the compact record"
+        );
+
+        // `index.lock` holds a change of its own, which the hook leaves alone.
+        std::fs::write(root.join(&name), "{}\n").unwrap();
+        assert!(crate::project::vcs::git_on(
+            &root,
+            Some(&real),
+            &["add", "--", &name]
+        ));
+        std::fs::write(root.join(&name), old).unwrap();
+        std::fs::copy(root.join(".git/index"), &next).unwrap();
+        let left = format!("{said}; run `git add {name}` after the commit");
+        assert_eq!(relay(&root, &name, Some(&next)), Some(left));
+        assert!(holds(&next) && !holds(&real));
+        std::fs::remove_file(&real).unwrap();
     }
 
     /// `git commit -a` builds the commit in its own index, so the record goes there; where git

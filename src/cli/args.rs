@@ -3,22 +3,27 @@
 use super::Change;
 use crate::gates::tools::miri::Part;
 use crate::project::config::Stage;
-use crate::run::Scope;
+use crate::run::report::{Format, Rows};
+use crate::run::{Host, Pace, Scope};
 use crate::usage::{USAGE, VERSION_LINE};
 
 /// The parsed command line, kept apart from dispatch so a test can check it without a process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command<'a> {
+    /// `run`: judges the named gates, or every gate the tier and the config run.
     Run {
+        /// The gates to run; none means every gate the tier and the config run.
         names: Vec<&'a str>,
-        json: bool,
-        fast: bool,
+        /// The report as JSON on stdout, in place of the text report.
+        json: Format,
+        /// Only the gates a commit runs: quick ones, none of which compiles.
+        fast: Pace,
         /// Set in CI, where checks whose tool CI cannot install are left out.
-        ci: bool,
+        ci: Host,
         /// Judges every gate again, with no kept verdict recalled.
         no_cache: bool,
         /// A row in the text report for every gate, also for one that passed.
-        verbose: bool,
+        verbose: Rows,
         /// The part of the Miri suite to run, from `--miri-partition=K/N`.
         miri_part: Option<Part>,
         /// Gates left out, from `--skip=NAME,...`: CI runs the slow ones in jobs of their own.
@@ -29,37 +34,51 @@ pub enum Command<'a> {
     },
     /// `cache clear`: removes every kept verdict.
     CacheClear,
+    /// `gates`: lists every gate, what it measures, and whether it is on.
     Gates {
-        json: bool,
+        /// The list as JSON, in place of text.
+        json: Format,
     },
     /// `enable`, `disable` and `stage`: one change to each named gate in the config.
     Configure {
+        /// The gates to change.
         names: Vec<&'a str>,
+        /// What changes in each of them.
         change: Change<'a>,
     },
     /// One gate's last findings, or with no gate all the debt on record.
     Explain {
+        /// The gate to explain; none means all the debt on record.
         name: Option<&'a str>,
-        json: bool,
+        /// The answer as JSON, in place of text.
+        json: Format,
     },
+    /// `baseline`: accepts today's numbers as the record, also where they got worse.
     Baseline(Vec<&'a str>),
+    /// `doctor`: checks that this machine has the tools the project pins.
     Doctor {
-        json: bool,
+        /// The rows as JSON, in place of text.
+        json: Format,
     },
     /// Measures a tree that chock does not own: no config, no baseline, no writes.
     Survey {
-        json: bool,
+        /// The report as JSON, in place of text.
+        json: Format,
     },
+    /// `message FILE`: checks a commit message before the commit exists.
     Message(&'a str),
     /// What a git hook runs. The body lives in chock, so an upgrade updates every hook.
     Hook(&'a [&'a str]),
+    /// `edited`: checks single files for an edit hook, with no baseline and no build.
     Edited(&'a [&'a str]),
     /// `slop`, `lean` and `oracle`: each reads a tree or a program that chock does not own.
     Tree(&'a str, &'a [&'a str]),
+    /// `init`: sets up the project, installs the tools it pins, or both.
     Init(&'a [&'a str]),
     /// `--version`, `--help`, and the lines of one command for `chock COMMAND --help` and
     /// `chock help COMMAND`: the text each one prints.
     Print(String),
+    /// A command line chock cannot take, with the problem to show.
     Usage(String),
 }
 
@@ -75,8 +94,12 @@ fn named<'a>(cmd: &'a str, rest: &'a [&'a str]) -> Command<'a> {
 }
 
 /// Accepts `--json` anywhere after the subcommand.
-pub(super) fn split_json<'a>(args: &[&'a str]) -> (Vec<&'a str>, bool) {
-    let json = args.contains(&"--json");
+pub(super) fn split_json<'a>(args: &[&'a str]) -> (Vec<&'a str>, Format) {
+    let json = if args.contains(&"--json") {
+        Format::Json
+    } else {
+        Format::Text
+    };
     (
         args.iter().copied().filter(|a| *a != "--json").collect(),
         json,
@@ -84,7 +107,11 @@ pub(super) fn split_json<'a>(args: &[&'a str]) -> (Vec<&'a str>, bool) {
 }
 
 /// A command whose one option is `--json`, and which refuses any other argument.
-fn json_only<'a>(cmd: &str, rest: &[&str], made: impl FnOnce(bool) -> Command<'a>) -> Command<'a> {
+fn json_only<'a>(
+    cmd: &str,
+    rest: &[&str],
+    made: impl FnOnce(Format) -> Command<'a>,
+) -> Command<'a> {
     match split_json(rest) {
         (extra, json) if extra.is_empty() => made(json),
         (extra, _) => Command::Usage(format!("{cmd} takes no argument `{}`", extra[0])),
@@ -124,7 +151,7 @@ const VALUED: [&str; 6] = [
 /// `run --skip miri` as `run --skip=miri`, so a flag of `run` that takes a value takes it either
 /// way.
 #[must_use]
-pub fn joined(args: &[&str]) -> Vec<String> {
+pub(super) fn joined(args: &[&str]) -> Vec<String> {
     let run = args.first() == Some(&"run");
     let mut out = Vec::new();
     let mut words = args.iter().peekable();
@@ -164,14 +191,15 @@ fn valued(names: &[&str], flag: &str) -> Result<Option<String>, String> {
 /// The names `flag` lists, split at each comma; a list that names nothing is refused.
 fn listed(names: &[&str], flag: &str) -> Result<Vec<String>, String> {
     let list = valued(names, flag)?.unwrap_or_default();
-    let named: Vec<String> = list
+    let entries: Vec<String> = list
         .split(',')
         .filter(|name| !name.is_empty())
         .map(str::to_string)
         .collect();
-    match list.is_empty() || !named.is_empty() {
-        true => Ok(named),
-        false => Err(format!("`{}` names nothing", flag.trim_end_matches('='))),
+    if list.is_empty() || !entries.is_empty() {
+        Ok(entries)
+    } else {
+        Err(format!("`{}` names nothing", flag.trim_end_matches('=')))
     }
 }
 
@@ -223,23 +251,33 @@ fn skipped<'a>(names: &[&'a str]) -> Vec<&'a str> {
 /// `run`: the gates it names, with its flags and `--json` wherever they stand.
 fn to_run<'a>(rest: &[&'a str]) -> Command<'a> {
     let (names, json) = split_json(rest);
-    match names.iter().find(|n| n.starts_with('-') && !known(n)) {
-        Some(flag) => Command::Usage(unknown_option(flag)),
-        // A malformed `--miri-partition` is a usage error too.
-        None => match (miri_part(&names), scope(&names)) {
-            (Err(why), _) | (_, Err(why)) => Command::Usage(why),
-            (Ok(part), Ok(scope)) => Command::Run {
-                fast: names.contains(&"--fast"),
-                ci: names.contains(&"--ci"),
-                no_cache: names.contains(&"--no-cache"),
-                verbose: names.contains(&"--verbose"),
-                skip: skipped(&names),
-                names: names.into_iter().filter(|n| !known(n)).collect(),
-                json,
-                miri_part: part,
-                scope,
-            },
+    if let Some(flag) = names.iter().find(|n| n.starts_with('-') && !known(n)) {
+        return Command::Usage(unknown_option(flag));
+    }
+    // A malformed `--miri-partition` is a usage error too.
+    let (part, scope) = match (miri_part(&names), scope(&names)) {
+        (Err(why), _) | (_, Err(why)) => return Command::Usage(why),
+        (Ok(part), Ok(scope)) => (part, scope),
+    };
+    let given = |flag: &str| names.contains(&flag);
+    Command::Run {
+        fast: if given("--fast") {
+            Pace::Fast
+        } else {
+            Pace::Full
         },
+        ci: if given("--ci") { Host::Ci } else { Host::Local },
+        no_cache: given("--no-cache"),
+        verbose: if given("--verbose") {
+            Rows::Every
+        } else {
+            Rows::NotPassed
+        },
+        skip: skipped(&names),
+        names: names.into_iter().filter(|n| !known(n)).collect(),
+        json,
+        miri_part: part,
+        scope,
     }
 }
 
@@ -254,6 +292,7 @@ fn miri_part(names: &[&str]) -> Result<Option<Part>, String> {
     }
 }
 
+/// The command the words name, or the usage error for words that name none.
 #[must_use]
 pub fn parse<'a>(args: &'a [&'a str]) -> Command<'a> {
     match args {
@@ -302,9 +341,10 @@ fn help(cmd: &str) -> String {
 
 /// A flag `run` does not know, or one that takes a value and came with none.
 fn unknown_option(flag: &str) -> String {
-    match VALUED.contains(&flag) {
-        true => format!("`{flag}` names nothing"),
-        false => format!("unknown option `{flag}`"),
+    if VALUED.contains(&flag) {
+        format!("`{flag}` names nothing")
+    } else {
+        format!("unknown option `{flag}`")
     }
 }
 
@@ -368,9 +408,9 @@ mod tests {
 
     #[test]
     fn each_subcommand_parses_to_its_own_action() {
-        assert_eq!(parse(&["doctor"]), Command::Doctor { json: false });
+        assert_eq!(parse(&["doctor"]), Command::Doctor { json: Format::Text });
         assert_eq!(parse(&["baseline"]), Command::Baseline(vec![]));
-        assert_eq!(parse(&["gates"]), Command::Gates { json: false });
+        assert_eq!(parse(&["gates"]), Command::Gates { json: Format::Text });
         let (version, usage) = (
             Command::Print(VERSION_LINE.into()),
             Command::Print(USAGE.into()),
@@ -411,11 +451,11 @@ mod tests {
             parse(&["run"]),
             Command::Run {
                 names: vec![],
-                json: false,
-                fast: false,
-                ci: false,
+                json: Format::Text,
+                fast: Pace::Full,
+                ci: Host::Local,
                 no_cache: false,
-                verbose: false,
+                verbose: Rows::NotPassed,
                 miri_part: None,
                 skip: Vec::new(),
                 scope: Scope::default()
@@ -430,11 +470,11 @@ mod tests {
             parse(&["run", "--fast"]),
             Command::Run {
                 names: vec![],
-                json: false,
-                fast: true,
-                ci: false,
+                json: Format::Text,
+                fast: Pace::Fast,
+                ci: Host::Local,
                 no_cache: false,
-                verbose: false,
+                verbose: Rows::NotPassed,
                 miri_part: None,
                 skip: Vec::new(),
                 scope: Scope::default()
@@ -444,11 +484,11 @@ mod tests {
             parse(&["run", "--fast", "--json"]),
             Command::Run {
                 names: vec![],
-                json: true,
-                fast: true,
-                ci: false,
+                json: Format::Json,
+                fast: Pace::Fast,
+                ci: Host::Local,
                 no_cache: false,
-                verbose: false,
+                verbose: Rows::NotPassed,
                 miri_part: None,
                 skip: Vec::new(),
                 scope: Scope::default()
@@ -462,11 +502,11 @@ mod tests {
             parse(&["run", "lint", "slop"]),
             Command::Run {
                 names: vec!["lint", "slop"],
-                json: false,
-                fast: false,
-                ci: false,
+                json: Format::Text,
+                fast: Pace::Full,
+                ci: Host::Local,
                 no_cache: false,
-                verbose: false,
+                verbose: Rows::NotPassed,
                 miri_part: None,
                 skip: Vec::new(),
                 scope: Scope::default()
@@ -478,11 +518,11 @@ mod tests {
     fn the_json_flag_is_accepted_before_or_after_the_gate_names() {
         let expected = Command::Run {
             names: vec!["lint"],
-            json: true,
-            fast: false,
-            ci: false,
+            json: Format::Json,
+            fast: Pace::Full,
+            ci: Host::Local,
             no_cache: false,
-            verbose: false,
+            verbose: Rows::NotPassed,
             miri_part: None,
             skip: Vec::new(),
             scope: Scope::default(),
@@ -495,11 +535,11 @@ mod tests {
     fn no_cache_is_a_flag_on_run_wherever_it_stands() {
         let expected = Command::Run {
             names: vec!["lint"],
-            json: false,
-            fast: false,
-            ci: true,
+            json: Format::Text,
+            fast: Pace::Full,
+            ci: Host::Ci,
             no_cache: true,
-            verbose: false,
+            verbose: Rows::NotPassed,
             miri_part: None,
             skip: Vec::new(),
             scope: Scope::default(),
@@ -512,11 +552,11 @@ mod tests {
     fn verbose_is_a_flag_on_run_wherever_it_stands() {
         let expected = Command::Run {
             names: vec![],
-            json: false,
-            fast: true,
-            ci: false,
+            json: Format::Text,
+            fast: Pace::Fast,
+            ci: Host::Local,
             no_cache: false,
-            verbose: true,
+            verbose: Rows::Every,
             miri_part: None,
             skip: Vec::new(),
             scope: Scope::default(),
@@ -529,11 +569,11 @@ mod tests {
     fn miri_partition_names_one_part_of_the_suite_wherever_it_stands() {
         let expected = Command::Run {
             names: vec!["miri"],
-            json: false,
-            fast: false,
-            ci: true,
+            json: Format::Text,
+            fast: Pace::Full,
+            ci: Host::Ci,
             no_cache: false,
-            verbose: false,
+            verbose: Rows::NotPassed,
             miri_part: Some(Part { index: 2, of: 12 }),
             skip: Vec::new(),
             scope: Scope::default(),
@@ -550,11 +590,11 @@ mod tests {
             let flag = format!("--miri-partition={asked}");
             let whole = Command::Run {
                 names: vec![],
-                json: false,
-                fast: false,
-                ci: false,
+                json: Format::Text,
+                fast: Pace::Full,
+                ci: Host::Local,
                 no_cache: false,
-                verbose: false,
+                verbose: Rows::NotPassed,
                 miri_part: Some(Part { index, of }),
                 skip: Vec::new(),
                 scope: Scope::default(),
@@ -567,11 +607,11 @@ mod tests {
     fn skip_leaves_out_each_gate_it_lists_wherever_it_stands() {
         let expected = Command::Run {
             names: vec!["lint"],
-            json: false,
-            fast: false,
-            ci: true,
+            json: Format::Text,
+            fast: Pace::Full,
+            ci: Host::Ci,
             no_cache: false,
-            verbose: false,
+            verbose: Rows::NotPassed,
             miri_part: None,
             skip: vec!["miri", "mutest", "bsize"],
             scope: Scope::default(),
@@ -603,11 +643,11 @@ mod tests {
         ]);
         let expected = Command::Run {
             names: vec!["test"],
-            json: true,
-            fast: false,
-            ci: false,
+            json: Format::Json,
+            fast: Pace::Full,
+            ci: Host::Local,
             no_cache: false,
-            verbose: false,
+            verbose: Rows::NotPassed,
             miri_part: None,
             skip: Vec::new(),
             scope: Scope {
@@ -636,11 +676,11 @@ mod tests {
         let narrowed = parse(&["run", "mutest", "--mutate=src/a.rs,,src/b.rs"]);
         let expected = Command::Run {
             names: vec!["mutest"],
-            json: false,
-            fast: false,
-            ci: false,
+            json: Format::Text,
+            fast: Pace::Full,
+            ci: Host::Local,
             no_cache: false,
-            verbose: false,
+            verbose: Rows::NotPassed,
             miri_part: None,
             skip: Vec::new(),
             scope: Scope {
@@ -697,8 +737,14 @@ mod tests {
 
     #[test]
     fn json_is_accepted_by_every_command_that_reports() {
-        assert_eq!(parse(&["doctor", "--json"]), Command::Doctor { json: true });
-        assert_eq!(parse(&["gates", "--json"]), Command::Gates { json: true });
+        assert_eq!(
+            parse(&["doctor", "--json"]),
+            Command::Doctor { json: Format::Json }
+        );
+        assert_eq!(
+            parse(&["gates", "--json"]),
+            Command::Gates { json: Format::Json }
+        );
         assert_eq!(
             parse(&["slop", "--json"]),
             Command::Tree("slop", &["--json"])

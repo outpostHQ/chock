@@ -9,14 +9,14 @@ pub const NAME: &str = "msrv";
 
 /// Installs the release that the crate's `rust-version` promises, or `None` with no promise. `Ok`
 /// and `Err` both hold the line to print; `Err` is an install that failed.
-pub fn install(start: Start, root: Option<&Path>) -> Option<Result<String, String>> {
+pub fn install(start: Start<'_>, root: Option<&Path>) -> Option<Result<String, String>> {
     let root = root?;
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).ok()?;
     let version = crate::gates::tools::rust_version(&manifest)?;
     Some(promised(start, &version, root))
 }
 
-fn promised(start: Start, version: &str, cwd: &Path) -> Result<String, String> {
+fn promised(start: Start<'_>, version: &str, cwd: &Path) -> Result<String, String> {
     let args = [
         "toolchain",
         "install",
@@ -37,10 +37,6 @@ fn promised(start: Start, version: &str, cwd: &Path) -> Result<String, String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use std::cell::RefCell;

@@ -16,6 +16,7 @@ use crate::run::baseline::{Keys, Series};
 use crate::run::report::{Detail, Finding, Place};
 use crate::run::{Ctx, Gate, Group, Kind, Measurement};
 
+/// Counts shipped functions that make one call and have one caller.
 pub const GATE: Gate = Gate {
     name: "wrappers",
     about: "shipped Rust functions that are one call and have one caller, which could make that \
@@ -149,21 +150,24 @@ fn called_once(graph: &Graph) -> Vec<(&Node, &Node)> {
 }
 
 fn is_rust_function(node: &Node) -> bool {
-    matches!(node.kind.as_str(), "function" | "method") && node.file.ends_with(".rs")
+    matches!(node.kind.as_str(), "function" | "method")
+        && std::path::Path::new(&node.file)
+            .extension()
+            .is_some_and(|ext| ext == "rs")
 }
 
 /// A settled wrapper adds its lines to its file and a place to the file's detail; an unsettled one
 /// is a candidate that says why.
-fn record(read: &mut Measurement, (node, caller, callee): (&Node, &str, &str), why: Option<&str>) {
+fn record(read: &mut Measurement, (node, caller, inner): (&Node, &str, &str), why: Option<&str>) {
     let name = &node.name;
     if let Some(why) = why {
         let message =
-            format!("`{name}` is one call to `{callee}` and only `{caller}` calls it, but {why}");
+            format!("`{name}` is one call to `{inner}` and only `{caller}` calls it, but {why}");
         let mut finding = Finding::at(&node.file, &message)
             .line(node.line)
             .candidate();
         finding.fix = Some(format!(
-            "make the call to `{callee}` in `{caller}` if nothing else needs `{name}`"
+            "make the call to `{inner}` in `{caller}` if nothing else needs `{name}`"
         ));
         read.findings.push(finding);
         return;
@@ -439,10 +443,6 @@ impl<'ast> Visit<'ast> for Calls<'_> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

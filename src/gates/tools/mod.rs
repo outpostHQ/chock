@@ -21,6 +21,7 @@ use crate::run::report::Finding;
 use crate::run::verdicts::Reads;
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
 
+/// Runs the suite, and fails a crate that has no tests.
 pub const TEST: Gate = Gate {
     name: "test",
     about: "the suite passes, and the crate has one",
@@ -31,6 +32,7 @@ pub const TEST: Gate = Gate {
     kind: Kind::Binary(suite::test),
 };
 
+/// Runs rustfmt and clippy, and fails on a change or a warning.
 pub const LINT: Gate = Gate {
     name: "lint",
     about: "formatting matches, and clippy is silent",
@@ -51,6 +53,7 @@ pub const FMT: Gate = Gate {
     kind: Kind::Binary(fmt),
 };
 
+/// Builds the documentation, and fails on a warning.
 pub const DOC: Gate = Gate {
     name: "doc",
     about: "the documentation builds with no warnings",
@@ -60,6 +63,7 @@ pub const DOC: Gate = Gate {
     kind: Kind::Binary(doc::check),
 };
 
+/// Runs `cargo deny`: no advisory, no disallowed licence and no unknown source.
 pub const DEPS: Gate = Gate {
     name: "deps",
     about: "no advisory, no disallowed licence, no unknown source",
@@ -69,6 +73,7 @@ pub const DEPS: Gate = Gate {
     kind: Kind::Binary(deps::check),
 };
 
+/// Counts the dependencies that no source file references.
 pub const UNUSED: Gate = Gate {
     name: "unused",
     about: "dependencies nothing references, by source scan, against the count recorded",
@@ -83,6 +88,7 @@ pub const UNUSED: Gate = Gate {
     },
 };
 
+/// Runs cackle, which fails a dependency that reaches an API that `cackle.toml` does not grant.
 pub const ACL: Gate = Gate {
     name: "acl",
     about: "no dependency reaches an API its entry in cackle.toml does not grant",
@@ -93,6 +99,7 @@ pub const ACL: Gate = Gate {
     kind: Kind::Binary(acl),
 };
 
+/// Counts the manifests whose dependency tables are out of order.
 pub const SORT: Gate = Gate {
     name: "sort",
     about: "manifests whose dependency tables are out of order, against the count recorded",
@@ -107,6 +114,7 @@ pub const SORT: Gate = Gate {
     },
 };
 
+/// Counts misspellings in source, comments and docs, per file and word.
 pub const TYPOS: Gate = Gate {
     name: "typos",
     about: "misspellings in source, comments and docs, per file and word",
@@ -120,6 +128,7 @@ pub const TYPOS: Gate = Gate {
     },
 };
 
+/// Builds the crate on the oldest Rust that it claims to support.
 pub const MSRV: Gate = Gate {
     name: "msrv",
     about: "the crate still builds on the oldest Rust it claims to support",
@@ -130,6 +139,7 @@ pub const MSRV: Gate = Gate {
     kind: Kind::Binary(msrv),
 };
 
+/// Counts the mutations that change a decision where no test notices.
 pub const MUTEST: Gate = Gate {
     name: "mutest",
     about: "mutations that changed a decision and no test noticed, per file and operator",
@@ -149,6 +159,7 @@ pub const MUTEST: Gate = Gate {
     },
 };
 
+/// Counts unused dependencies from a compiled build, not a source scan.
 pub const UNUSED_DEEP: Gate = Gate {
     name: "unused-deep",
     about: "unused dependencies, compiled rather than scanned; needs nightly",
@@ -159,6 +170,7 @@ pub const UNUSED_DEEP: Gate = Gate {
     kind: Kind::Binary(unused_deep),
 };
 
+/// Shows where the bytes of the binary go: an instrument that never fails.
 pub const BSIZE: Gate = Gate {
     name: "bsize",
     about: "where the binary's bytes are — an instrument, not a gate",
@@ -253,10 +265,11 @@ fn span(text: &str, note: &Note, root: &Path) -> Option<Finding> {
 
 /// Reads diagnostics whatever the exit code, since `cargo deny` can warn of an advisory and exit 0.
 pub(super) fn verdict(out: &exec::Output, root: &Path) -> Outcome {
-    match out.success() {
-        true => Outcome::noted(from_both(spans, out, root)),
+    if out.success() {
+        Outcome::noted(from_both(spans, out, root))
+    } else {
         // The raw output goes along, for when no finding could be read from it.
-        false => Outcome::failed(whole(from_both(errors, out, root), out)).saying(out),
+        Outcome::failed(whole(from_both(errors, out, root), out)).saying(out)
     }
 }
 
@@ -287,6 +300,7 @@ fn from_both(
     found
 }
 
+/// Runs the suite a second time in the same tree, with no clean between the runs.
 pub const IDEMPOTENT: Gate = Gate {
     name: "idempotent",
     about: "the suite passes a second time in the same tree, without cleaning between",
@@ -498,7 +512,38 @@ fn unused_deep(ctx: &Ctx) -> Result<Outcome, String> {
     ];
     args.extend(ctx.build.iter().map(String::as_str));
     let out = exec::tool(&ctx.root, "cargo", &args)?;
-    read_deep(&out, &ctx.root)
+    deep_findings(&out, &ctx.root)
+}
+
+/// What `cargo udeps` printed, less each entry whose features Cargo unifies. Only a finding needs
+/// the resolved graph, so a check that found nothing does not ask Cargo for it.
+fn deep_findings(out: &exec::Output, root: &Path) -> Result<Outcome, String> {
+    let found = read_deep(out, root)?;
+    if found.passed || found.findings.is_empty() {
+        return Ok(found);
+    }
+    let unified = machete::unified(&crate::project::resolved(root)?, root)?;
+    Ok(without_unified(found, &unified))
+}
+
+/// Drops each finding on an entry that only turns on features, and passes once none is left.
+fn without_unified(found: Outcome, unified: &BTreeSet<String>) -> Outcome {
+    let entry = |finding: &Finding| {
+        format!(
+            "{}#{}",
+            finding.file,
+            finding.item.as_deref().unwrap_or_default()
+        )
+    };
+    let findings: Vec<Finding> = found
+        .findings
+        .into_iter()
+        .filter(|f| !unified.contains(&entry(f)))
+        .collect();
+    if findings.is_empty() {
+        return Outcome::passed();
+    }
+    Outcome { findings, ..found }
 }
 
 fn read_deep(out: &exec::Output, root: &Path) -> Result<Outcome, String> {
@@ -820,11 +865,6 @@ fn declared_version(line: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::suite::*;
     use super::*;
@@ -1043,7 +1083,7 @@ mod tests {
                            PASS [   0.001s] chock other::fine\n\
                       FLAKY 2/2 [   2.000s] chock retried::eventually_passed\n";
         assert_eq!(
-            named(&failing_tests(&ran(out, Some(100), false))),
+            named(&failing_tests(&ran(out, Some(100)))),
             ["chock lock::tests::a_lock_is_taken", "chock slow::hangs"]
         );
     }
@@ -1067,7 +1107,7 @@ mod tests {
     #[test]
     fn a_test_that_libtest_failed_is_named_by_its_verdict_line_or_its_output_header() {
         assert_eq!(
-            named(&failing_tests(&ran(LIBTEST, Some(101), false))),
+            named(&failing_tests(&ran(LIBTEST, Some(101)))),
             ["spawns::a_child", "zz_probe::the_gate_can_fail"]
         );
         let on_stderr =
@@ -1081,7 +1121,7 @@ mod tests {
     #[test]
     fn a_suite_that_libtest_failed_trips_and_names_each_test() {
         assert_eq!(
-            said(&read_suite(&ran(LIBTEST, Some(101), false), root())),
+            said(&read_suite(&ran(LIBTEST, Some(101)), root())),
             [
                 "spawns::a_child: this test failed: panicked at src/lib.rs:9:5: the child exited \
                  with 3",
@@ -1103,7 +1143,7 @@ mod tests {
                    \x20       FAIL [   0.001s] chock old::style\n\
                    thread 'old::style' panicked at 'gone', src/old.rs:3:5\n";
         assert_eq!(
-            said(&read_suite(&ran(out, Some(100), false), root())),
+            said(&read_suite(&ran(out, Some(100)), root())),
             [
                 "chock db::tests::opens: this test failed: panicked at src/db.rs:12:9: assertion \
                  `left == right` failed left: 1 right: 2",
@@ -1114,7 +1154,7 @@ mod tests {
             "thread 'big' panicked at src/a.rs:1:1:\n{}\n",
             "x".repeat(400)
         );
-        let quoted = failure(&ran(&long, Some(101), false), "big", "this test failed");
+        let quoted = failure(&ran(&long, Some(101)), "big", "this test failed");
         let place = "panicked at src/a.rs:1:1: ";
         let kept = "x".repeat(PANIC_CHARS - place.len());
         assert_eq!(quoted, format!("this test failed: {place}{kept}…"));
@@ -1127,7 +1167,7 @@ mod tests {
                    --- STDOUT:              chock lock::tests::a_lock_is_taken ---\n\
                    test lock::tests::a_lock_is_taken ... FAILED\n";
         assert_eq!(
-            named(&failing_tests(&ran(out, Some(100), false))),
+            named(&failing_tests(&ran(out, Some(100)))),
             ["chock lock::tests::a_lock_is_taken"]
         );
     }
@@ -1159,6 +1199,28 @@ mod tests {
         );
         assert_eq!(uncounted("(not a count) x"), "(not a count) x");
         assert_eq!(uncounted("(12/1783 x"), "(12/1783 x");
+    }
+
+    /// The deep check drops an entry that only turns on features, and passes once none is left.
+    #[test]
+    fn a_deep_finding_on_an_entry_that_only_turns_on_features_is_dropped() {
+        let json = r#"{"success":false,"unused_deps":{"p 0.1.0 (path+file:///w)":
+            {"manifest_path":"/w/Cargo.toml","normal":["proc-macro2","itoa"],"development":[],
+             "build":[]}},"note":null}"#;
+        let found = read_udeps(json, Path::new("/w")).unwrap();
+        let unified = BTreeSet::from(["Cargo.toml#proc-macro2".to_string()]);
+        let left = without_unified(found.clone(), &unified);
+        let named: Vec<_> = left
+            .findings
+            .iter()
+            .filter_map(|f| f.item.as_deref())
+            .collect();
+        assert_eq!((left.passed, named), (false, vec!["itoa"]));
+        let both = BTreeSet::from([
+            "Cargo.toml#proc-macro2".to_string(),
+            "Cargo.toml#itoa".to_string(),
+        ]);
+        assert_eq!(without_unified(found, &both), Outcome::passed());
     }
 
     /// The shape `--output json` prints, from cargo-udeps 0.1.61's own `Outcome`.
@@ -1252,7 +1314,7 @@ mod tests {
         let run = |argv: &[&str]| {
             let held = std::fs::read_to_string(&rules).unwrap();
             seen.replace((argv.iter().map(ToString::to_string).collect(), held));
-            Ok(ran("", Some(0), false))
+            Ok(ran("", Some(0)))
         };
         typos_with_rules(&["target", "vendor"], &rules, &run).unwrap();
         let (asked, held): (Vec<String>, String) = seen.into_inner();
@@ -1282,7 +1344,7 @@ mod tests {
     #[test]
     fn a_misspelling_is_counted_against_its_file_and_the_word_itself() {
         let out = r#"{"type":"typo","path":"./src/a.rs","line_num":12,"typo":"teh","corrections":["the"]}"#;
-        let series = read_typos(&ran(out, Some(2), false)).unwrap();
+        let series = read_typos(&ran(out, Some(2))).unwrap();
         assert_eq!(series.get("src/a.rs#teh"), Some(1));
     }
 
@@ -1294,7 +1356,7 @@ mod tests {
             "\n",
             r#"{"type":"typo","path":"a.rs","line_num":9,"typo":"adn","corrections":["and"]}"#
         );
-        let series = read_typos(&ran(out, Some(2), false)).unwrap();
+        let series = read_typos(&ran(out, Some(2))).unwrap();
         assert_eq!(series.get("a.rs#teh"), Some(1));
         assert_eq!(series.get("a.rs#adn"), Some(1));
     }
@@ -1306,7 +1368,7 @@ mod tests {
             "\n",
             r#"{"type":"typo","path":"a.rs","line_num":40,"typo":"teh","corrections":["the"]}"#
         );
-        let series = read_typos(&ran(out, Some(2), false)).unwrap();
+        let series = read_typos(&ran(out, Some(2))).unwrap();
         assert_eq!(series.get("a.rs#teh"), Some(2));
     }
 
@@ -1317,20 +1379,20 @@ mod tests {
             "\n",
             r#"{"type":"typo","path":"a.rs","line_num":1,"typo":"teh","corrections":["the"]}"#
         );
-        let series = read_typos(&ran(out, Some(2), false)).unwrap();
+        let series = read_typos(&ran(out, Some(2))).unwrap();
         assert_eq!(series.get("a.rs#teh"), Some(1));
         assert_eq!(series.len(), 1);
     }
 
     #[test]
     fn a_tree_with_nothing_misspelled_measures_nothing() {
-        assert_eq!(read_typos(&ran("", Some(0), false)).unwrap(), Series::new());
+        assert_eq!(read_typos(&ran("", Some(0))).unwrap(), Series::new());
     }
 
     /// typos exits 78, printing nothing, over a config it cannot parse.
     #[test]
     fn a_config_typos_cannot_parse_stops_the_gate_rather_than_measuring_zero() {
-        let err = read_typos(&ran("", Some(78), false)).unwrap_err();
+        let err = read_typos(&ran("", Some(78))).unwrap_err();
         assert_eq!(err, "typos could not run: it broke");
     }
 
@@ -1338,7 +1400,7 @@ mod tests {
     fn output_typos_had_cut_short_would_under_count_and_stops_the_gate() {
         let out =
             r#"{"type":"typo","path":"a.rs","line_num":1,"typo":"teh","corrections":["the"]}"#;
-        let err = read_typos(&ran(out, Some(2), true)).unwrap_err();
+        let err = read_typos(&cut_off(out, Some(2))).unwrap_err();
         assert!(err.contains("more than chock keeps"), "{err}");
     }
 
@@ -1403,7 +1465,7 @@ mod tests {
 
     #[test]
     fn a_suite_that_passed_is_a_pass_with_nothing_to_point_at() {
-        let out = ran("", Some(0), false);
+        let out = ran("", Some(0));
         assert_eq!(read_suite(&out, root()), Outcome::passed());
     }
 
@@ -1481,13 +1543,29 @@ mod tests {
 
     #[test]
     fn a_tree_the_compiler_finds_no_unused_dependency_in_passes_the_deep_check() {
-        let out = ran("", Some(0), false);
+        let out = ran("", Some(0));
         assert_eq!(read_deep(&out, root()).unwrap(), Outcome::passed());
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn the_deep_check_reads_the_resolved_graph_only_for_a_finding() {
+        let clean = ran("", Some(0));
+        assert_eq!(deep_findings(&clean, root()).unwrap(), Outcome::passed());
+        let mut broke = ran("", Some(101));
+        broke.stderr = "error[E0433]: failed to resolve".to_string();
+        let left = deep_findings(&broke, root()).unwrap().findings;
+        assert_eq!(left, Vec::<Finding>::new());
+        let json = r#"{"success":false,"unused_deps":{"p 0.1.0 (path+file:///w/proj)":
+            {"manifest_path":"/w/proj/Cargo.toml","normal":["itoa"],"development":[],
+             "build":[]}},"note":null}"#;
+        // `/w/proj` holds no project, so the graph cannot be read and the finding is not dropped.
+        assert!(deep_findings(&ran(json, Some(1)), root()).is_err());
+    }
+
+    #[test]
     fn output_udeps_had_cut_short_stops_the_deep_check() {
-        let out = ran("{}", Some(1), true);
+        let out = cut_off("{}", Some(1));
         let err = read_deep(&out, root()).unwrap_err();
         assert!(err.contains("more than chock keeps"), "{err}");
     }
@@ -1500,7 +1578,7 @@ mod tests {
             out_of_reach(said),
             Some(("sysinfo@0.39.6".to_string(), "1.95".to_string()))
         );
-        let mut out = ran("", Some(101), false);
+        let mut out = ran("", Some(101));
         out.stderr = said.to_string();
         let outcome = read_msrv(&out, "1.94", root()).unwrap();
         assert!(!outcome.passed);
@@ -1519,7 +1597,7 @@ mod tests {
 
     #[test]
     fn a_udeps_that_could_not_build_carries_its_reason_rather_than_a_parse_error() {
-        let mut out = ran("", Some(101), false);
+        let mut out = ran("", Some(101));
         out.stderr = "error[E0433]: failed to resolve: use of undeclared crate `nope`".to_string();
         let outcome = read_deep(&out, root()).unwrap();
         assert!(!outcome.passed);
@@ -1605,7 +1683,7 @@ mod tests {
 
     #[test]
     fn a_crate_that_still_builds_on_its_oldest_rust_passes() {
-        let out = ran("", Some(0), false);
+        let out = ran("", Some(0));
         assert_eq!(read_msrv(&out, "1.85", root()).unwrap(), Outcome::passed());
     }
 
@@ -1724,9 +1802,9 @@ mod tests {
     /// seed's `cargo fmt --all` named only `../outpost`, a path dependency in another repository.
     #[test]
     fn hunks_only_in_another_repository_pass_unless_the_output_was_cut() {
-        let elsewhere = ran("Diff in /o/x.rs:3:\n", Some(1), false);
+        let elsewhere = ran("Diff in /o/x.rs:3:\n", Some(1));
         assert!(formatted(&elsewhere, Path::new("/w")).unwrap().passed);
-        let cut = ran("Diff in /o/x.rs:3:\n", Some(1), true);
+        let cut = cut_off("Diff in /o/x.rs:3:\n", Some(1));
         let refused = formatted(&cut, Path::new("/w")).unwrap_err();
         assert!(
             refused.starts_with("cargo fmt named no file in this tree"),
@@ -1763,12 +1841,20 @@ mod tests {
         assert!(formatted(&clean, Path::new("/w")).unwrap().passed);
     }
 
-    fn ran(stdout: &str, code: Option<i32>, truncated: bool) -> exec::Output {
+    fn ran(stdout: &str, code: Option<i32>) -> exec::Output {
         exec::Output {
             code,
             stdout: stdout.to_string(),
             stderr: "it broke".to_string(),
-            truncated,
+            truncated: false,
+        }
+    }
+
+    /// A run whose output chock cut off at its limit.
+    fn cut_off(stdout: &str, code: Option<i32>) -> exec::Output {
+        exec::Output {
+            truncated: true,
+            ..ran(stdout, code)
         }
     }
 
@@ -1853,7 +1939,7 @@ mod tests {
 
     #[test]
     fn a_tree_every_dependency_stays_inside_passes() {
-        assert!(read_acl(&ran("", Some(0), false)).unwrap().passed);
+        assert!(read_acl(&ran("", Some(0))).unwrap().passed);
     }
 
     #[test]
@@ -1863,7 +1949,7 @@ mod tests {
             "Failed to open cackle.toml",
             "cackle.toml: No such file or directory",
         ] {
-            let err = read_acl(&ran(said, Some(1), false)).unwrap_err();
+            let err = read_acl(&ran(said, Some(1))).unwrap_err();
             assert_eq!(
                 err,
                 "no cackle.toml, so no dependency is held to anything — write one with \
@@ -1879,7 +1965,6 @@ mod tests {
             "ERROR: 'proc-macro2' uses disallowed API `process`\n\
              ERROR: 'proc-macro2' uses disallowed API `fs`\n",
             Some(255),
-            false,
         );
         let found = read_acl(&out).unwrap();
         assert!(!found.passed);
@@ -1894,7 +1979,7 @@ mod tests {
 
     #[test]
     fn a_tree_with_no_config_could_not_run_rather_than_passing() {
-        let mut out = ran("", Some(255), false);
+        let mut out = ran("", Some(255));
         out.stderr = "Error: Failed to open /x/cackle.toml: No such file".to_string();
         let err = read_acl(&out).unwrap_err();
         assert!(err.contains("no cackle.toml"), "{err}");
@@ -1903,11 +1988,11 @@ mod tests {
 
     #[test]
     fn only_a_failure_to_open_the_config_itself_reads_as_the_config_being_absent() {
-        let mut other = ran("", Some(255), false);
+        let mut other = ran("", Some(255));
         other.stderr = "Error: Failed to open /x/lcov.info: No such file".to_string();
         assert!(!read_acl(&other).unwrap_err().contains("no cackle.toml"));
 
-        let mut named = ran("", Some(255), false);
+        let mut named = ran("", Some(255));
         named.stderr = "Error: cackle.toml is version 3, which is newer".to_string();
         assert!(!read_acl(&named).unwrap_err().contains("no cackle.toml"));
     }
@@ -1917,7 +2002,6 @@ mod tests {
         let out = ran(
             "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n",
             Some(255),
-            false,
         );
         let err = read_acl(&out).unwrap_err();
         assert!(err.contains("bubblewrap"), "{err}");
@@ -1929,13 +2013,13 @@ mod tests {
 
     #[test]
     fn a_refusal_naming_no_package_is_refused_rather_than_reported_as_a_finding() {
-        let out = ran("something went wrong\n", Some(255), false);
+        let out = ran("something went wrong\n", Some(255));
         assert!(read_acl(&out).is_err());
     }
 
     #[test]
     fn a_manifest_cargo_sort_accepts_measures_nothing() {
-        assert_eq!(read_sort(&ran("", Some(0), false)).unwrap(), Series::new());
+        assert_eq!(read_sort(&ran("", Some(0))).unwrap(), Series::new());
     }
 
     #[test]
@@ -1962,13 +2046,13 @@ mod tests {
 
     #[test]
     fn a_refusal_with_no_message_is_a_gate_that_could_not_measure() {
-        let why = read_sort(&ran("", Some(1), false)).unwrap_err();
+        let why = read_sort(&ran("", Some(1))).unwrap_err();
         assert!(why.contains("without saying which"), "{why}");
     }
 
     #[test]
     fn a_cut_objection_from_cargo_sort_is_refused_since_its_count_would_be_partial() {
-        let why = read_sort(&ran("", Some(1), true)).unwrap_err();
+        let why = read_sort(&cut_off("", Some(1))).unwrap_err();
         assert!(why.contains("printed more than chock keeps"), "{why}");
     }
 
@@ -1979,22 +2063,22 @@ mod tests {
         let partial = format!("output: {CUT}");
         let erred = "error[E0425]: cannot find value\n --> /w/proj/a.rs:3:5\n";
         assert_eq!(
-            said(&verdict(&ran(erred, Some(101), true), root())),
+            said(&verdict(&cut_off(erred, Some(101)), root())),
             ["a.rs:3: E0425: cannot find value", partial.as_str()]
         );
         assert_eq!(
-            said(&read_suite(&ran(FAILED_TEST, Some(100), true), root())),
+            said(&read_suite(&cut_off(FAILED_TEST, Some(100)), root())),
             [
                 "chock a_rule_that_holds: this test failed",
                 partial.as_str()
             ]
         );
-        let differs = ran("Diff in /w/proj/src/a.rs:624:\n", Some(1), true);
+        let differs = cut_off("Diff in /w/proj/src/a.rs:624:\n", Some(1));
         assert_eq!(
             said(&formatted(&differs, root()).unwrap()),
             [format!("src/a.rs: {UNFORMATTED}"), partial.clone()]
         );
-        let reached = ran("ERROR: 'syn' uses disallowed API `fs`\n", Some(255), true);
+        let reached = cut_off("ERROR: 'syn' uses disallowed API `fs`\n", Some(255));
         assert_eq!(
             said(&read_acl(&reached).unwrap()),
             [
@@ -2007,10 +2091,10 @@ mod tests {
     #[test]
     fn a_whole_output_and_a_cut_one_nothing_was_read_from_gain_no_such_finding() {
         assert_eq!(
-            said(&read_suite(&ran(FAILED_TEST, Some(100), false), root())),
+            said(&read_suite(&ran(FAILED_TEST, Some(100)), root())),
             ["chock a_rule_that_holds: this test failed"]
         );
-        let silent = verdict(&ran("", Some(101), true), root());
+        let silent = verdict(&cut_off("", Some(101)), root());
         assert_eq!(silent.findings, Vec::new());
     }
 }

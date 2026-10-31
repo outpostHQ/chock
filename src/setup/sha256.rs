@@ -1,6 +1,7 @@
 //! SHA-256 (FIPS 180-4), which a download pin names its file by. Written here, because a hash crate
 //! would be one more crate to trust for the one function that decides whether a fetch is trusted.
 
+use std::fmt::Write as _;
 use std::io::Read;
 
 const K: [u32; 64] = [
@@ -82,6 +83,7 @@ const START: [u32; 8] = [
 ];
 
 /// A hash in progress: the state, the bytes not yet a whole block, and the length so far.
+#[derive(Debug)]
 pub struct Hasher {
     state: [u32; 8],
     block: [u8; 64],
@@ -101,8 +103,10 @@ impl Default for Hasher {
 }
 
 impl Hasher {
+    /// Feeds `bytes` into the hash, compressing each block as it fills.
     pub fn update(&mut self, bytes: &[u8]) {
-        self.length = self.length.wrapping_add(bytes.len() as u64);
+        let added = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        self.length = self.length.wrapping_add(added);
         for &byte in bytes {
             if let Some(slot) = self.block.get_mut(self.filled) {
                 *slot = byte;
@@ -126,13 +130,17 @@ impl Hasher {
         let tail = bits.to_be_bytes();
         self.block[56..].copy_from_slice(&tail);
         compress(&mut self.state, &self.block);
-        self.state
-            .iter()
-            .map(|word| format!("{word:08x}"))
-            .collect()
+        self.state.iter().fold(String::new(), |mut out, word| {
+            let _ = write!(out, "{word:08x}");
+            out
+        })
     }
 }
 
+#[expect(
+    clippy::many_single_char_names,
+    reason = "the names are those of FIPS 180-4, so the code reads line for line against it"
+)]
 fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
     for (i, word) in block.as_chunks::<4>().0.iter().enumerate() {
@@ -181,6 +189,8 @@ pub fn of(bytes: &[u8]) -> String {
 }
 
 /// The hash of a file, read a block at a time so a 200 MB archive is never held whole.
+/// # Errors
+/// When the file cannot be opened or read.
 pub fn of_file(path: &std::path::Path) -> std::io::Result<String> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Hasher::default();
@@ -212,7 +222,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri takes 15 minutes to hash a million bytes")]
     fn a_million_bytes_hash_as_fips_180_4_says() {
         let said = "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0";
-        assert_eq!(of(&[b'a'; 1_000_000]), said);
+        assert_eq!(of(&vec![b'a'; 1_000_000]), said);
     }
 
     #[test]
@@ -227,10 +237,6 @@ mod tests {
 
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    #[allow(
-        clippy::unwrap_used,
-        reason = "a failed unwrap in a test is the test failing"
-    )]
     fn a_file_hashes_as_its_bytes_and_a_missing_one_is_an_error() {
         let dir = crate::testdir::make("sha256-file");
         let bytes: Vec<u8> = (0..=255u8).cycle().take(70_000).collect();

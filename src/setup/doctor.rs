@@ -8,14 +8,26 @@ use crate::setup::downloads::Download;
 use crate::setup::pins::{Pin, pinned};
 use crate::setup::version;
 
+mod toolchain;
+use toolchain::toolchain_status;
+#[cfg(test)]
+use toolchain::{missing_toolchain, toolchain_host, toolchain_name};
+
+/// How one thing `chock doctor` checks stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
+    /// Installed at the pinned version, which it holds.
     Matches(String),
+    /// Installed at another version than the pin.
     Drifted {
+        /// The version installed.
         have: String,
+        /// The version the pin names.
         want: String,
     },
+    /// Not installed.
     Missing {
+        /// The version the pin names.
         want: String,
     },
     /// Present, and built from a checkout rather than fetched, so there is no version to compare.
@@ -32,11 +44,16 @@ pub enum Status {
     Untrusted(String),
     /// Holding a record in a unit this chock does not produce, so the gate refuses until re-recorded.
     Recounted {
+        /// The unit the record holds.
         have: String,
+        /// The unit this chock counts in.
         want: String,
     },
+    /// Looked at directly, with the verdict and the words of the row.
     Inspected {
+        /// How the check stands.
         verdict: Verdict,
+        /// What the row says.
         message: String,
     },
 }
@@ -64,13 +81,17 @@ impl Status {
     }
 }
 
+/// One row of `chock doctor`: what it checked and how that stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
+    /// The tool, hook or gate the row is about.
     pub command: String,
+    /// How it stands.
     pub status: Status,
 }
 
 impl Row {
+    /// Whether the row fails `chock doctor`.
     #[must_use]
     pub fn is_failure(&self) -> bool {
         self.verdict() != Verdict::Pass
@@ -102,20 +123,40 @@ pub fn outpost_hooks(standing: Option<&str>, file: &str) -> Vec<Row> {
     }]
 }
 
+/// Whether chock wired the editor hook into the settings it writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wiring {
+    /// The settings run the hook.
+    Wired,
+    /// The settings do not run the hook.
+    Unwired,
+}
+
+/// Whether a file the editor hook reads changed after the wiring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edits {
+    /// No such file changed yet, so a silent hook is no fault.
+    Awaited,
+    /// A file changed, so the hook had a chance to answer.
+    Made,
+}
+
 /// The row for the hook chock wired into an editor, or `None` where it wired none: a project
-/// that never asked for a hook does not have a broken one. `waiting` is a hook no edit reached.
+/// that never asked for a hook does not have a broken one.
 #[must_use]
 pub fn editor_hook(
-    configured: bool,
+    wiring: Wiring,
     since: Option<std::time::Duration>,
-    waiting: bool,
+    edits: Edits,
 ) -> Option<Row> {
-    if !configured {
+    if wiring == Wiring::Unwired {
         return None;
     }
     let status = match since {
         Some(ago) => Status::Firing(format!("last answered {}", how_long(ago))),
-        None if waiting => Status::Firing("no edit since `chock init --local` wired it".into()),
+        None if edits == Edits::Awaited => {
+            Status::Firing("no edit since `chock init --local` wired it".into())
+        }
         None => Status::Silent,
     };
     Some(Row {
@@ -237,15 +278,16 @@ fn idle(rows: Vec<Row>, pins: &[Pin], enabled: &dyn Fn(&str) -> bool) -> Vec<Row
                 .map(|gate| gate.name)
                 .collect();
             let off = !gates.is_empty() && !gates.iter().any(|gate| enabled(gate));
-            match row.is_failure() && off {
-                true => Row {
+            if row.is_failure() && off {
+                Row {
                     status: Status::available(format!(
                         "only switched-off gates run it: {}",
                         gates.join(", ")
                     )),
                     ..row
-                },
-                false => row,
+                }
+            } else {
+                row
             }
         })
         .collect()
@@ -276,9 +318,12 @@ fn judged(rows: Vec<Row>, standing: &dyn Fn() -> (Verdict, String)) -> Vec<Row> 
             && matches!(row.status, Status::Unbuilt | Status::Unpinned(_))
     };
     rows.into_iter()
-        .map(|row| match fork(&row) {
-            true => inspected(&row.command, standing()),
-            false => row,
+        .map(|row| {
+            if fork(&row) {
+                inspected(&row.command, standing())
+            } else {
+                row
+            }
         })
         .collect()
 }
@@ -296,7 +341,7 @@ fn miri_in(
 /// Java runs TLC and Apalache for `tla`. No pin holds it, so doctor runs the one the gate finds.
 fn java_in(
     config: &Result<Option<crate::project::config::Config>, String>,
-    start: crate::exec::Start,
+    start: crate::exec::Start<'_>,
     root: &std::path::Path,
     home: Option<std::ffi::OsString>,
 ) -> Option<Row> {
@@ -333,7 +378,7 @@ pub fn gathered(
     extra: &crate::setup::pins::AdditionalPins,
 ) -> Vec<Row> {
     use crate::project::{document, vcs};
-    let start: crate::exec::Start = &crate::exec::run_env;
+    let start: crate::exec::Start<'_> = &crate::exec::run_env;
     let rows = check(pins, &installed_on_this_machine());
     let mut rows = judged(rows, &|| crate::setup::mutest::standing(start, root).row());
     let config = document::read::<crate::project::config::Config>(root).map_err(|e| e.to_string());
@@ -357,11 +402,17 @@ pub fn gathered(
     let wired = std::fs::read_to_string(root.join(".claude/settings.json"))
         .is_ok_and(|held| held.contains(crate::setup::agents::ON_EDIT));
     let since = crate::edited::since_firing(root);
-    rows.extend(editor_hook(
-        wired,
-        since,
-        crate::edited::awaiting_edit(root),
-    ));
+    let wiring = if wired {
+        Wiring::Wired
+    } else {
+        Wiring::Unwired
+    };
+    let edits = if crate::edited::awaiting_edit(root) {
+        Edits::Awaited
+    } else {
+        Edits::Made
+    };
+    rows.extend(editor_hook(wiring, since, edits));
     rows.extend(git_hooks(&crate::setup::hooks::installed_hooks(root)));
     // Only where Outpost holds this tree: elsewhere Outpost answers for an ancestor repository.
     let outpost_holds = vcs::holders(root).contains(&vcs::Kind::Outpost);
@@ -432,9 +483,10 @@ pub fn manual_in(config: &Result<Option<crate::project::config::Config>, String>
 
 /// The repository top where git holds this project's hooks, and the project's path below it.
 fn hooks_declared_at(root: &std::path::Path) -> Option<(std::path::PathBuf, Option<String>)> {
-    match crate::project::vcs::holders(root).contains(&crate::project::vcs::Kind::Git) {
-        true => Some((root.to_path_buf(), None)),
-        false => crate::project::vcs::enclosing_git(root).map(|(top, below)| (top, Some(below))),
+    if crate::project::vcs::holders(root).contains(&crate::project::vcs::Kind::Git) {
+        Some((root.to_path_buf(), None))
+    } else {
+        crate::project::vcs::enclosing_git(root).map(|(top, below)| (top, Some(below)))
     }
 }
 
@@ -538,101 +590,6 @@ pub fn additional(
         status: Status::broken("unrecognized pin key; supported suffixes are _VERSION, _BIN, _SETUP, _OS, _GIT, _REV, _NIGHTLY, _URL and _SHA256; this value was not executed or checked".to_string()),
     }));
     rows
-}
-
-fn toolchain_status(want: &str, stdout: &str) -> Status {
-    let unreadable =
-        || Status::unreadable("rustup toolchain list returned an unrecognized listing".to_string());
-    if stdout.trim() == "no installed toolchains" {
-        return missing_toolchain(want);
-    }
-    let Some((wanted, host)) = toolchain_name(want) else {
-        return unreadable();
-    };
-    if stdout.trim().is_empty() {
-        return unreadable();
-    }
-    let mut found = false;
-    // Linked custom toolchains are opaque names; only official names are normalized for matching.
-    for line in stdout
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-    {
-        let mut words = line.splitn(2, char::is_whitespace);
-        let name = words.next().unwrap_or_default();
-        let installed = toolchain_name(name);
-        let annotation = words.next().unwrap_or_default().trim();
-        if !matches!(
-            annotation,
-            "" | "(active)" | "(default)" | "(active, default)" | "(default, active)"
-        ) {
-            return unreadable();
-        }
-        found |= installed.is_some_and(|(name, installed_host)| {
-            name == wanted && (host.is_none() || host == installed_host)
-        });
-    }
-    if found {
-        Status::available(format!("pinned toolchain {want} is installed"))
-    } else {
-        missing_toolchain(want)
-    }
-}
-
-fn missing_toolchain(want: &str) -> Status {
-    Status::broken(format!(
-        "pinned toolchain {want} is not installed; run `rustup toolchain install {want}`"
-    ))
-}
-
-fn toolchain_name(name: &str) -> Option<(&str, Option<&str>)> {
-    let (channel, rest) = name.split_once('-').unwrap_or((name, ""));
-    if !toolchain_channel(channel) {
-        return None;
-    }
-    let (base, host) = dated_toolchain(name, channel, rest)?;
-    if host.is_empty() {
-        return (!name.ends_with('-')).then_some((base, None));
-    }
-    toolchain_host(host).then_some((base, Some(host)))
-}
-
-fn toolchain_channel(channel: &str) -> bool {
-    matches!(channel, "stable" | "beta" | "nightly")
-        || version::from_version_output(channel).as_deref() == Some(channel)
-}
-
-fn dated_toolchain<'a>(
-    name: &'a str,
-    channel: &'a str,
-    rest: &'a str,
-) -> Option<(&'a str, &'a str)> {
-    if !rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
-        return Some((channel, rest));
-    }
-    let date = rest.get(..10)?;
-    if !date.bytes().enumerate().all(|(i, b)| match i {
-        4 | 7 => b == b'-',
-        _ => b.is_ascii_digit(),
-    }) {
-        return None;
-    }
-    let tail = rest.get(10..)?;
-    let host = match tail {
-        "" => "",
-        _ => tail.strip_prefix('-')?,
-    };
-    Some((name.get(..channel.len() + 11)?, host))
-}
-
-fn toolchain_host(host: &str) -> bool {
-    let parts: Vec<&str> = host.split('-').collect();
-    (3..=4).contains(&parts.len())
-        && host.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
-        && parts.iter().all(|part| {
-            !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-        })
 }
 
 /// This project's declarations, named for `below` where it sits below its repository's top. A
@@ -786,6 +743,7 @@ fn inspection_label(verdict: Verdict) -> &'static str {
     }
 }
 
+/// The text of `chock doctor`: one line for each row, then the summary.
 #[must_use]
 pub fn render(rows: &[Row]) -> String {
     if rows.is_empty() {
@@ -993,10 +951,6 @@ pub fn render_json(rows: &[Row], chock_version: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
 
@@ -1018,6 +972,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "it stands for the machine's answer, which the code under test takes as a `Result`"
+    )]
     fn listing(text: &str) -> Result<crate::exec::Output, String> {
         Ok(crate::exec::Output::of(Some(0), text, ""))
     }
@@ -1089,17 +1047,17 @@ mod tests {
             let rows = unpinned(&|gate| gate == "verus", &[], downloads);
             rows.into_iter().map(|row| row.command).collect()
         };
-        assert!(named(&verus).is_empty());
+        assert_eq!(named(&verus), Vec::<String>::new());
         assert_eq!(named(&tlapm), ["verus"]);
     }
 
     /// A manual gate is the project's choice, so its row passes; naming it keeps it in sight.
     #[test]
     fn a_manual_gate_that_is_on_is_named_and_one_that_is_off_is_not() {
-        use crate::project::config::{Config, Stage};
+        use crate::project::config::{Config, Needs, Stage};
         let mut config = Config::of(["binsize"]);
-        config.place("binsize", true, Stage::Manual);
-        config.place("bsize", true, Stage::Manual);
+        config.place("binsize", Needs::Compiler, Stage::Manual);
+        config.place("bsize", Needs::Compiler, Stage::Manual);
         let rows = manual_in(&Ok(Some(config)));
         let named: Vec<&str> = rows.iter().map(|row| row.command.as_str()).collect();
         assert_eq!(named, ["binsize"]);
@@ -1712,9 +1670,9 @@ mod tests {
             &|p| (p.command == "cargo-sort").then(|| "1.58.0".to_string()),
         );
         rows.extend(editor_hook(
-            true,
+            Wiring::Wired,
             Some(std::time::Duration::from_secs(60)),
-            false,
+            Edits::Made,
         ));
         assert_eq!(verdict(&rows), Verdict::Pass);
         let text = render(&rows);
@@ -1741,17 +1699,22 @@ mod tests {
 
     #[test]
     fn a_hook_wired_and_never_seen_to_answer_is_a_failure() {
-        let row = editor_hook(true, None, false).unwrap();
+        let row = editor_hook(Wiring::Wired, None, Edits::Made).unwrap();
         assert_eq!(row.command, EDITOR_HOOK);
         assert_eq!(row.status, Status::Silent);
         assert!(row.is_failure());
-        let waiting = editor_hook(true, None, true).unwrap();
+        let waiting = editor_hook(Wiring::Wired, None, Edits::Awaited).unwrap();
         assert!(!waiting.is_failure(), "no edit has reached it yet");
     }
 
     #[test]
     fn a_hook_that_has_answered_is_not_a_failure_and_says_when() {
-        let row = editor_hook(true, Some(std::time::Duration::from_secs(90)), true).unwrap();
+        let row = editor_hook(
+            Wiring::Wired,
+            Some(std::time::Duration::from_secs(90)),
+            Edits::Awaited,
+        )
+        .unwrap();
         assert_eq!(
             row.status,
             Status::Firing("last answered 1 minute ago".to_string())
@@ -1761,9 +1724,13 @@ mod tests {
 
     #[test]
     fn a_project_with_no_editor_hook_is_not_asked_about_one() {
-        assert_eq!(editor_hook(false, None, true), None);
+        assert_eq!(editor_hook(Wiring::Unwired, None, Edits::Awaited), None);
         assert_eq!(
-            editor_hook(false, Some(std::time::Duration::from_secs(1)), false),
+            editor_hook(
+                Wiring::Unwired,
+                Some(std::time::Duration::from_secs(1)),
+                Edits::Made
+            ),
             None
         );
     }
@@ -1774,12 +1741,12 @@ mod tests {
         assert_eq!(how_long(Duration::from_secs(5)), "just now");
         assert_eq!(how_long(Duration::from_secs(60)), "1 minute ago");
         assert_eq!(how_long(Duration::from_secs(3600)), "1 hour ago");
-        assert_eq!(how_long(Duration::from_secs(86_400 * 3)), "3 days ago");
+        assert_eq!(how_long(Duration::from_hours(72)), "3 days ago");
     }
 
     #[test]
     fn a_silent_hook_makes_the_whole_report_fail() {
-        let rows = vec![editor_hook(true, None, false).unwrap()];
+        let rows = vec![editor_hook(Wiring::Wired, None, Edits::Made).unwrap()];
         assert_eq!(verdict(&rows), Verdict::Tripped);
     }
 

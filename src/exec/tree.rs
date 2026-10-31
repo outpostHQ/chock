@@ -77,10 +77,6 @@ fn signal(pid: u32, signal: rustix::process::Signal) -> Result<(), rustix::io::E
 }
 
 #[cfg(all(test, target_os = "linux"))]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

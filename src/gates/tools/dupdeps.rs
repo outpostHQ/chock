@@ -5,6 +5,7 @@ use crate::exec;
 use crate::run::baseline::{Keys, Series};
 use crate::run::{Ctx, Gate, Group, Kind};
 
+/// Counts the crates that the dependency graph compiles more than once.
 pub const GATE: Gate = Gate {
     name: "dupdeps",
     about: "crates the dependency graph compiles more than once, against the count recorded",
@@ -67,10 +68,6 @@ fn read(out: &exec::Output) -> Result<Series, String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use std::collections::BTreeMap;
 

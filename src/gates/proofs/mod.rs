@@ -16,7 +16,9 @@ use crate::exec;
 /// file, and the command each tool starts behind, which is empty but in a test that fakes them.
 #[derive(Debug, Clone, Default)]
 pub struct Tools {
+    /// chock's tools directory, which holds each download pin's file; `None` when it has none.
     pub home: Option<PathBuf>,
+    /// The command each tool starts behind; empty but in a test that fakes the tools.
     pub launcher: Vec<String>,
 }
 
@@ -36,20 +38,22 @@ impl Tools {
         let all = launcher
             .chain(std::iter::once(program))
             .chain(args.iter().copied());
-        let mut argv: Vec<String> = all.map(str::to_string).collect();
-        let first = argv.remove(0);
-        (first, argv)
+        let mut words: Vec<String> = all.map(str::to_string).collect();
+        let first = words.remove(0);
+        (first, words)
     }
 
     /// `program` run once in `dir`, as `exec::run` runs it.
+    /// # Errors
+    /// A program that could not run, with the step at which it stopped.
     pub fn run(
         &self,
         program: &str,
         args: &[&str],
         dir: &Path,
     ) -> Result<exec::Output, exec::ExecError> {
-        let (first, argv) = self.command(program, args);
-        exec::run(&first, &strs(&argv), dir)
+        let (first, rest) = self.command(program, args);
+        exec::run(&first, &strs(&rest), dir)
     }
 }
 
@@ -99,10 +103,6 @@ pub(crate) fn cleared(scratch: &Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
 

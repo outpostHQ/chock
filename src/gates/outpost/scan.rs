@@ -7,6 +7,7 @@ use crate::gates::metrics::prodlines;
 use crate::run::baseline::{Keys, Series};
 use crate::run::{Ctx, Gate, Group, Kind};
 
+/// Counts defects that shipped before, and untrusted input that reaches a sink.
 pub const GATE: Gate = Gate {
     name: "scan",
     about: "a defect that has shipped before, or untrusted input reaching a sink; needs `outpost`",
@@ -71,10 +72,6 @@ fn keyed<'a>(findings: impl Iterator<Item = &'a Found>) -> Series {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

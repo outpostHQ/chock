@@ -7,6 +7,7 @@ pub mod evidence;
 pub mod github;
 pub mod lock;
 pub mod report;
+pub mod since;
 pub mod verdicts;
 
 mod compare;
@@ -15,7 +16,8 @@ mod lanes;
 mod measurement;
 pub(crate) mod workers;
 pub use context::{
-    Coverage, Ctx, LCOV, Runner, Scope, coverage_for, default_coverage, default_runner, runner_for,
+    Coverage, Ctx, Host, LCOV, Runner, Scope, coverage_for, default_coverage, default_runner,
+    runner_for,
 };
 
 use std::hash::{Hash, Hasher};
@@ -28,11 +30,17 @@ pub(crate) use lanes::recorded_tests;
 pub use measurement::{Details, Measurement, unread_of};
 use workers::on_workers;
 
+mod measured_ratchet;
+use measured_ratchet::measured_ratchet;
+pub use measured_ratchet::portable;
+
 /// What a pass/fail gate found. `passed` is the tool's own verdict rather than a count of
 /// findings, because a tool can warn about things that are not failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
+    /// The tool's own verdict.
     pub passed: bool,
+    /// What the tool found, which a pass may still carry.
     pub findings: Vec<Finding>,
     /// What the tool wrote, for when no finding could be read from it; the reason quotes its tail.
     pub said: Option<String>,
@@ -45,6 +53,7 @@ pub struct Outcome {
 }
 
 impl Outcome {
+    /// A pass with nothing found.
     #[must_use]
     pub fn passed() -> Self {
         Self {
@@ -74,12 +83,14 @@ impl Outcome {
     /// A pass when nothing was found, and otherwise a failure that holds what was.
     #[must_use]
     pub fn of(findings: Vec<Finding>) -> Self {
-        match findings.is_empty() {
-            true => Self::passed(),
-            false => Self::failed(findings),
+        if findings.is_empty() {
+            Self::passed()
+        } else {
+            Self::failed(findings)
         }
     }
 
+    /// A failure that holds what was found.
     #[must_use]
     pub fn failed(findings: Vec<Finding>) -> Self {
         Self {
@@ -115,7 +126,7 @@ impl Outcome {
     pub fn saying(mut self, out: &crate::exec::Output) -> Self {
         let wrote = [out.stdout.as_str(), out.stderr.as_str()];
         let wrote: Vec<&str> = wrote.into_iter().filter(|text| !text.is_empty()).collect();
-        self.said = Some(wrote.join(STREAMS) + cut_short(out.truncated));
+        self.said = Some(wrote.join(STREAMS) + cut_short(out));
         self
     }
 }
@@ -128,28 +139,30 @@ const CUT_SHORT: &str =
     "\n(the tool printed more than chock keeps, so these are not the last lines it wrote)";
 
 /// `CUT_SHORT` where the capture was cut, and nothing where it holds all the tool wrote.
-fn cut_short(truncated: bool) -> &'static str {
-    match truncated {
-        true => CUT_SHORT,
-        false => "",
-    }
+fn cut_short(out: &crate::exec::Output) -> &'static str {
+    if out.truncated { CUT_SHORT } else { "" }
 }
 
 /// `Err` is always "could not run", never "found something". A gate that reports a tool crash as a
 /// clean result is the one failure a quality system cannot afford.
 pub type Measure = fn(&Ctx) -> Result<Series, String>;
+/// What a pass-or-fail gate runs; `Err` is "could not run", as for `Measure`.
 pub type Check = fn(&Ctx) -> Result<Outcome, String>;
 
+/// A `Measure` that also returns scope notes, details and the files it could not read.
 pub type AnnotatedMeasure = fn(&Ctx) -> Result<Measurement, String>;
 
 /// Existing debt may be adopted; blockers still fail even when the debt has a baseline.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Inspection {
+    /// Findings a baseline may hold as debt.
     pub debt: Vec<Finding>,
+    /// Findings that fail the gate whatever the baseline holds.
     pub blockers: Vec<Finding>,
 }
 
 impl Inspection {
+    /// An inspection where every finding is debt and none blocks.
     #[must_use]
     pub fn debt(findings: Vec<Finding>) -> Self {
         Self {
@@ -184,8 +197,10 @@ impl Inspection {
     }
 }
 
+/// What a debt gate runs; `Err` is "could not run", as for `Measure`.
 pub type Inspect = fn(&Ctx) -> Result<Inspection, String>;
 
+/// How a gate reaches its verdict.
 #[derive(Debug)]
 pub enum Kind {
     /// The tool decides. chock normalises its exit code and nothing more.
@@ -193,19 +208,27 @@ pub enum Kind {
     /// Debt on record passes. A local run takes the first record; CI, which writes none, holds a
     /// gate without one to zero.
     Debt {
+        /// What the gate runs.
         inspect: Inspect,
+        /// What the gate counts, such as `finding(s)`.
         unit: &'static str,
     },
     /// chock decides, by comparing what the gate measured against the committed baseline.
     Ratchet {
+        /// What the gate runs.
         measure: Measure,
+        /// What the gate keys its record by.
         keys: Keys,
+        /// What the gate counts.
         unit: &'static str,
     },
     /// Scope advisories travel with the numbers; they never become keys or change the verdict.
     AnnotatedRatchet {
+        /// What the gate runs.
         measure: AnnotatedMeasure,
+        /// What the gate keys its record by.
         keys: Keys,
+        /// What the gate counts.
         unit: &'static str,
     },
 }
@@ -239,10 +262,14 @@ pub enum Group {
     Setup,
 }
 
+/// One check chock runs: its name, what it is for, and how it reaches its verdict.
 #[derive(Debug)]
 pub struct Gate {
+    /// The name `chock run` and the report use.
     pub name: &'static str,
+    /// One line on what the gate checks, for `chock gates`.
     pub about: &'static str,
+    /// Which list the gate belongs to.
     pub group: Group,
     /// Whether answering costs a compile. It decides which gates a commit can wait for, and it is
     /// a fact about the gate, not a guess by the hook script.
@@ -250,6 +277,7 @@ pub struct Gate {
     /// What the gate reads, so a run may answer from an earlier verdict. `None` is never recalled,
     /// and is right until somebody shows the list is complete.
     pub reads: Option<crate::run::verdicts::Reads>,
+    /// How the gate reaches its verdict.
     pub kind: Kind,
 }
 
@@ -270,14 +298,38 @@ impl Gate {
             Kind::Binary(_) => None,
         }
     }
+
+    /// Whether this gate needs a compiler, from `builds`.
+    #[must_use]
+    pub fn needs(&self) -> crate::project::config::Needs {
+        use crate::project::config::Needs;
+        if self.builds {
+            Needs::Compiler
+        } else {
+            Needs::NoCompiler
+        }
+    }
+}
+
+/// How much a run measures: every gate it would take, or with `--fast` only the quick ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pace {
+    /// Every gate the run would take.
+    Full,
+    /// Only the quick gates, none of which needs a compiler, from `--fast`.
+    Fast,
 }
 
 /// Measure one ratchet without judging it, which is what `chock baseline` records.
+/// # Errors
+/// The text says why the gate could not run, or which files it could not read.
 pub fn measure(gate: &Gate, ctx: &Ctx) -> Result<Series, String> {
     measured(gate, ctx).map(|read| read.series)
 }
 
 /// What `chock baseline` records and a survey shows: a read of every file, with its scope notes.
+/// # Errors
+/// The text says why the gate could not run, or which files it could not read.
 pub fn measured(gate: &Gate, ctx: &Ctx) -> Result<Measurement, String> {
     read_of(gate, ctx).and_then(Measurement::whole)
 }
@@ -336,9 +388,10 @@ fn keyed(gate: &Gate, ctx: &Ctx) -> Option<String> {
         coverage_tools: &ctx.coverage.tools,
         record: own_record(gate, ctx),
         chock: &chock,
+        tips: &|| crate::project::vcs::tips(&ctx.root),
     };
     let key = crate::run::verdicts::key(reads, gate.name, &held);
-    key.map(|key| key_format(gate, reads.reader, ctx.ci, &key))
+    key.map(|key| key_format(gate, reads.reader, ctx.host(), &key))
         .map(|key| with_part(gate, ctx, key))
         .map(|key| with_scope(ctx, key))
         .and_then(|key| with_change_set(gate, ctx, key))
@@ -389,12 +442,12 @@ fn with_change_set(gate: &Gate, ctx: &Ctx, key: String) -> Option<String> {
 
 /// Reader and invocation changes must not reuse earlier answers while the package version is fixed.
 /// The gate names its own reader; carrying scope notes changes what any ratchet's answer holds.
-fn key_format(gate: &Gate, reader: &str, ci: bool, key: &str) -> String {
+fn key_format(gate: &Gate, reader: &str, host: Host, key: &str) -> String {
     let scoped = matches!(gate.kind, Kind::AnnotatedRatchet { .. }).then_some("scope-v2");
     // A recalled pass lowers no record, so one kept before records were lowered must not answer.
     let lowers = gate.counts_in().map(|_| "lowers-v1");
     // CI fails a gain the record lacks where a local run writes it, so the two share no verdict.
-    let mode = ci.then_some("ci");
+    let mode = (host == Host::Ci).then_some("ci");
     let parts: Vec<&str> = [reader]
         .into_iter()
         .filter(|reader| !reader.is_empty())
@@ -406,6 +459,7 @@ fn key_format(gate: &Gate, reader: &str, ci: bool, key: &str) -> String {
     parts.join(":")
 }
 
+/// Runs one gate and judges it, or says why it could not run.
 pub fn run_one(gate: &Gate, ctx: &Ctx) -> GateReport {
     if ctx.depth >= MAX_DEPTH {
         return GateReport::cannot_run(
@@ -474,7 +528,7 @@ pub type Told<'a> = &'a (dyn Fn(&GateReport) + Sync);
 
 /// `told` hears each gate that compiles as it ends. The rest take seconds, so it hears those that
 /// did not pass once they have all run, before the first build starts.
-pub fn run_all(gates: &[&Gate], ctx: &Ctx, chock_version: &str, told: Told) -> Run {
+pub fn run_all(gates: &[&Gate], ctx: &Ctx, chock_version: &str, told: Told<'_>) -> Run {
     let quick = side_by_side(gates, ctx, ctx.jobs.clamp(1, 8));
     quick
         .iter()
@@ -494,7 +548,7 @@ pub fn run_all(gates: &[&Gate], ctx: &Ctx, chock_version: &str, told: Told) -> R
     Run::new(chock_version, reports)
 }
 
-fn in_turn(gate: &Gate, ctx: &Ctx, told: Told) -> GateReport {
+fn in_turn(gate: &Gate, ctx: &Ctx, told: Told<'_>) -> GateReport {
     let report = run_one(gate, ctx);
     told(&report);
     report
@@ -734,30 +788,6 @@ fn numbered(gate: &Gate, verdict: Verdict, now: u64, was: u64, unit: &str) -> Ga
     report
 }
 
-/// What a first record says beside its number. An annotated ratchet names each site past its
-/// record, and with none every site is past it, so only its notes, which name no file, stay.
-fn first_notes(gate: &Gate, findings: Vec<Finding>) -> Vec<Finding> {
-    let sited = matches!(gate.kind, Kind::AnnotatedRatchet { .. });
-    findings
-        .into_iter()
-        .filter(|found| !sited || found.file.is_empty())
-        .collect()
-}
-
-/// A gate's first local run: what it measured is its record from here on, written whatever the
-/// verdict. A file the change touched is still held to zero where the project asks that.
-fn first_record(gate: &Gate, ctx: &Ctx, read: Measurement, keys: Keys, unit: &str) -> GateReport {
-    let now = read.series;
-    let total = now.summed();
-    let mut report = numbered(gate, Verdict::Pass, total, total, unit);
-    report.findings = first_notes(gate, read.findings);
-    if let Err(why) = touched(&mut report, gate, ctx, &now, &now, keys) {
-        return GateReport::cannot_run(gate.name, rerun(gate.name).as_str(), &why);
-    }
-    report.tightened = Some(now);
-    report
-}
-
 /// The ratchet, in the only place it is written. A local run takes a gate's first record from what
 /// it measured. CI writes no record, so there a gate without one cannot rule on the tree.
 fn ratchet(gate: &Gate, ctx: &Ctx, keys: Keys, unit: &str) -> GateReport {
@@ -829,53 +859,23 @@ fn with_findings(mut report: GateReport, read: Measurement, over: Vec<Finding>) 
     report
 }
 
-fn measured_ratchet(
-    gate: &Gate,
-    ctx: &Ctx,
-    read: Measurement,
-    keys: Keys,
-    unit: &str,
-) -> GateReport {
-    if let Err(why) = portable(&read.series) {
-        return GateReport::cannot_run(gate.name, rerun(gate.name).as_str(), &why);
+/// Each key this run measured that the record lacks because the chock that wrote the record did
+/// not measure it yet. A local run records each first; CI writes no record, so there it fails.
+fn newly_measured(gate: &Gate, ctx: &Ctx, now: &Series, was: &Series) -> Series {
+    let older = |since: &str| {
+        crate::setup::version::compare(&ctx.baseline.chock, since) == Some(std::cmp::Ordering::Less)
+    };
+    let mut added = Series::new();
+    if ctx.ci {
+        return added;
     }
-    if takes_first(gate, ctx) {
-        return first_record(gate, ctx, read, keys, unit);
+    for (key, count) in &now.0 {
+        let newer = crate::gates::measured_since(gate.name, key).is_some_and(older);
+        if newer && was.get(key).is_none() {
+            added.set(key, *count);
+        }
     }
-    let now = read.series;
-    let total = now.summed();
-    let was = held_against(gate, ctx, &now);
-    let regroup = regrouped(gate, &now, &was, keys);
-    let recount = recounted(ctx.baseline.unit(gate.name), unit);
-    if let Some(reason) = regroup.or(recount) {
-        return GateReport::cannot_run(gate.name, rerun(gate.name).as_str(), &reason);
-    }
-    let (verdict, findings) = compared(&now, &was, keys, gate.name, unit, &read.details);
-    let mut report = numbered(gate, verdict, total, was.summed(), unit);
-    report.findings = findings;
-    report.findings.extend(read.findings);
-    if let Err(why) = touched(&mut report, gate, ctx, &now, &was, keys) {
-        return GateReport::cannot_run(gate.name, rerun(gate.name).as_str(), &why);
-    }
-    lock_in(&mut report, gate, ctx, now.tightened(&was, keys), &was);
-    report
-}
-
-/// A reader that re-keys makes every old key absent and every new one look like new debt.
-fn regrouped(gate: &Gate, now: &Series, was: &Series, keys: Keys) -> Option<String> {
-    if matches!(gate.kind, Kind::Debt { .. }) {
-        return None;
-    }
-    rekeyed(now, was, keys)
-}
-
-/// A gate that changes what it counts keeps its keys, so only the unit tells the numbers apart.
-fn recounted(held: Option<&str>, unit: &str) -> Option<String> {
-    let before = held.filter(|before| *before != unit)?;
-    Some(format!(
-        "this run counts {unit} where the record holds {before}, so the numbers are not \
-         comparable — re-record with `chock baseline <gate>`"
-    ))
+    added
 }
 
 /// Debt the record allows in a file the change touched, where the project holds such files to zero.
@@ -926,73 +926,32 @@ fn strict(gate: &Gate, ctx: &Ctx) -> bool {
     ctx.strict.iter().any(|name| name == gate.name)
 }
 
-/// What a run is compared against: the record, or zero for every key a strict gate measured.
+/// What a run is compared against: the record less each row of a lens the gate now leaves out, or
+/// zero for every key a strict gate measured.
 fn held_against(gate: &Gate, ctx: &Ctx, now: &Series) -> Series {
-    match strict(gate, ctx) {
-        true => now.zeroed(),
-        false => ctx.baseline.gate(gate.name),
+    if strict(gate, ctx) {
+        return now.zeroed();
     }
-}
-
-/// A passing gate whose record went down keeps the lower number for the run to write. CI writes
-/// nothing, so there each gain the committed record is missing fails the gate instead.
-fn lock_in(report: &mut GateReport, gate: &Gate, ctx: &Ctx, tighter: Option<Series>, was: &Series) {
-    let passed = report.verdict == Verdict::Pass;
-    let Some(tighter) = tighter.filter(|_| passed && crate::gates::settles_anywhere(gate.name))
-    else {
-        return;
-    };
-    if !ctx.ci {
-        report.tightened = Some(tighter);
-        return;
-    }
-    report.verdict = Verdict::Tripped;
-    report.exit_code = Verdict::Tripped.code();
-    let unit = report.unit.clone().unwrap_or_default();
-    report.findings.extend(unrecorded(&tighter, was, &unit));
-}
-
-/// Each key whose committed record is above what this run measured, where an editor can open it.
-fn unrecorded(tighter: &Series, was: &Series, unit: &str) -> Vec<Finding> {
-    was.0
-        .iter()
-        .filter(|(key, held)| tighter.get(key) != Some(**held))
-        .map(|(key, held)| {
-            let now = tighter.get(key).unwrap_or_default();
-            let said = format!(
-                "{now} {unit} where the record holds {held}: a commit through the pre-commit hook \
-                 lowers the record, or `chock baseline --lower`, and the change has to commit it"
-            );
-            placed(key, &said).numbers(now, Some(*held))
-        })
-        .collect()
-}
-
-/// Whether a baseline may carry these keys. Asked where a record is written as well as where one is
-/// read, because a first run refuses before it measures and never reaches the comparison.
-pub fn portable(series: &Series) -> Result<(), String> {
-    match crate::project::unportable(series.0.keys().map(String::as_str)) {
-        None => Ok(()),
-        Some(key) => Err(format!(
-            "measured `{key}`, which is not inside this project — a baseline is committed and read \
-             elsewhere, so it cannot be keyed by one machine's paths"
-        )),
-    }
+    let left_out = |key: &str| crate::gates::outpost::intel::leaves_out(gate.name, key);
+    let mut held = ctx.baseline.gate(gate.name);
+    held.0.retain(|key, _| !left_out(key));
+    held
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap in a test is the test failing, and one measure panics on purpose"
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the test gates fill a gate's fn-pointer slot, which returns a `Result`"
 )]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
     use crate::gates;
     use crate::gates::tools::miri::Part;
     use crate::run::baseline::Baseline;
     use crate::run::compare::finding_for;
-    use crate::run::report::locked_in;
+    use crate::run::report::{Gating, locked_in};
     use std::path::PathBuf;
 
     fn ctx_with(gate: &str, pairs: &[(&str, u64)]) -> Ctx {
@@ -1463,7 +1422,7 @@ mod tests {
         assert_eq!(report.verdict, Verdict::Pass);
         assert_eq!(report.measured, Some(15));
         assert_eq!(report.baseline, Some(15));
-        assert!(report.findings.is_empty());
+        assert_eq!(report.findings, Vec::<Finding>::new());
     }
 
     #[test]
@@ -1504,7 +1463,7 @@ mod tests {
         lower.set("src/a.rs", 10);
         lower.set("src/b.rs", 5);
         assert_eq!(report.tightened, Some(lower.clone()));
-        let settled = locked_in(&ctx.baseline, &[report], true).unwrap();
+        let settled = locked_in(&ctx.baseline, &[report], Gating::Commit).unwrap();
         assert_eq!(settled.record.gate("slop"), lower);
         assert_eq!(
             (settled.first.clone(), settled.lowered.clone()),
@@ -1728,6 +1687,10 @@ mod tests {
     }
 
     /// Panics if it is ever reached, which is what proves the second run answered from the record.
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "it fills a gate's `Check` slot and must never run"
+    )]
     fn never_checked(_ctx: &Ctx) -> Result<Outcome, String> {
         panic!("a recalled verdict must not run the gate again")
     }
@@ -1841,6 +1804,10 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "it fills a gate's `Measure` slot and must never run"
+    )]
     fn never_reached(_ctx: &Ctx) -> Result<Series, String> {
         panic!("in CI a ratchet with no record must refuse before it measures anything")
     }
@@ -1896,7 +1863,7 @@ mod tests {
         assert_eq!(report.findings, Vec::new());
         let counted = two_items(&ctx).unwrap();
         assert_eq!(report.tightened, Some(counted.clone()));
-        let settled = locked_in(&ctx.baseline, &[report], false).unwrap();
+        let settled = locked_in(&ctx.baseline, &[report], Gating::Other).unwrap();
         assert_eq!(settled.record.gate("probe"), counted);
         assert_eq!(settled.record.unit("probe"), Some("lines"));
         assert!(settled.record.has("another"), "the other records stay");
@@ -1905,6 +1872,101 @@ mod tests {
             (vec!["probe".to_string()], Vec::new())
         );
         assert_eq!(settled.said(), "wrote the first record for probe");
+    }
+
+    fn three_long(_ctx: &Ctx) -> Result<Measurement, String> {
+        let mut series = Series::new();
+        series.set("clippy::redundant_clone", 2);
+        series.set(gates::tools::codeslop::LONG_LITERAL, 3);
+        Ok(Measurement::of(series, Vec::new()))
+    }
+
+    /// The `codeslop` gate, measuring `three_long`, over a record that the chock `version` wrote.
+    fn codeslop_recorded_by(version: &str) -> (Gate, Ctx) {
+        let gate = Gate {
+            name: gates::tools::codeslop::GATE.name,
+            ..annotated_of(three_long, Keys::Measures, "findings")
+        };
+        let mut ctx = ctx_with(gate.name, &[("clippy::redundant_clone", 2)]);
+        ctx.baseline.chock = version.to_string();
+        (gate, ctx)
+    }
+
+    /// Contract: another gate's write under 0.20.0 keeps a 0.19.0 record's `chock` until codeslop
+    /// records its new keys; then a missing new key fails. Mutant: `stamp` always says `running`.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_write_for_another_gate_keeps_the_record_chock_until_codeslop_records_its_new_keys() {
+        let dir = crate::testdir::make("run-held-chock");
+        let read = || -> Baseline {
+            let text = std::fs::read_to_string(dir.join(crate::run::baseline::FILE)).unwrap();
+            crate::project::document::parse(&text, "baseline").unwrap()
+        };
+        let (gate, older) = codeslop_recorded_by("0.19.0");
+        let mut typos = GateReport::new("typos", Verdict::Pass, "chock run typos");
+        typos.measured = Some(0);
+        typos.tightened = Some(Series::new());
+        crate::run::report::settle(&dir, &older.baseline, &[typos], "0.20.0", Gating::Other);
+        assert_eq!(
+            read().chock,
+            "0.19.0",
+            "codeslop has not recorded its new keys yet"
+        );
+        let ctx = Ctx {
+            baseline: read(),
+            ..older
+        };
+        let report = run_one(&gate, &ctx);
+        assert_eq!(report.verdict, Verdict::Pass);
+        crate::run::report::settle(&dir, &ctx.baseline, &[report], "0.20.0", Gating::Other);
+        assert_eq!(read().chock, "0.20.0");
+        assert_eq!(read().gate(gate.name), three_long(&ctx).unwrap().series);
+        let mut lacking = read();
+        let mut old_keys = Series::new();
+        old_keys.set("clippy::redundant_clone", 2);
+        lacking.set(gate.name, old_keys);
+        let report = run_one(
+            &gate,
+            &Ctx {
+                baseline: lacking,
+                ..ctx
+            },
+        );
+        assert_eq!(report.verdict, Verdict::Tripped);
+    }
+
+    /// Contract: a record by 0.19.0 that lacks `chock::long_literal` takes a first record of it,
+    /// and one by 0.20.0 fails on it. Mutant: `newly_measured` without the version test.
+    #[test]
+    fn a_measure_newer_than_the_record_takes_a_first_record_and_one_the_record_knew_fails() {
+        let (gate, older) = codeslop_recorded_by("0.19.0");
+        let report = run_one(&gate, &older);
+        assert_eq!(report.verdict, Verdict::Pass);
+        let mut added = Series::new();
+        added.set(gates::tools::codeslop::LONG_LITERAL, 3);
+        assert_eq!(report.new_measures, added);
+        let settled = locked_in(&older.baseline, &[report], Gating::Other).unwrap();
+        assert_eq!(
+            settled.record.gate(gate.name),
+            three_long(&older).unwrap().series
+        );
+        assert_eq!(
+            settled.said(),
+            "wrote the first record of a new measure for codeslop chock::long_literal"
+        );
+        let (gate, newer) = codeslop_recorded_by("0.20.0");
+        let report = run_one(&gate, &newer);
+        assert_eq!(report.verdict, Verdict::Tripped);
+        assert!(report.new_measures.is_empty());
+    }
+
+    #[test]
+    fn ci_writes_no_record_so_a_newer_measure_the_record_lacks_fails_there() {
+        let (gate, mut ci) = codeslop_recorded_by("0.19.0");
+        ci.ci = true;
+        let report = run_one(&gate, &ci);
+        assert_eq!(report.verdict, Verdict::Tripped);
+        assert!(report.new_measures.is_empty());
     }
 
     #[test]
@@ -2061,7 +2123,7 @@ mod tests {
         );
         let report = run_one(&ratchet_gate(), &ctx);
         assert_eq!(report.verdict, Verdict::Pass);
-        assert!(report.findings.is_empty());
+        assert_eq!(report.findings, Vec::<Finding>::new());
     }
 
     /// `codeslop` keys by whichever clippy lint fired, so a lint fixed to zero leaves the series.
@@ -2079,7 +2141,7 @@ mod tests {
         );
         let report = run_one(&gate, &ctx);
         assert_eq!(report.verdict, Verdict::Pass);
-        assert!(report.findings.is_empty());
+        assert_eq!(report.findings, Vec::<Finding>::new());
     }
 
     #[test]
@@ -2092,7 +2154,7 @@ mod tests {
         let ctx = ctx_with("probe", &[("half-an-inverse", 4)]);
         let report = run_one(&census_gate(one_quiet_lens), &ctx);
         assert_eq!(report.verdict, Verdict::Pass);
-        assert!(report.findings.is_empty());
+        assert_eq!(report.findings, Vec::<Finding>::new());
     }
 
     #[test]
@@ -2187,7 +2249,7 @@ mod tests {
         let gate = scoped_ratchet();
         let old = GateReport::new("probe", Verdict::Pass, "chock run probe");
         crate::run::verdicts::keep(&dir, "probe", "same-inputs", &old);
-        let key = key_format(&gate, "", false, "same-inputs");
+        let key = key_format(&gate, "", Host::Local, "same-inputs");
         assert_eq!(key, "scope-v2:lowers-v1:same-inputs");
         assert_eq!(crate::run::verdicts::recall(&dir, "probe", &key), None);
         let ctx = ctx_with("probe", &[("src/a.rs#eq_op_invert", 1)]);
@@ -2198,11 +2260,11 @@ mod tests {
             Some(annotated)
         );
         assert_eq!(
-            key_format(&ratchet_gate(), "", false, "same-inputs"),
+            key_format(&ratchet_gate(), "", Host::Local, "same-inputs"),
             "lowers-v1:same-inputs"
         );
         assert_eq!(
-            key_format(&gates::tools::TEST, "", false, "same-inputs"),
+            key_format(&gates::tools::TEST, "", Host::Local, "same-inputs"),
             "same-inputs"
         );
     }
@@ -2260,7 +2322,7 @@ mod tests {
         ];
         for (gate, expected) in cases {
             let reader = gate.reads.map_or("", |reads| reads.reader);
-            assert_eq!(key_format(gate, reader, false, "input"), expected);
+            assert_eq!(key_format(gate, reader, Host::Local, "input"), expected);
         }
     }
 
@@ -2277,7 +2339,7 @@ mod tests {
             read.gates[0].findings[0].item.as_deref(),
             Some("integration test commands")
         );
-        let text = run.render(report::Rows::Every);
+        let text = run.render(report::Rows::Every, report::Leaves::default());
         assert!(text.contains("advisory, and it passed"), "{text}");
         assert!(text.contains("not mutation-covered"), "{text}");
     }
@@ -2554,6 +2616,28 @@ mod tests {
         );
     }
 
+    /// With `mutest_proofs` on, mutest builds Kani harnesses in the suite's target directory, so it
+    /// stays in the suite's lane.
+    #[test]
+    fn a_mutest_that_runs_proofs_stays_in_the_lane_of_the_suite() {
+        let named = |name| Gate {
+            name,
+            builds: true,
+            ..gate_of(Kind::Binary(agreeable))
+        };
+        let (test, mutest, miri) = (named("test"), named("mutest"), named("miri"));
+        let bsize = named("bsize");
+        let gates = [&test, &mutest, &miri, &bsize];
+        let mut ctx = ctx_with("probe", &[]);
+        ctx.mutest_proofs = true;
+        let peaks =
+            [("mutest", 9), ("miri", 7), ("test", 2)].map(|(gate, mb)| (gate.to_string(), mb));
+        assert_eq!(
+            lanes::lanes_of(&gates, &ctx, &peaks, 18),
+            [vec![0, 1], vec![3], vec![2]]
+        );
+    }
+
     #[test]
     fn crap_reads_the_coverage_report_in_the_lane_of_coverage() {
         let named = |name| Gate {
@@ -2640,7 +2724,12 @@ mod tests {
 
     #[test]
     fn a_failure_nothing_could_be_read_out_of_quotes_what_the_tool_said() {
-        let wrote = |n: usize| (1..=n).map(|i| format!("line {i}\n")).collect::<String>();
+        let wrote = |n: usize| {
+            (1..=n).fold(String::new(), |mut text, i| {
+                let _ = writeln!(text, "line {i}");
+                text
+            })
+        };
         let reason = said_nothing(Some(&wrote(3)));
         assert_eq!(
             reason,

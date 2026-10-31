@@ -40,10 +40,11 @@ pub(super) fn read_suite(out: &exec::Output, root: &Path) -> Outcome {
     if found.is_empty() {
         found.extend(failed_cases(out));
     }
-    match found.is_empty() {
+    if found.is_empty() {
         // Nothing named a test or a measure, so the build failed; rustc's spans say where.
-        true => verdict(out, root),
-        false => Outcome::failed(whole(found, out)),
+        verdict(out, root)
+    } else {
+        Outcome::failed(whole(found, out))
     }
 }
 
@@ -250,9 +251,10 @@ fn test_counts(out: &exec::Output) -> String {
         verdict_lines(out, libtest_failure),
         verdict_lines(out, |line| libtest_verdict(line, "ignored")),
     ];
-    let [passed, failed, ignored] = match nextest.iter().all(BTreeSet::is_empty) {
-        true => libtest,
-        false => nextest,
+    let [passed, failed, ignored] = if nextest.iter().all(BTreeSet::is_empty) {
+        libtest
+    } else {
+        nextest
     };
     let (passed, failed, ignored) = (passed.len(), failed.len(), ignored.len());
     format!("{passed} passed, {failed} failed, {ignored} ignored")
@@ -340,30 +342,33 @@ fn watched(ctx: &Ctx) -> Result<(exec::Output, Vec<String>), String> {
 /// Each file the repository holds that differs from its last commit, with a hash of its bytes, or
 /// `None` once it is deleted; `None` where no repository says which files it holds.
 fn changes(ctx: &Ctx) -> Option<BTreeMap<String, Option<u64>>> {
-    hashed(ctx, crate::project::vcs::dirty(&ctx.root, ctx.vcs).ok()?)
+    Some(hashed(
+        ctx,
+        crate::project::vcs::dirty(&ctx.root, ctx.vcs).ok()?,
+    ))
 }
 
 /// `changes`, and each file the repository neither holds nor ignores: a run should add none.
 pub(in crate::gates) fn changes_and_new(ctx: &Ctx) -> Option<BTreeMap<String, Option<u64>>> {
     let mut paths = crate::project::vcs::dirty(&ctx.root, ctx.vcs).ok()?;
     paths.extend(crate::project::vcs::untracked(&ctx.root, ctx.vcs).ok()?);
-    hashed(ctx, paths)
+    Some(hashed(ctx, paths))
 }
 
 /// Each of `paths` but those a run writes by design, with a hash of its bytes or `None`.
-fn hashed(ctx: &Ctx, paths: Vec<String>) -> Option<BTreeMap<String, Option<u64>>> {
+fn hashed(ctx: &Ctx, paths: Vec<String>) -> BTreeMap<String, Option<u64>> {
     let held: Vec<String> = paths
         .into_iter()
         .filter(|path| !written_on_purpose(&ctx.commands, path))
         .collect();
     let hashes = crate::project::contents(&ctx.root, &held);
-    let hashed = held.into_iter().map(|path| {
+    let pairs = held.into_iter().map(|path| {
         let hash = hashes.get(&path).copied();
         (path, hash)
     });
     let mut map = BTreeMap::new();
-    map.extend(hashed);
-    Some(map)
+    map.extend(pairs);
+    map
 }
 
 /// A file that a run writes by design: the lockfile cargo settles, a report a gate asks for,
@@ -384,8 +389,8 @@ fn written_on_purpose(commands: &[Command], path: &str) -> bool {
 /// Runs whatever the project's `runner` setting names, since some suites need their own setup.
 /// A run that was stopped keeps what it printed under `gate`'s name.
 pub(super) fn suite(ctx: &Ctx, gate: &str) -> Result<exec::Output, String> {
-    let argv = narrowed(&ctx.runner.argv, &ctx.scope)?;
-    let (program, args) = argv
+    let command = narrowed(&ctx.runner.argv, &ctx.scope)?;
+    let (program, args) = command
         .split_first()
         .ok_or("the configured `runner` names no command")?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -431,10 +436,6 @@ fn narrowed(argv: &[String], scope: &Scope) -> Result<Vec<String>, String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -541,6 +542,7 @@ mod tests {
             counts: false,
             builds: false,
             outputs: vec!["schema/".to_string(), "docs/cli.md".to_string()],
+            cannot_run_codes: Vec::new(),
         };
         let commands = [schema];
         let by_design = [

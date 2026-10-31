@@ -25,11 +25,13 @@ pub enum Decision {
 }
 
 impl Decision {
+    /// Whether `init` turns the gate on.
     #[must_use]
     pub fn enables(&self) -> bool {
         matches!(self, Self::On(_) | Self::Failing(_) | Self::Unmeasurable(_))
     }
 
+    /// The detail `init` prints beside the gate.
     #[must_use]
     pub fn detail(&self) -> &str {
         match self {
@@ -39,6 +41,7 @@ impl Decision {
         }
     }
 
+    /// The short state `init` prints for the gate: `on`, `off`, `FOUND` or `on, error`.
     #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
@@ -176,16 +179,26 @@ fn touched_note(config: &Config) -> String {
     )
 }
 
+/// Whether a repository holds the project, so it can say which files a change touches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Tracked {
+    /// A repository holds the project.
+    InRepository,
+    /// No repository holds the project.
+    Untracked,
+}
+
 /// The config `init` saves for a project with none, and what it prints of each decision. The
 /// changed files come from the repository, so a tree that none holds gets no `clean_when_touched`.
 pub(crate) fn decided(
     rows: &[(&str, Decision)],
-    in_repository: bool,
+    tracked: Tracked,
     coverage: Option<&[String]>,
 ) -> (Config, String) {
-    let chosen = match in_repository {
-        true => clean_where_touched(selected(rows)),
-        false => selected(rows),
+    let chosen = if tracked == Tracked::InRepository {
+        clean_where_touched(selected(rows))
+    } else {
+        selected(rows)
     };
     let mut config = match coverage {
         Some(argv) => chosen.with_coverage(argv),
@@ -198,10 +211,6 @@ pub(crate) fn decided(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::gates;
@@ -363,7 +372,7 @@ mod tests {
             ("lint", on("already green")),
             ("slop", Decision::Found("3 findings".to_string())),
         ];
-        let (config, report) = decided(&rows, true, None);
+        let (config, report) = decided(&rows, Tracked::InRepository, None);
         assert_eq!(
             config.clean_when_touched,
             Some(vec!["nesting".to_string(), "phrases".to_string()])
@@ -382,7 +391,7 @@ mod tests {
             Decision::On("ratchet: 2 items today".to_string()),
         )];
         let argv = ["./coverage.sh".to_string()];
-        let (config, report) = decided(&rows, false, Some(&argv));
+        let (config, report) = decided(&rows, Tracked::Untracked, Some(&argv));
         assert_eq!(config.clean_when_touched, None);
         assert_eq!(config.coverage, Some(argv.to_vec()));
         assert_eq!(report, render_decisions(&rows));
@@ -391,7 +400,7 @@ mod tests {
     #[test]
     fn a_project_with_no_gate_to_hold_where_touched_gets_no_empty_list() {
         let rows = [("lint", Decision::On("already green".to_string()))];
-        let (config, report) = decided(&rows, true, None);
+        let (config, report) = decided(&rows, Tracked::InRepository, None);
         assert_eq!(config.clean_when_touched, None);
         assert_eq!(report, render_decisions(&rows));
     }
@@ -399,8 +408,8 @@ mod tests {
     #[test]
     fn the_config_init_saves_for_a_new_project_holds_the_lint_floor() {
         let rows = [("profile", Decision::On("already green".to_string()))];
-        for in_repository in [true, false] {
-            let (config, _) = decided(&rows, in_repository, None);
+        for tracked in [Tracked::InRepository, Tracked::Untracked] {
+            let (config, _) = decided(&rows, tracked, None);
             assert_eq!(config.lint_floor, Some(true));
             let saved = crate::project::document::render(&config);
             assert!(saved.contains("\"lint_floor\": true"), "{saved}");

@@ -8,16 +8,21 @@ use serde::Serialize;
 use super::repeats::{Repeat, Site};
 use super::shapes::Seen;
 use super::{Tree, read_tree};
+use crate::gates::metrics::prodlines::Code;
 use crate::run::Ctx;
 
 /// What the caller asked for: test code too, and the fewest removable lines a listed file has.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Asked {
+    /// Set by `--tests`: read test code as well as production code.
     pub tests: bool,
+    /// Set by `--min`: a file with fewer removable lines gets no row.
     pub min: u64,
 }
 
 /// The flags of `chock lean`, and the one path it may name.
+/// # Errors
+/// When a flag is unknown, `--min` lacks a number, or more than one path is given.
 pub fn asked<'a>(args: &[&'a str]) -> Result<(Asked, Option<&'a str>), String> {
     let mut asked = Asked::default();
     let mut path = None;
@@ -41,17 +46,25 @@ pub fn asked<'a>(args: &[&'a str]) -> Result<(Asked, Option<&'a str>), String> {
 /// for a shape a person must judge; `twin` is the other copy of a repeat or a mirror.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Cut {
+    /// Where the place starts, counted from 1.
     pub line: u32,
+    /// Where the place ends, counted from 1.
     pub end_line: u32,
+    /// What sort of place it is, such as a forwarder or a repeat.
     pub kind: &'static str,
+    /// How many lines the fix would remove.
     pub removable_lines: u64,
+    /// What to change, in words a person can act on.
     pub fix: String,
+    /// The other copy, as `path:line`, where the place has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub twin: Option<String>,
+    /// `exact` or `estimate`, as the doc above the type says.
     pub evidence: &'static str,
 }
 
 impl Cut {
+    /// A place whose `lines` run from first to last, which a person must judge.
     pub fn estimate(kind: &'static str, lines: (u32, u32), removable: u64, fix: &str) -> Self {
         Self {
             line: lines.0,
@@ -68,9 +81,13 @@ impl Cut {
 /// One file: its lines, the lines it could lose, and each place in line order.
 #[derive(Debug, Serialize)]
 pub struct Row {
+    /// The file, relative to the root.
     pub path: String,
+    /// How long the file is now.
     pub lines: u64,
+    /// The sum over the file's places.
     pub removable_lines: u64,
+    /// Each place in the file, in line order.
     pub places: Vec<Cut>,
 }
 
@@ -78,15 +95,25 @@ pub struct Row {
 /// lose the most lines first.
 #[derive(Debug, Serialize)]
 pub struct Report {
+    /// The version of chock that wrote the report.
     pub chock: String,
+    /// How many production files the tree holds.
     pub files: usize,
+    /// How long those files are, summed.
     pub lines: u64,
+    /// The sum over every place, rows that `min` drops included.
     pub removable_lines: u64,
+    /// The removable lines of each sort of place.
     pub by_kind: BTreeMap<&'static str, u64>,
+    /// How `lines` is counted, so a reader can count the same way.
     pub lines_counted: &'static str,
+    /// Whether test code was read too.
     pub tests: bool,
+    /// The fewest removable lines a file needs for a row.
     pub min: u64,
+    /// The files that could not be read.
     pub unread: Vec<String>,
+    /// One per file, the file that could lose the most first.
     pub rows: Vec<Row>,
 }
 
@@ -121,30 +148,34 @@ fn copies(repeat: &Repeat) -> Vec<(String, Cut)> {
 }
 
 /// The copies of each repeated group. A group of test code is in only where asked.
-fn repeats(tree: &Tree, tests: bool) -> Vec<(String, Cut)> {
+fn repeats(tree: &Tree, asked: Asked) -> Vec<(String, Cut)> {
     let in_tests = tree.corpus.test_starts();
     let test = |site: &Site| in_tests.contains(&(site.file.as_str(), site.line));
-    let asked = |repeat: &&Repeat| tests || !repeat.sites.first().is_some_and(test);
+    let kept = |repeat: &&Repeat| asked.tests || !repeat.sites.first().is_some_and(test);
     let groups = tree.corpus.repeats();
-    groups.iter().filter(asked).flat_map(copies).collect()
+    groups.iter().filter(kept).flat_map(copies).collect()
 }
 
 /// The tree under `ctx` as a report.
+/// # Errors
+/// When the tree cannot be walked, or a file that a crate compiles cannot be read or parsed.
 pub fn survey(ctx: &Ctx, asked: Asked, version: &str) -> Result<Report, String> {
     let tree = read_tree(ctx)?;
     let mut cuts = forwarders(&tree);
-    cuts.extend(repeats(&tree, asked.tests));
+    cuts.extend(repeats(&tree, asked));
     let mut seen = Seen::default();
-    let production = tree.lines.keys().map(|shown| (shown, false));
-    for (shown, test) in production.chain(tree.tests.iter().map(|shown| (shown, true))) {
+    let production = tree.lines.keys().map(|shown| (shown, Code::Production));
+    for (shown, code) in production.chain(tree.tests.iter().map(|shown| (shown, Code::Test))) {
         if let Ok(src) = std::fs::read_to_string(ctx.root.join(shown)) {
-            seen.read(shown, &src, test);
+            seen.read(shown, &src, code);
         }
     }
     cuts.extend(seen.cuts(&tree.lines));
     let whole = |shown: &str| {
         let read = std::fs::read_to_string(ctx.root.join(shown));
-        read.map_or(0, |src| src.split('\n').count() as u64)
+        read.map_or(0, |src| {
+            u64::try_from(src.split('\n').count()).unwrap_or(u64::MAX)
+        })
     };
     let mut report = tally(&tree.lines, cuts, asked, &whole);
     report.chock = version.to_string();
@@ -197,6 +228,8 @@ const SHOWN: usize = 30;
 
 impl Report {
     /// Zero for a report that read each file, else the files it could not read.
+    /// # Errors
+    /// When a file could not be read, naming each such file.
     pub fn whole(&self) -> Result<u8, String> {
         match self.unread.as_slice() {
             [] => Ok(0),
@@ -204,6 +237,7 @@ impl Report {
         }
     }
 
+    /// The whole report as pretty JSON, every row and place included.
     #[must_use]
     pub fn render_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()
@@ -240,10 +274,6 @@ impl Report {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::testdir::Held;

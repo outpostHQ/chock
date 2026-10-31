@@ -25,19 +25,29 @@ pub trait Versioned: DeserializeOwned {
 /// Why a document could not be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
+    /// The file does not read, for a reason other than its absence.
     Unreadable {
+        /// The file, as a message shows it.
         path: String,
+        /// What the system said.
         reason: String,
     },
+    /// The file is not the JSON the document needs.
     Unparsable {
+        /// The file, as a message shows it.
         path: String,
+        /// What the parser said.
         reason: String,
+        /// What the document is, as `Versioned::describe` says it.
         expected: &'static str,
     },
     /// Written by a chock whose format this one predates, so its numbers may not mean the same.
     FromTheFuture {
+        /// The file, as a message shows it.
         path: String,
+        /// The schema version the file holds.
         found: u32,
+        /// The highest schema version this chock reads.
         reads: u32,
     },
 }
@@ -62,11 +72,15 @@ impl fmt::Display for Error {
 /// Where the published schemas live; a test checks each named file is in this repository.
 const SCHEMAS: &str = "https://raw.githubusercontent.com/outpostHQ/chock/main/schema";
 
+/// The published schema of one version of a document, such as `config` or `baseline`.
 #[must_use]
 pub fn schema_url(document: &str, version: u32) -> String {
     format!("{SCHEMAS}/{document}-v{version}.json")
 }
 
+/// The document in `text`, which came from `path`.
+/// # Errors
+/// When the text is not the document, or a later chock wrote it.
 pub fn parse<T: Versioned>(text: &str, path: &str) -> Result<T, Error> {
     let parsed: T = serde_json::from_str(text).map_err(|e| Error::Unparsable {
         path: path.to_string(),
@@ -84,6 +98,8 @@ pub fn parse<T: Versioned>(text: &str, path: &str) -> Result<T, Error> {
 }
 
 /// Reads the document under `root`; `Ok(None)` when there is no file.
+/// # Errors
+/// When the file does not read or does not parse, or a later chock wrote it.
 pub fn read<T: Versioned>(root: &Path) -> Result<Option<T>, Error> {
     let path = root.join(T::FILE);
     let shown = path.display().to_string();
@@ -98,6 +114,8 @@ pub fn read<T: Versioned>(root: &Path) -> Result<Option<T>, Error> {
 }
 
 /// Refuses a relative path: every path chock writes hangs off an absolute project root.
+/// # Errors
+/// When the path is relative.
 pub fn rooted(path: &Path) -> std::io::Result<()> {
     if path.is_absolute() {
         return Ok(());
@@ -109,6 +127,8 @@ pub fn rooted(path: &Path) -> std::io::Result<()> {
 }
 
 /// Writes atomically, and only to an absolute path.
+/// # Errors
+/// When the path is relative, or the system refuses the write or the rename.
 pub fn write(path: &Path, contents: &str) -> std::io::Result<()> {
     rooted(path).and_then(|()| staged(path, contents))
 }
@@ -185,7 +205,7 @@ struct InOrder;
 impl<'de> serde::de::Visitor<'de> for InOrder {
     type Value = Entries;
 
-    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("a JSON object")
     }
 
@@ -228,11 +248,6 @@ fn pretty(value: &Value, indent: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
@@ -242,7 +257,7 @@ mod tests {
             .unwrap()
             .filter_map(Result::ok)
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.ends_with(".tmp"))
+            .filter(|name| Path::new(name).extension().is_some_and(|ext| ext == "tmp"))
             .collect()
     }
 
@@ -477,6 +492,7 @@ mod tests {
                 counts: true,
                 builds: true,
                 outputs: Vec::new(),
+                cannot_run_codes: vec![2],
             }]),
             forbidden: Some(vec![crate::project::config::Forbidden {
                 text: "mercurial".to_string(),

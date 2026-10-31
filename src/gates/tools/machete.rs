@@ -10,12 +10,113 @@ use crate::run::Ctx;
 use crate::run::baseline::Series;
 use crate::run::report::Finding;
 
+/// Each dependency cargo-machete finds unused and no source names, keyed `manifest#name`.
+/// # Errors
+/// A cargo-machete that cannot run, or a manifest chock cannot read.
 pub fn unused(ctx: &Ctx) -> Result<Series, String> {
     // machete honours `.gitignore` only inside git, so `target/` is skipped explicitly.
     let out = exec::tool(&ctx.root, "cargo", &["machete", "--skip-target-dir"])?;
     let objected = read_machete(&out, &ctx.root)?;
     let sources = sources_for(ctx, &objected)?;
-    Ok(unnamed_anywhere(&objected, &sources))
+    without_unified(unnamed_anywhere(&objected, &sources), &ctx.root)
+}
+
+/// `unnamed` less each entry whose features Cargo unifies. Only an entry needs the resolved graph,
+/// so a tree with none left does not ask Cargo for it.
+fn without_unified(unnamed: Series, root: &Path) -> Result<Series, String> {
+    if unnamed.is_empty() {
+        return Ok(unnamed);
+    }
+    let unified = unified(&project::resolved(root)?, root)?;
+    let mut kept = Series::new();
+    for (key, count) in unnamed.0.iter().filter(|(key, _)| !unified.contains(*key)) {
+        kept.set(key, *count);
+    }
+    Ok(kept)
+}
+
+/// Each entry, as `manifest#name`, that turns on features of a package its crate also reaches
+/// through another dependency. Cargo unifies features, so such an entry is in use.
+pub(super) fn unified(resolved: &str, root: &Path) -> Result<BTreeSet<String>, String> {
+    let read: serde_json::Value = serde_json::from_str(resolved)
+        .map_err(|e| format!("cargo metadata printed a graph chock cannot read: {e}"))?;
+    let unread = || "cargo metadata printed no resolved dependency graph".to_string();
+    let nodes = read["resolve"]["nodes"].as_array().ok_or_else(unread)?;
+    let edges: BTreeMap<&str, Vec<&str>> = nodes
+        .iter()
+        .filter_map(|node| {
+            let deps = node["deps"].as_array().into_iter().flatten();
+            Some((
+                node["id"].as_str()?,
+                deps.filter_map(|dep| dep["pkg"].as_str()).collect(),
+            ))
+        })
+        .collect();
+    let packages = read["packages"].as_array().ok_or_else(unread)?;
+    let name_of: BTreeMap<&str, &str> = packages
+        .iter()
+        .filter_map(|package| Some((package["id"].as_str()?, package["name"].as_str()?)))
+        .collect();
+    let members: BTreeSet<&str> = read["workspace_members"]
+        .as_array()
+        .ok_or_else(unread)?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    let mut found = BTreeSet::new();
+    for package in packages.iter().filter(|package| {
+        package["id"]
+            .as_str()
+            .is_some_and(|id| members.contains(id))
+    }) {
+        let (Some(id), Some(manifest)) =
+            (package["id"].as_str(), package["manifest_path"].as_str())
+        else {
+            continue;
+        };
+        let direct = edges.get(id).map(Vec::as_slice).unwrap_or_default();
+        let entries = package["dependencies"].as_array().into_iter().flatten();
+        for entry in entries.filter(|entry| {
+            entry["features"]
+                .as_array()
+                .is_some_and(|on| !on.is_empty())
+        }) {
+            let Some(name) = entry["name"].as_str() else {
+                continue;
+            };
+            let targets = direct.iter().filter(|pkg| name_of.get(*pkg) == Some(&name));
+            if targets
+                .into_iter()
+                .any(|target| reached_otherwise(target, direct, &edges))
+            {
+                let key = entry["rename"].as_str().unwrap_or(name);
+                let shown = project::relative(root, Path::new(manifest));
+                found.insert(format!("{shown}#{key}"));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Whether a direct dependency other than `target` leads to it in the resolved graph.
+fn reached_otherwise(target: &str, direct: &[&str], edges: &BTreeMap<&str, Vec<&str>>) -> bool {
+    let mut seen = BTreeSet::new();
+    let mut next: Vec<&str> = direct
+        .iter()
+        .copied()
+        .filter(|pkg| *pkg != target)
+        .collect();
+    while let Some(pkg) = next.pop() {
+        if !seen.insert(pkg) {
+            continue;
+        }
+        let deps = edges.get(pkg).map(Vec::as_slice).unwrap_or_default();
+        if deps.contains(&target) {
+            return true;
+        }
+        next.extend(deps);
+    }
+    false
 }
 
 /// The sources of each crate machete named, read once per manifest and not once per finding.
@@ -120,7 +221,7 @@ fn crate_sources(ctx: &Ctx, manifest: &str) -> Result<Vec<String>, String> {
         &ctx.listing,
         &ctx.root,
         &|name| !project::SKIPPED.contains(&name),
-        &|name, _| name.ends_with(".rs"),
+        &|name, _| Path::new(name).extension().is_some_and(|ext| ext == "rs"),
     )?;
     let mut out = Vec::new();
     for path in &found {
@@ -148,10 +249,6 @@ fn owns(manifest: &str, shown: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -159,12 +256,20 @@ mod tests {
         Path::new("/w/proj")
     }
 
-    fn ran(stdout: &str, code: Option<i32>, truncated: bool) -> exec::Output {
+    fn ran(stdout: &str, code: Option<i32>) -> exec::Output {
         exec::Output {
             code,
             stdout: stdout.to_string(),
             stderr: "it broke".to_string(),
-            truncated,
+            truncated: false,
+        }
+    }
+
+    /// A run whose output chock cut off at its limit.
+    fn cut_off(stdout: &str, code: Option<i32>) -> exec::Output {
+        exec::Output {
+            truncated: true,
+            ..ran(stdout, code)
         }
     }
 
@@ -255,32 +360,27 @@ mod tests {
         let out = ran(
             "cargo-machete didn't find any unused dependencies\n",
             Some(0),
-            false,
         );
         assert_eq!(read_machete(&out, root()).unwrap(), Series::new());
     }
 
     #[test]
     fn an_unused_dependency_is_keyed_by_the_manifest_that_declares_it_and_the_name() {
-        let out = ran("chock -- /w/proj/Cargo.toml:\n\tserde\n\n", Some(1), false);
+        let out = ran("chock -- /w/proj/Cargo.toml:\n\tserde\n\n", Some(1));
         let series = read_machete(&out, root()).unwrap();
         assert_eq!(series.get("Cargo.toml#serde"), Some(1));
     }
 
     #[test]
     fn output_machete_had_cut_short_stops_the_gate_rather_than_reporting_half() {
-        let out = ran("chock -- /w/proj/Cargo.toml:\n\tserde\n", Some(1), true);
+        let out = cut_off("chock -- /w/proj/Cargo.toml:\n\tserde\n", Some(1));
         let err = read_machete(&out, root()).unwrap_err();
         assert!(err.contains("more than chock keeps"), "{err}");
     }
 
     #[test]
     fn a_tool_that_objected_and_named_no_dependency_measured_nothing() {
-        let out = ran(
-            "cargo-machete found the following unused dep",
-            Some(1),
-            false,
-        );
+        let out = ran("cargo-machete found the following unused dep", Some(1));
         let err = read_machete(&out, root()).unwrap_err();
         assert!(err.contains("without naming a dependency"), "{err}");
     }
@@ -370,5 +470,79 @@ mod tests {
         objected.set("Cargo.toml#regex", 1);
         let read = unnamed_anywhere(&objected, &BTreeMap::new());
         assert_eq!(read.get("Cargo.toml#regex"), Some(1));
+    }
+
+    /// The resolved graph of a crate whose manifest names `syn`, and `proc-macro2` with `on`.
+    fn graph(on: &str, rename: &str) -> String {
+        format!(
+            r#"{{"workspace_members":["app"],
+            "packages":[{{"id":"app","name":"app","manifest_path":"/w/proj/crates/app/Cargo.toml",
+              "dependencies":[{{"name":"syn","rename":null,"features":[]}},
+                {{"name":"proc-macro2","rename":{rename},"features":[{on}]}},
+                {{"name":"memchr","rename":null,"features":["std"]}}]}},
+              {{"id":"syn","name":"syn","manifest_path":"/r/syn/Cargo.toml","dependencies":[]}},
+              {{"id":"pm","name":"proc-macro2","manifest_path":"/r/pm/Cargo.toml","dependencies":[]}},
+              {{"id":"memchr","name":"memchr","manifest_path":"/r/memchr/Cargo.toml","dependencies":[]}}],
+            "resolve":{{"nodes":[{{"id":"app","deps":[{{"pkg":"syn"}},{{"pkg":"pm"}},{{"pkg":"memchr"}}]}},
+              {{"id":"syn","deps":[{{"pkg":"pm"}}]}},{{"id":"pm","deps":[]}},{{"id":"memchr","deps":[]}}]}}}}"#
+        )
+    }
+
+    /// Contract: the graph is read only for an entry, and an entry it cannot judge stays.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn the_resolved_graph_is_read_only_for_an_entry_left_to_judge() {
+        assert_eq!(without_unified(Series::new(), root()), Ok(Series::new()));
+        let mut ghost = Series::new();
+        ghost.set("Cargo.toml#ghost", 1);
+        assert!(
+            without_unified(ghost.clone(), root()).is_err(),
+            "/w/proj holds no project"
+        );
+        let manifest = "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n\
+                        edition = \"2021\"\n[workspace]\n";
+        let tree = crate::testdir::tree(
+            "machete-without-unified",
+            &[("Cargo.toml", manifest), ("src/lib.rs", "")],
+        );
+        assert_eq!(without_unified(ghost.clone(), &tree), Ok(ghost));
+    }
+
+    /// A member with no manifest, an entry with no name and a package reached twice each stop
+    /// only their own part of the walk.
+    #[test]
+    fn a_part_of_the_graph_chock_cannot_read_or_has_walked_skips_only_that_part() {
+        let resolved = r#"{"workspace_members":["odd","app"],
+            "packages":[{"id":"odd","name":"odd","dependencies":[]},
+              {"id":"app","name":"app","manifest_path":"/w/proj/crates/app/Cargo.toml",
+              "dependencies":[{"features":["x"]},{"name":"pm","rename":null,"features":["y"]}]},
+              {"id":"a","name":"a"},{"id":"b","name":"b"},{"id":"c","name":"c"},
+              {"id":"d","name":"d"},{"id":"pm","name":"pm"}],
+            "resolve":{"nodes":[{"id":"app","deps":[{"pkg":"a"},{"pkg":"b"},{"pkg":"pm"}]},
+              {"id":"a","deps":[{"pkg":"d"},{"pkg":"c"}]},{"id":"b","deps":[{"pkg":"c"}]},
+              {"id":"c","deps":[]},{"id":"d","deps":[{"pkg":"pm"}]},{"id":"pm","deps":[]}]}}"#;
+        assert_eq!(
+            unified(resolved, root()).unwrap(),
+            BTreeSet::from(["crates/app/Cargo.toml#pm".to_string()])
+        );
+    }
+
+    /// An entry with features, whose package another dependency also pulls in, is used: Cargo
+    /// unifies the features. One with no features stays unused. Mutant: drop the features test.
+    #[test]
+    fn an_entry_that_only_turns_on_features_of_a_package_another_dependency_pulls_in_is_used() {
+        let used = unified(&graph(r#""span-locations""#, "null"), root()).unwrap();
+        assert_eq!(
+            used,
+            BTreeSet::from(["crates/app/Cargo.toml#proc-macro2".to_string()])
+        );
+        let renamed = unified(&graph(r#""span-locations""#, r#""pm2""#), root()).unwrap();
+        assert_eq!(
+            renamed,
+            BTreeSet::from(["crates/app/Cargo.toml#pm2".to_string()])
+        );
+        // No features: the entry adds nothing, and `memchr` has features but nothing else reaches it.
+        assert!(unified(&graph("", "null"), root()).unwrap().is_empty());
+        assert!(unified("{}", root()).is_err());
     }
 }

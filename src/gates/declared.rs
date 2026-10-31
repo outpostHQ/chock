@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::exec;
-use crate::project::config::Command;
+use crate::project::config::{Command, Needs};
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Inspection, Kind};
 
@@ -34,22 +34,23 @@ pub const BUILDS: Gate = Gate {
 };
 
 fn quick(ctx: &Ctx) -> Result<Inspection, String> {
-    inspect(ctx, false)
+    inspect(ctx, Needs::NoCompiler)
 }
 
 fn building(ctx: &Ctx) -> Result<Inspection, String> {
-    inspect(ctx, true)
+    inspect(ctx, Needs::Compiler)
 }
 
-fn inspect(ctx: &Ctx, builds: bool) -> Result<Inspection, String> {
+fn inspect(ctx: &Ctx, needs: Needs) -> Result<Inspection, String> {
     let chosen: Vec<&Command> = ctx
         .commands
         .iter()
-        .filter(|command| command.builds == builds)
+        .filter(|command| command.builds == needs.builds())
         .collect();
     if chosen.is_empty() {
         return Err(format!(
-            "no command with `builds: {builds}` is declared under `commands` in {}",
+            "no command with `builds: {}` is declared under `commands` in {}",
+            needs.builds(),
             crate::project::config::FILE
         ));
     }
@@ -87,6 +88,16 @@ fn judge(command: &Command, out: &exec::Output, found: &mut Inspection) -> Resul
             command.name
         ));
     }
+    if let Some(code) = out
+        .code
+        .filter(|code| command.cannot_run_codes.contains(code))
+    {
+        return Err(format!(
+            "`{}` could not check (exit code {code}): {}",
+            command.name,
+            out.why_it_failed()
+        ));
+    }
     if !command.counts {
         if !out.success() {
             let why = format!("failed: {}", out.why_it_failed());
@@ -108,7 +119,7 @@ fn judge(command: &Command, out: &exec::Output, found: &mut Inspection) -> Resul
     let total = counts
         .values()
         .try_fold(0_u64, |sum, count| sum.checked_add(*count));
-    if !total.is_some_and(|total| total <= MOST_COUNTED) {
+    if total.is_none_or(|total| total > MOST_COUNTED) {
         return Err(format!(
             "`{}` counted more than the {MOST_COUNTED} findings chock holds in memory",
             command.name
@@ -124,20 +135,26 @@ fn judge(command: &Command, out: &exec::Output, found: &mut Inspection) -> Resul
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
-    fn declared(name: &str, run: &[&str], counts: bool, builds: bool) -> Command {
+    /// What a declared command prints: a pass or a fail, or an object of counts.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Says {
+        /// Its exit code is the verdict.
+        PassFail,
+        /// It prints a JSON object of counts.
+        Counts,
+    }
+
+    fn declared(name: &str, run: &[&str], says: Says, needs: Needs) -> Command {
         Command {
             name: name.to_string(),
             run: run.iter().map(|arg| (*arg).to_string()).collect(),
-            counts,
-            builds,
+            counts: says == Says::Counts,
+            builds: needs.builds(),
             outputs: Vec::new(),
+            cannot_run_codes: Vec::new(),
         }
     }
 
@@ -174,7 +191,7 @@ mod tests {
 
     #[test]
     fn a_pass_fail_command_blocks_only_when_it_fails() {
-        let check = declared("shipped-config", &["true"], false, true);
+        let check = declared("shipped-config", &["true"], Says::PassFail, Needs::Compiler);
         assert_eq!(judged(&check, &said(0, "")), Ok(Inspection::default()));
         let broken = said(101, "error[E0425]: not found");
         let failed = judged(&check, &broken).unwrap();
@@ -188,9 +205,41 @@ mod tests {
         assert_eq!(failed.debt, Vec::new());
     }
 
+    /// An exit code the entry names under `cannot_run_codes` means the command could not check, so
+    /// the gate cannot run; any other non-zero code still fails. An old entry names none.
+    #[test]
+    fn a_declared_cannot_run_code_stops_the_gate_and_any_other_code_fails_it() {
+        let old = r#"{"name": "contracts", "run": ["scripts/contracts"]}"#;
+        let mut check: Command = serde_json::from_str(old).unwrap();
+        assert_eq!(check.cannot_run_codes, Vec::<i32>::new());
+        let harness = exec::Output::of(Some(2), "", "error: the harness could not start");
+        let failed = |out: &exec::Output| {
+            [(
+                "contracts".to_string(),
+                format!("failed: {}", out.why_it_failed()),
+            )]
+        };
+        assert_eq!(
+            said_by(&judged(&check, &harness).unwrap().blockers),
+            failed(&harness)
+        );
+        let new = r#"{"name": "contracts", "run": ["scripts/contracts"], "cannot_run_codes": [2]}"#;
+        check = serde_json::from_str(new).unwrap();
+        assert_eq!(
+            judged(&check, &harness).unwrap_err(),
+            "`contracts` could not check (exit code 2): error: the harness could not start"
+        );
+        let one = said(1, "");
+        assert_eq!(
+            said_by(&judged(&check, &one).unwrap().blockers),
+            failed(&one)
+        );
+        assert_eq!(judged(&check, &said(0, "")), Ok(Inspection::default()));
+    }
+
     #[test]
     fn a_counting_command_charges_each_key_its_count() {
-        let docs = declared("doc-check", &["true"], true, false);
+        let docs = declared("doc-check", &["true"], Says::Counts, Needs::NoCompiler);
         let found = judged(&docs, &said(0, "{\"stale\": 2, \"absent\": 1}\n")).unwrap();
         assert_eq!(
             tallied(&found.debt),
@@ -205,7 +254,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri did not end this test in 19 minutes")]
     fn a_count_that_is_not_an_answer_refuses_rather_than_reading_as_zero() {
-        let docs = declared("doc-check", &["true"], true, false);
+        let docs = declared("doc-check", &["true"], Says::Counts, Needs::NoCompiler);
         assert_eq!(
             judged(&docs, &said(0, "all good")).unwrap_err(),
             "`doc-check` printed no object of counts: expected value at line 1 column 1"
@@ -250,13 +299,23 @@ mod tests {
         let dir = crate::testdir::make("declared-commands");
         let ctx = Ctx {
             commands: vec![
-                declared("quick", &["sh", "-c", "exit 0"], false, false),
-                declared("slow", &["sh", "-c", "exit 3"], false, true),
+                declared(
+                    "quick",
+                    &["sh", "-c", "exit 0"],
+                    Says::PassFail,
+                    Needs::NoCompiler,
+                ),
+                declared(
+                    "slow",
+                    &["sh", "-c", "exit 3"],
+                    Says::PassFail,
+                    Needs::Compiler,
+                ),
                 declared(
                     "counted",
                     &["sh", "-c", "echo '{\"warn\": 1}'"],
-                    true,
-                    false,
+                    Says::Counts,
+                    Needs::NoCompiler,
                 ),
             ],
             ..Ctx::at(&dir)
@@ -281,7 +340,7 @@ mod tests {
             "no command with `builds: false` is declared under `commands` in .chock/config.json"
         );
         let empty = Ctx {
-            commands: vec![declared("nothing", &[], false, false)],
+            commands: vec![declared("nothing", &[], Says::PassFail, Needs::NoCompiler)],
             ..Ctx::at(&dir)
         };
         assert_eq!(quick_or_reason(&empty), "`nothing` names no command to run");
@@ -295,7 +354,12 @@ mod tests {
         let files = [("gen/a.json", "1\n"), ("gen/b.json", "1\n")];
         let dir = crate::testdir::tree("declared-outputs", &files);
         let script = "echo 2 > gen/a.json; echo 1 > gen/b.json; echo 1 > gen/new.json";
-        let mut writes = declared("schema", &["sh", "-c", script], false, false);
+        let mut writes = declared(
+            "schema",
+            &["sh", "-c", script],
+            Says::PassFail,
+            Needs::NoCompiler,
+        );
         writes.outputs = vec!["gen/".to_string()];
         let ctx = Ctx {
             commands: vec![writes],
@@ -315,8 +379,6 @@ mod tests {
     }
 
     fn quick_or_reason(ctx: &Ctx) -> String {
-        quick(ctx)
-            .map(|found| format!("{found:?}"))
-            .unwrap_or_else(|why| why)
+        quick(ctx).map_or_else(|why| why, |found| format!("{found:?}"))
     }
 }

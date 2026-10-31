@@ -17,6 +17,7 @@ mod floor;
 
 pub use floor::Floor;
 
+/// Holds the release profile, the cargo config and each lint table to the rules of this module.
 pub const GATE: Gate = Gate {
     name: "profile",
     about: "the release profile takes the wins that cost only compile time, nothing in the \
@@ -49,7 +50,9 @@ fn check(ctx: &Ctx) -> Result<Outcome, String> {
 /// The gate's findings, split by whether they fail it; notes are only advisory.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Review {
+    /// The findings that fail the gate.
     pub failures: Vec<Finding>,
+    /// Advisory notes on the release profile; none of them fails the gate.
     pub notes: Vec<Finding>,
     /// Advisory notes on the dev profile, kept apart from the release `notes`.
     pub dev: Vec<Finding>,
@@ -76,7 +79,9 @@ fn advisory(finding: Finding) -> Finding {
 /// The text of every file the gate reads; `members` is keyed by the path a finding prints.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Sources {
+    /// The text of the root manifest, which alone holds `[profile]`.
     pub root: String,
+    /// The text of each member manifest, for its lint table.
     pub members: BTreeMap<String, String>,
     /// The cargo configuration: the name it was found under, then its text.
     pub config: Option<(String, String)>,
@@ -92,10 +97,12 @@ pub struct Sources {
 }
 
 /// Applies every rule to the gathered text. A file that does not parse is an error, never a pass.
+/// # Errors
+/// Returns `Err` when a manifest, the cargo config or the clippy config does not parse.
 pub fn review(sources: &Sources) -> Result<Review, String> {
     let root = parse(&sources.root).map_err(|e| format!("{MANIFEST}: {e}"))?;
     let mut review = Review::default();
-    release_profile(&root, sources.binary, &mut review);
+    release_profile(&root, sources, &mut review);
     lints(sources, &root, &mut review)?;
     rustflags(sources, &mut review)?;
     review.dev = dev_profile(&root);
@@ -108,8 +115,8 @@ fn lints(sources: &Sources, root: &Doc, review: &mut Review) -> Result<(), Strin
     floor::clippy_config(sources, review)
 }
 
-fn release_profile(doc: &Doc, binary: bool, review: &mut Review) {
-    if binary {
+fn release_profile(doc: &Doc, sources: &Sources, review: &mut Review) {
+    if sources.binary {
         free_wins(doc, review);
         unchecked_overflow(doc, review);
     }
@@ -148,14 +155,21 @@ fn free_wins(doc: &Doc, review: &mut Review) {
     }
 }
 
-/// Fails only an explicit `overflow-checks = false`, not cargo's default, which is the norm.
+/// Fails an explicit `overflow-checks = false`. An absent key is cargo's default, the norm, which
+/// also wraps, so it is only advised.
 fn unchecked_overflow(doc: &Doc, review: &mut Review) {
-    if doc.get(&under(RELEASE, "overflow-checks")) == Some(&Value::Bool(false)) {
-        review.fail(about(
+    match doc.get(&under(RELEASE, "overflow-checks")) {
+        Some(Value::Bool(false)) => review.fail(about(
             doc,
             "overflow-checks",
             "the release profile turns overflow checks off, so integer overflow wraps silently in the shipped binary",
-        ));
+        )),
+        None => review.note(about(
+            doc,
+            "overflow-checks",
+            "release builds let integer overflow wrap silently: `overflow-checks = true` makes an overflow panic",
+        )),
+        Some(_) => {}
     }
 }
 
@@ -557,6 +571,15 @@ fn slurp(path: &Path) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// The lines a TOML string may span: only a triple-quoted string crosses a newline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lines {
+    /// One quote mark each side: the string ends on its line.
+    One,
+    /// Three quote marks each side: the string may cross a newline.
+    Many,
+}
+
 /// One TOML value in the shapes this gate reads; any other legal TOML is `Other`, not an error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Value {
@@ -821,14 +844,14 @@ impl Toml<'_> {
         if self.matches(&[quote, quote]) {
             self.bump();
             self.bump();
-            return self.until(&[quote, quote, quote], true);
+            return self.until(&[quote, quote, quote], Lines::Many);
         }
-        self.until(&[quote], false)
+        self.until(&[quote], Lines::One)
     }
 
-    /// Reads up to `close`, failing on an unclosed string. Only a triple-quoted (`long`) string may
-    /// cross a newline.
-    fn until(&mut self, close: &[u8], long: bool) -> Result<String, String> {
+    /// Reads up to `close`, failing on an unclosed string. Only a triple-quoted string, of
+    /// `Lines::Many`, may cross a newline.
+    fn until(&mut self, close: &[u8], lines: Lines) -> Result<String, String> {
         let start = self.at;
         while let Some(byte) = self.peek() {
             if self.matches(close) {
@@ -838,7 +861,7 @@ impl Toml<'_> {
                 }
                 return Ok(text);
             }
-            if byte == b'\n' && !long {
+            if byte == b'\n' && lines == Lines::One {
                 break;
             }
             if byte == b'\\' && close.first() == Some(&b'"') {
@@ -921,10 +944,6 @@ impl Toml<'_> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::project::workspace::Target;
@@ -999,7 +1018,9 @@ mod tests {
         assert!(strips(&parse("[profile.release]\nstrip = true\n").unwrap()));
     }
 
-    const FREE: &str = "[profile.release]\nstrip = true\nlto = true\ncodegen-units = 1\n";
+    /// A release profile with nothing to advise: it takes every free win and keeps overflow checks.
+    const FREE: &str =
+        "[profile.release]\nstrip = true\nlto = true\ncodegen-units = 1\noverflow-checks = true\n";
 
     fn from(root: &str) -> Sources {
         Sources {
@@ -1061,7 +1082,8 @@ mod tests {
             [
                 "profile.release.strip",
                 "profile.release.lto",
-                "profile.release.codegen-units"
+                "profile.release.codegen-units",
+                "profile.release.overflow-checks"
             ]
         );
     }
@@ -1086,54 +1108,56 @@ mod tests {
 
     #[test]
     fn a_release_profile_with_no_strip_is_reported() {
-        let manifest = "[profile.release]\nlto = true\ncodegen-units = 1\n";
+        let manifest = "[profile.release]\nlto = true\ncodegen-units = 1\noverflow-checks = true\n";
         assert_eq!(settings(&from(manifest)), ["profile.release.strip"]);
     }
 
     #[test]
     fn a_release_profile_that_turns_strip_off_is_reported() {
-        let manifest = "[profile.release]\nstrip = false\nlto = true\ncodegen-units = 1\n";
+        let manifest = "[profile.release]\nstrip = false\nlto = true\ncodegen-units = 1\noverflow-checks = true\n";
         assert_eq!(settings(&from(manifest)), ["profile.release.strip"]);
     }
 
     #[test]
     fn strip_spelled_as_a_mode_rather_than_a_boolean_counts_as_stripping() {
-        let manifest = "[profile.release]\nstrip = \"symbols\"\nlto = true\ncodegen-units = 1\n";
+        let manifest = "[profile.release]\nstrip = \"symbols\"\nlto = true\ncodegen-units = 1\noverflow-checks = true\n";
         assert_eq!(settings(&from(manifest)), Vec::<String>::new());
     }
 
     #[test]
     fn a_release_profile_with_no_link_time_optimisation_is_reported() {
-        let manifest = "[profile.release]\nstrip = true\ncodegen-units = 1\n";
+        let manifest =
+            "[profile.release]\nstrip = true\ncodegen-units = 1\noverflow-checks = true\n";
         assert_eq!(settings(&from(manifest)), ["profile.release.lto"]);
     }
 
     #[test]
     fn link_time_optimisation_turned_off_by_name_is_reported() {
-        let manifest = "[profile.release]\nstrip = true\nlto = \"off\"\ncodegen-units = 1\n";
+        let manifest = "[profile.release]\nstrip = true\nlto = \"off\"\ncodegen-units = 1\noverflow-checks = true\n";
         assert_eq!(settings(&from(manifest)), ["profile.release.lto"]);
     }
 
     #[test]
     fn thin_link_time_optimisation_counts_as_optimising_at_the_link() {
-        let manifest = "[profile.release]\nstrip = true\nlto = \"thin\"\ncodegen-units = 1\n";
+        let manifest = "[profile.release]\nstrip = true\nlto = \"thin\"\ncodegen-units = 1\noverflow-checks = true\n";
         assert_eq!(settings(&from(manifest)), Vec::<String>::new());
     }
 
     #[test]
     fn a_release_profile_leaving_the_codegen_units_at_the_default_is_reported() {
-        let manifest = "[profile.release]\nstrip = true\nlto = true\n";
+        let manifest = "[profile.release]\nstrip = true\nlto = true\noverflow-checks = true\n";
         assert_eq!(settings(&from(manifest)), ["profile.release.codegen-units"]);
     }
 
     #[test]
-    fn a_manifest_with_no_release_profile_is_reported_once_per_free_win() {
+    fn a_manifest_with_no_release_profile_is_advised_once_per_free_win_and_for_overflow() {
         assert_eq!(
             settings(&from("[package]\nname = \"demo\"\n")),
             [
                 "profile.release.strip",
                 "profile.release.lto",
                 "profile.release.codegen-units",
+                "profile.release.overflow-checks",
             ]
         );
     }
@@ -1229,8 +1253,7 @@ mod tests {
 
     #[test]
     fn line_table_debug_information_is_not_the_full_symbols_that_carry_build_paths() {
-        let manifest =
-            "[profile.release]\ndebug = 1\nstrip = false\nlto = true\ncodegen-units = 1\n";
+        let manifest = "[profile.release]\ndebug = 1\nstrip = false\nlto = true\ncodegen-units = 1\noverflow-checks = true\n";
         assert_eq!(settings(&from(manifest)), ["profile.release.strip"]);
     }
 
@@ -1245,7 +1268,7 @@ mod tests {
             ("line-tables-only", vec!["profile.release.strip"]),
         ] {
             let manifest = format!(
-                "[profile.release]\nstrip = false\nlto = true\ncodegen-units = 1\ndebug = \"{name}\"\n"
+                "[profile.release]\nstrip = false\nlto = true\ncodegen-units = 1\noverflow-checks = true\ndebug = \"{name}\"\n"
             );
             assert_eq!(settings(&from(&manifest)), expected, "{name}");
         }
@@ -1253,15 +1276,26 @@ mod tests {
 
     #[test]
     fn a_release_profile_that_turns_overflow_checks_off_is_reported() {
-        let manifest = format!("{FREE}overflow-checks = false\n");
+        let manifest = FREE.replace("overflow-checks = true", "overflow-checks = false");
         assert_eq!(
             settings(&from(&manifest)),
             ["profile.release.overflow-checks"]
         );
     }
 
+    /// cargo's release default wraps on overflow too, so an absent key is advised once and never
+    /// failed; `true` says nothing, and `false` fails as the test above shows.
     #[test]
-    fn a_release_profile_that_leaves_overflow_checks_unwritten_is_not_reported() {
+    fn a_release_profile_that_leaves_overflow_checks_unwritten_is_advised_and_never_failed() {
+        let unwritten = from(&FREE.replace("overflow-checks = true\n", ""));
+        assert_eq!(failures(&unwritten), Vec::<String>::new());
+        assert_eq!(
+            advised(&unwritten),
+            [
+                "Cargo.toml:1: advisory, profile.release.overflow-checks: release builds let integer \
+              overflow wrap silently: `overflow-checks = true` makes an overflow panic"
+            ]
+        );
         assert_eq!(settings(&from(FREE)), Vec::<String>::new());
     }
 
@@ -1282,7 +1316,7 @@ mod tests {
         assert!(review.failures.is_empty(), "{:?}", review.failures);
         assert_eq!(
             review.notes[0].render(),
-            "Cargo.toml:5: advisory, profile.release.panic: `panic = \"abort\"` removes \
+            "Cargo.toml:6: advisory, profile.release.panic: `panic = \"abort\"` removes \
              unwinding: a panic can no longer be caught and destructors stop running"
         );
     }
@@ -1302,7 +1336,7 @@ mod tests {
     #[test]
     fn optimising_for_speed_says_nothing_at_all() {
         let manifest = format!("{FREE}opt-level = 3\n");
-        assert!(review(&from(&manifest)).unwrap().notes.is_empty());
+        assert_eq!(review(&from(&manifest)).unwrap().notes, Vec::new());
     }
 
     fn dev_advice(root: &str) -> Vec<String> {
@@ -1359,7 +1393,7 @@ mod tests {
                  leaves it beside the objects",
             ]
         );
-        assert!(review.failures.is_empty());
+        assert_eq!(review.failures, Vec::new());
     }
 
     #[test]
@@ -1618,7 +1652,7 @@ mod tests {
 
     #[test]
     fn an_inline_table_reaches_the_same_setting_as_a_table_header_would() {
-        let manifest = "[profile]\nrelease = { strip = true, lto = true, codegen-units = 1 }\n";
+        let manifest = "[profile]\nrelease = { strip = true, lto = true, codegen-units = 1, overflow-checks = true }\n";
         assert_eq!(settings(&from(manifest)), Vec::<String>::new());
     }
 

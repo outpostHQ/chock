@@ -5,6 +5,7 @@ use crate::run::baseline::Keys;
 use crate::run::report::{Detail, Place};
 use crate::run::{Ctx, Details, Gate, Group, Kind, Measurement};
 
+/// Counts shipped code that repeats elsewhere in the tree.
 pub const GATE: Gate = Gate {
     name: "duplicates",
     about: "shipped code duplicated elsewhere in the tree, by shape rather than by syntax; needs \
@@ -66,10 +67,6 @@ fn copies(groups: &[super::Finding]) -> Details {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
     use crate::run::baseline::Series;

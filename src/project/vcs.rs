@@ -6,12 +6,26 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::exec;
+use crate::run::Host;
+
+mod hooks;
+#[cfg(test)]
+use hooks::{
+    DECLARED_HOOKS_SINCE, confirm_declared_hooks, read_git_hook_declarations, read_hooks_path,
+    read_version,
+};
+pub use hooks::{
+    GitHook, clear_hooks_path, declare_hook, declares_hooks, git_hook_declarations, hooks_path,
+    point_hooks_at, runs_declared_hooks,
+};
 
 /// A version control system, serialised lower-case as a project writes it in its config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
+    /// Git, whose tool is `git`.
     Git,
+    /// Outpost, whose tool is `outpost`.
     Outpost,
 }
 
@@ -31,6 +45,7 @@ impl Kind {
         }
     }
 
+    /// The program that runs the system's commands.
     #[must_use]
     pub fn command(self) -> &'static str {
         match self {
@@ -95,6 +110,8 @@ fn standing(out: &exec::Output) -> Option<String> {
 pub const MAX_TRACKED: usize = 50_000;
 
 /// Every file the repository tracks, relative to the root; `Err` outside a repository.
+/// # Errors
+/// When no repository holds the tree, or its tool fails.
 pub fn tracked(root: &Path, held: Option<Kind>) -> Result<Vec<String>, String> {
     match held {
         None => Err("no repository here, so nothing says which files are tracked".to_string()),
@@ -217,6 +234,8 @@ fn join(at: &str, name: &str) -> String {
 const CHANGING: [&str; 6] = ["rev-list", "--count", "--full-history", "HEAD", "--", ":/"];
 
 /// How many commits that change a file the system holding this tree can walk back from HEAD.
+/// # Errors
+/// When no repository holds the tree, or its tool fails.
 pub fn commits(root: &Path, held: Option<Kind>) -> Result<u64, String> {
     match held {
         None => Err("no repository here, so nothing says how many commits there are".to_string()),
@@ -339,161 +358,6 @@ fn read_outpost_count(out: &exec::Output) -> Result<u64, String> {
     Ok(u64::try_from(walked).unwrap_or(u64::MAX))
 }
 
-/// `core.hooksPath`, or `None` where it is unset or git could not answer.
-pub fn hooks_path(root: &Path) -> Option<String> {
-    let out = exec::run("git", &["config", "--get", "core.hooksPath"], root).ok()?;
-    read_hooks_path(&out)
-}
-
-/// The configured hooks path; an unset key (a non-zero exit) or an empty value is `None`.
-fn read_hooks_path(out: &exec::Output) -> Option<String> {
-    if !out.success() {
-        return None;
-    }
-    let set = out.stdout.trim();
-    (!set.is_empty()).then(|| set.to_string())
-}
-
-/// One `hook.chock-*` declaration in git config.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct GitHook {
-    pub name: String,
-    pub events: Vec<String>,
-    pub command: Option<String>,
-}
-
-fn require_declared_hook_support(version: &exec::Output) -> Result<(), String> {
-    if declares_hooks(version) {
-        Ok(())
-    } else {
-        Err("cannot confirm Git supports the configured hook declarations; Git 2.54 or later is required".to_string())
-    }
-}
-
-/// chock's hook declarations in git config, read with `--null` so a command holding a newline
-/// stays whole.
-pub fn git_hook_declarations(root: &Path) -> Result<Vec<GitHook>, String> {
-    if !holders(root).contains(&Kind::Git) {
-        return Ok(Vec::new());
-    }
-    let out = exec::run(
-        "git",
-        &[
-            "config",
-            "--null",
-            "--get-regexp",
-            r"^hook\.chock-.*\.(event|command)$",
-        ],
-        root,
-    )
-    .map_err(|e| e.to_string())?;
-    confirm_declared_hooks(read_git_hook_declarations(&out)?, || {
-        exec::run("git", &["--version"], root).map_err(|e| e.to_string())
-    })
-}
-
-fn confirm_declared_hooks(
-    hooks: Vec<GitHook>,
-    version: impl FnOnce() -> Result<exec::Output, String>,
-) -> Result<Vec<GitHook>, String> {
-    if !hooks.is_empty() {
-        require_declared_hook_support(&version()?)?;
-    }
-    Ok(hooks)
-}
-
-fn read_git_hook_declarations(out: &exec::Output) -> Result<Vec<GitHook>, String> {
-    if out.truncated {
-        return Err("Git hook declarations were truncated".to_string());
-    }
-    if out.code == Some(1) && out.stdout.is_empty() && out.stderr.is_empty() {
-        return Ok(Vec::new());
-    }
-    if !out.success() {
-        return Err(format!(
-            "cannot read Git hook declarations: {}",
-            out.why_it_failed()
-        ));
-    }
-    if !out.stdout.ends_with('\0') {
-        return Err("Git hook declarations have no complete record".to_string());
-    }
-    let mut hooks = std::collections::BTreeMap::<String, GitHook>::new();
-    for record in out.stdout.split_terminator('\0') {
-        let (key, value) = record
-            .split_once('\n')
-            .ok_or("unreadable Git hook declaration")?;
-        let Some(rest) = key.strip_prefix("hook.chock-") else {
-            continue;
-        };
-        let (name, field) = rest.rsplit_once('.').ok_or("unreadable Git hook key")?;
-        let name = format!("chock-{name}");
-        let hook = hooks.entry(name.clone()).or_insert_with(|| GitHook {
-            name,
-            ..GitHook::default()
-        });
-        match field {
-            "event" => hook.events.push(value.to_string()),
-            "command" => hook.command = Some(value.to_string()),
-            _ => return Err("unrecognized Git hook field".to_string()),
-        }
-    }
-    Ok(hooks.into_values().collect())
-}
-
-/// The first git that runs hooks declared in config, alongside the hooks directory.
-const DECLARED_HOOKS_SINCE: (u32, u32) = (2, 54);
-
-/// Whether the installed git runs hooks declared in config.
-#[must_use]
-pub fn runs_declared_hooks(root: &Path) -> bool {
-    exec::run("git", &["--version"], root).is_ok_and(|out| declares_hooks(&out))
-}
-
-/// Whether a `git --version` answer is at least `DECLARED_HOOKS_SINCE`. Apart from the spawn, so a
-/// test can reach both answers.
-fn declares_hooks(out: &exec::Output) -> bool {
-    read_version(out).is_some_and(|found| found >= DECLARED_HOOKS_SINCE)
-}
-
-/// `git version 2.55.0.782.g1630431f32`, of which only the first two numbers decide.
-fn read_version(out: &exec::Output) -> Option<(u32, u32)> {
-    if !out.success() {
-        return None;
-    }
-    let rest = out.stdout.trim().strip_prefix("git version ")?;
-    let mut parts = rest.split('.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next()?.parse().ok()?;
-    Some((major, minor))
-}
-
-/// Declares one hook in git config, alongside the hooks directory. Refuses where git does not hold
-/// the tree, since `git config` would write to a repository above it.
-pub fn declare_hook(root: &Path, name: &str, event: &str, command: &str) -> bool {
-    if !holders(root).contains(&Kind::Git) {
-        return false;
-    }
-    let keyed = |key: &str, value: &str| {
-        exec::run("git", &["config", key, value], root).is_ok_and(|out| out.success())
-    };
-    keyed(&format!("hook.{name}.event"), event) && keyed(&format!("hook.{name}.command"), command)
-}
-
-/// Sets `core.hooksPath` to `dir` and says whether git took it; refuses off a git tree.
-pub fn point_hooks_at(root: &Path, dir: &str) -> bool {
-    holders(root).contains(&Kind::Git)
-        && exec::run("git", &["config", "core.hooksPath", dir], root).is_ok_and(|out| out.success())
-}
-
-/// Unsets `core.hooksPath` only while it still names `dir`: a path somebody else chose is theirs.
-pub fn clear_hooks_path(root: &Path, dir: &str) -> bool {
-    holders(root).contains(&Kind::Git)
-        && hooks_path(root).as_deref() == Some(dir)
-        && exec::run("git", &["config", "--unset", "core.hooksPath"], root)
-            .is_ok_and(|out| out.success())
-}
-
 /// Where git keeps the message being composed. A declared hook gets no arguments, so `commit-msg`
 /// asks git rather than reading `$1`.
 #[must_use]
@@ -528,6 +392,60 @@ pub(crate) fn commit_index_at(root: &Path, hook: &Path) -> Option<std::path::Pat
     let git_dir = std::fs::canonicalize(lines.next()?).ok()?;
     let held = std::fs::canonicalize(index.parent()?).ok()?;
     held.starts_with(git_dir).then_some(index)
+}
+
+/// The index `git commit --only` leaves behind, where `index` is the `next-index-*` file its hook
+/// stages into: `index.lock` beside it. `None` for any other index.
+#[must_use]
+pub fn real_index(index: &Path) -> Option<std::path::PathBuf> {
+    let named = index.file_name()?.to_str()?;
+    let real = index.with_file_name("index.lock");
+    (named.starts_with("next-index-") && real.is_file()).then_some(real)
+}
+
+/// Where a commit's hook may stage a file it rewrites, read before it rewrites it. One rule for each
+/// record a hook writes, so `git commit --only` leaves no index behind with the old file.
+#[derive(Debug)]
+pub struct Staging {
+    index: Option<std::path::PathBuf>,
+    /// The index `git commit --only` leaves behind, and whether its entry is still the file.
+    left: Option<(std::path::PathBuf, bool)>,
+}
+
+impl Staging {
+    /// `None` where the hook's index holds a change to `file` that the work tree lacks, or the other
+    /// way round: the hook must not stage over it.
+    #[must_use]
+    pub fn before(root: &Path, index: Option<&Path>, file: &str) -> Option<Self> {
+        let unchanged =
+            |index: Option<&Path>| git_on(root, index, &["diff", "--quiet", "--", file]);
+        if !unchanged(index) {
+            return None;
+        }
+        let left = index.and_then(real_index).map(|real| {
+            let kept = unchanged(Some(&real));
+            (real, kept)
+        });
+        Some(Self {
+            index: index.map(Path::to_path_buf),
+            left,
+        })
+    }
+
+    /// Adds the rewritten `file` to the commit; `None` where git refused. `Some(false)` where the
+    /// index the commit leaves behind holds another change, so it needs `git add` after the commit.
+    #[must_use]
+    pub fn add(&self, root: &Path, file: &str) -> Option<bool> {
+        let add = |index: Option<&Path>| git_on(root, index, &["add", "--", file]);
+        if !add(self.index.as_deref()) {
+            return None;
+        }
+        Some(
+            self.left
+                .as_ref()
+                .is_none_or(|(real, kept)| *kept && add(Some(real))),
+        )
+    }
 }
 
 /// Runs git on `index` where one is given, as a commit's hook must to stage a file.
@@ -618,6 +536,8 @@ fn on_commit_index(root: &Path, args: &[&str]) -> Option<exec::Output> {
 }
 
 /// Commits not yet on the remote, as (id, message): only those can still be rewritten.
+/// # Errors
+/// When no repository holds the tree, or its tool fails.
 pub fn unpushed(root: &Path, held: Option<Kind>) -> Result<Vec<(String, String)>, String> {
     match held {
         None => Err(NO_REPOSITORY.to_string()),
@@ -636,12 +556,30 @@ pub fn unpushed(root: &Path, held: Option<Kind>) -> Result<Vec<(String, String)>
     }
 }
 
+/// HEAD's commit and its upstream's, the two ends of the commits a push would carry; `none` for one
+/// git does not have. `None` where git cannot be started.
+#[must_use]
+pub fn tips(root: &Path) -> Option<String> {
+    let id = |rev: &str| {
+        let out = exec::run("git", &["rev-parse", "--verify", "--quiet", rev], root).ok()?;
+        let named = out.success().then(|| out.stdout.trim().to_string());
+        Some(named.unwrap_or_else(|| "none".to_string()))
+    };
+    Some(format!(
+        "{} {}",
+        id("HEAD^{commit}")?,
+        id("@{upstream}^{commit}")?
+    ))
+}
+
 /// The files this change touched, relative to the root: since the fork from the upstream, or in CI
 /// the commit under test. A local file nothing tracks yet counts, as it will once it is committed.
-pub fn changed(root: &Path, held: Option<Kind>, ci: bool) -> Result<Vec<String>, String> {
+/// # Errors
+/// When no repository holds the tree, or its tool fails.
+pub fn changed(root: &Path, held: Option<Kind>, host: Host) -> Result<Vec<String>, String> {
     match held {
         None => Err(NO_REPOSITORY.to_string()),
-        Some(Kind::Git) if ci => git_committed(root),
+        Some(Kind::Git) if host == Host::Ci => git_committed(root),
         Some(Kind::Git) => git_local(root),
         Some(Kind::Outpost) => outpost_changed(root),
     }
@@ -649,6 +587,8 @@ pub fn changed(root: &Path, held: Option<Kind>, ci: bool) -> Result<Vec<String>,
 
 /// The files the repository holds that differ from its last commit, relative to the root: edited,
 /// staged or deleted. A file it does not hold is none of them.
+/// # Errors
+/// When no repository holds the tree, or its tool fails.
 pub fn dirty(root: &Path, held: Option<Kind>) -> Result<Vec<String>, String> {
     let differ = match held {
         None => return Err(NO_REPOSITORY.to_string()),
@@ -664,6 +604,8 @@ pub fn dirty(root: &Path, held: Option<Kind>) -> Result<Vec<String>, String> {
 
 /// The files under the root that the repository neither holds nor ignores. Outpost keeps no such
 /// list chock reads, so a tree it holds alone names none.
+/// # Errors
+/// When no repository holds the tree, or its tool fails.
 pub fn untracked(root: &Path, held: Option<Kind>) -> Result<Vec<String>, String> {
     match held {
         None => Err(NO_REPOSITORY.to_string()),
@@ -689,9 +631,10 @@ fn git_local(root: &Path) -> Result<Vec<String>, String> {
 /// with its parent. A repository's first commit has none, and every file it holds is the change.
 fn git_committed(root: &Path) -> Result<Vec<String>, String> {
     let commit = exec::run("git", &["cat-file", "-p", "HEAD"], root).map_err(|e| e.to_string())?;
-    match has_parent(&commit.stdout) {
-        true => git_diff(root, &["HEAD^1", "HEAD"]),
-        false => tracked(root, Some(Kind::Git)),
+    if has_parent(&commit.stdout) {
+        git_diff(root, &["HEAD^1", "HEAD"])
+    } else {
+        tracked(root, Some(Kind::Git))
     }
 }
 
@@ -742,6 +685,17 @@ fn git_fork(root: &Path) -> Result<Option<String>, String> {
         return Ok(Some(fork.stdout.trim().to_string()));
     }
     git_head(root)
+}
+
+/// The commit HEAD names in git, or `None` where the tree is not git's or has no commit yet.
+#[must_use]
+pub fn head(root: &Path, held: Option<Kind>) -> Option<String> {
+    if held != Some(Kind::Git) {
+        return None;
+    }
+    let args = ["rev-parse", "--verify", "--quiet", "HEAD"];
+    let out = exec::run("git", &args, root).ok()?;
+    out.success().then(|| out.stdout.trim().to_string())
 }
 
 /// `HEAD` where the repository has a commit.
@@ -921,6 +875,8 @@ struct Branch {
 
 /// Every Rust file under `root` that differs between `rev` and the working tree and is still
 /// there, relative to `root`.
+/// # Errors
+/// When git cannot run, or cannot compare with `rev`.
 pub fn rust_changed_since(root: &Path, rev: &str) -> Result<Vec<String>, String> {
     let filter = ["--relative", "--diff-filter=d", rev, "--", "*.rs"];
     let args = [&["diff", "--name-only"][..], &filter].concat();
@@ -933,6 +889,8 @@ pub fn rust_changed_since(root: &Path, rev: &str) -> Result<Vec<String>, String>
 }
 
 /// The text `rev` holds for a file named from `root`, or none when it holds no such file.
+/// # Errors
+/// When git cannot run, or cannot read the file at `rev`.
 pub fn text_at(root: &Path, rev: &str, path: &str) -> Result<Option<String>, String> {
     let out = exec::tool(root, "git", &["show", &format!("{rev}:./{path}")])?;
     read_text_at(&out).map_err(|why| format!("git could not read `{path}` at `{rev}`: {why}"))
@@ -955,10 +913,6 @@ fn reason(what: &str, out: &exec::Output) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -1122,6 +1076,14 @@ mod tests {
         assert!(declares_hooks(&said("git version 2.54.0\n")));
         assert!(!declares_hooks(&said("git version 2.43.0\n")));
         assert!(!declares_hooks(&said("git version 1.9.5\n")));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn the_installed_git_is_asked_whether_it_runs_declared_hooks() {
+        let here = Path::new(".");
+        let asked = exec::run("git", &["--version"], here).unwrap();
+        assert_eq!(runs_declared_hooks(here), declares_hooks(&asked));
     }
 
     /// Assuming it does would declare a hook nothing runs.
@@ -1327,7 +1289,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_commit_leaves_out_an_unstaged_change_and_a_file_nobody_added() {
         let root = repo("vcs-leaves-out");
-        assert!(leaves_out(&root, &[]).is_empty());
+        assert_eq!(leaves_out(&root, &[]), Vec::<String>::new());
         std::fs::write(root.join("a.rs"), "fn f() -> u8 { 3 }\n").unwrap();
         assert!(unstaged(&root, "a.rs"));
         assert_eq!(leaves_out(&root, &[]), ["a.rs"]);
@@ -1335,7 +1297,7 @@ mod tests {
         assert!(!unstaged(&root, "a.rs") && leaves_out(&root, &[]).is_empty());
         std::fs::write(root.join("own.json"), "{}\n").unwrap();
         assert_eq!(leaves_out(&root, &[]), ["own.json"]);
-        assert!(leaves_out(&root, &["own.json"]).is_empty());
+        assert_eq!(leaves_out(&root, &["own.json"]), Vec::<String>::new());
     }
 
     /// A change to a tracked file that chock writes is not left out, at the top or below it.
@@ -1353,9 +1315,29 @@ mod tests {
         let own = [".chock/run.lock"];
         std::fs::write(root.join(".chock/run.lock"), "2\n").unwrap();
         assert_eq!(leaves_out(&root, &[]), [".chock/run.lock"]);
-        assert!(leaves_out(&root, &own).is_empty());
+        assert_eq!(leaves_out(&root, &own), Vec::<String>::new());
         std::fs::write(below.join(".chock/run.lock"), "2\n").unwrap();
         assert!(!leaves_out(&below, &[]).is_empty() && leaves_out(&below, &own).is_empty());
+    }
+
+    /// HEAD is the commit git names, and `None` before the first commit or where git does not hold
+    /// the tree. Mutant: dropping the `Kind::Git` check asks git in a tree Outpost holds.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn head_is_the_commit_git_names_and_none_before_the_first_or_outside_git() {
+        let root = repo("vcs-head");
+        let named = exec::run("git", &["rev-parse", "HEAD"], &root).unwrap();
+        let commit = named.stdout.trim().to_string();
+        assert!(
+            commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "{commit}"
+        );
+        assert_eq!(head(&root, Some(Kind::Git)), Some(commit));
+        assert_eq!(head(&root, Some(Kind::Outpost)), None);
+        assert_eq!(head(&root, None), None);
+        let empty = crate::testdir::make("vcs-head-empty");
+        git(&empty, &["init", "--quiet"]);
+        assert_eq!(head(&empty, Some(Kind::Git)), None);
     }
 
     fn repo(name: &str) -> crate::testdir::Scratch {
@@ -1397,6 +1379,25 @@ mod tests {
             &["commit", "--quiet", "-am", "In the rest of the tree"],
         );
         (root, crate_dir)
+    }
+
+    /// A reworded commit keeps its tree and not its id, and a push moves the upstream alone. A
+    /// branch with no upstream says so rather than failing.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn the_tips_change_with_a_reworded_head_or_a_moved_upstream() {
+        let (root, _) = nested("vcs-tips");
+        let first = tips(&root).unwrap();
+        git(&root, &["commit", "--amend", "--quiet", "-m", "Reworded"]);
+        let reworded = tips(&root).unwrap();
+        assert_ne!(reworded, first);
+        git(&root, &["push", "--quiet", "origin", "HEAD"]);
+        let pushed = tips(&root).unwrap();
+        assert_ne!(pushed, reworded);
+        let head = |tips: &str| tips.split(' ').next().map(str::to_string);
+        assert_eq!(head(&pushed), head(&reworded), "only the upstream moved");
+        let alone = tips(&repo("vcs-tips-alone")).unwrap();
+        assert!(alone.ends_with(" none"), "{alone}");
     }
 
     #[test]
@@ -1489,19 +1490,19 @@ mod tests {
         let (root, crate_dir) = nested("vcs-changed");
         std::fs::write(crate_dir.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
         assert_eq!(
-            changed(&crate_dir, Some(Kind::Git), false).unwrap(),
+            changed(&crate_dir, Some(Kind::Git), Host::Local).unwrap(),
             ["src/lib.rs"]
         );
         assert_eq!(
-            changed(&root, Some(Kind::Git), false).unwrap(),
+            changed(&root, Some(Kind::Git), Host::Local).unwrap(),
             ["a.rs", "crates/c/src/lib.rs"]
         );
-        assert_eq!(changed(&root, Some(Kind::Git), true).unwrap(), ["a.rs"]);
+        assert_eq!(changed(&root, Some(Kind::Git), Host::Ci).unwrap(), ["a.rs"]);
         assert_eq!(
-            changed(&crate_dir, Some(Kind::Git), true).unwrap(),
+            changed(&crate_dir, Some(Kind::Git), Host::Ci).unwrap(),
             Vec::<String>::new()
         );
-        assert!(changed(&root, None, false).is_err());
+        assert!(changed(&root, None, Host::Local).is_err());
     }
 
     #[test]
@@ -1509,18 +1510,21 @@ mod tests {
     fn a_branch_without_an_upstream_changes_only_what_is_not_committed() {
         let root = repo("vcs-changed-local");
         assert_eq!(
-            changed(&root, Some(Kind::Git), false).unwrap(),
+            changed(&root, Some(Kind::Git), Host::Local).unwrap(),
             Vec::<String>::new()
         );
         std::fs::write(root.join("a.rs"), "fn f() -> u8 { 4 }\n").unwrap();
-        assert_eq!(changed(&root, Some(Kind::Git), false).unwrap(), ["a.rs"]);
+        assert_eq!(
+            changed(&root, Some(Kind::Git), Host::Local).unwrap(),
+            ["a.rs"]
+        );
         // A file nothing tracks yet is part of the change; one that git ignores is not.
         std::fs::create_dir_all(root.join(".git/info")).unwrap();
         std::fs::write(root.join(".git/info/exclude"), "kept.log\n").unwrap();
         std::fs::write(root.join("kept.log"), "").unwrap();
         std::fs::write(root.join("new.rs"), "").unwrap();
         assert_eq!(
-            changed(&root, Some(Kind::Git), false).unwrap(),
+            changed(&root, Some(Kind::Git), Host::Local).unwrap(),
             ["a.rs", "new.rs"]
         );
     }
@@ -1541,7 +1545,7 @@ mod tests {
         // What `fetch-depth: 1` leaves: the commit is there, and git may not read past it.
         let head = exec::run("git", &["rev-parse", "HEAD"], &root).unwrap();
         std::fs::write(root.join(".git/shallow"), &head.stdout).unwrap();
-        let why = changed(&root, Some(Kind::Git), true).unwrap_err();
+        let why = changed(&root, Some(Kind::Git), Host::Ci).unwrap_err();
         assert!(why.contains("fetch-depth: 2"), "{why}");
     }
 
@@ -1554,7 +1558,7 @@ mod tests {
         git(&root, &["add", "a.rs", "b.rs"]);
         git(&root, &["commit", "--quiet", "-m", "only"]);
         assert_eq!(
-            changed(&root, Some(Kind::Git), true).unwrap(),
+            changed(&root, Some(Kind::Git), Host::Ci).unwrap(),
             ["a.rs", "b.rs"]
         );
     }
@@ -1567,7 +1571,7 @@ mod tests {
         git(&root, &["add", "b.rs"]);
         std::fs::write(root.join("a.rs"), "").unwrap();
         assert_eq!(
-            changed(&root, Some(Kind::Git), false).unwrap(),
+            changed(&root, Some(Kind::Git), Host::Local).unwrap(),
             ["a.rs", "b.rs"]
         );
     }
@@ -1594,7 +1598,7 @@ mod tests {
         assert!(run(&["add", "."]).success() && run(&["commit", "-m", "first"]).success());
         std::fs::write(root.join("a.rs"), "fn f() {}\n").unwrap();
         assert_eq!(
-            changed(&root, Some(Kind::Outpost), false).unwrap(),
+            changed(&root, Some(Kind::Outpost), Host::Local).unwrap(),
             ["a.rs"]
         );
     }
@@ -1673,7 +1677,7 @@ mod tests {
     fn an_outpost_out_of_reach_refuses_every_question_rather_than_answering_empty() {
         let gone = crate::testdir::make("vcs-outpost-gone").join("gone");
         assert!(tracked(&gone, Some(Kind::Outpost)).is_err());
-        assert!(changed(&gone, Some(Kind::Outpost), false).is_err());
+        assert!(changed(&gone, Some(Kind::Outpost), Host::Local).is_err());
         assert!(unpushed(&gone, Some(Kind::Outpost)).is_err());
         assert_eq!(declared_hook_standing(&gone), None);
     }

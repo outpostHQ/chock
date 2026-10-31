@@ -14,6 +14,7 @@ use crate::run::report::{Detail, Place};
 use crate::run::{Ctx, Gate, Group, Kind};
 use crate::tokens::{Item, Lexed, Tok};
 
+/// The `pinned` gate: tests that a document names, which must still exist.
 pub const GATE: Gate = Gate {
     name: "pinned",
     about: "a `test:<file>#<name>` pin in a document whose test or table row is gone, per pin; a \
@@ -44,7 +45,7 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let paths = project::walked(&ctx.listing, &ctx.root, &seen, &|_, _| true)?;
     let shown = paths.iter().map(|path| project::relative(&ctx.root, path));
     let mut pinned = Pinned::new();
-    for doc in shown.filter(|file| file.ends_with(".md")) {
+    for doc in shown.filter(|file| Path::new(file).extension().is_some_and(|ext| ext == "md")) {
         let text = std::fs::read_to_string(ctx.root.join(&doc));
         for (key, line) in pins(&text.map_err(|e| format!("{doc}: {e}"))?) {
             pinned.entry(key).or_default().push((doc.clone(), line));
@@ -111,7 +112,8 @@ fn pins(text: &str) -> Vec<((String, String), usize)> {
 fn pin(span: &str) -> Option<(String, String)> {
     let (file, name) = span.strip_prefix(OPENS)?.split_once('#')?;
     let name = name.trim();
-    (file.ends_with(".rs") && !name.is_empty()).then(|| (file.to_string(), name.to_string()))
+    (Path::new(file).extension().is_some_and(|ext| ext == "rs") && !name.is_empty())
+        .then(|| (file.to_string(), name.to_string()))
 }
 
 fn names_in(root: &Path, file: &str) -> Names {
@@ -184,10 +186,6 @@ fn text_of(literal: &str) -> Option<&str> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::testdir::Held;

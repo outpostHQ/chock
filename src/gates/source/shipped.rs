@@ -12,6 +12,8 @@ pub type Reached = BTreeMap<String, BTreeSet<String>>;
 
 /// Which features ship, read from `cargo metadata --no-deps`; a member matching `not_shipped`
 /// enables nothing.
+/// # Errors
+/// When `metadata` is not the JSON that `cargo metadata` writes.
 pub fn reached(metadata: &str, not_shipped: &[String]) -> Result<Reached, String> {
     let read: Metadata = serde_json::from_str(metadata)
         .map_err(|e| format!("cargo metadata produced something unreadable: {e}"))?;
@@ -74,10 +76,6 @@ fn closure(seeds: &BTreeSet<String>, table: &BTreeMap<String, Vec<String>>) -> B
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
 

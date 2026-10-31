@@ -1,5 +1,6 @@
 //! One started command that chock owns: the leader of its own process group, ended as a whole.
 
+use std::fmt::Write as _;
 use std::process::Command;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use std::process::Stdio;
@@ -117,7 +118,7 @@ impl Process {
         if let Err(reason) = &mut cleanup
             && let Err(error) = self.child.kill()
         {
-            reason.push_str(&format!("; direct-child kill failed: {error}"));
+            let _ = write!(reason, "; direct-child kill failed: {error}");
         }
         let reaped = reap_until(&mut self.child, CLEANUP);
         match (cleanup, reaped) {

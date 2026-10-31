@@ -2,6 +2,7 @@
 //! beside the line, and a table of every gate on the job's summary page. Elsewhere it says nothing.
 
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::io::Write;
 use std::path::Path;
 
@@ -12,6 +13,7 @@ const SHOWN: usize = 10;
 
 /// Annotations on stderr, since `--json` owns stdout and the runner reads both, and the table
 /// appended to the job summary.
+#[expect(clippy::print_stderr, reason = "the annotations go to stderr")]
 pub fn tell(run: &Run, root: &Path) {
     eprint!("{}", told(run, root, &|name| std::env::var_os(name)));
 }
@@ -48,7 +50,10 @@ fn within(root: &Path, workspace: &Path) -> String {
         let names = inside
             .components()
             .map(|part| part.as_os_str().to_string_lossy());
-        names.map(|name| format!("{name}/")).collect()
+        names.fold(String::new(), |mut joined, name| {
+            let _ = write!(joined, "{name}/");
+            joined
+        })
     };
     root.strip_prefix(&workspace).map(parts).unwrap_or_default()
 }
@@ -131,10 +136,6 @@ fn summary(run: &Run) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

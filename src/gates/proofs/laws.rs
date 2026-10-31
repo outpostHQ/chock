@@ -12,6 +12,7 @@ use crate::run::report::Detail;
 use crate::run::{Ctx, Gate, Group, Kind, Measurement};
 use crate::tokens::Lexed;
 
+/// Fails a proof statement whose text differs from the text a person pinned.
 pub const GATE: Gate = Gate {
     name: "laws",
     about: "a TLA+ theorem, a Verus `requires` or `ensures`, or the checks of a Kani harness whose \
@@ -38,7 +39,11 @@ struct Law {
 /// Keyed `file#name@hash`, so a law whose text changes stops its row and starts a new one.
 fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let seen = |dir: &str| !project::SKIPPED.contains(&dir);
-    let named = |name: &str, _: &Path| name.ends_with(".tla") || name.ends_with(".rs");
+    let named = |name: &str, _: &Path| {
+        Path::new(name)
+            .extension()
+            .is_some_and(|ext| ext == "tla" || ext == "rs")
+    };
     let files = project::walked(&ctx.listing, &ctx.root, &seen, &named)?;
     let mut measured = Measurement::of(Series::new(), Vec::new());
     for path in files {
@@ -46,7 +51,10 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             // A Rust file that is not UTF-8 holds no proof.
-            Err(e) if shown.ends_with(".rs") && e.kind() == std::io::ErrorKind::InvalidData => {
+            Err(e)
+                if Path::new(&shown).extension().is_some_and(|ext| ext == "rs")
+                    && e.kind() == std::io::ErrorKind::InvalidData =>
+            {
                 continue;
             }
             Err(e) => return Err(format!("{shown}: {e}")),
@@ -70,7 +78,7 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
 /// The laws of one file: the theorems of a TLA+ module, and the harnesses and Verus contracts of a
 /// Rust file. A Rust file that does not lex holds none, since it does not build.
 fn laws_in(shown: &str, text: &str) -> Vec<Law> {
-    if shown.ends_with(".tla") {
+    if Path::new(shown).extension().is_some_and(|ext| ext == "tla") {
         return tla::theorems(text);
     }
     let verus = text.contains("verus!");
@@ -95,10 +103,6 @@ fn fnv(text: &str) -> u64 {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

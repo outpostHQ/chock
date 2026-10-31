@@ -1,7 +1,7 @@
 //! Cognitive complexity per function, by Campbell's rules: how hard code is to follow, not how many
 //! paths run through it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use syn::spanned::Spanned;
 use syn::visit::Visit;
@@ -22,6 +22,7 @@ pub(crate) fn skipped(name: &str) -> bool {
     project::SKIPPED.contains(&name) || ALSO_SKIPPED.contains(&name)
 }
 
+/// The `complexity` gate: the cognitive complexity score of each function.
 pub const GATE: Gate = Gate {
     name: "complexity",
     about: "no function is harder to follow than the baseline records",
@@ -38,9 +39,13 @@ pub const GATE: Gate = Gate {
 /// One function and its score. `line` is for navigation and stays out of the baseline key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Function {
+    /// Where the function lives, as reports show the path.
     pub file: String,
+    /// What the source calls the function.
     pub name: String,
+    /// Where the function starts, counted from 1.
     pub line: u32,
+    /// The cognitive complexity, which the ratchet holds.
     pub score: u32,
     /// The top-level statement that costs the most, where any costs anything.
     pub costliest: Option<Costliest>,
@@ -49,8 +54,11 @@ pub struct Function {
 /// A top-level statement of a function and what it adds to the function's score.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Costliest {
+    /// Where the statement starts, counted from 1.
     pub line: u32,
+    /// Where the statement ends, counted from 1.
     pub last: u32,
+    /// What the statement adds to the function's score.
     pub score: u32,
     /// What the statement is, such as `match`, in the words a fix line uses.
     pub what: &'static str,
@@ -152,7 +160,7 @@ pub(crate) fn keep_worst(series: &mut Series, key: &str, value: u64) {
 fn walked(ctx: &Ctx) -> Result<(Vec<PathBuf>, Vec<String>), String> {
     let root = &ctx.root;
     let found = project::walked(&ctx.listing, root, &|name| !skipped(name), &|name, _| {
-        name.ends_with(".rs") || name == project::MANIFEST
+        Path::new(name).extension().is_some_and(|ext| ext == "rs") || name == project::MANIFEST
     })?;
     let crates = found
         .iter()
@@ -167,6 +175,8 @@ fn walked(ctx: &Ctx) -> Result<(Vec<PathBuf>, Vec<String>), String> {
 
 /// Every named function in `source`, scored. `file` is only a label; an `Err` reads `line: reason`
 /// for the caller to prefix with the path.
+/// # Errors
+/// When `source` does not parse as Rust.
 pub fn functions(source: &str, file: &str) -> Result<Vec<Function>, String> {
     let parsed =
         syn::parse_file(source).map_err(|e| format!("{}: {e}", line_of(e.span().start().line)))?;
@@ -184,13 +194,29 @@ pub fn functions(source: &str, file: &str) -> Result<Vec<Function>, String> {
 
 /// One function and its body. A function defined inside another is measured as part of its host.
 pub struct Body<'ast> {
+    /// What the source calls the function.
     pub name: String,
+    /// Where the function starts, counted from 1.
     pub line: u32,
+    /// The statements that the gates measure.
     pub body: &'ast Block,
     /// Declared in an `impl` or a trait, where a bare call of its own name is some other function.
     pub method: bool,
+    /// The parameters and return type, as written.
     pub sig: &'ast Signature,
+    /// The attributes written on the function.
     pub attrs: &'ast [Attribute],
+}
+
+impl std::fmt::Debug for Body<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // syn's tree types have no `Debug` without its `extra-traits` feature.
+        f.debug_struct("Body")
+            .field("name", &self.name)
+            .field("line", &self.line)
+            .field("method", &self.method)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Every function in a parsed file, outside modules whose attributes `skip` names. `nesting` and
@@ -209,6 +235,15 @@ fn line_of(line: usize) -> u32 {
     u32::try_from(line).unwrap_or(u32::MAX)
 }
 
+/// Whether a body is a free function or a method, which recurse in different ways.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Form {
+    /// A function outside any `impl` or trait.
+    Free,
+    /// A function in an `impl` or a trait.
+    Method,
+}
+
 struct Collector<'ast, 'a> {
     found: Vec<Body<'ast>>,
     skip: &'a dyn Fn(&[Attribute]) -> bool,
@@ -220,13 +255,13 @@ impl<'ast> Collector<'ast, '_> {
         sig: &'ast Signature,
         attrs: &'ast [Attribute],
         body: &'ast Block,
-        method: bool,
+        form: Form,
     ) {
         self.found.push(Body {
             name: sig.ident.to_string(),
             line: line_of(sig.ident.span().start().line),
             body,
-            method,
+            method: form == Form::Method,
             sig,
             attrs,
         });
@@ -241,21 +276,21 @@ impl<'ast> Visit<'ast> for Collector<'ast, '_> {
     }
 
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        self.take(&node.sig, &node.attrs, &node.block, false);
+        self.take(&node.sig, &node.attrs, &node.block, Form::Free);
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
-        self.take(&node.sig, &node.attrs, &node.block, true);
+        self.take(&node.sig, &node.attrs, &node.block, Form::Method);
     }
 
     fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
         if let Some(body) = &node.default {
-            self.take(&node.sig, &node.attrs, body, true);
+            self.take(&node.sig, &node.attrs, body, Form::Method);
         }
     }
 }
 
-fn scorer(found: &Body) -> Scorer {
+fn scorer(found: &Body<'_>) -> Scorer {
     Scorer {
         name: found.name.clone(),
         method: found.method,
@@ -263,14 +298,14 @@ fn scorer(found: &Body) -> Scorer {
     }
 }
 
-fn score(found: &Body) -> u32 {
+fn score(found: &Body<'_>) -> u32 {
     let mut scorer = scorer(found);
     scorer.visit_block(found.body);
     scorer.score + u32::from(scorer.recursive)
 }
 
 /// The top-level statement that adds the most, the first of equals; `None` where none adds any.
-fn costliest(found: &Body) -> Option<Costliest> {
+fn costliest(found: &Body<'_>) -> Option<Costliest> {
     let mut best: Option<Costliest> = None;
     for stmt in &found.body.stmts {
         let mut scorer = scorer(found);
@@ -471,11 +506,6 @@ fn runs(ops: &[Logic]) -> u32 {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::testdir::tree;
@@ -648,6 +678,20 @@ mod tests {
         let inside = "fn f(a: bool) { let c = |x: bool| { if x { g(); } }; c(a); }";
         assert_eq!(scored(outside), 1);
         assert_eq!(scored(inside), 2);
+    }
+
+    #[test]
+    fn a_method_of_an_impl_inside_a_function_is_scored_into_its_host() {
+        let source = "fn f() { struct S; impl S { fn m(&self, b: bool) { if b { h(); } } } }";
+        assert_eq!(names(source), vec!["f".to_string()]);
+        assert_eq!(scored(source), 2);
+    }
+
+    #[test]
+    fn a_body_shows_its_name_line_and_kind_but_not_its_tree() {
+        let file = syn::parse_file("fn f() {}\n").unwrap();
+        let shown = format!("{:?}", bodies(&file, &|_| false));
+        assert_eq!(shown, r#"[Body { name: "f", line: 1, method: false, .. }]"#);
     }
 
     #[test]

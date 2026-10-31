@@ -75,6 +75,7 @@
     "wrappers"
   ],
   "vcs": "git",
+  "lint_floor": true,
   "local_only": [
     "boundaries",
     "duplicates",
@@ -115,7 +116,7 @@
   "seams": [
     { "path": "syn", "only": ["src/gates/**", "src/tokens.rs"], "why": "Only the gates and the token reader parse Rust source." },
     { "path": "proc_macro2", "only": ["src/gates/**", "src/tokens.rs"], "why": "Only the gates and the token reader parse Rust source." },
-    { "path": "std::process::Command", "only": ["src/exec/**", "src/setup/init.rs", "src/oracle/side.rs"], "why": "A gate starts each process in exec, which paces it and stops it at its limit. Only init's installs, which show their progress, and the oracle's sandbox start their own." }
+    { "path": "std::process::Command", "only": ["src/exec/**", "src/setup/init.rs", "src/setup/init/install.rs", "src/oracle/side.rs"], "why": "A gate starts each process in exec, which paces it and stops it at its limit. Only init's installs, which show their progress, and the oracle's sandbox start their own." }
   ],
   "owners": [
     { "call": "std::env::var", "why": "Read each variable in one place, and pass the value on." },

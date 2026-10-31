@@ -14,6 +14,10 @@ pub const FILE: &str = ".chock/verdicts.json";
 
 /// What a gate's verdict depends on beyond chock's own code; a gate without one is never recalled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one input a gate declares, and gates outside `run` build this struct"
+)]
 pub struct Reads {
     /// Every file the run's walk can see, a superset of any one gate's inputs.
     pub tree: bool,
@@ -28,6 +32,8 @@ pub struct Reads {
     pub reader: &'static str,
     /// Whether the answer also depends on which files the change touched.
     pub change_set: bool,
+    /// Whether the answer also reads the commits above the upstream, such as their messages.
+    pub commits: bool,
 }
 
 impl Reads {
@@ -41,6 +47,7 @@ impl Reads {
             coverage: false,
             reader: "",
             change_set: false,
+            commits: false,
         }
     }
 
@@ -76,6 +83,15 @@ impl Reads {
             ..self
         }
     }
+
+    /// The same inputs, and the commits above the upstream: a reworded commit keeps its tree.
+    #[must_use]
+    pub const fn and_commits(self) -> Self {
+        Self {
+            commits: true,
+            ..self
+        }
+    }
 }
 
 /// What a gate reads when its answer comes from one `outpost` call over the tree.
@@ -96,8 +112,11 @@ const KEPT_PER_GATE: usize = 4;
 
 /// What one run holds that a key reads beyond the gate's own declaration.
 pub struct Held<'a> {
+    /// The root of the tree the run checks.
     pub root: &'a Path,
+    /// The run's walk of the tree, made once when a key first asks for it.
     pub listed: &'a std::sync::OnceLock<Result<crate::project::Listing, String>>,
+    /// A tool's version output, or `None` when the tool cannot answer.
     pub version_of: &'a dyn Fn(&str) -> Option<String>,
     /// What the project's runner calls, where it named them.
     pub runner_tools: &'a [String],
@@ -107,12 +126,27 @@ pub struct Held<'a> {
     pub record: u64,
     /// This chock's build, from `this_build`, since a new chock may judge the same tree differently.
     pub chock: &'a str,
+    /// HEAD and the upstream commit, from `vcs::tips`, for a gate that reads the commits between.
+    pub tips: &'a dyn Fn() -> Option<String>,
+}
+
+impl std::fmt::Debug for Held<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Held")
+            .field("root", &self.root)
+            .field("listed", &self.listed)
+            .field("runner_tools", &self.runner_tools)
+            .field("coverage_tools", &self.coverage_tools)
+            .field("record", &self.record)
+            .field("chock", &self.chock)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A digest of everything a gate's verdict depends on. `None` if any input cannot be read, since a
 /// partial key could match a tree it should not.
 #[must_use]
-pub fn key(reads: Reads, gate: &str, held: &Held) -> Option<String> {
+pub fn key(reads: Reads, gate: &str, held: &Held<'_>) -> Option<String> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     held.chock.hash(&mut hasher);
     gate.hash(&mut hasher);
@@ -139,6 +173,9 @@ pub fn key(reads: Reads, gate: &str, held: &Held) -> Option<String> {
         .hash(&mut hasher);
     if reads.tree {
         tree(held.root, held.listed)?.hash(&mut hasher);
+    }
+    if reads.commits {
+        (held.tips)()?.hash(&mut hasher);
     }
     Some(format!("{:016x}", hasher.finish()))
 }
@@ -188,6 +225,8 @@ pub fn recall(root: &Path, gate: &str, key: &str) -> Option<GateReport> {
 }
 
 /// Forgets every kept verdict, and says how many there were. Nothing kept is not an error.
+/// # Errors
+/// The error from removing the file, when the file exists and cannot be removed.
 pub fn clear(root: &Path) -> std::io::Result<usize> {
     let kept = read(root).map_or(0, |held| held.values().map(Vec::len).sum());
     match std::fs::remove_file(root.join(FILE)) {
@@ -199,7 +238,8 @@ pub fn clear(root: &Path) -> std::io::Result<usize> {
 
 /// Whether something was measured and no record waits to be written.
 fn keepable(report: &GateReport) -> bool {
-    report.verdict != Verdict::CannotRun && report.tightened.is_none()
+    let writes = report.tightened.is_some() || !report.new_measures.is_empty();
+    report.verdict != Verdict::CannotRun && !writes
 }
 
 static KEEPING: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -256,8 +296,8 @@ fn write(root: &Path, held: &Record) -> Option<()> {
 #[must_use]
 pub fn installed(root: &Path, tool: &str) -> Option<String> {
     let (program, args) = asked(tool);
-    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let said = version_in(&crate::exec::run(&program, &argv, root).ok()?)?;
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let said = version_in(&crate::exec::run(&program, &words, root).ok()?)?;
     let home = std::env::var_os("CARGO_HOME").map(std::path::PathBuf::from);
     let flags: Vec<Option<std::ffi::OsString>> = BUILD_ENV.iter().map(std::env::var_os).collect();
     Some(format!(
@@ -388,10 +428,6 @@ fn version_in(out: &crate::exec::Output) -> Option<String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -407,6 +443,10 @@ mod tests {
 
     type Listed = std::sync::OnceLock<Result<crate::project::Listing, String>>;
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "it stands in for `Held::version_of`, which returns an `Option`"
+    )]
     fn one_version(tool: &str) -> Option<String> {
         Some(format!("{tool} 1.0.0"))
     }
@@ -422,7 +462,20 @@ mod tests {
             coverage_tools: &[],
             record: 0,
             chock: "chock 1.0.0",
+            tips: &|| Some("head upstream".to_string()),
         }
+    }
+
+    #[test]
+    fn what_a_run_holds_shows_its_inputs_but_not_its_functions() {
+        let listed = Listed::new();
+        let shown = format!("{:?}", held(Path::new("/w"), &listed));
+        assert!(
+            shown.starts_with(r#"Held { root: "/w", listed: "#),
+            "{shown}"
+        );
+        let rest = r#"runner_tools: [], coverage_tools: [], record: 0, chock: "chock 1.0.0", .. }"#;
+        assert!(shown.ends_with(rest), "{shown}");
     }
 
     fn keyed(root: &Path, tools: &'static [&'static str]) -> Option<String> {
@@ -639,6 +692,35 @@ mod tests {
         let first = keyed(&dir, &[]).unwrap();
         std::fs::rename(dir.join("src/a.rs"), dir.join("src/b.rs")).unwrap();
         assert_ne!(keyed(&dir, &[]).unwrap(), first);
+    }
+
+    /// A gate that reads the commits keys on HEAD and the upstream, so a reworded commit with the
+    /// same tree recalls nothing; a gate that reads only the tree still recalls.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_new_head_or_upstream_changes_the_key_only_of_a_gate_that_reads_the_commits() {
+        let dir = crate::testdir::tree("verdicts", &[("src/a.rs", "fn a() {}\n")]);
+        let listed = Listed::new();
+        let keyed = |reads: Reads, tips: Option<&'static str>| {
+            let said = move || tips.map(str::to_string);
+            let run = Held {
+                tips: &said,
+                ..held(&dir, &listed)
+            };
+            key(reads, "probe", &run)
+        };
+        let commits = Reads::tree_and(&[]).and_commits();
+        let first = keyed(commits, Some("head upstream"));
+        assert!(first.is_some());
+        assert_ne!(keyed(commits, Some("reworded upstream")), first);
+        assert_ne!(keyed(commits, Some("head moved")), first);
+        assert_eq!(keyed(commits, None), None, "unread tips leave no key");
+        let tree = Reads::tree_and(&[]);
+        assert_eq!(
+            keyed(tree, Some("reworded moved")),
+            keyed(tree, Some("head upstream"))
+        );
+        assert!(keyed(tree, None).is_some());
     }
 
     #[test]

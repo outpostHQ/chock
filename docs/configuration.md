@@ -99,6 +99,38 @@ A candidate never trips the gate.
 use `mutest_exhaustive`. After such a run the results stay in
 `target/test-scratch/mutest-results-<process>-<time>/`. Delete the directory when you are done.
 
+### What `mutest` killed
+
+Each `mutest` run writes `.chock/mutest-kills.json` again. The file names each mutation that the run
+evaluated, its verdict, and the tests that killed it. Git ignores the file, and the hook never adds
+it to a commit. A run that stops before mutest evaluates its mutations keeps the file of the run
+before. A run with `--mutate` lists only the mutations of the files it names.
+
+| Key | Value |
+|---|---|
+| `version` | 1 |
+| `chock` | the version of chock that wrote the file |
+| `commit` | HEAD in git, or `null` where git holds no commit |
+| `dirty` | `true` where the tree differed from `commit` when the run began |
+| `targets` | one row for each mutation that the run evaluated |
+
+Each row holds these keys:
+
+| Key | Value |
+|---|---|
+| `file`, `line` | where the mutation is |
+| `function` | the function that holds the mutation, such as `src/lib.rs::Counter::add`, or `null` where no function of the file holds it |
+| `operator`, `mutation` | the mutest operator, and the name mutest shows for the mutation |
+| `verdict` | `killed`, `survived` or `timed_out`; a crash counts as `killed` |
+| `tests` | each test that killed the mutation; always empty unless `mutest_exhaustive` is `true` |
+| `body_sha256` | the SHA-256 of the function's text, from the line of its `fn` to its closing brace, in 64 lowercase hex digits, or `null` with `function` |
+
+An inline module and a function around a nested function are parts of the name too, as in
+`src/lib.rs::tests::helper`. When mutest tests one mutation in more than one target, the row has
+the strongest verdict and the tests of each target. The hash changes when the text of the
+function changes, and not when another function changes. Any SHA-256 of the same bytes gives the
+same hash, so another tool can compare its own hash of a function with the row.
+
 `"mutest_proofs": true` lets Kani kill a mutation that no test detects. chock rebuilds the mutated
 file in a copy of the project under `target/test-scratch/`. It runs the harnesses that the file
 defines, and the harnesses that check the contracts of its functions. A harness counts only where it
@@ -179,7 +211,8 @@ the whole command as a list, program first, started from the project root with n
   { "name": "shipped-config", "run": ["scripts/check-config"] },
   { "name": "doc-check", "run": ["scripts/doc-check"], "counts": true },
   { "name": "api-diff", "run": ["cargo", "semver-checks"], "builds": true },
-  { "name": "schema", "run": ["scripts/gen-schema"], "outputs": ["schema/"] }
+  { "name": "schema", "run": ["scripts/gen-schema"], "outputs": ["schema/"] },
+  { "name": "contracts", "run": ["scripts/contracts"], "cannot_run_codes": [2] }
 ]
 ```
 
@@ -191,5 +224,8 @@ the whole command as a list, program first, started from the project root with n
 - An entry with `outputs` names the files or directories, from the root, that the command writes.
   The gate fails at each one whose bytes the command changed, so a committed generated file cannot
   go stale. The `test` gate does not count a change to them.
+- An entry with `cannot_run_codes` names the exit codes that mean the command could not check,
+  such as a harness error that exits 2. For such a code the gate says `CANNOT RUN`. Any other
+  non-zero code of a command that passes or fails still fails the gate.
 
 `chock enable commands commands-build` switches both gates on.

@@ -81,10 +81,6 @@ pub fn compare(a: &str, b: &str) -> Option<std::cmp::Ordering> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
 

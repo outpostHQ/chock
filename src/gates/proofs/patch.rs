@@ -119,7 +119,7 @@ struct Hunk<'a> {
 }
 
 fn hunks(diff: &str) -> Result<Vec<Hunk<'_>>, String> {
-    let mut hunks: Vec<Hunk> = Vec::new();
+    let mut hunks: Vec<Hunk<'_>> = Vec::new();
     for line in diff.lines().skip(2) {
         if let Some(header) = line.strip_prefix("@@ -") {
             let start = header
@@ -151,9 +151,10 @@ fn hunks(diff: &str) -> Result<Vec<Hunk<'_>>, String> {
             Some(_) => return Err(format!("`{line}` is no line of a unified diff")),
         }
     }
-    match hunks.is_empty() {
-        true => Err("the patch holds no hunk".into()),
-        false => Ok(hunks),
+    if hunks.is_empty() {
+        Err("the patch holds no hunk".into())
+    } else {
+        Ok(hunks)
     }
 }
 
@@ -199,10 +200,6 @@ fn found(lines: &[&str], old: &[&str], wanted: usize, from: usize) -> Result<usi
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

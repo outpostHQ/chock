@@ -152,10 +152,6 @@ fn resident_kb(pid: u32) -> u64 {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use crate::exec::Watchdog;

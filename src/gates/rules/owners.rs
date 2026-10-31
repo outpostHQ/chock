@@ -11,6 +11,7 @@ use crate::project::config::Owner;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Inspection, Kind};
 
+/// The `owners` gate: values that only one file may read.
 pub const GATE: Gate = Gate {
     name: "owners",
     about: "a value read through a call listed under `owners` is read in more than one file",
@@ -168,10 +169,6 @@ fn listed(files: &BTreeSet<&str>) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

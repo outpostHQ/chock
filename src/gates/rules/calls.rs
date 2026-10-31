@@ -11,6 +11,7 @@ use crate::project::config::Paired;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Inspection, Kind};
 
+/// The `calls` gate: calls that the project lists as a pair, out of order or alone.
 pub const GATE: Gate = Gate {
     name: "calls",
     about: "a function makes a call listed under `calls` without the call it must come after or with",
@@ -97,10 +98,6 @@ fn finding(shown: &str, entry: &Paired, function: &str, line: u32) -> Finding {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

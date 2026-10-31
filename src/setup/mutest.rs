@@ -31,8 +31,10 @@ pub fn starting() -> String {
 }
 
 /// Builds the fork at the newest commit of `main`, unless that build is here already. `Ok` and
-/// `Err` both hold the line to print; `Err` is an install that failed.
-pub fn install(start: Start, temp: &Path) -> Result<String, String> {
+/// `Err` both hold the line to print.
+/// # Errors
+/// When the fork cannot be cloned or built; the `Err` holds the line to print.
+pub fn install(start: Start<'_>, temp: &Path) -> Result<String, String> {
     // Named for this process, so two installs at once do not build in one folder.
     let scratch = temp.join(format!("chock-{}", std::process::id()));
     let done = newest(start, temp).and_then(|commit| {
@@ -45,7 +47,7 @@ pub fn install(start: Start, temp: &Path) -> Result<String, String> {
 }
 
 /// The commit `main` of the fork is at now.
-fn newest(start: Start, cwd: &Path) -> Result<String, String> {
+fn newest(start: Start<'_>, cwd: &Path) -> Result<String, String> {
     let said = exec::printed(start, "git", &["ls-remote", FORK, BRANCH], cwd, &NO_PROMPT)?;
     commit_in(&said).ok_or_else(|| format!("{FORK} has no `main` branch to build from"))
 }
@@ -65,7 +67,7 @@ fn short(commit: &str) -> &str {
 }
 
 /// The fork at `commit` in `clone`. Cargo records this path, so its name carries the commit.
-fn cloned(start: Start, clone: &Path, commit: &str) -> Result<(), String> {
+fn cloned(start: Start<'_>, clone: &Path, commit: &str) -> Result<(), String> {
     // An install that was stopped under this process id may have left one.
     let _ = std::fs::remove_dir_all(clone);
     std::fs::create_dir_all(clone)
@@ -81,7 +83,7 @@ fn cloned(start: Start, clone: &Path, commit: &str) -> Result<(), String> {
 }
 
 /// The build in `clone`, or no build where cargo's record and the tool itself say it is here.
-fn built(start: Start, clone: &Path, commit: &str) -> Result<String, String> {
+fn built(start: Start<'_>, clone: &Path, commit: &str) -> Result<String, String> {
     let toolchain = toolchain_in(clone)?;
     install_toolchain(start, clone, &toolchain)?;
     if current(start, clone, commit)? {
@@ -151,7 +153,7 @@ fn plain(name: &str) -> bool {
 }
 
 /// The toolchain, then each part the fork links against; rustup skips what is here already.
-fn install_toolchain(start: Start, clone: &Path, toolchain: &Toolchain) -> Result<(), String> {
+fn install_toolchain(start: Start<'_>, clone: &Path, toolchain: &Toolchain) -> Result<(), String> {
     let channel = toolchain.channel.as_str();
     let install = [
         "toolchain",
@@ -169,7 +171,7 @@ fn install_toolchain(start: Start, clone: &Path, toolchain: &Toolchain) -> Resul
 }
 
 /// Whether the installed tool is the build of `commit`: cargo's record names it, and it answers.
-fn current(start: Start, cwd: &Path, commit: &str) -> Result<bool, String> {
+fn current(start: Start<'_>, cwd: &Path, commit: &str) -> Result<bool, String> {
     let listing = exec::printed(start, "cargo", &["install", "--list"], cwd, &[])?;
     Ok(recorded(&listing) == Some(commit) && tool::asked(start, cwd)? == Tool::Usable)
 }
@@ -199,7 +201,11 @@ const STEPS: [&str; 3] = [
 
 /// The empty `CARGO_ENCODED_RUSTFLAGS` keeps a caller's `RUSTFLAGS` out of the build; the flags
 /// the fork needs are in its manifest.
-fn build(start: Start, clone: &Path, channel: &str) -> Result<(), String> {
+#[expect(
+    clippy::print_stdout,
+    reason = "each step's line is progress the user must see before a build of minutes"
+)]
+fn build(start: Start<'_>, clone: &Path, channel: &str) -> Result<(), String> {
     let env = [
         ("RUSTUP_TOOLCHAIN", channel),
         ("CARGO_ENCODED_RUSTFLAGS", ""),
@@ -217,21 +223,27 @@ fn build(start: Start, clone: &Path, channel: &str) -> Result<(), String> {
 /// How the installed tool stands against the fork's `main`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Standing {
+    /// Built from the newest commit of `main`, which it holds.
     Current(String),
+    /// Built from an older commit than the newest of `main`.
     Behind {
+        /// The commit the tool was built from.
         have: String,
+        /// The commit `main` is at now.
         newest: String,
     },
     /// Usable, with no commit to compare: a build chock did not make, or no answer from `main`.
     Unknown(String),
+    /// A `cargo-mutest` that is not a current build of the fork.
     Foreign,
+    /// No `cargo-mutest` is installed.
     Absent,
     /// Cargo could not be asked which tool it has.
     Unasked(String),
 }
 
 /// Asks the tool, then cargo's record, then the fork; each next question only where it matters.
-pub fn standing(start: Start, cwd: &Path) -> Standing {
+pub fn standing(start: Start<'_>, cwd: &Path) -> Standing {
     match tool::asked(start, cwd) {
         Ok(Tool::Usable) => compared(start, cwd),
         Ok(Tool::Foreign) => Standing::Foreign,
@@ -240,7 +252,7 @@ pub fn standing(start: Start, cwd: &Path) -> Standing {
     }
 }
 
-fn compared(start: Start, cwd: &Path) -> Standing {
+fn compared(start: Start<'_>, cwd: &Path) -> Standing {
     let listing = exec::printed(start, "cargo", &["install", "--list"], cwd, &[]);
     let Some(have) = listing.as_deref().ok().and_then(recorded) else {
         let why = "a build chock did not make, so it cannot tell its commit";
@@ -287,13 +299,10 @@ impl Standing {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::fmt::Write as _;
 
     const NEWEST: &str = "392a07841b5f05acc96a62facac7d24e9a8c3182";
     const OLDER: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -327,10 +336,10 @@ mod tests {
             cwd: &Path,
             env: &[(&str, &str)],
         ) -> Result<exec::Output, exec::ExecError> {
-            let set: String = env
-                .iter()
-                .map(|(key, value)| format!("{key}={value} "))
-                .collect();
+            let set = env.iter().fold(String::new(), |mut set, (key, value)| {
+                let _ = write!(set, "{key}={value} ");
+                set
+            });
             let line = format!("{set}{program} {}", args.join(" "));
             if let (true, Some(text)) = (line.contains("git checkout"), self.toolchain) {
                 std::fs::write(cwd.join("rust-toolchain.toml"), text).unwrap();
@@ -376,15 +385,15 @@ mod tests {
         )
     }
 
-    fn installing(machine: &Machine, temp: &Path) -> Result<String, String> {
+    fn installing(machine: &Machine<'_>, temp: &Path) -> Result<String, String> {
         install(
             &|program, args, cwd, env| machine.run(program, args, cwd, env),
             temp,
         )
     }
 
-    fn judged(machine: &Machine) -> Standing {
-        let start: Start = &|program, args, cwd, env| machine.run(program, args, cwd, env);
+    fn judged(machine: &Machine<'_>) -> Standing {
+        let start: Start<'_> = &|program, args, cwd, env| machine.run(program, args, cwd, env);
         standing(start, Path::new("."))
     }
 
@@ -560,11 +569,10 @@ mod tests {
                 "  FAILED    cargo-mutest — the build finished, but {}; is another `cargo-mutest` earlier on `PATH`?",
                 tool::FOREIGN
             );
-            let expected = match help == HELP {
-                true => Ok(
-                    "  installed cargo-mutest 392a078 — the newest commit of `main`".to_string(),
-                ),
-                false => Err(foreign),
+            let expected = if help == HELP {
+                Ok("  installed cargo-mutest 392a078 — the newest commit of `main`".to_string())
+            } else {
+                Err(foreign)
             };
             assert_eq!(done, expected);
         }

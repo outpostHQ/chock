@@ -1,5 +1,5 @@
-//! Characters no reader sees that change what a file says to a compiler, a shell or an AI agent:
-//! tag characters (hidden prompts), mixed variation selectors (GlassWorm, 2026-03), bidi controls.
+//! Characters no reader sees that change what a file tells a compiler, a shell or an AI agent: tag
+//! characters (hidden prompts), mixed variation selectors (`GlassWorm`, 2026-03), bidi controls.
 
 use crate::run::report::Finding;
 

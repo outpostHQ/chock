@@ -94,6 +94,7 @@ static REGISTRY: &[Gate] = &[
     wiring::GATE,
 ];
 
+/// Every gate that chock knows, opt-in gates and instruments included.
 #[must_use]
 pub fn registry() -> &'static [Gate] {
     REGISTRY
@@ -152,6 +153,33 @@ pub fn settles_anywhere(gate: &str) -> bool {
     SETTLES_ANYWHERE.contains(&gate)
 }
 
+/// The chock release that first measured `key` of `gate`, where it came after the gate itself.
+#[must_use]
+pub fn measured_since(gate: &str, key: &str) -> Option<&'static str> {
+    added(gate)
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, since)| *since)
+}
+
+/// Whether `gate` counts a key that no chock up to `version` measured.
+#[must_use]
+pub fn counts_after(gate: &str, version: &str) -> bool {
+    let later = |since: &str| {
+        crate::setup::version::compare(version, since) == Some(std::cmp::Ordering::Less)
+    };
+    added(gate).iter().any(|(_, since)| later(since))
+}
+
+/// Each key `gate` counts that came after the gate, with the release that first measured it.
+fn added(gate: &str) -> &'static [(&'static str, &'static str)] {
+    if gate == tools::codeslop::GATE.name {
+        &tools::codeslop::ADDED
+    } else {
+        &[]
+    }
+}
+
 /// Gates that count items but key each one by a name, not by the file it is in.
 const KEYED_BY_NAME: [&str; 7] = [
     "boundaries",
@@ -190,15 +218,25 @@ pub fn builds_apart(gate: &str, build: &[String]) -> bool {
 /// own beside the suite's once its recorded memory fits. A coverage build is instrumented.
 pub(crate) const BUILDS_ALONE: [&str; 3] = ["mutest", "miri", "coverage"];
 
+/// Whether mutest runs Kani harnesses on each mutation that no test detects: `mutest_proofs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MutestProofs {
+    /// mutest runs the harnesses, which build in the suite's target directory.
+    On,
+    /// mutest runs only the tests.
+    Off,
+}
+
 /// Whether `gate` may take a lane of its own. mutest's proofs build in the suite's target
 /// directory, so with them on it runs in the suite's lane, and never beside the `proof` gate.
-pub(crate) fn builds_alone(gate: &str, mutest_proofs: bool) -> bool {
-    BUILDS_ALONE.contains(&gate) && !(mutest_proofs && gate == tools::MUTEST.name)
+pub(crate) fn builds_alone(gate: &str, proofs: MutestProofs) -> bool {
+    BUILDS_ALONE.contains(&gate) && !(proofs == MutestProofs::On && gate == tools::MUTEST.name)
 }
 
 /// A gate that reads what another writes, and that gate: it runs in that gate's lane when it has one.
 pub(crate) const FOLLOWS: [(&str, &str); 1] = [("crap", "coverage")];
 
+/// The gate that `name` names, if chock has one.
 #[must_use]
 pub fn find(name: &str) -> Option<&'static Gate> {
     REGISTRY.iter().find(|gate| gate.name == name)
@@ -251,13 +289,16 @@ pub fn own_baseline(name: &str) -> Option<String> {
 }
 
 /// The debt the gate's own file holds under `root`; none for a gate that keeps no such file.
+/// # Errors
+/// Returns `Err` when the gate's own record exists but cannot be read.
 pub fn own_debt(
     root: &std::path::Path,
     name: &str,
 ) -> Result<Option<crate::run::debt::Debt>, String> {
-    match name == coverage::crap::GATE.name {
-        true => coverage::crap::debt(root),
-        false => Ok(None),
+    if name == coverage::crap::GATE.name {
+        coverage::crap::debt(root)
+    } else {
+        Ok(None)
     }
 }
 
@@ -328,10 +369,11 @@ mod tests {
 
     #[test]
     fn mutest_with_proofs_runs_in_the_suite_lane_so_two_kani_jobs_never_meet() {
-        assert!(builds_alone("mutest", false));
-        assert!(!builds_alone("mutest", true));
-        assert!(builds_alone("miri", true) && builds_alone("coverage", true));
-        assert!(!builds_alone("proof", false) && !builds_alone("proof", true));
+        let (on, off) = (MutestProofs::On, MutestProofs::Off);
+        assert!(builds_alone("mutest", off));
+        assert!(!builds_alone("mutest", on));
+        assert!(builds_alone("miri", on) && builds_alone("coverage", on));
+        assert!(!builds_alone("proof", off) && !builds_alone("proof", on));
     }
 
     #[test]

@@ -5,6 +5,7 @@ use crate::run::baseline::Baseline;
 use crate::run::report::{Finding, Verdict};
 use crate::run::{self, Ctx, Gate, Group, Kind, Outcome};
 
+/// Fails a default gate that is off where it would pass on this tree.
 pub const GATE: Gate = Gate {
     name: "wiring",
     about: "every gate that would pass on this tree, and is not opt-in, is switched on",
@@ -72,10 +73,6 @@ fn unwired(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

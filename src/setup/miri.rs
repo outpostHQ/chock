@@ -41,7 +41,7 @@ enum Have {
     NoRustup(String),
 }
 
-fn have(start: Start, cwd: &Path) -> Have {
+fn have(start: Start<'_>, cwd: &Path) -> Have {
     match start("rustup", &LISTED, cwd, &[]) {
         Err(why) if why.stage == exec::Stage::Spawn => Have::NoRustup(why.to_string()),
         Err(why) => Have::Unlisted(why.to_string()),
@@ -62,8 +62,10 @@ fn complete(listing: &str) -> bool {
 }
 
 /// Adds what is missing; an installed `nightly` keeps its date. `Ok` and `Err` both hold the line
-/// to print; `Err` is an install that failed.
-pub fn install(start: Start, cwd: &Path) -> Result<String, String> {
+/// to print.
+/// # Errors
+/// When a `rustup` step fails; the `Err` holds the line to print.
+pub fn install(start: Start<'_>, cwd: &Path) -> Result<String, String> {
     let steps: &[&[&str]] = match have(start, cwd) {
         Have::Both => return Ok(format!("  current   {NAME} — on the `nightly` toolchain")),
         Have::NoRustup(why) => {
@@ -82,7 +84,7 @@ pub fn install(start: Start, cwd: &Path) -> Result<String, String> {
 }
 
 /// The verdict and the words of Miri's row in `chock doctor`.
-pub fn standing(start: Start, cwd: &Path) -> (Verdict, String) {
+pub fn standing(start: Start<'_>, cwd: &Path) -> (Verdict, String) {
     const REPAIR: &str = "run `chock init --global`";
     match have(start, cwd) {
         Have::Both => (

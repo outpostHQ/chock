@@ -80,8 +80,11 @@ impl fmt::Display for Stage {
 /// A tool that could not be run, and at which step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecError {
+    /// The program that could not be run.
     pub program: String,
+    /// The step that failed.
     pub stage: Stage,
+    /// Why the step failed, as the system or the watchdog said it.
     pub reason: String,
     /// What a tool that was stopped had printed, where both streams were read whole.
     pub printed: Option<Box<Output>>,
@@ -119,7 +122,9 @@ impl fmt::Display for ExecError {
 pub struct Output {
     /// `None` when a signal killed the child.
     pub code: Option<i32>,
+    /// What the tool printed on stdout, up to the capture cap.
     pub stdout: String,
+    /// What the tool printed on stderr, up to the capture cap.
     pub stderr: String,
     /// The capture holds only a prefix, so a gate must not read a total from it.
     pub truncated: bool,
@@ -138,10 +143,30 @@ impl Output {
     }
 }
 
+/// Whether a tool exited 0, for a reader that needs only that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exit {
+    /// The tool exited with code 0.
+    Success,
+    /// The tool exited with another code, or a signal killed it.
+    Failure,
+}
+
 impl Output {
+    /// Whether the tool exited with code 0.
     #[must_use]
     pub fn success(&self) -> bool {
         self.code == Some(0)
+    }
+
+    /// `success` as an `Exit`, for a reader handed only that.
+    #[must_use]
+    pub fn exit(&self) -> Exit {
+        if self.success() {
+            Exit::Success
+        } else {
+            Exit::Failure
+        }
     }
 
     /// The line that best says why the tool failed: a marked error, else the last line it printed.
@@ -240,17 +265,23 @@ pub fn strip_colour(line: &str) -> String {
 }
 
 /// Runs a program in `cwd` within the deadline, capturing both streams.
+/// # Errors
+/// When the program cannot start or be read, or is stopped before its end.
 pub fn run(program: &str, args: &[&str], cwd: &Path) -> Result<Output, ExecError> {
     run_capped(program, args, cwd, MAX_CAPTURE)
 }
 
 /// `run` with a failure to run as a message; a tool that ran and said no is still `Ok`.
+/// # Errors
+/// When the program cannot start or be read, or is stopped before its end.
 pub fn tool(root: &Path, program: &str, args: &[&str]) -> Result<Output, String> {
     run(program, args, root).map_err(|e| e.to_string())
 }
 
 /// Whether the tool objected, by exiting non-zero. A truncated objection is an error, since its
 /// findings would be partial.
+/// # Errors
+/// When the tool exited non-zero and its output was cut short.
 pub fn objected(out: &Output, tool: &str) -> Result<bool, String> {
     if out.success() {
         return Ok(false);
@@ -269,6 +300,8 @@ fn run_capped(program: &str, args: &[&str], cwd: &Path, cap: usize) -> Result<Ou
 }
 
 /// `run` with extra environment variables, such as `RUSTDOCFLAGS`.
+/// # Errors
+/// When the program cannot start or be read, or is stopped before its end.
 pub fn run_env(
     program: &str,
     args: &[&str],
@@ -286,21 +319,24 @@ pub type Starter<'a> =
     dyn Fn(&str, &[&str], &Path, &[(&str, &str)]) -> Result<Output, ExecError> + 'a;
 
 /// What a program printed, or the command with why it failed.
+/// # Errors
+/// When the program cannot run, or exits with a code other than 0.
 pub fn printed(
-    start: Start,
+    start: Start<'_>,
     program: &str,
     args: &[&str],
     cwd: &Path,
     env: &[(&str, &str)],
 ) -> Result<String, String> {
     let out = start(program, args, cwd, env).map_err(|e| e.to_string())?;
-    match out.success() {
-        true => Ok(out.stdout),
-        false => Err(format!(
+    if out.success() {
+        Ok(out.stdout)
+    } else {
+        Err(format!(
             "`{program} {}` failed: {}",
             args.join(" "),
             out.failure_details()
-        )),
+        ))
     }
 }
 
@@ -344,6 +380,8 @@ pub type Pace = (Moving, std::time::Duration);
 
 /// `run_env` for a tool that may run as long as it shows progress: it is stopped only when no
 /// line the pace's `Moving` accepts arrives within its wait.
+/// # Errors
+/// When the program cannot start or be read, or is stopped before its end.
 pub fn run_paced(
     program: &str,
     args: &[&str],
@@ -401,12 +439,13 @@ impl Watchdog for Paced<'_> {
             self.seen = now;
             self.since = std::time::Instant::now();
         }
-        match past(self.since.elapsed(), self.limit) {
-            true => Err(format!(
+        if past(self.since.elapsed(), self.limit) {
+            Err(format!(
                 "no progress for {}s; cleanup requested",
                 self.limit.as_secs()
-            )),
-            false => Ok(()),
+            ))
+        } else {
+            Ok(())
         }
     }
     fn complete(&mut self) -> Result<(), String> {
@@ -688,11 +727,11 @@ fn run_full(
         printed: None,
     };
 
-    let (spawn, argv) = spawned(program, args, crate::exec::budget::politely(program));
+    let (spawn, spawn_args) = spawned(program, args, crate::exec::budget::politely(program));
 
     let mut command = Command::new(spawn);
     command
-        .args(&argv)
+        .args(&spawn_args)
         .env_remove_each(&GIT_STATE)
         .envs(crash_report(std::env::var_os("RUSTC_ICE").as_deref()))
         .envs(env.iter().copied())
@@ -755,7 +794,10 @@ fn finish_capture(
         .and_then(|(text, _)| marked(text))
         .map(|line| format!("\nwhat it marked as the error: {line}"))
         .unwrap_or_default();
-    let printed = stopped_streams(waited.is_err(), &out, &err);
+    let printed = waited
+        .is_err()
+        .then(|| stopped_streams(&out, &err))
+        .flatten();
     let fail = |(stage, reason): (Stage, String)| ExecError {
         program: program.to_string(),
         stage,
@@ -779,16 +821,14 @@ fn finish_capture(
 }
 
 /// A stopped tool's streams, read whole, so that a caller can keep all that it printed.
-fn stopped_streams(stopped: bool, out: &Drained, err: &Drained) -> Option<Box<Output>> {
+fn stopped_streams(out: &Drained, err: &Drained) -> Option<Box<Output>> {
     let ((stdout, out_cut), (stderr, err_cut)) = (out.as_ref().ok()?, err.as_ref().ok()?);
-    stopped.then(|| {
-        Box::new(Output {
-            code: None,
-            stdout: stdout.clone(),
-            stderr: stderr.clone(),
-            truncated: *out_cut || *err_cut,
-        })
-    })
+    Some(Box::new(Output {
+        code: None,
+        stdout: stdout.clone(),
+        stderr: stderr.clone(),
+        truncated: *out_cut || *err_cut,
+    }))
 }
 
 fn completed_capture<T>(
@@ -841,7 +881,7 @@ fn next_chunk<'a>(reader: &mut impl Read, chunk: &'a mut [u8]) -> Result<&'a [u8
 fn read_chunk(reader: &mut impl Read, chunk: &mut [u8]) -> Result<usize, String> {
     loop {
         match reader.read(chunk) {
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             result => return result.map_err(|e| e.to_string()),
         }
     }
@@ -862,12 +902,19 @@ fn remember_tail(tail: &mut Vec<u8>, chunk: &[u8]) {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stopped_tool_s_streams_are_cut_when_either_one_was_cut() {
+        let stream = |cut: bool| -> Drained { Ok(("printed".to_string(), cut)) };
+        let truncated =
+            |out, err| stopped_streams(&stream(out), &stream(err)).map(|it| it.truncated);
+        assert_eq!(truncated(false, false), Some(false));
+        assert_eq!(truncated(true, false), Some(true));
+        assert_eq!(truncated(false, true), Some(true));
+        assert_eq!(truncated(true, true), Some(true));
+    }
 
     #[test]
     fn each_stage_names_the_step_that_failed() {
@@ -900,7 +947,7 @@ mod tests {
     #[test]
     fn printed_is_the_stdout_of_a_command_that_passed_and_names_one_that_did_not() {
         let cwd = Path::new(".");
-        let passed: Start = &|_, _, _, _| {
+        let passed: Start<'_> = &|_, _, _, _| {
             Ok(Output {
                 code: Some(0),
                 ..said("abc\n", "noise")
@@ -910,12 +957,12 @@ mod tests {
             printed(passed, "git", &["status"], cwd, &[]),
             Ok("abc\n".to_string())
         );
-        let failed: Start = &|_, _, _, _| Ok(said("", "fatal: no remote\n"));
+        let failed: Start<'_> = &|_, _, _, _| Ok(said("", "fatal: no remote\n"));
         assert_eq!(
             printed(failed, "git", &["ls-remote", "origin"], cwd, &[]),
             Err("`git ls-remote origin` failed: fatal: no remote\nstderr (bounded output):\nfatal: no remote\n".to_string())
         );
-        let absent: Start = &|program, _, _, _| {
+        let absent: Start<'_> = &|program, _, _, _| {
             Err(ExecError {
                 program: program.to_string(),
                 stage: Stage::Spawn,

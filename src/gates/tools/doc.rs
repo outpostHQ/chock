@@ -53,8 +53,9 @@ fn documents(target: &Target) -> bool {
         })
 }
 
+/// `--keep-going`, since cargo otherwise stops at the first package that fails and hides the rest.
 fn invocation<'a>(package: Option<&'a str>, features: &'a [String]) -> Vec<&'a str> {
-    let mut args = vec!["doc", "--no-deps"];
+    let mut args = vec!["doc", "--no-deps", "--keep-going"];
     match package {
         Some(package) => args.extend(["-p", package]),
         None => args.push("--workspace"),
@@ -85,9 +86,10 @@ fn checked(
 
 /// One package's outcome, or an error where its output was cut.
 fn uncut(out: &exec::Output, root: &Path) -> Result<Outcome, String> {
-    match out.truncated {
-        true => Err("documentation output was truncated, so not every diagnostic was read".into()),
-        false => Ok(super::verdict(out, root)),
+    if out.truncated {
+        Err("documentation output was truncated, so not every diagnostic was read".into())
+    } else {
+        Ok(super::verdict(out, root))
     }
 }
 
@@ -100,17 +102,14 @@ fn merged(outcomes: Vec<Outcome>) -> Outcome {
             .flat_map(|outcome| outcome.findings)
             .collect()
     };
-    match failed.is_empty() {
-        true => Outcome::noted(findings(passed)),
-        false => Outcome::failed(findings(failed)),
+    if failed.is_empty() {
+        Outcome::noted(findings(passed))
+    } else {
+        Outcome::failed(findings(failed))
     }
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -141,11 +140,26 @@ mod tests {
         let flags = ["--features".to_string(), "testkit".to_string()];
         assert_eq!(
             invocation(None, &flags),
-            ["doc", "--no-deps", "--workspace", "--features", "testkit"]
+            [
+                "doc",
+                "--no-deps",
+                "--keep-going",
+                "--workspace",
+                "--features",
+                "testkit"
+            ]
         );
         assert_eq!(
             invocation(Some("first"), &flags),
-            ["doc", "--no-deps", "-p", "first", "--features", "testkit"]
+            [
+                "doc",
+                "--no-deps",
+                "--keep-going",
+                "-p",
+                "first",
+                "--features",
+                "testkit"
+            ]
         );
     }
 
@@ -163,7 +177,10 @@ mod tests {
         );
         assert_eq!(
             *calls.borrow(),
-            ["doc --no-deps -p first", "doc --no-deps -p second"]
+            [
+                "doc --no-deps --keep-going -p first",
+                "doc --no-deps --keep-going -p second"
+            ]
         );
         let fail = |_: &[&str]| Ok(exec::Output::of(Some(1), "", "error: fixture failed"));
         assert!(
@@ -207,7 +224,7 @@ mod tests {
     /// The false green this answers: the first package to fail ended the check before the rest ran.
     #[test]
     fn every_failing_package_is_listed_and_not_only_the_first() {
-        let run = |args: &[&str]| Ok(documented(args[3]));
+        let run = |args: &[&str]| Ok(documented(args[4]));
         let places = |scopes: &[&str]| {
             let scopes: Vec<Option<String>> = scopes.iter().map(|s| Some((*s).into())).collect();
             let outcome = checked(Path::new("/w"), &scopes, &[], &run).unwrap();
@@ -219,6 +236,25 @@ mod tests {
             (false, vec!["src/first.rs".into(), "src/second.rs".into()])
         );
         assert_eq!(places(&["clean"]), (true, vec!["src/clean.rs".into()]));
+    }
+
+    /// Two failing packages in one workspace run give two findings. The fake cargo, as the real
+    /// one does, stops at the first failing package unless it is told `--keep-going`.
+    #[test]
+    fn one_workspace_run_names_every_failing_package() {
+        let cargo = |args: &[&str]| {
+            let first = "error: unresolved link\n --> crates/a/src/lib.rs:1:5\n";
+            let rest = if args.contains(&"--keep-going") {
+                "error: unresolved link\n --> crates/b/src/lib.rs:2:5\n"
+            } else {
+                ""
+            };
+            Ok(exec::Output::of(Some(101), "", &format!("{first}{rest}")))
+        };
+        let outcome = checked(Path::new("/w"), &[None], &[], &cargo).unwrap();
+        let files: Vec<String> = outcome.findings.into_iter().map(|f| f.file).collect();
+        assert!(!outcome.passed);
+        assert_eq!(files, ["crates/a/src/lib.rs", "crates/b/src/lib.rs"]);
     }
 
     #[test]

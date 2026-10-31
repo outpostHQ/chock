@@ -155,8 +155,8 @@ fn running(text: &str) -> Option<&str> {
         .lines()
         .filter_map(|line| line.strip_prefix("test ")?.split_once(" ... "))
         .next_back()?;
-    let test = named.split_once(" - ").map_or(named, |(test, _)| test);
-    verdict.is_empty().then_some(test)
+    let found = named.split_once(" - ").map_or(named, |(head, _)| head);
+    verdict.is_empty().then_some(found)
 }
 
 /// The test a group was in when chock stopped it.
@@ -234,10 +234,6 @@ pub(super) fn rerun(args: &[String], failed: &[&Group]) -> Vec<String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

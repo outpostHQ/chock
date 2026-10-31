@@ -57,10 +57,12 @@ pub(super) fn check(ctx: &Ctx) -> Result<Outcome, String> {
         let meta = scratch.join(format!("{n}-{}", cfg.stem));
         let limit = limit_of(settings, &cfg.stem, &cfg.model);
         let run = tlc(&tool, cfg, &meta, workers, limit);
-        (n, (run, read_tlc as Read))
+        let read: Read = read_tlc;
+        (n, (run, read))
     });
     let refuted = refutes.into_iter();
-    let refuted = refuted.map(|(n, run)| (n, (run, apalache::said as Read)));
+    let said: Read = apalache::said;
+    let refuted = refuted.map(|(n, run)| (n, (run, said)));
     let jobs: BTreeMap<usize, (Run, Read)> = checked.chain(refuted).collect();
     let (readers, mut jobs): (Vec<_>, Vec<_>) = jobs
         .into_iter()
@@ -84,7 +86,7 @@ pub(super) fn check(ctx: &Ctx) -> Result<Outcome, String> {
         .enumerate()
         .map(|(n, _)| read.remove(&n).unwrap_or(Said::Passed))
         .collect();
-    let wrong = cfgs.iter().zip(&said).flat_map(|(cfg, said)| {
+    let wrong = cfgs.iter().zip(&said).filter_map(|(cfg, said)| {
         let file = relative(&ctx.root, &cfg.dir.join(cfg.file()));
         let why = judged(split.engine(cfg), cfg, said);
         why.map(|why| Finding::at(&file, &why).item(&cfg.model))
@@ -99,10 +101,12 @@ pub(super) fn check(ctx: &Ctx) -> Result<Outcome, String> {
     let stepped: Vec<Option<Finding>> = stepped.collect::<Result<_, String>>()?;
     findings.extend(stepped.into_iter().flatten());
     findings.extend(tlaps::judged_each(&theorems.modules, proved)?);
-    Ok(match findings.is_empty() {
-        true => Outcome::noted(notes.into_iter().chain(theorems.notes).collect()),
-        false => Outcome::failed(findings),
-    })
+    if !findings.is_empty() {
+        return Ok(Outcome::failed(findings));
+    }
+    Ok(Outcome::noted(
+        notes.into_iter().chain(theorems.notes).collect(),
+    ))
 }
 
 /// The first model `--model` names that no cfg checks and no module of that name proves.

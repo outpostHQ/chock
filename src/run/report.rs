@@ -2,12 +2,17 @@
 //! or a CI job reads this instead of each tool's prose.
 
 use std::fmt;
-
-use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
-use crate::run::baseline::{Baseline, Series};
+use crate::run::baseline::Series;
+
+mod settle;
+use settle::stamped;
+pub use settle::{Gating, locked_in, remember_or_say, settle, some_of};
+#[cfg(test)]
+use settle::{forgets, forgotten, lowering, settles};
 
 /// Bumped only by adding a field, so a consumer written against v1 keeps working.
 pub const SCHEMA: u32 = 1;
@@ -16,8 +21,10 @@ pub const SCHEMA: u32 = 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
+    /// The gate ran and found nothing that fails it.
     #[serde(rename = "passed")]
     Pass,
+    /// The gate ran and found something that fails it.
     Tripped,
     /// The gate could not run, so its silence means nothing.
     CannotRun,
@@ -28,6 +35,7 @@ fn schema_url() -> String {
 }
 
 impl Verdict {
+    /// The exit code of this verdict: 0, 1 or 2.
     #[must_use]
     pub fn code(self) -> u8 {
         match self {
@@ -64,15 +72,19 @@ impl fmt::Display for Verdict {
 pub struct Finding {
     /// Relative to the project root, so it means the same on the next machine.
     pub file: String,
+    /// The line in `file`, when the finding has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
     /// The function, lint or measure this is about, when the file alone is not the subject.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
+    /// The number the gate measured, for a ratchet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub measured: Option<u64>,
+    /// The number the baseline holds, for a ratchet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline: Option<u64>,
+    /// What is wrong, in words.
     pub message: String,
     /// The other places it is about, each named by what it is to this one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -80,6 +92,7 @@ pub struct Finding {
     /// The change that clears it, where the gate can name one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix: Option<String>,
+    /// Whether the finding counts toward the verdict or is only a lead.
     #[serde(default, skip_serializing_if = "Grade::is_finding")]
     pub grade: Grade,
 }
@@ -89,18 +102,25 @@ pub struct Finding {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Grade {
+    /// Counts toward the gate's verdict.
     #[default]
     Finding,
+    /// A lead to check, which never trips a gate.
     Candidate,
 }
 
 impl Grade {
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde's `skip_serializing_if` passes a reference"
+    )]
     fn is_finding(&self) -> bool {
         *self == Self::Finding
     }
 }
 
 impl Finding {
+    /// A finding in `file` that says `message`, with nothing else set.
     #[must_use]
     pub fn at(file: &str, message: &str) -> Self {
         Self {
@@ -122,24 +142,28 @@ impl Finding {
         found.sort_by(|a, b| (&a.file, a.line, &a.item).cmp(&(&b.file, b.line, &b.item)));
     }
 
+    /// The same finding, graded as a candidate.
     #[must_use]
     pub fn candidate(mut self) -> Self {
         self.grade = Grade::Candidate;
         self
     }
 
+    /// The same finding, at `line`.
     #[must_use]
     pub fn line(mut self, line: u32) -> Self {
         self.line = Some(line);
         self
     }
 
+    /// The same finding, about `item`.
     #[must_use]
     pub fn item(mut self, item: &str) -> Self {
         self.item = Some(item.to_string());
         self
     }
 
+    /// The same finding, with the number measured and the number on record.
     #[must_use]
     pub fn numbers(mut self, measured: u64, baseline: Option<u64>) -> Self {
         self.measured = Some(measured);
@@ -215,8 +239,11 @@ impl Finding {
 /// What a gate knows about one key beyond its number. A finding about that key carries it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Detail {
+    /// The line the key is about, when it has one.
     pub line: Option<u32>,
+    /// The other places the key is about.
     pub places: Vec<Place>,
+    /// The change that clears the key, where the gate can name one.
     pub fix: Option<String>,
 }
 
@@ -228,16 +255,20 @@ const SHOWN_LINES: u32 = 12;
 pub struct Place {
     /// What this place is to the finding, such as `copy` or `caller`.
     pub role: String,
+    /// The file of the place, relative to the project root.
     pub file: String,
+    /// The first line of the place.
     pub line: u32,
     /// The last line, where the place spans more than one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<u32>,
+    /// The function or item at the place, when the file and line alone do not name it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
 }
 
 impl Place {
+    /// A place in `file` at `line` that is `role` to its finding.
     #[must_use]
     pub fn at(role: &str, file: &str, line: u32) -> Self {
         Self {
@@ -249,12 +280,14 @@ impl Place {
         }
     }
 
+    /// The same place, ending at `last` where that is past its first line.
     #[must_use]
     pub fn through(mut self, last: u32) -> Self {
         self.last = (last > self.line).then_some(last);
         self
     }
 
+    /// The same place, naming `item`.
     #[must_use]
     pub fn item(mut self, item: &str) -> Self {
         self.item = Some(item.to_string());
@@ -296,25 +329,33 @@ impl Place {
     }
 }
 
+/// What one gate reported in one run, in the shape every gate shares.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateReport {
+    /// The gate's name.
     pub gate: String,
+    /// The gate's verdict.
     pub verdict: Verdict,
+    /// The verdict's exit code.
     pub exit_code: u8,
     /// What this run measured, summed over the gate's keys. Absent for a gate that is pass/fail.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub measured: Option<u64>,
+    /// What the record holds, summed over the gate's keys. Absent for a gate that is pass/fail.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline: Option<u64>,
+    /// What the gate counts, such as `finding(s)`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
     /// Why no number was produced. Present exactly when the verdict is `CannotRun`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cannot_run_reason: Option<String>,
+    /// What the gate found.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub findings: Vec<Finding>,
     /// The narrowest command that re-runs this gate.
     pub rerun: String,
+    /// How long the gate took, in ms.
     pub duration_ms: u64,
     /// Seconds since the Unix epoch, set only in the cached record, so an old pass does not read
     /// as a fresh one.
@@ -328,6 +369,9 @@ pub struct GateReport {
     /// verdict has nothing to write.
     #[serde(skip)]
     pub tightened: Option<Series>,
+    /// Keys a newer chock measures that the record lacks, which this run records first.
+    #[serde(skip)]
+    pub new_measures: Series,
     /// What to do about a gate that tripped, in one sentence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix: Option<String>,
@@ -360,6 +404,8 @@ pub const LAST_RUN: &str = ".chock/last-run.json";
 
 /// Best effort: a run that gated correctly is done even if the cache cannot be written. `run`
 /// and `init` both keep reports here, so each is stamped and none erases the rest.
+/// # Errors
+/// The error from making the directory or writing the file.
 pub fn remember(
     root: &std::path::Path,
     reports: &[GateReport],
@@ -379,299 +425,8 @@ pub fn remember(
     crate::project::document::write(&path, &record.render_json())
 }
 
-/// What a run leaves in the record file: each gate's first record, and each lower number.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Settled {
-    pub record: Baseline,
-    /// Gates that had no record before this run.
-    pub first: Vec<String>,
-    pub lowered: Vec<String>,
-    /// Gates that measured less outside a commit; the pre-commit hook lowers their record.
-    pub waiting: Vec<String>,
-    /// Each lowered or waiting record's total before and after, by the name it is said under.
-    pub moved: BTreeMap<String, (u64, u64)>,
-    /// Each key of a waiting record the next commit lowers or drops, as `gate key 9 to 4`.
-    pub next: Vec<String>,
-}
-
-/// Names said in full up to this many, such as the keys the next commit lowers or drops.
-const NAMED: usize = 10;
-
-/// The names in full up to `NAMED`, then how many more.
-#[must_use]
-pub fn some_of(names: &[String]) -> String {
-    match names.len().saturating_sub(NAMED) {
-        0 => names.join(", "),
-        more => format!("{} and {more} more", names[..NAMED].join(", ")),
-    }
-}
-
-/// Each key of `gate` that `now` holds lower than `was`, or not at all.
-fn lowering(gate: &str, was: &Series, now: &Series) -> Vec<String> {
-    let lower = |(key, was): (&String, &u64)| match now.get(key) {
-        Some(now) if now < *was => Some(format!("{gate} {key} {was} to {now}")),
-        Some(_) => None,
-        None => Some(format!("{gate} {key} {was} to none")),
-    };
-    was.0.iter().filter_map(lower).collect()
-}
-
-impl Settled {
-    fn new(held: &Baseline) -> Self {
-        Self {
-            record: held.clone(),
-            first: Vec::new(),
-            lowered: Vec::new(),
-            waiting: Vec::new(),
-            moved: BTreeMap::new(),
-            next: Vec::new(),
-        }
-    }
-
-    fn take(&mut self, held: &Baseline, report: &GateReport, series: &Series, committing: bool) {
-        if held.has(&report.gate) {
-            let total = |series: &Series| series.0.values().sum::<u64>();
-            let now = (total(&held.gate(&report.gate)), total(series));
-            self.moved.insert(report.gate.clone(), now);
-        }
-        // Work in progress can lose an item and get it back, so only a commit moves a record down.
-        if held.has(&report.gate) && !committing {
-            self.waiting.push(report.gate.clone());
-            let was = held.gate(&report.gate);
-            self.next.extend(lowering(&report.gate, &was, series));
-            return;
-        }
-        self.record.set(&report.gate, series.clone());
-        if held.has(&report.gate) {
-            self.lowered.push(report.gate.clone());
-            return;
-        }
-        // The unit goes beside a first record, as `chock baseline` writes it.
-        if let Some(unit) = &report.unit {
-            self.record.units.insert(report.gate.clone(), unit.clone());
-        }
-        self.first.push(report.gate.clone());
-    }
-
-    fn writes(&self) -> bool {
-        !(self.first.is_empty() && self.lowered.is_empty())
-    }
-
-    /// Writes the record where this run changed it, and says what it did. At a commit the file
-    /// goes into the commit, unless it holds a change nobody staged.
-    fn written(mut self, root: &std::path::Path, chock_version: &str, committing: bool) -> String {
-        if !self.writes() {
-            return self.said();
-        }
-        // The file names the chock that wrote it, as `chock baseline` leaves it.
-        self.record.chock = chock_version.to_string();
-        let file = crate::run::baseline::FILE;
-        let index = crate::project::vcs::commit_index(root);
-        let git = |args: &[&str]| crate::project::vcs::git_on(root, index.as_deref(), args);
-        let stages = committing && git(&["diff", "--quiet", "--", file]);
-        let rendered = crate::project::document::render(&self.record);
-        match crate::project::document::write(&root.join(file), &rendered) {
-            Ok(()) if stages && git(&["add", "--", file]) => {
-                format!("{}; {file} is in this commit", self.said())
-            }
-            Ok(()) => format!("{}; commit {file} with this change", self.said()),
-            Err(error) => format!("could not write {file}, so this run recorded nothing: {error}"),
-        }
-    }
-
-    /// What was written, in the words the run prints: first records, then lowered ones.
-    #[must_use]
-    pub fn said(&self) -> String {
-        let part = |what: &str, gates: &[String]| {
-            (!gates.is_empty()).then(|| format!("{what} {}", gates.join(", ")))
-        };
-        // `take` and `forgotten` keep both totals of each gate they list.
-        let by = |gates: &[String]| -> Vec<String> {
-            let moved = |gate: &String| {
-                let totals = self.moved.get(gate);
-                let said = totals.map(|(was, now)| format!(" ({was} to {now})"));
-                format!("{gate}{}", said.unwrap_or_default())
-            };
-            gates.iter().map(moved).collect()
-        };
-        let next = some_of(&self.next);
-        let next = match next.is_empty() {
-            true => next,
-            false => format!(": {next}"),
-        };
-        let waiting = part("measured less for", &by(&self.waiting)).map(|said| {
-            format!("{said}, and the pre-commit hook lowers the record at the next commit{next}")
-        });
-        [
-            part("wrote the first record for", &self.first),
-            part("lowered the record for", &by(&self.lowered)),
-            waiting,
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join("; ")
-    }
-}
-
-/// What this run writes into the record: each first record, and each lower number it measured
-/// when it gates a commit; `None` when it has nothing to write or to say.
-#[must_use]
-pub fn locked_in(held: &Baseline, reports: &[GateReport], committing: bool) -> Option<Settled> {
-    let mut settled = Settled::new(held);
-    for report in reports {
-        if let Some(series) = &report.tightened {
-            settled.take(held, report, series, committing);
-        }
-    }
-    (!settled.said().is_empty()).then_some(settled)
-}
-
-/// What a finished run leaves behind: its record for `chock explain`, and each first record and
-/// each gain written into the baseline for the change to commit. CI writes neither.
-pub fn settle(
-    root: &std::path::Path,
-    held: &Baseline,
-    reports: &[GateReport],
-    chock_version: &str,
-    committing: bool,
-) {
-    remember_or_say(root, reports, chock_version);
-    for said in settles(root, held, reports, chock_version, committing) {
-        eprintln!("chock: {said}");
-    }
-}
-
-/// Writes each first record and each gain into the records, and returns what it says of them.
-fn settles(
-    root: &std::path::Path,
-    held: &Baseline,
-    reports: &[GateReport],
-    chock_version: &str,
-    at_commit: bool,
-) -> Vec<String> {
-    // The run measured the work tree. A record that held a change the commit leaves out would be
-    // wrong for the commit, so the record then moves as it does outside a commit.
-    let left = match at_commit {
-        true => crate::run::baseline::left_out(root),
-        false => Vec::new(),
-    };
-    let committing = at_commit && left.is_empty();
-    let mut said = crate::gates::coverage::crap::relaid(root, committing);
-    let file = crate::run::baseline::FILE;
-    if let Some(settled) = forgets(root, held, locked_in(held, reports, committing), committing) {
-        if !left.is_empty() && !settled.waiting.is_empty() {
-            said.push(lowered_none(&left));
-        }
-        said.push(settled.written(root, chock_version, committing));
-    } else if at_commit && crate::project::vcs::unstaged(root, file) {
-        // A commit its message refused leaves the record it wrote unstaged; a retry writes none.
-        said.push(format!(
-            "{file} holds a record that this commit leaves out; stage it to commit it"
-        ));
-    }
-    said
-}
-
-/// Why a commit lowered no record: the tree it measured is not the tree it commits. CI then fails
-/// each record that stays above what the commit holds.
-fn lowered_none(paths: &[String]) -> String {
-    format!(
-        "this commit leaves out {}, so no record moved down, and CI fails each record above what \
-         the commit holds; stage those changes, or stash them with `git stash -k -u`",
-        some_of(paths)
-    )
-}
-
-/// `settled`, and at a commit, less each record of a file that neither the disk nor the repository
-/// holds any more: a file that comes back at the same path starts again from no record.
-fn forgets(
-    root: &std::path::Path,
-    held: &Baseline,
-    settled: Option<Settled>,
-    committing: bool,
-) -> Option<Settled> {
-    if !committing {
-        return settled;
-    }
-    let holder = crate::project::vcs::live_holder(root);
-    let Ok(tracked) = crate::project::vcs::tracked(root, holder) else {
-        return settled;
-    };
-    let tracked: std::collections::HashSet<String> = tracked.into_iter().collect();
-    forgotten(held, settled, &|file| {
-        !tracked.contains(file) && !root.join(file).exists()
-    })
-}
-
-/// `settled`, less each key of a `gone` file in every gate that keeps a number for each file, on
-/// every system; `None` when it has nothing to write or to say.
-fn forgotten(
-    held: &Baseline,
-    settled: Option<Settled>,
-    gone: &dyn Fn(&str) -> bool,
-) -> Option<Settled> {
-    let mut settled = settled.unwrap_or_else(|| Settled::new(held));
-    let Settled {
-        record,
-        lowered,
-        moved,
-        ..
-    } = &mut settled;
-    for (name, series) in &mut record.gates {
-        let gate = name.split_once('@').map_or(name.as_str(), |(gate, _)| gate);
-        let (before, total) = (series.0.len(), series.0.values().sum::<u64>());
-        if crate::gates::holds_each_file(gate) {
-            series
-                .0
-                .retain(|key, _| !gone(crate::run::baseline::file_of(key)));
-        }
-        if series.0.len() == before {
-            continue;
-        }
-        let now = series.0.values().sum::<u64>();
-        let said = lowered
-            .iter()
-            .find(|was| crate::run::baseline::kept_here(was) == *name);
-        match said {
-            Some(was) => {
-                moved.entry(was.clone()).or_insert((total, now)).1 = now;
-            }
-            None => {
-                lowered.push(name.clone());
-                moved.insert(name.clone(), (total, now));
-            }
-        }
-    }
-    (!settled.said().is_empty()).then_some(settled)
-}
-
-/// `remember`, saying so on stderr when the record could not be written: `chock explain` then
-/// answers from an older run, and a reader has to be told which.
-pub fn remember_or_say(root: &std::path::Path, reports: &[GateReport], chock_version: &str) {
-    if let Err(error) = remember(root, reports, chock_version) {
-        eprintln!(
-            "chock: this run was not recorded, so `chock explain` shows an older one: {error}"
-        );
-    }
-}
-
-/// Each report with the time it was taken, so an old pass does not read as a fresh one.
-fn stamped(reports: &[GateReport]) -> Vec<GateReport> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_secs())
-        .ok();
-    reports
-        .iter()
-        .map(|report| GateReport {
-            ran_at: now,
-            ..report.clone()
-        })
-        .collect()
-}
-
 impl GateReport {
+    /// A report of `verdict` for `gate`, with nothing measured and nothing found.
     #[must_use]
     pub fn new(gate: &str, verdict: Verdict, rerun: &str) -> Self {
         Self {
@@ -688,12 +443,14 @@ impl GateReport {
             duration_ms: 0,
             ran_at: None,
             tightened: None,
+            new_measures: Series::new(),
             fix: None,
             peak_mb: None,
             tests_ms: std::collections::BTreeMap::new(),
         }
     }
 
+    /// A report that `gate` could not run, and why.
     #[must_use]
     pub fn cannot_run(gate: &str, rerun: &str, reason: &str) -> Self {
         let mut report = Self::new(gate, Verdict::CannotRun, rerun);
@@ -719,12 +476,13 @@ impl GateReport {
     /// The two totals. A trip at or under the recorded total adds its finding count, because the
     /// totals alone read as a pass there.
     fn against(&self, now: u64, was: u64) -> String {
-        match self.verdict == Verdict::Tripped && now <= was {
-            true => format!(
+        if self.verdict == Verdict::Tripped && now <= was {
+            format!(
                 "{now} against {was} in total, {}",
                 plural(self.findings.len(), "finding")
-            ),
-            false => format!("{now} against {was}"),
+            )
+        } else {
+            format!("{now} against {was}")
         }
     }
 
@@ -742,10 +500,7 @@ impl GateReport {
             (None, Some(now), None) => format!("{now}, not yet recorded"),
             (None, None, _) => String::new(),
         };
-        let how = match self.recalled {
-            true => " recalled",
-            false => "",
-        };
+        let how = if self.recalled { " recalled" } else { "" };
         format!("  {:<10} {:<11} {detail}{how}", self.gate, self.verdict)
             .trim_end()
             .to_string()
@@ -756,13 +511,22 @@ impl GateReport {
     #[must_use]
     pub fn progress(&self) -> String {
         let seconds = self.duration_ms / 1000;
-        let line = format!("chock: {} {} after {seconds} s", self.gate, self.verdict);
+        // "after 0 s" read as a fresh judgement, so a run that judged nothing looked like one that did.
+        let line = if self.recalled {
+            format!(
+                "chock: {} {}, recalled: nothing it reads changed",
+                self.gate, self.verdict
+            )
+        } else {
+            format!("chock: {} {} after {seconds} s", self.gate, self.verdict)
+        };
         if self.verdict == Verdict::Pass {
             return line;
         }
-        let reasons = match self.detailed() {
-            true => block(self),
-            false => String::new(),
+        let reasons = if self.detailed() {
+            block(self, Leaves::default())
+        } else {
+            String::new()
         };
         format!("{line}\n{}{reasons}", self.summary())
             .trim_end()
@@ -785,12 +549,16 @@ pub struct Run {
     /// Recomputed on every write and never read back, so an older chock's URL never carries over.
     #[serde(rename = "$schema", skip_deserializing, default = "schema_url")]
     pub schema_url: String,
+    /// The schema of the report, which `SCHEMA` names.
     pub version: u32,
+    /// The chock that ran the gates.
     pub chock: String,
+    /// Each gate's report, in the order the run ran them.
     pub gates: Vec<GateReport>,
 }
 
 impl Run {
+    /// A run by `chock_version` of `gates`.
     #[must_use]
     pub fn new(chock_version: &str, gates: Vec<GateReport>) -> Self {
         Self {
@@ -801,6 +569,7 @@ impl Run {
         }
     }
 
+    /// The worst verdict of the run's gates.
     #[must_use]
     pub fn verdict(&self) -> Verdict {
         Verdict::worst(self.gates.iter().map(|g| g.verdict))
@@ -864,6 +633,7 @@ impl Run {
         })
     }
 
+    /// The report as pretty JSON, with a newline at the end.
     #[must_use]
     pub fn render_json(&self) -> String {
         let mut text = serde_json::to_string_pretty(self).unwrap_or_default();
@@ -871,10 +641,10 @@ impl Run {
         text
     }
 
-    /// The text report: the rows `rows` asks for, the findings of each gate that has any, and the
-    /// tally, which also counts the gates that got no row.
+    /// The text report: the rows `rows` asks for, the findings of each gate that has any, less what
+    /// `leaves` names, and the tally, which also counts the gates that got no row.
     #[must_use]
-    pub fn render(&self, rows: Rows) -> String {
+    pub fn render(&self, rows: Rows, leaves: Leaves) -> String {
         let mut out = String::new();
         let shown = |gate: &&GateReport| rows == Rows::Every || gate.verdict != Verdict::Pass;
         for gate in self.gates.iter().filter(shown) {
@@ -882,13 +652,16 @@ impl Run {
             out.push('\n');
         }
         for gate in self.gates.iter().filter(|g| g.detailed()) {
-            out.push_str(&block(gate));
+            if leaves.said && gate.verdict != Verdict::Pass {
+                continue;
+            }
+            out.push_str(&block(gate, leaves));
         }
         if !self.gates.is_empty() {
-            out.push_str(&format!("\n{}\n", self.tally()));
+            let _ = writeln!(out, "\n{}", self.tally());
         }
         if let Some(once) = self.not_compiling() {
-            out.push_str(&format!("{once}\n"));
+            let _ = writeln!(out, "{once}");
         }
         out.trim_start_matches('\n').to_string()
     }
@@ -906,15 +679,31 @@ pub enum Rows {
 }
 
 impl Rows {
-    /// The rows of a `chock run`: every gate for `--verbose`, or for a run that names its gates,
-    /// since those are the gates its reader asked about, passed or not.
+    /// The rows of a `chock run`: these, or every gate for a run that names its gates, since those
+    /// are the gates its reader asked about, passed or not.
     #[must_use]
-    pub fn asked(verbose: bool, named: bool) -> Self {
-        match verbose || named {
-            true => Self::Every,
-            false => Self::NotPassed,
-        }
+    pub fn asked(self, names: &[&str]) -> Self {
+        if names.is_empty() { self } else { Self::Every }
     }
+}
+
+/// What a text report leaves out: the blocks its reader saw already, and a hook's advisories.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Leaves {
+    /// Progress put the block of each gate that did not pass on the report's own stream.
+    pub said: bool,
+    /// A hook counts a passing gate's findings, and `chock explain` lists them.
+    pub advisories: bool,
+}
+
+/// The form of a command's report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Format {
+    /// Text for a person.
+    #[default]
+    Text,
+    /// JSON for an agent or a script, from `--json`.
+    Json,
 }
 
 /// The line `chock baseline` prints for a gate it could not measure, and the install that repairs
@@ -928,25 +717,37 @@ pub fn skipped(gate: &str, reason: &str) -> String {
     }
 }
 
-/// A gate's findings under a heading; a passing gate's findings are advisories.
-fn block(gate: &GateReport) -> String {
+/// A gate's findings under a heading; a passing gate's findings are advisories, which `leaves`
+/// can count in one line, as a hook shows them.
+fn block(gate: &GateReport, leaves: Leaves) -> String {
     let mut out = format!("\n{} — {}\n", gate.gate, headed(gate));
     let (findings, candidates): (Vec<&Finding>, Vec<&Finding>) = gate
         .findings
         .iter()
         .partition(|finding| finding.grade.is_finding());
-    for line in findings.into_iter().flat_map(Finding::lines) {
-        out.push_str(&format!("  {line}\n"));
+    let name = &gate.gate;
+    if leaves.advisories && gate.verdict == Verdict::Pass && !findings.is_empty() {
+        let count = plural(findings.len(), "finding");
+        let _ = writeln!(
+            out,
+            "  {count} not shown in a hook, since this gate passed: `chock explain {name}` lists \
+             each one"
+        );
+    } else {
+        for line in findings.into_iter().flat_map(Finding::lines) {
+            let _ = writeln!(out, "  {line}");
+        }
     }
     if !candidates.is_empty() {
-        let (count, name) = (plural(candidates.len(), "candidate"), &gate.gate);
-        out.push_str(&format!(
+        let count = plural(candidates.len(), "candidate");
+        let _ = writeln!(
+            out,
             "  {count} not shown, since a candidate never trips a gate: `chock explain {name}` \
-             lists each one\n"
-        ));
+             lists each one"
+        );
     }
     if let Some(fix) = &gate.fix {
-        out.push_str(&format!("  fix: {fix}\n"));
+        let _ = writeln!(out, "  fix: {fix}");
     }
     out
 }
@@ -996,12 +797,9 @@ fn rustc_refused(reason: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
+    use crate::run::baseline::Baseline;
 
     #[test]
     fn a_verdict_taken_now_reads_without_the_recalled_mark() {
@@ -1156,6 +954,16 @@ mod tests {
         assert_eq!(done.progress(), "chock: mutest ok after 249 s");
     }
 
+    #[test]
+    fn a_recalled_verdict_says_it_was_recalled_and_never_a_time() {
+        let mut kept = GateReport::new("coverage", Verdict::Pass, "chock run coverage");
+        kept.recalled = true;
+        assert_eq!(
+            kept.progress(),
+            "chock: coverage ok, recalled: nothing it reads changed"
+        );
+    }
+
     /// A run of an hour once kept every reason to its end.
     #[test]
     fn a_gate_that_did_not_pass_says_its_reasons_as_it_ends() {
@@ -1187,7 +995,10 @@ mod tests {
             format!("chock: proof CANNOT RUN after 0 s\n  proof      CANNOT RUN  {reason}{block}")
         );
         let run = Run::new("0.1.0", vec![stopped]);
-        assert!(run.render(Rows::Every).contains(&format!("{block}\n")));
+        assert!(
+            run.render(Rows::Every, Leaves::default())
+                .contains(&format!("{block}\n"))
+        );
         assert_eq!(
             skipped("mutest", crate::gates::mutation::tool::FOREIGN),
             format!(
@@ -1207,7 +1018,8 @@ mod tests {
         let mut tripped = GateReport::new("slop", Verdict::Tripped, "chock run slop");
         tripped.findings = vec![Finding::at("src/a.rs", "block of 5 lines").line(4)];
         tripped.fix = Some("cut the comment to two lines".to_string());
-        let rendered = Run::new("0.1.0", vec![tripped.clone()]).render(Rows::Every);
+        let rendered =
+            Run::new("0.1.0", vec![tripped.clone()]).render(Rows::Every, Leaves::default());
         let told = "slop — chock run slop\n  src/a.rs:4: block of 5 lines\n  fix: cut the comment to two lines\n";
         assert!(rendered.contains(told), "{rendered}");
         assert_eq!(
@@ -1231,15 +1043,60 @@ mod tests {
         let mut passed = GateReport::new("lean", Verdict::Pass, "chock run lean");
         passed.findings = vec![Finding::at("src/d.rs", "only one type").candidate()];
         assert_eq!(
-            block(&tripped),
+            block(&tripped, Leaves::default()),
             "\nmutest — chock run mutest\n  src/a.rs:4: survived\n  2 candidates not shown, since \
              a candidate never trips a gate: `chock explain mutest` lists each one\n"
         );
         assert_eq!(
-            block(&passed),
+            block(&passed, Leaves::default()),
             "\nlean — advisory, and it passed — chock run lean\n  1 candidate not shown, since a \
              candidate never trips a gate: `chock explain lean` lists each one\n"
         );
+    }
+
+    fn tripped_and_advised() -> Run {
+        let mut tripped = GateReport::new("slop", Verdict::Tripped, "chock run slop");
+        tripped.findings = vec![Finding::at("src/a.rs", "block of 5 lines").line(4)];
+        let mut advised = GateReport::new("profile", Verdict::Pass, "chock run profile");
+        advised.findings = vec![
+            Finding::at("Cargo.toml", "opt-level is z").line(9),
+            Finding::at("Cargo.toml", "no lto").line(12),
+        ];
+        Run::new("0.1.0", vec![tripped, advised])
+    }
+
+    /// Progress put the tripped block on the reader's stream, so the report keeps its row and the
+    /// advisories. Mutants: `said` ignored; every block left out.
+    #[test]
+    fn a_report_on_the_progress_stream_leaves_out_the_blocks_progress_printed() {
+        let said = Leaves {
+            said: true,
+            advisories: false,
+        };
+        let rendered = tripped_and_advised().render(Rows::NotPassed, said);
+        assert!(rendered.contains("  slop       TRIPPED\n"), "{rendered}");
+        assert!(!rendered.contains("slop — chock run slop"), "{rendered}");
+        assert!(rendered.contains("  Cargo.toml:12: no lto\n"), "{rendered}");
+    }
+
+    /// A hook counts a passing gate's findings in one line, and still lists a tripped gate's.
+    /// Mutant: the count takes a tripped gate's findings too.
+    #[test]
+    fn a_hook_counts_the_advisories_and_lists_what_tripped() {
+        let hook = Leaves {
+            said: false,
+            advisories: true,
+        };
+        let rendered = tripped_and_advised().render(Rows::NotPassed, hook);
+        assert!(
+            rendered.contains("slop — chock run slop\n  src/a.rs:4: block of 5 lines\n"),
+            "{rendered}"
+        );
+        let counted = "profile — advisory, and it passed — chock run profile\n  2 findings not \
+                       shown in a hook, since this gate passed: `chock explain profile` lists \
+                       each one\n";
+        assert!(rendered.contains(counted), "{rendered}");
+        assert!(!rendered.contains("no lto"), "{rendered}");
     }
 
     #[test]
@@ -1254,7 +1111,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            run.render(Rows::Every),
+            run.render(Rows::Every, Leaves::default()),
             "  lint       ok\n  \
              slop       TRIPPED\n\n\
              slop — chock run slop\n  \
@@ -1275,7 +1132,7 @@ mod tests {
         advised.findings = vec![Finding::at("Cargo.toml", "opt-level is z").line(9)];
         let run = Run::new("0.1.0", vec![passed("lint"), tripped, advised]);
         assert_eq!(
-            run.render(Rows::NotPassed),
+            run.render(Rows::NotPassed, Leaves::default()),
             "  slop       TRIPPED\n\n\
              slop — chock run slop\n  \
              src/a.rs:4: block of 5 lines\n\n\
@@ -1284,21 +1141,24 @@ mod tests {
              1 of 3 gates tripped (slop).\n"
         );
         let clean = Run::new("0.1.0", vec![passed("lint"), passed("fmt")]);
-        assert_eq!(clean.render(Rows::NotPassed), "2 gates ok.\n");
+        assert_eq!(
+            clean.render(Rows::NotPassed, Leaves::default()),
+            "2 gates ok.\n"
+        );
     }
 
     #[test]
     fn a_run_that_names_its_gates_or_says_verbose_gives_every_gate_a_row() {
-        assert_eq!(Rows::asked(false, false), Rows::NotPassed);
-        assert_eq!(Rows::asked(true, false), Rows::Every);
-        assert_eq!(Rows::asked(false, true), Rows::Every);
+        assert_eq!(Rows::NotPassed.asked(&[]), Rows::NotPassed);
+        assert_eq!(Rows::Every.asked(&[]), Rows::Every);
+        assert_eq!(Rows::NotPassed.asked(&["lint"]), Rows::Every);
     }
 
     #[test]
     fn a_passing_gate_with_findings_heads_them_as_advisory() {
         let mut passed = GateReport::new("miri", Verdict::Pass, "chock run miri");
         passed.findings = vec![Finding::at("src/a.rs", "deprecated: fetch_update").line(9)];
-        let text = Run::new("0.1.0", vec![passed]).render(Rows::Every);
+        let text = Run::new("0.1.0", vec![passed]).render(Rows::Every, Leaves::default());
         assert!(
             text.contains("miri — advisory, and it passed — chock run miri"),
             "{text}"
@@ -1328,7 +1188,7 @@ mod tests {
                 ),
             ],
         );
-        let text = run.render(Rows::Every);
+        let text = run.render(Rows::Every, Leaves::default());
         assert!(
             text.contains("2 of those could not run because this tree does not compile"),
             "{text}"
@@ -1356,7 +1216,7 @@ mod tests {
                 ),
             ],
         );
-        let text = run.render(Rows::Every);
+        let text = run.render(Rows::Every, Leaves::default());
         assert!(
             text.contains(
                 "2 of those could not run because this project's own suite does not pass"
@@ -1385,7 +1245,7 @@ mod tests {
                 refused("crap", "the coverage run failed: error: test run failed"),
             ],
         );
-        let text = run.render(Rows::Every);
+        let text = run.render(Rows::Every, Leaves::default());
         assert!(text.contains("does not compile"), "{text}");
         assert!(!text.contains("own suite does not pass"), "{text}");
     }
@@ -1400,7 +1260,7 @@ mod tests {
                 "the coverage run failed: error: test run failed",
             )],
         );
-        let text = run.render(Rows::Every);
+        let text = run.render(Rows::Every, Leaves::default());
         assert!(!text.contains("which is one problem"), "{text}");
     }
 
@@ -1479,8 +1339,8 @@ mod tests {
             let names = |it: &serde_json::Value| -> std::collections::BTreeSet<String> {
                 it.as_object().unwrap().keys().cloned().collect()
             };
-            let named = &schema["$defs"][def]["properties"];
-            assert_eq!(names(value), names(named), "{def}");
+            let declared = &schema["$defs"][def]["properties"];
+            assert_eq!(names(value), names(declared), "{def}");
         }
         let grades = &schema["$defs"]["finding"]["properties"]["grade"]["enum"];
         let spelled =
@@ -1546,7 +1406,7 @@ mod tests {
         let of = |name: &str| GateReport::new(name, Verdict::Pass, "chock run x");
         let run = Run::new("0.1.0", vec![of("a"), of("b"), of("c")]);
         assert_eq!(run.tally(), "3 gates ok.");
-        let text = run.render(Rows::Every);
+        let text = run.render(Rows::Every, Leaves::default());
         assert!(text.ends_with("3 gates ok.\n"), "{text}");
     }
 
@@ -1627,7 +1487,10 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn explain_shows_each_place_with_its_code_cut_at_twelve_lines() {
-        let text: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+        let text = (1..=20).fold(String::new(), |mut text, n| {
+            let _ = writeln!(text, "line {n}");
+            text
+        });
         let root = crate::testdir::tree("report-shown", &[("src/b.rs", text.as_str())]);
         let mut found = Finding::at("src/a.rs", "a copy").line(1);
         found.places = vec![
@@ -1711,7 +1574,10 @@ mod tests {
     #[test]
     fn nothing_lowered_writes_no_record() {
         let report = GateReport::new("slop", Verdict::Pass, "chock run slop");
-        assert_eq!(locked_in(&Baseline::empty("0.1.0"), &[report], true), None);
+        assert_eq!(
+            locked_in(&Baseline::empty("0.1.0"), &[report], Gating::Commit),
+            None
+        );
     }
 
     #[test]
@@ -1733,14 +1599,14 @@ mod tests {
             wrote("typos", Some("typo(s)")),
             wrote("nesting", None),
         ];
-        let working = locked_in(&held, &reports, false).unwrap();
+        let working = locked_in(&held, &reports, Gating::Other).unwrap();
         assert_eq!(
             working.said(),
             "wrote the first record for typos, nesting; measured less for slop (9 to 4), and the \
              pre-commit hook lowers the record at the next commit: slop src/a.rs 9 to 4"
         );
         assert_eq!(working.record.gate("slop").get("src/a.rs"), Some(9));
-        let settled = locked_in(&held, &reports, true).unwrap();
+        let settled = locked_in(&held, &reports, Gating::Commit).unwrap();
         assert_eq!(
             settled.said(),
             "wrote the first record for typos, nesting; lowered the record for slop (9 to 4)"
@@ -1777,7 +1643,7 @@ mod tests {
         held.set("slop", was);
         let mut report = GateReport::new("slop", Verdict::Pass, "chock run");
         report.tightened = Some(now);
-        let working = locked_in(&held, &[report], false).unwrap();
+        let working = locked_in(&held, &[report], Gating::Other).unwrap();
         let said = working.said();
         assert!(said.ends_with("src/10.rs 9 to 4 and 2 more"), "{said}");
         assert!(
@@ -1798,12 +1664,15 @@ mod tests {
         let mut series = crate::run::baseline::Series::new();
         series.set("src/a.rs", 2);
         first.tightened = Some(series);
-        let written = |committing: bool| {
+        let written = |committing: Gating| {
             let settled = locked_in(&held, std::slice::from_ref(&first), committing).unwrap();
-            settled.written(&root, "0.1.0", committing)
+            settled.written(&root, "0.1.0", committing, &[])
         };
         let said = "wrote the first record for typos";
-        assert_eq!(written(true), format!("{said}; {file} is in this commit"));
+        assert_eq!(
+            written(Gating::Commit),
+            format!("{said}; {file} is in this commit")
+        );
         assert_eq!(
             git(&["diff", "--cached", "--name-only"]),
             format!("{file}\n")
@@ -1811,16 +1680,82 @@ mod tests {
         git(&["reset", "--quiet"]);
         git(&["checkout", "--", file]);
         assert_eq!(
-            written(false),
+            written(Gating::Other),
             format!("{said}; commit {file} with this change")
         );
         assert_eq!(git(&["diff", "--cached", "--name-only"]), "");
         // The file now holds the run's own write, which nobody staged.
         assert_eq!(
-            written(true),
+            written(Gating::Commit),
             format!("{said}; commit {file} with this change")
         );
         assert_eq!(git(&["diff", "--cached", "--name-only"]), "");
+    }
+
+    /// Under `git commit --only` the hook stages into `next-index-*`, and `index.lock` becomes the
+    /// index after the commit, so the record goes into both. Mutant: drop the add to `index.lock`.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_commit_of_named_files_also_stages_the_record_into_the_index_it_leaves_behind() {
+        let file = crate::run::baseline::FILE;
+        let root = crate::testdir::repo("report-only", &[(file, "{}\n")]);
+        let (dir, git_on) = (root.join(".git"), crate::project::vcs::git_on);
+        let (next, real) = (dir.join("next-index-1.lock"), dir.join("index.lock"));
+        let holds_the_file =
+            |index: &std::path::Path| git_on(&root, Some(index), &["diff", "--quiet", "--", file]);
+        let held = crate::run::baseline::Baseline::empty("0.0.9");
+        let mut first = GateReport::new("typos", Verdict::Pass, "chock run typos");
+        let mut series = crate::run::baseline::Series::new();
+        series.set("src/a.rs", 2);
+        first.tightened = Some(series);
+        let written = || {
+            std::fs::copy(dir.join("index"), &next).unwrap();
+            let settled = locked_in(&held, std::slice::from_ref(&first), Gating::Commit).unwrap();
+            settled.written_into(&root, "0.1.0", Gating::Commit, &[], Some(&next))
+        };
+        let said = "wrote the first record for typos";
+        assert_eq!(
+            crate::project::vcs::real_index(&next),
+            None,
+            "no index.lock yet"
+        );
+        std::fs::copy(dir.join("index"), &real).unwrap();
+        assert_eq!(crate::project::vcs::real_index(&real), None);
+        assert_eq!(written(), format!("{said}; {file} is in this commit"));
+        assert!(holds_the_file(&next) && holds_the_file(&real));
+
+        // `index.lock` holds a change of its own, which the hook leaves alone.
+        std::fs::write(root.join(file), "[]\n").unwrap();
+        assert!(git_on(&root, Some(&real), &["add", "--", file]));
+        std::fs::write(root.join(file), "{}\n").unwrap();
+        let left =
+            format!("{said}; {file} is in this commit; run `git add {file}` after the commit");
+        assert_eq!(written(), left);
+        assert!(holds_the_file(&next) && !holds_the_file(&real));
+        std::fs::remove_file(&real).unwrap();
+    }
+
+    /// A key a newer chock measures joins the record after the same commit lowers the old keys, so
+    /// the lower record does not drop it.
+    #[test]
+    fn a_new_measure_is_recorded_beside_a_record_the_same_commit_lowers() {
+        let mut held = crate::run::baseline::Baseline::empty("0.19.0");
+        let mut was = crate::run::baseline::Series::new();
+        was.set("clippy::redundant_clone", 4);
+        held.set("codeslop", was);
+        let mut report = GateReport::new("codeslop", Verdict::Pass, "chock run codeslop");
+        let mut lower = crate::run::baseline::Series::new();
+        lower.set("clippy::redundant_clone", 2);
+        report.tightened = Some(lower.clone());
+        report.new_measures.set("chock::long_literal", 3);
+        let settled = locked_in(&held, &[report], Gating::Commit).unwrap();
+        lower.set("chock::long_literal", 3);
+        assert_eq!(settled.record.gate("codeslop"), lower);
+        assert_eq!(
+            settled.said(),
+            "wrote the first record of a new measure for codeslop chock::long_literal; lowered the \
+             record for codeslop (4 to 2)"
+        );
     }
 
     /// The run measured the work tree, so a commit that leaves out a change or a file there lowers no
@@ -1840,10 +1775,23 @@ mod tests {
         let mut lower = crate::run::baseline::Series::new();
         lower.set("src/a.rs", 2);
         gained.tightened = Some(lower.clone());
-        let settled =
-            |held: &Baseline| settles(&root, held, std::slice::from_ref(&gained), "0.1.0", true);
+        let settled = |held: &Baseline| {
+            settles(
+                &root,
+                held,
+                std::slice::from_ref(&gained),
+                "0.1.0",
+                Gating::Commit,
+            )
+        };
         // Outside a commit a gain waits, and the tree leaves nothing out.
-        let outside = settles(&root, &held, std::slice::from_ref(&gained), "0.1.0", false);
+        let outside = settles(
+            &root,
+            &held,
+            std::slice::from_ref(&gained),
+            "0.1.0",
+            Gating::Other,
+        );
         let names = |said: &[String], path: &str| {
             let left = format!("this commit leaves out {path}");
             said.iter().any(|line| line.starts_with(&left))
@@ -1871,10 +1819,13 @@ mod tests {
             format!("{file} holds a record that this commit leaves out; stage it to commit it");
         let levels = std::slice::from_ref(&level);
         assert_eq!(
-            settles(&root, &held, levels, "0.1.0", false),
+            settles(&root, &held, levels, "0.1.0", Gating::Other),
             Vec::<String>::new()
         );
-        assert_eq!(settles(&root, &held, levels, "0.1.0", true), vec![notice]);
+        assert_eq!(
+            settles(&root, &held, levels, "0.1.0", Gating::Commit),
+            vec![notice]
+        );
     }
 
     /// A key of a gone file goes in each gate that keys by file, on each system; a crate stays.
@@ -1896,7 +1847,7 @@ mod tests {
         let gone = |file: &str| ["src/gone.rs", "serde"].contains(&file);
         let mut report = GateReport::new("slop", Verdict::Pass, "chock run slop");
         report.tightened = Some(series(&[("src/a.rs", 1), ("src/gone.rs", 2)]));
-        let settled = forgotten(&held, locked_in(&held, &[report], true), &gone).unwrap();
+        let settled = forgotten(&held, locked_in(&held, &[report], Gating::Commit), &gone).unwrap();
         assert_eq!(
             settled.said(),
             "lowered the record for slop (5 to 1), mutest@windows (1 to 0)"
@@ -1926,13 +1877,21 @@ mod tests {
         let mut lines = Series::new();
         lines.set("total", 5);
         held.set("lines", lines.clone());
-        assert_eq!(forgets(&root, &held, None, false), None, "outside a commit");
-        let settled = forgets(&root, &held, None, true).unwrap();
+        assert_eq!(
+            forgets(&root, &held, None, Gating::Other),
+            None,
+            "outside a commit"
+        );
+        let settled = forgets(&root, &held, None, Gating::Commit).unwrap();
         was.0.remove("src/gone.rs");
         assert_eq!(settled.record.gate("slop"), was);
         assert_eq!(settled.record.gate("lines"), lines, "a total names no file");
         let bare = crate::testdir::make("report-forgets-bare");
-        assert_eq!(forgets(&bare, &held, None, true), None, "no repository");
+        assert_eq!(
+            forgets(&bare, &held, None, Gating::Commit),
+            None,
+            "no repository"
+        );
     }
 
     #[test]
@@ -1951,7 +1910,13 @@ mod tests {
             let text = std::fs::read_to_string(dir.join(crate::run::baseline::FILE)).unwrap();
             crate::project::document::parse(&text, "baseline").unwrap()
         };
-        settle(&dir, &held, std::slice::from_ref(&gained), "0.1.0", false);
+        settle(
+            &dir,
+            &held,
+            std::slice::from_ref(&gained),
+            "0.1.0",
+            Gating::Other,
+        );
         assert!(
             !dir.join(crate::run::baseline::FILE).exists(),
             "a gain outside a commit waits for the pre-commit hook"
@@ -1960,14 +1925,20 @@ mod tests {
         let mut first = GateReport::new("typos", Verdict::Pass, "chock run typos");
         first.tightened = Some(lower.clone());
         first.unit = Some("typo(s)".to_string());
-        settle(&dir, &held, &[first.clone(), gained], "0.1.0", false);
+        settle(
+            &dir,
+            &held,
+            &[first.clone(), gained],
+            "0.1.0",
+            Gating::Other,
+        );
         assert_eq!(written().chock, "0.1.0", "the chock that wrote the file");
         assert_eq!(written().gate("typos"), lower);
         assert_eq!(written().unit("typos"), Some("typo(s)"));
         assert_eq!(written().gate("slop"), was);
         let blocked = crate::testdir::make("report-settle-blocked");
         std::fs::write(blocked.join(".chock"), "not a directory").unwrap();
-        settle(&blocked, &held, &[first], "0.1.0", false);
+        settle(&blocked, &held, &[first], "0.1.0", Gating::Other);
         assert_eq!(
             std::fs::read_to_string(blocked.join(".chock")).unwrap(),
             "not a directory"
@@ -1983,9 +1954,9 @@ mod tests {
                    \"crap\": 2.0\n    }\n  ]\n}\n";
         let root = crate::testdir::repo("report-settle-relaid", &[(name, old)]);
         let held = crate::run::baseline::Baseline::empty("0.0.9");
-        settle(&root, &held, &[], "0.1.0", false);
+        settle(&root, &held, &[], "0.1.0", Gating::Other);
         assert_eq!(std::fs::read_to_string(root.join(name)).unwrap(), old);
-        settle(&root, &held, &[], "0.1.0", true);
+        settle(&root, &held, &[], "0.1.0", Gating::Commit);
         assert_eq!(
             std::fs::read_to_string(root.join(name)).unwrap(),
             "{\n  \"version\": 1,\n  \"entries\": [\n    {\"crap\":2.0}\n  ]\n}\n"

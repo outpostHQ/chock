@@ -98,13 +98,12 @@ pub(super) fn gates_on_test(
             let arms = arguments(group.stream());
             // An empty `any()` is false and an empty `all()` always holds: neither is a test gate.
             !arms.is_empty()
-                && match name == "all" {
-                    true => arms
-                        .into_iter()
-                        .any(|arm| gates_on_test(arm, depth + 1, test_only)),
-                    false => arms
-                        .into_iter()
-                        .all(|arm| gates_on_test(arm, depth + 1, test_only)),
+                && if name == "all" {
+                    arms.into_iter()
+                        .any(|arm| gates_on_test(arm, depth + 1, test_only))
+                } else {
+                    arms.into_iter()
+                        .all(|arm| gates_on_test(arm, depth + 1, test_only))
                 }
         }
         _ => false,
@@ -132,10 +131,6 @@ pub(super) fn arguments(tokens: TokenStream) -> Vec<TokenStream> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing, which is the point"
-)]
 mod tests {
     use super::*;
 

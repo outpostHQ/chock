@@ -8,13 +8,17 @@ use std::ops::RangeInclusive;
 use std::path::Path;
 
 use crate::exec;
-use crate::gates::metrics::prodlines;
 use crate::gates::text::claims;
 use crate::project::{self, vcs};
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Inspection, Kind};
 use crate::tokens::{self, Lexed, Tok};
 
+mod tree;
+
+use tree::Tree;
+
+/// Fails a `code:` comment in a model or a proof whose item is gone or changed.
 pub const GATE: Gate = Gate {
     name: "links",
     about: "a `code:` comment in a TLA+ model or a Verus proof that names no item, names one the \
@@ -142,12 +146,18 @@ fn inspect(ctx: &Ctx) -> Result<Inspection, String> {
 /// holds a `verus!` block.
 fn models(ctx: &Ctx) -> Result<Vec<(String, Vec<Block>)>, String> {
     let entered = |dir: &str| !project::SKIPPED.contains(&dir);
-    let named = |name: &str, _: &Path| name.ends_with(".tla") || name.ends_with(".rs");
+    let named = |name: &str, _: &Path| {
+        Path::new(name)
+            .extension()
+            .is_some_and(|ext| ext == "tla" || ext == "rs")
+    };
     let files = project::walked(&ctx.listing, &ctx.root, &entered, &named)?;
     let mut out = Vec::new();
     for path in files {
         let shown = project::relative(&ctx.root, &path);
-        let tla = shown.ends_with(".tla");
+        let tla = Path::new(&shown)
+            .extension()
+            .is_some_and(|ext| ext == "tla");
         if !tla && !shown.split('/').any(|dir| dir == "proofs") {
             continue;
         }
@@ -228,7 +238,7 @@ fn checked(
     let mut found = Vec::new();
     let mut linked = false;
     for link in links(&block.text) {
-        let resolved = tree.resolve(&link);
+        let resolved = tree.resolve(&link, model);
         linked |= !matches!(resolved, Resolved::Rust);
         if let Some(message) = wrong(&link, resolved, model, drift.as_deref_mut())? {
             found.push(at(link.key(), message));
@@ -283,10 +293,11 @@ fn wrong(
     Ok(Some(message))
 }
 
-/// The links of a comment: each word outside parentheses and backticks that names a `.rs` file,
-/// with an item path after `::` or not, or that is a path of two names or more.
+/// Each word outside parentheses and backticks that names a `.rs` file, with `::path` or not, or a
+/// path of two names or more. A file word just before a path word limits the path to that file.
 fn links(text: &str) -> Vec<Link> {
-    // Each character inside parentheses or backticks, and the marks, is made a space.
+    // Each character inside parentheses or backticks, and the marks, is made a `+`, which ends a
+    // run of words.
     let (mut depth, mut quoted) = (0_usize, false);
     let mut hide = |c: char| {
         let hidden = depth > 0 || quoted || matches!(c, '(' | ')' | '`');
@@ -296,11 +307,34 @@ fn links(text: &str) -> Vec<Link> {
             ')' if !quoted => depth = depth.saturating_sub(1),
             _ => {}
         }
-        if hidden { ' ' } else { c }
+        if hidden { '+' } else { c }
     };
     let open: String = text.chars().map(&mut hide).collect();
-    let words = open.split(|c: char| c.is_whitespace() || c == '+');
-    words.filter_map(link).collect()
+    open.split('+').flat_map(run_links).collect()
+}
+
+/// The links in one run of words, where a `.rs` file word takes the path word after it.
+fn run_links(run: &str) -> Vec<Link> {
+    let mut out = Vec::new();
+    let mut words = run.split_whitespace().peekable();
+    while let Some(word) = words.next() {
+        let Some(found) = link(word) else {
+            continue;
+        };
+        let file = Path::new(word).extension().is_some_and(|ext| ext == "rs");
+        match words.peek().copied().and_then(link) {
+            Some(item) if file && item.file.is_none() => {
+                words.next();
+                out.push(Link {
+                    written: format!("{} {}", found.written, item.written),
+                    file: found.file,
+                    path: item.path,
+                });
+            }
+            _ => out.push(found),
+        }
+    }
+    out
 }
 
 fn link(word: &str) -> Option<Link> {
@@ -344,119 +378,6 @@ fn is_name(word: &str) -> bool {
     let mut chars = word.chars();
     let first = chars.next().is_some_and(|c| c.is_alphabetic() || c == '_');
     first && chars.all(|c| c.is_alphanumeric() || c == '_')
-}
-
-/// Every production source and its items, with each item found by its last name.
-struct Tree {
-    sources: Vec<Source>,
-    named: BTreeMap<String, Vec<(usize, usize)>>,
-}
-
-impl Tree {
-    fn read(ctx: &Ctx) -> Result<Self, String> {
-        let read = prodlines::for_each_source(ctx, &|src| Ok(defined(src)))?;
-        let source = |(file, items): (String, Vec<Defined>)| Source {
-            module: module(&file),
-            file,
-            items,
-        };
-        let sources: Vec<Source> = read.into_iter().map(source).collect();
-        let mut named: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
-        for (s, source) in sources.iter().enumerate() {
-            for (i, item) in source.items.iter().enumerate() {
-                if let Some(last) = item.path.last() {
-                    named.entry(last.clone()).or_default().push((s, i));
-                }
-            }
-        }
-        Ok(Self { sources, named })
-    }
-
-    /// With a file, the item must be in a source whose path ends in it. The copies of one item in
-    /// one file, kept apart by `#[cfg]`, are one item.
-    fn resolve(&self, link: &Link) -> Resolved<'_> {
-        if link.outside() {
-            let why = "its file is outside this project, whose code alone the gate reads; link code \
-                       here, or start the comment with `none;` and say why";
-            return Resolved::Missing(why.to_string());
-        }
-        let files = link.file.as_deref().map(|file| self.ending(file));
-        if let (Some(file), Some(files)) = (&link.file, &files) {
-            match (files.len(), link.path.is_empty()) {
-                (0, _) => return Resolved::Missing(format!("no source file ends in `{file}`")),
-                (1, true) => return Resolved::File,
-                (_, true) => {
-                    return Resolved::Many(files.iter().map(ToString::to_string).collect());
-                }
-                _ => {}
-            }
-        }
-        let hits = self.hits(&link.path, files.as_deref());
-        let Some(&(source, item)) = hits.first() else {
-            let first = link.path.first().map_or("", String::as_str);
-            let path = link.path.join("::");
-            return match &link.file {
-                None if RUST.contains(&first) => Resolved::Rust,
-                None => Resolved::Missing(format!("no item's path ends in `{path}`")),
-                Some(file) => {
-                    Resolved::Missing(format!("no file that ends in `{file}` holds `{path}`"))
-                }
-            };
-        };
-        let copy = |(s, i): &(&Source, &Defined)| s.file == source.file && i.path == item.path;
-        if hits.iter().all(copy) {
-            return Resolved::Item(source, hits.iter().map(|(_, item)| *item).collect());
-        }
-        let place = |(s, i): &(&Source, &Defined)| format!("{}:{}", s.file, i.line);
-        Resolved::Many(hits.iter().map(place).collect())
-    }
-
-    /// The sources whose path is `file` or ends in `/file`.
-    fn ending(&self, file: &str) -> Vec<&str> {
-        let tail = format!("/{file}");
-        let ends = |source: &&Source| source.file == file || source.file.ends_with(&tail);
-        self.sources
-            .iter()
-            .filter(ends)
-            .map(|source| source.file.as_str())
-            .collect()
-    }
-
-    /// The items, in `files` when it is given, whose module path and own path, read as one, end
-    /// in `path`.
-    fn hits(&self, path: &[String], files: Option<&[&str]>) -> Vec<(&Source, &Defined)> {
-        let last = path.last().map_or("", String::as_str);
-        let places = self.named.get(last).into_iter().flatten();
-        let items = places.map(|(s, i)| (&self.sources[*s], &self.sources[*s].items[*i]));
-        let held = |(source, _): &(&Source, &Defined)| {
-            files.is_none_or(|files| files.contains(&source.file.as_str()))
-        };
-        let ends =
-            |(source, item): &(&Source, &Defined)| ends_with(&source.module, &item.path, path);
-        items.filter(held).filter(ends).collect()
-    }
-}
-
-/// Whether the module path and the item path, read as one, end in `wanted`.
-fn ends_with(module: &[String], path: &[String], wanted: &[String]) -> bool {
-    let len = module.len() + path.len();
-    let full = module.iter().chain(path);
-    len >= wanted.len() && full.skip(len - wanted.len()).eq(wanted)
-}
-
-/// The module path a file's place gives its items: the crate's directory with `-` read as `_`,
-/// then each directory under `src` and the file's name, which `lib`, `main` and `mod` leave out.
-fn module(file: &str) -> Vec<String> {
-    let parts: Vec<&str> = file.trim_end_matches(".rs").split('/').collect();
-    let (crate_dir, inner) = match parts.iter().rposition(|part| *part == "src") {
-        Some(at) => (at.checked_sub(1).map(|it| parts[it]), &parts[at + 1..]),
-        None => (None, &parts[..]),
-    };
-    let named = inner
-        .iter()
-        .filter(|part| !matches!(**part, "lib" | "main" | "mod"));
-    let all = crate_dir.into_iter().chain(named.copied());
-    all.map(|part| part.replace('-', "_")).collect()
 }
 
 /// Each item of a source that a link can name, with its path inside the file. A file that does not
@@ -682,11 +603,8 @@ fn last_commit(root: &Path, model: &str) -> Result<Option<String>, String> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
+    use super::tree::module;
     use super::*;
     use crate::testdir::Held;
 
@@ -749,6 +667,53 @@ mod tests {
         assert_eq!((link.file, link.path), (None, path));
         let link = links("b.rs::B::c").pop().unwrap();
         assert_eq!(link.file.as_deref(), Some("b.rs"));
+    }
+
+    /// A file word just before a path word limits the path to that file. A mark after the file, a
+    /// parenthesis or a `+` between them keeps the two apart. Mutant: read each word alone.
+    #[test]
+    fn a_file_word_just_before_a_path_limits_the_path_to_that_file() {
+        let text =
+            "src/a.rs Type::f, b.rs, Type::g c.rs (x) Type::h d.rs + Type::i e.rs::E::j F::k";
+        assert_eq!(
+            written(text),
+            [
+                "src/a.rs Type::f",
+                "b.rs",
+                "Type::g",
+                "c.rs",
+                "Type::h",
+                "d.rs",
+                "Type::i",
+                "e.rs::E::j",
+                "F::k"
+            ]
+        );
+        let link = links("src/a.rs crate::Type::f").pop().unwrap();
+        let path = vec!["Type".to_string(), "f".to_string()];
+        assert_eq!((link.file.as_deref(), link.path), (Some("src/a.rs"), path));
+    }
+
+    /// A link never names an item of the model that holds it, and a file word limits the path
+    /// after it. Mutants: drop either rule, and a link names 2 items.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_link_names_one_item_outside_the_model_that_holds_it() {
+        let feed = "pub struct Chunked;\nimpl Chunked {\n    pub fn feed(&self) {}\n";
+        let first = format!("{feed}    pub fn reset(&mut self) {{}}\n}}\n");
+        let model = "verus! {\npub struct Chunked;\nimpl Chunked {\n\
+                     \x20   // code: src/http1/chunk.rs Chunked::feed\n    pub fn feed(&self) {}\n\
+                     \x20   // code: Chunked::reset\n    pub fn reset(&mut self) {}\n}\n}\n";
+        let ctx = Held::tree(
+            "gate-links-model",
+            &[
+                ("src/http1/chunk.rs", first.as_str()),
+                ("src/http2/chunk.rs", &format!("{feed}}}\n")),
+                ("proofs/verus/chunk.rs", model),
+            ],
+        );
+        let inspection = inspect(&ctx).unwrap();
+        assert_eq!(found(&inspection), Vec::<(u32, &str)>::new());
     }
 
     #[test]
@@ -847,7 +812,7 @@ mod tests {
                 (15, "store.rs")
             ]
         );
-        assert!(inspection.blockers.is_empty());
+        assert_eq!(inspection.blockers, Vec::new());
         let none = Held::tree("gate-links-none", &[("src/lib.rs", "pub fn f() {}\n")]);
         assert_eq!(inspect(&none).unwrap(), Inspection::default());
         let raw = Held::tree("gate-links-raw", &[("src/lib.rs", "pub fn f() {}\n")]);
@@ -892,7 +857,7 @@ mod tests {
         let files = [("crates/a/src/lib.rs", lib), ("crates/b/src/lib.rs", lib)];
         let ctx = Held::tree("gate-links-files", &files);
         let tree = Tree::read(&ctx).unwrap();
-        let resolved = |text: &str| tree.resolve(&links(text)[0]);
+        let resolved = |text: &str| tree.resolve(&links(text)[0], "M.tla");
         let missing = "no source file ends in `gone.rs`";
         assert!(matches!(resolved("gone.rs"), Resolved::Missing(why) if why == missing));
         assert!(matches!(resolved("a/src/lib.rs"), Resolved::File));
@@ -906,7 +871,7 @@ mod tests {
             let found = checked("M.tla", &block, &tree, None).unwrap();
             found.into_iter().filter_map(|it| it.item).collect()
         };
-        assert!(items("none; a clock").is_empty());
+        assert_eq!(items("none; a clock"), Vec::<String>::new());
         assert_eq!(items("a/src/lib.rs::f lib.rs"), ["lib.rs"]);
         assert_eq!(items("prose"), [UNLINKED]);
         assert_eq!(

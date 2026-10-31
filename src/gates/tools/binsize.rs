@@ -9,6 +9,7 @@ use crate::project;
 use crate::run::baseline::{Keys, Series};
 use crate::run::{Ctx, Gate, Group, Kind, Outcome};
 
+/// Holds the size of each release binary, in bytes, to its record.
 pub const GATE: Gate = Gate {
     name: "binsize",
     about: "the size of each release binary, in bytes",
@@ -343,10 +344,6 @@ fn record_size(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 

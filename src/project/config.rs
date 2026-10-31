@@ -6,8 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::project::document::{self, Versioned};
 
+/// The layout version this chock writes and reads; it refuses a higher one.
 pub const SCHEMA: u32 = 1;
 
+/// Where the config lives, from the project root.
 pub const FILE: &str = ".chock/config.json";
 
 /// An unknown key is refused, as the schema says, so a typo or a retired key is named.
@@ -21,6 +23,7 @@ pub struct Config {
         deserialize_with = "recomputed"
     )]
     pub schema_url: String,
+    /// The version of the file's layout; chock refuses a higher one rather than half-read it.
     pub version: u32,
     /// The gates switched on, sorted so `init` writes the same bytes each time.
     pub enabled: BTreeSet<String>,
@@ -140,23 +143,33 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Command {
+    /// The name chock reports the check by.
     pub name: String,
+    /// The whole command, program first, started from the root with no shell.
     pub run: Vec<String>,
+    /// It prints a JSON object of counts, and chock holds each count to its record.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub counts: bool,
+    /// It compiles, so the `commands-build` gate runs it in place of the `commands` gate.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub builds: bool,
     /// The files or directories, from the root, that the command writes. Its gate fails at each
     /// one whose bytes the run changed, so a committed generated file is never stale.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<String>,
+    /// Exit codes that mean the command could not check, such as a harness error. The gate then
+    /// cannot run, where any other non-zero code fails it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cannot_run_codes: Vec<i32>,
 }
 
 /// A phrase refused in source, matched without regard to case, and the reason given with it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Forbidden {
+    /// The phrase to refuse.
     pub text: String,
+    /// Why the project refuses it, which each finding gives.
     pub why: String,
     /// Only where it stands alone: `dvc` in `advc`, `dvc-core` or `.dvc` is not a mention.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -182,6 +195,7 @@ pub struct Seam {
     /// Files from the root for a path, with `*` and `**`; package names for a crate.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub only: Vec<String>,
+    /// Why only those may use it, which each finding gives.
     pub why: String,
 }
 
@@ -191,6 +205,7 @@ pub struct Seam {
 pub struct Owner {
     /// The full path of the function, such as `std::env::var`.
     pub call: String,
+    /// Why one file reads the value, which each finding gives.
     pub why: String,
 }
 
@@ -198,11 +213,15 @@ pub struct Owner {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Paired {
+    /// The full path of the call that needs the other.
     pub call: String,
+    /// The call that must come earlier in the same function.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<String>,
+    /// The call that must stand anywhere in the same function.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub with: Option<String>,
+    /// Why the calls go together, which each finding gives.
     pub why: String,
 }
 
@@ -211,8 +230,11 @@ pub struct Paired {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Secret {
+    /// The name a finding gives the credential.
     pub name: String,
+    /// The fixed text each credential of this shape starts with.
     pub prefix: String,
+    /// The fewest letters, digits, `_` or `-` after the prefix.
     pub tail: usize,
 }
 
@@ -220,7 +242,9 @@ pub struct Secret {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Unmutated {
+    /// The Rust file, from the root.
     pub path: String,
+    /// Why `mutest` leaves it alone.
     pub why: String,
 }
 
@@ -300,6 +324,7 @@ pub struct Tla {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct History {
+    /// Credentials published on purpose, which the gate no longer reports.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accepted: Vec<Accepted>,
 }
@@ -309,17 +334,23 @@ pub struct History {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Accepted {
+    /// The commit that published it, or a start of that commit's id.
     pub commit: String,
+    /// The file it is in, from the root.
     pub path: String,
+    /// The rule that found it.
     pub rule: String,
+    /// Why it is safe to publish.
     pub reason: String,
 }
 
 /// The packages a gate runs over; neither `packages` nor `exclude` means the whole workspace.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scope {
+    /// Only these packages, where given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub packages: Option<Vec<String>>,
+    /// Every package but these, where given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude: Option<Vec<String>>,
     /// The interpreter's flags, replacing chock's rather than adding, so one can be dropped.
@@ -330,10 +361,13 @@ pub struct Scope {
 /// Commit message limits; an absent field keeps chock's default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
+    /// The widest subject allowed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<usize>,
+    /// The most non-blank body lines allowed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<usize>,
+    /// The widest body line allowed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<usize>,
 }
@@ -352,21 +386,47 @@ fn recomputed<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Strin
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Stage {
+    /// The pre-commit hook.
     Commit,
+    /// The pre-push hook.
     Push,
+    /// A CI job.
     Ci,
+    /// Only `chock run`.
     Manual,
 }
 
+/// Whether a gate needs a compiler, which decides its default stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Needs {
+    /// The gate compiles the project, so it takes minutes.
+    Compiler,
+    /// The gate reads files only, so it answers in seconds.
+    NoCompiler,
+}
+
+impl Needs {
+    /// Whether the gate compiles, as the `builds` key of a declared command says it.
+    #[must_use]
+    pub const fn builds(self) -> bool {
+        matches!(self, Needs::Compiler)
+    }
+}
+
 impl Stage {
+    /// Every stage, from the first to run to the last.
     pub const ALL: [Stage; 4] = [Stage::Commit, Stage::Push, Stage::Ci, Stage::Manual];
 
     /// A gate that needs no compiler answers in seconds, so the commit waits for it.
     #[must_use]
-    pub fn default_for(builds: bool) -> Self {
-        if builds { Stage::Push } else { Stage::Commit }
+    pub fn default_for(needs: Needs) -> Self {
+        match needs {
+            Needs::Compiler => Stage::Push,
+            Needs::NoCompiler => Stage::Commit,
+        }
     }
 
+    /// The word the config and the CLI use for the stage.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -377,6 +437,7 @@ impl Stage {
         }
     }
 
+    /// The stage a word names, or `None` for a word that names none.
     #[must_use]
     pub fn named(name: &str) -> Option<Self> {
         Stage::ALL.into_iter().find(|stage| stage.name() == name)
@@ -397,6 +458,7 @@ impl Versioned for Config {
 }
 
 impl Config {
+    /// A config that switches on the named gates, with every other key left out.
     #[must_use]
     pub fn of<I: IntoIterator<Item = S>, S: Into<String>>(names: I) -> Self {
         Self {
@@ -448,6 +510,7 @@ impl Config {
         self
     }
 
+    /// Whether the config switches the gate on.
     #[must_use]
     pub fn is_on(&self, gate: &str) -> bool {
         self.enabled.contains(gate)
@@ -455,17 +518,17 @@ impl Config {
 
     /// The stage the project chose for a gate, else the gate's default.
     #[must_use]
-    pub fn stage_of(&self, gate: &str, builds: bool) -> Stage {
+    pub fn stage_of(&self, gate: &str, needs: Needs) -> Stage {
         self.stage
             .get(gate)
             .copied()
-            .unwrap_or(Stage::default_for(builds))
+            .unwrap_or(Stage::default_for(needs))
     }
 
     /// Records a gate's stage; its default stage removes the entry. `true` when this changed it.
-    pub fn place(&mut self, gate: &str, builds: bool, stage: Stage) -> bool {
-        let was = self.stage_of(gate, builds);
-        if stage == Stage::default_for(builds) {
+    pub fn place(&mut self, gate: &str, needs: Needs, stage: Stage) -> bool {
+        let was = self.stage_of(gate, needs);
+        if stage == Stage::default_for(needs) {
             self.stage.remove(gate);
         } else {
             self.stage.insert(gate.to_string(), stage);
@@ -553,10 +616,6 @@ impl Config {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "a failed unwrap in a test is the test failing"
-)]
 mod tests {
     use super::*;
 
@@ -595,15 +654,18 @@ mod tests {
     #[test]
     fn a_stage_is_recorded_only_where_it_is_not_the_default() {
         let mut config = Config::of(["binsize"]);
-        assert_eq!(config.stage_of("binsize", true), Stage::Push);
-        assert_eq!(config.stage_of("slop", false), Stage::Commit);
-        assert!(config.place("binsize", true, Stage::Ci));
-        assert!(!config.place("binsize", true, Stage::Ci), "already there");
-        assert_eq!(config.stage_of("binsize", true), Stage::Ci);
-        assert!(config.place("binsize", true, Stage::Push));
+        assert_eq!(config.stage_of("binsize", Needs::Compiler), Stage::Push);
+        assert_eq!(config.stage_of("slop", Needs::NoCompiler), Stage::Commit);
+        assert!(config.place("binsize", Needs::Compiler, Stage::Ci));
+        assert!(
+            !config.place("binsize", Needs::Compiler, Stage::Ci),
+            "already there"
+        );
+        assert_eq!(config.stage_of("binsize", Needs::Compiler), Stage::Ci);
+        assert!(config.place("binsize", Needs::Compiler, Stage::Push));
         assert!(config.stage.is_empty(), "the default needs no entry");
         assert!(
-            !config.place("lint", true, Stage::Push),
+            !config.place("lint", Needs::Compiler, Stage::Push),
             "a gate that builds starts at push"
         );
         assert!(
@@ -624,7 +686,7 @@ mod tests {
         let staged =
             r#"{"$schema": "x", "version": 1, "enabled": [], "stage": {"binsize": "manual"}}"#;
         let read = document::parse::<Config>(staged, FILE).unwrap();
-        assert_eq!(read.stage_of("binsize", true), Stage::Manual);
+        assert_eq!(read.stage_of("binsize", Needs::Compiler), Stage::Manual);
         assert_eq!(
             read.schema_url,
             schema_url(),
@@ -702,7 +764,10 @@ mod tests {
 
     #[test]
     fn a_config_naming_only_real_gates_reports_nothing_unknown() {
-        assert!(Config::of(["lint"]).unknown(&["lint", "slop"]).is_empty());
+        assert_eq!(
+            Config::of(["lint"]).unknown(&["lint", "slop"]),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -716,13 +781,16 @@ mod tests {
     #[test]
     fn a_name_held_where_touched_that_keeps_no_number_for_each_file_is_reported() {
         let mut config = Config::of(["slop", "binsize"]);
-        assert!(config.unheld_where_touched(&|_| false).is_empty());
+        assert_eq!(
+            config.unheld_where_touched(&|_| false),
+            Vec::<String>::new()
+        );
         config.clean_when_touched = Some(vec!["slop".to_string(), "binsize".to_string()]);
         assert_eq!(
             config.unheld_where_touched(&|name| name == "slop"),
             ["binsize"]
         );
-        assert!(config.unheld_where_touched(&|_| true).is_empty());
+        assert_eq!(config.unheld_where_touched(&|_| true), Vec::<String>::new());
     }
 
     #[test]
