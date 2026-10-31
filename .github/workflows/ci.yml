@@ -348,7 +348,8 @@ jobs:
             Windows) target=x86_64-pc-windows-msvc ;;
           esac
           release=cargo-nextest-$CARGO_NEXTEST_VERSION
-          cd "${CARGO_HOME:-$HOME/.cargo}/bin"
+          bin="${CARGO_HOME:-$HOME/.cargo}/bin" # an image with its own rustup may lack it
+          mkdir -p "$bin" && echo "$bin" >> "$GITHUB_PATH" && cd "$bin"
           curl -fsSL --retry 3 --proto =https \
             "https://github.com/nextest-rs/nextest/releases/download/$release/$release-$target.tar.gz" \
             | tar -xzf -

@@ -103,6 +103,11 @@ fn defined(
         .unwrap_or_default();
     let packages = read["packages"].as_array().into_iter().flatten();
     let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    // cargo prints each path as given, such as `D:\…` or through a link, and `base` is canonical
+    // (`\\?\D:\…` on Windows): a member is read under the canonical `workspace_root`.
+    let printed = read.get("workspace_root").and_then(Value::as_str);
+    let printed = PathBuf::from(printed.unwrap_or_default());
+    let canonical = printed.canonicalize().unwrap_or_else(|_| printed.clone());
     let crates: Vec<(String, PathBuf)> = packages
         .filter(|package| members.contains(&package["id"]))
         .map(|package| {
@@ -112,7 +117,9 @@ fn defined(
                 .as_str()
                 .unwrap_or_default()
                 .replace('-', "_");
-            (name, dir.strip_prefix(&base).unwrap_or(dir).to_path_buf())
+            let under = dir.strip_prefix(&printed).map(|rel| canonical.join(rel));
+            let dir = under.unwrap_or_else(|_| dir.to_path_buf());
+            (name, dir.strip_prefix(&base).unwrap_or(&dir).to_path_buf())
         })
         .collect();
     let mut tests: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -138,6 +145,7 @@ fn defined(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// A file outside every member defines no test of a member, wherever the list holds it.
     /// Mutant: `break` for `continue` loses the member listed after it.
@@ -145,23 +153,46 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_file_outside_every_member_defines_no_test_of_a_member() {
         let root = crate::testdir::make("covers-defined");
-        let lib = root.join("crates/a/src/lib.rs");
-        let loose = root.join("tools/loose.rs");
-        for file in [&lib, &loose] {
-            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-            std::fs::write(file, "#[test]\nfn checks() {\n    assert!(f());\n}\n").unwrap();
-        }
-        let manifest = root.canonicalize().unwrap().join("crates/a/Cargo.toml");
-        let shown = manifest.display().to_string();
-        let metadata = serde_json::json!({
-            "workspace_members": ["a 0.1.0"],
-            "packages": [{"id": "a 0.1.0", "name": "my-a", "manifest_path": shown}],
-        })
-        .to_string();
+        let lib = checks_at(&root, "crates/a/src/lib.rs");
+        let loose = checks_at(&root, "tools/loose.rs");
+        let metadata = one_member(&root.canonicalize().unwrap());
         let alone = defined(&root, &metadata, std::slice::from_ref(&lib)).unwrap();
-        let checks = BTreeSet::from(["checks".to_string()]);
-        assert_eq!(alone, BTreeMap::from([("my_a".to_string(), checks)]));
+        assert_eq!(alone, my_a_checks());
         assert_eq!(defined(&root, &metadata, &[loose, lib]).unwrap(), alone);
+    }
+
+    /// A member is read under the root however cargo spells the root, here through a link.
+    /// Mutant: keep the directory as cargo printed it, and the member defines no test.
+    #[cfg(unix)]
+    #[test]
+    fn a_member_printed_through_a_link_still_defines_its_tests() {
+        let scratch = crate::testdir::make("covers-linked");
+        let (root, alias) = (scratch.join("real"), scratch.join("alias"));
+        let lib = checks_at(&root, "crates/a/src/lib.rs");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        let found = defined(&root, &one_member(&alias), &[lib]);
+        assert_eq!(found, Ok(my_a_checks()));
+    }
+
+    /// A file at `path` under `root` that defines the test `checks`.
+    fn checks_at(root: &Path, path: &str) -> PathBuf {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "#[test]\nfn checks() {\n    assert!(f());\n}\n").unwrap();
+        file
+    }
+
+    /// cargo's metadata for one member, `my-a` at `crates/a`, where cargo spells the root `shown`.
+    fn one_member(shown: &Path) -> String {
+        let manifest = shown.join("crates/a/Cargo.toml");
+        let package = json!({"id": "a", "name": "my-a", "manifest_path": manifest});
+        json!({"workspace_root": shown, "workspace_members": ["a"], "packages": [package]})
+            .to_string()
+    }
+
+    /// What `defined` finds for `one_member` with `checks_at` its lib.
+    fn my_a_checks() -> BTreeMap<String, BTreeSet<String>> {
+        BTreeMap::from([("my_a".to_string(), BTreeSet::from(["checks".to_string()]))])
     }
 
     /// Only a `// checked:` line in the run of `//` lines right above a line covers it, top first;

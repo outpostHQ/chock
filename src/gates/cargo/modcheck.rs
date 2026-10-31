@@ -628,6 +628,11 @@ mod tests {
         )
     }
 
+    /// `modcheck` finds nothing in `files`: every file there is reached.
+    fn reached(files: &[(&str, &str)]) {
+        assert_eq!(rendered(files), Vec::<String>::new());
+    }
+
     fn rendered(files: &[(&str, &str)]) -> Vec<String> {
         faults(&tree(files))
             .unwrap()
@@ -663,17 +668,14 @@ mod tests {
     fn a_redirected_module_is_credited_to_its_file_not_its_name() {
         let found = decls("#[path = \"elsewhere/on_disk.rs\"]\nmod other_name;\n");
         assert_eq!(found[0].redirects, ["src/elsewhere/on_disk.rs"]);
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                (
-                    "src/lib.rs",
-                    "#[path = \"elsewhere/on_disk.rs\"]\nmod other_name;\n"
-                ),
-                ("src/elsewhere/on_disk.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            (
+                "src/lib.rs",
+                "#[path = \"elsewhere/on_disk.rs\"]\nmod other_name;\n",
+            ),
+            ("src/elsewhere/on_disk.rs", ""),
+        ]);
     }
 
     #[test]
@@ -717,15 +719,12 @@ mod tests {
             found[0].redirects,
             ["src/decode/wasm.rs", "src/decode/native.rs"]
         );
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", src),
-                ("src/decode/wasm.rs", ""),
-                ("src/decode/native.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", src),
+            ("src/decode/wasm.rs", ""),
+            ("src/decode/native.rs", ""),
+        ]);
     }
 
     #[test]
@@ -739,27 +738,21 @@ mod tests {
     #[test]
     fn a_module_declared_inside_a_macro_body_is_reached_like_any_other() {
         let src = "cfg_if! { if #[cfg(feature = \"s3\")] { mod s3; } else { mod fs; } }\n";
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", src),
-                ("src/s3.rs", ""),
-                ("src/fs.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", src),
+            ("src/s3.rs", ""),
+            ("src/fs.rs", ""),
+        ]);
     }
 
     /// A macro may build module names from pieces, so a name found in one may match no file.
     #[test]
     fn a_module_a_macro_names_but_no_file_answers_to_is_not_reported() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", "build_me! { mod never_written; }\n"),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", "build_me! { mod never_written; }\n"),
+        ]);
     }
 
     /// The findings for a crate whose root holds `lib`, beside the `nested` files and an empty file
@@ -843,26 +836,20 @@ mod tests {
     #[test]
     fn a_keyword_module_is_looked_for_under_the_name_without_its_escape() {
         assert_eq!(names("mod r#async;\nmod r#match;\n"), ["async", "match"]);
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", "mod r#async;\n"),
-                ("src/async.rs", "")
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", "mod r#async;\n"),
+            ("src/async.rs", ""),
+        ]);
     }
 
     #[test]
     fn a_keyword_module_nested_inline_looks_under_the_escaped_name_too() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", "mod r#if {\n    mod inner;\n}\n"),
-                ("src/if/inner.rs", "")
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", "mod r#if {\n    mod inner;\n}\n"),
+            ("src/if/inner.rs", ""),
+        ]);
     }
 
     #[test]
@@ -898,32 +885,26 @@ mod tests {
 
     #[test]
     fn a_file_reached_only_by_include_is_not_dead_code() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", "mod generated;\n"),
-                ("src/generated.rs", "include!(\"generated/prost.rs\");\n"),
-                ("src/generated/prost.rs", "")
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", "mod generated;\n"),
+            ("src/generated.rs", "include!(\"generated/prost.rs\");\n"),
+            ("src/generated/prost.rs", ""),
+        ]);
     }
 
     #[test]
     fn a_module_declared_inside_a_spliced_file_looks_from_the_module_it_was_spliced_into() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", "mod generated;\n"),
-                (
-                    "src/generated/mod.rs",
-                    "mod proto {\n    include!(\"prost.rs\");\n}\n"
-                ),
-                ("src/generated/prost.rs", "mod part;\n"),
-                ("src/generated/proto/part.rs", "")
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", "mod generated;\n"),
+            (
+                "src/generated/mod.rs",
+                "mod proto {\n    include!(\"prost.rs\");\n}\n",
+            ),
+            ("src/generated/prost.rs", "mod part;\n"),
+            ("src/generated/proto/part.rs", ""),
+        ]);
     }
 
     #[test]
@@ -967,106 +948,82 @@ mod tests {
 
     #[test]
     fn a_module_file_named_mod_rs_satisfies_its_declaration() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", "mod gates;\n"),
-                ("src/gates/mod.rs", "mod slop;\n"),
-                ("src/gates/slop.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", "mod gates;\n"),
+            ("src/gates/mod.rs", "mod slop;\n"),
+            ("src/gates/slop.rs", ""),
+        ]);
     }
 
     #[test]
     fn a_nested_module_resolves_under_the_directory_its_parent_owns() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", "mod outer;\n"),
-                ("src/outer.rs", "mod inner;\n"),
-                ("src/outer/inner.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", "mod outer;\n"),
+            ("src/outer.rs", "mod inner;\n"),
+            ("src/outer/inner.rs", ""),
+        ]);
     }
 
     #[test]
     fn an_inline_module_sends_its_children_into_a_directory_of_its_own() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", "mod wrap {\n    mod leaf;\n}\n"),
-                ("src/wrap/leaf.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", "mod wrap {\n    mod leaf;\n}\n"),
+            ("src/wrap/leaf.rs", ""),
+        ]);
     }
 
     #[test]
     fn a_crate_with_both_roots_resolves_its_modules_through_either() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", "mod cli;\n"),
-                ("src/main.rs", "fn main() {}\n"),
-                ("src/cli.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", "mod cli;\n"),
+            ("src/main.rs", "fn main() {}\n"),
+            ("src/cli.rs", ""),
+        ]);
     }
 
     #[test]
     fn an_integration_test_file_is_a_root_of_its_own() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", ""),
-                ("tests/end_to_end.rs", "mod common;\n"),
-                ("tests/common/mod.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", ""),
+            ("tests/end_to_end.rs", "mod common;\n"),
+            ("tests/common/mod.rs", ""),
+        ]);
     }
 
     #[test]
     fn a_binary_under_src_bin_is_a_root_of_its_own() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", ""),
-                ("src/bin/server.rs", "mod wiring;\n"),
-                ("src/bin/wiring.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", ""),
+            ("src/bin/server.rs", "mod wiring;\n"),
+            ("src/bin/wiring.rs", ""),
+        ]);
     }
 
     #[test]
     fn a_directory_target_is_rooted_at_its_main_but_not_below_it() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", ""),
-                ("examples/demo/main.rs", "mod steps;\n"),
-                ("examples/demo/steps.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", ""),
+            ("examples/demo/main.rs", "mod steps;\n"),
+            ("examples/demo/steps.rs", ""),
+        ]);
     }
 
     #[test]
     fn a_stray_file_outside_src_is_left_alone_because_a_harness_may_read_it() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", ""),
-                ("examples/demo/main.rs", ""),
-                ("examples/demo/stray.rs", ""),
-                ("tests/output/expected.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", ""),
+            ("examples/demo/main.rs", ""),
+            ("examples/demo/stray.rs", ""),
+            ("tests/output/expected.rs", ""),
+        ]);
     }
 
     #[test]
@@ -1079,83 +1036,65 @@ mod tests {
 
     #[test]
     fn a_build_script_is_a_root_whose_children_sit_beside_it() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", ""),
-                ("build.rs", "mod codegen;\n"),
-                ("codegen.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", ""),
+            ("build.rs", "mod codegen;\n"),
+            ("codegen.rs", ""),
+        ]);
     }
 
     #[test]
     fn a_path_attribute_reaching_out_of_its_own_directory_still_resolves() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", ""),
-                (
-                    "tests/one.rs",
-                    "#[path = \"../shared/helper.rs\"]\nmod helper;\n"
-                ),
-                ("shared/helper.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", ""),
+            (
+                "tests/one.rs",
+                "#[path = \"../shared/helper.rs\"]\nmod helper;\n",
+            ),
+            ("shared/helper.rs", ""),
+        ]);
     }
 
     #[test]
     fn a_target_the_manifest_names_by_path_is_a_root() {
-        assert_eq!(
-            rendered(&[
-                (
-                    "Cargo.toml",
-                    "[[bin]]\nname = \"tool\"\npath = \"src/tools/tool.rs\"\n"
-                ),
-                ("src/lib.rs", ""),
-                ("src/tools/tool.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            (
+                "Cargo.toml",
+                "[[bin]]\nname = \"tool\"\npath = \"src/tools/tool.rs\"\n",
+            ),
+            ("src/lib.rs", ""),
+            ("src/tools/tool.rs", ""),
+        ]);
     }
 
     #[test]
     fn a_rust_file_cargo_never_compiles_is_left_alone() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", ""),
-                ("docs/sample.rs", "")
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", ""),
+            ("docs/sample.rs", ""),
+        ]);
     }
 
     #[test]
     fn a_directory_holding_no_rust_at_all_is_not_a_module() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", ""),
-                ("src/snapshots/one.snap", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", ""),
+            ("src/snapshots/one.snap", ""),
+        ]);
     }
 
     #[test]
     fn a_nested_crate_is_judged_against_its_own_layout() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", "[workspace]\n"),
-                ("crates/a/Cargo.toml", ""),
-                ("crates/a/src/lib.rs", "mod inner;\n"),
-                ("crates/a/src/inner.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", "[workspace]\n"),
+            ("crates/a/Cargo.toml", ""),
+            ("crates/a/src/lib.rs", "mod inner;\n"),
+            ("crates/a/src/inner.rs", ""),
+        ]);
     }
 
     /// A shape once reported as a false orphan: a workspace member whose root holds a public
@@ -1163,29 +1102,23 @@ mod tests {
     #[test]
     fn a_public_inline_module_in_a_workspace_member_reaches_each_file_below_it() {
         let root = "pub mod handlers {\n    pub mod action;\n    pub mod landing;\n}\n";
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", "[workspace]\n"),
-                ("crates/a/Cargo.toml", ""),
-                ("crates/a/src/lib.rs", root),
-                ("crates/a/src/handlers/action.rs", ""),
-                ("crates/a/src/handlers/landing.rs", "mod page;\n"),
-                ("crates/a/src/handlers/landing/page.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", "[workspace]\n"),
+            ("crates/a/Cargo.toml", ""),
+            ("crates/a/src/lib.rs", root),
+            ("crates/a/src/handlers/action.rs", ""),
+            ("crates/a/src/handlers/landing.rs", "mod page;\n"),
+            ("crates/a/src/handlers/landing/page.rs", ""),
+        ]);
     }
 
     #[test]
     fn a_waived_file_is_taken_at_its_word_in_both_directions() {
-        assert_eq!(
-            rendered(&[
-                ("Cargo.toml", ""),
-                ("src/lib.rs", "// chock:modcheck-exempt\nmod nowhere;\n"),
-                ("src/generated.rs", ""),
-            ]),
-            Vec::<String>::new()
-        );
+        reached(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", "// chock:modcheck-exempt\nmod nowhere;\n"),
+            ("src/generated.rs", ""),
+        ]);
     }
 
     #[test]

@@ -231,6 +231,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_last_run_is_read_by_gate_with_its_time_and_an_unread_record_is_empty() {
         let dir = crate::testdir::make("since-before");
         assert!(before(&dir).is_empty());
