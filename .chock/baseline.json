@@ -320,6 +320,7 @@
     },
     "coverage@windows": {
       "src/cli.rs": 42,
+      "src/cli/explain.rs": 1,
       "src/edited.rs": 14,
       "src/exec/budget.rs": 3,
       "src/exec/mod.rs": 34,
@@ -361,6 +362,7 @@
       "src/gates/repo/hygiene.rs": 1,
       "src/gates/source/interpolation.rs": 2,
       "src/gates/source/mod.rs": 18,
+      "src/gates/source/scan.rs": 12,
       "src/gates/source/shipped.rs": 0,
       "src/gates/source/targets.rs": 0,
       "src/gates/source/testonly.rs": 4,
@@ -374,7 +376,7 @@
       "src/gates/tools/machete.rs": 1,
       "src/gates/tools/miri.rs": 11,
       "src/gates/tools/mod.rs": 84,
-      "src/gates/tools/proof.rs": 14,
+      "src/gates/tools/proof.rs": 20,
       "src/gates/wiring.rs": 2,
       "src/main.rs": 0,
       "src/project/config.rs": 0,
@@ -395,6 +397,7 @@
       "src/setup/doctor.rs": 6,
       "src/setup/hooks.rs": 1,
       "src/setup/init.rs": 119,
+      "src/setup/init/install.rs": 41,
       "src/setup/pins.rs": 0,
       "src/setup/version.rs": 1,
       "src/slop.rs": 3,
@@ -694,6 +697,7 @@
       "src/setup/hooks.rs#match_guard_value": 1,
       "src/setup/init.rs#bool_expr_negate": 4,
       "src/setup/init.rs#logical_op_and_or_swap": 1,
+      "src/setup/init/install.rs#bool_expr_negate": 1,
       "src/slop.rs#match_guard_value": 1
     },
     "nesting": {

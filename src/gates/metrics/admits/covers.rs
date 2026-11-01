@@ -103,8 +103,7 @@ fn defined(
         .unwrap_or_default();
     let packages = read["packages"].as_array().into_iter().flatten();
     let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    // cargo prints each path as given, such as `D:\…` or through a link, and `base` is canonical
-    // (`\\?\D:\…` on Windows): a member is read under the canonical `workspace_root`.
+    // cargo prints a path as given (`D:\…`, a link) and `base` is canonical: re-root each member.
     let printed = read.get("workspace_root").and_then(Value::as_str);
     let printed = PathBuf::from(printed.unwrap_or_default());
     let canonical = printed.canonicalize().unwrap_or_else(|_| printed.clone());
@@ -184,9 +183,10 @@ mod tests {
 
     /// cargo's metadata for one member, `my-a` at `crates/a`, where cargo spells the root `shown`.
     fn one_member(shown: &Path) -> String {
-        let manifest = shown.join("crates/a/Cargo.toml");
+        let manifest = shown.join("crates/a/Cargo.toml").display().to_string();
         let package = json!({"id": "a", "name": "my-a", "manifest_path": manifest});
-        json!({"workspace_root": shown, "workspace_members": ["a"], "packages": [package]})
+        let root = shown.display().to_string();
+        json!({"workspace_root": root, "workspace_members": ["a"], "packages": [package]})
             .to_string()
     }
 
