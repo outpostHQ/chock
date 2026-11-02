@@ -55,8 +55,8 @@ fn older_chock(pin: &Pin) -> Option<String> {
     let older = version::compare(&pin.want, running) == Some(std::cmp::Ordering::Less);
     (pin.crate_name == "chock" && older).then(|| {
         format!(
-            "  kept      chock {running} — this project pins {}; `chock init --local` updates \
-             its pins to this chock",
+            "  kept      chock {running} — this project pins {}; `chock init --local` removes \
+             that pin",
             pin.want
         )
     })
@@ -170,8 +170,8 @@ mod tests {
     fn an_older_chock_pin_never_replaces_the_chock_that_runs() {
         let running = env!("CARGO_PKG_VERSION");
         let kept = format!(
-            "  kept      chock {running} — this project pins 0.0.1; `chock init --local` updates its \
-             pins to this chock"
+            "  kept      chock {running} — this project pins 0.0.1; `chock init --local` removes \
+             that pin"
         );
         let older = version_pinned("chock", "0.0.1");
         assert_eq!(not_fetched(&older, "linux"), Some(kept));

@@ -5,7 +5,16 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.20.0] - 2026-10-31
+## [0.20.1] - 2026-11-02
+
+- **No project pins chock.** CI installs the newest chock, so a pin held CI on an older one.
+  `chock init --local` no longer writes `CHOCK_VERSION` into `tool-versions.env`. It removes the
+  line, and its comment, that an older chock wrote, and it says so. It moves the other pins and
+  keeps the project's own keys as before.
+- **A pin file that names no chock is moved in place.** It shares a pin with chock's, so `init`
+  updates it. Before, `init` wrote a `tool-versions.env.chock` copy beside it.
+
+## [0.20.0] - 2026-11-01
 
 - **A hook names the chock that ran it, and the gates that the next stage adds.** After the
   pre-commit hook: `chock 0.20.0 at <path> judged the commit's 33 gates; the push adds 9: binsize,

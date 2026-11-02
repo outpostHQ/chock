@@ -258,12 +258,13 @@ fn known_key(key: &str) -> bool {
         || crate::setup::downloads::is_download_key(key)
 }
 
-/// A pin file moved to the pins of the chock that runs: its new text, the chock the old text named,
-/// and a line per change for `init` to report.
+/// The pin an older chock wrote of itself. No project pins chock now: CI installs the newest.
+const CHOCK: &str = "CHOCK_VERSION";
+
+/// A pin file moved to the pins of the chock that runs: its new text, and a line per change for
+/// `init` to report.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Repinned {
-    /// The chock version the old text named.
-    pub from: String,
     /// The new text of the pin file.
     pub text: String,
     /// One line for each change, for `init` to report.
@@ -271,11 +272,11 @@ pub struct Repinned {
 }
 
 /// `held` with each key `ours` sets at `ours`' value, or at `held`'s where that is a newer version,
-/// then the keys only `ours` sets. `None` where `held` names no chock or will not parse.
+/// then the keys only `ours` sets, less any pin of chock. `None` where `held` is no pin file.
 #[must_use]
 pub fn repinned(held: &str, ours: &str) -> Option<Repinned> {
     let (theirs, wanted) = (assignments(held)?, assignments(ours)?);
-    let from = value_of(&theirs, "CHOCK_VERSION")?.to_string();
+    let (rest, pinned) = without_chock(held, &theirs, &wanted)?;
     let (added, _) = own_lines(ours, &theirs);
     // A version the project raised past chock's stays: `init` never takes a tool back.
     let raised = |key: &str, want: &str| {
@@ -291,6 +292,7 @@ pub fn repinned(held: &str, ours: &str) -> Option<Repinned> {
     let kept: Vec<&str> = theirs
         .iter()
         .map(|&(key, _)| key)
+        .filter(|&key| key != CHOCK)
         .filter(|key| value_of(&set, key).is_none())
         .collect();
     let mut changes: Vec<String> = wanted
@@ -305,14 +307,42 @@ pub fn repinned(held: &str, ours: &str) -> Option<Repinned> {
             },
         )
         .collect();
-    if !kept.is_empty() {
-        changes.push(format!("kept as this project's own: {}", kept.join(", ")));
-    }
+    changes.extend(pinned.then(|| format!("removed {CHOCK}: CI installs the newest chock")));
+    let own = format!("kept as this project's own: {}", kept.join(", "));
+    changes.extend((!kept.is_empty()).then_some(own));
+    let text = format!("{}{added}", in_place(&rest, ours, &set));
     Some(Repinned {
-        from,
-        text: format!("{}{added}", in_place(held, ours, &set)),
+        text: text.trim_start_matches('\n').to_string(),
         changes,
     })
+}
+
+/// `held` less the chock pin an older chock wrote, with its comment and the blank line above it,
+/// and whether `held` held one. `None` where `held` sets no chock and no key of `wanted`.
+fn without_chock(
+    held: &str,
+    theirs: &[(&str, &str)],
+    wanted: &[(&str, &str)],
+) -> Option<(String, bool)> {
+    let pinned = value_of(theirs, CHOCK).is_some();
+    let shared = theirs
+        .iter()
+        .any(|&(key, _)| value_of(wanted, key).is_some());
+    if !pinned && !shared {
+        return None;
+    }
+    let comment = "# The chock that wrote this project's baselines. doctor holds you to it.";
+    let mut text = String::new();
+    for raw in held.lines() {
+        let key = assignment(raw, 0).ok().flatten().map(|(key, _)| key);
+        if raw.trim() != comment && key != Some(CHOCK) {
+            text.push_str(raw);
+            text.push('\n');
+        } else if text.ends_with("\n\n") {
+            text.pop();
+        }
+    }
+    Some((text, pinned))
 }
 
 /// `held` line by line, a line setting a key `set` gives another value taking `ours`' line for it,
@@ -394,22 +424,6 @@ fn nightly_name(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
-/// The first qualifier key whose stem no `*_VERSION` pins.
-fn orphan(
-    pinned: &[&String],
-    suffix: &'static str,
-    qualifiers: &BTreeMap<String, (usize, String)>,
-) -> Option<ParseError> {
-    qualifiers
-        .iter()
-        .find(|(stem, _)| !pinned.contains(stem))
-        .map(|(stem, (line, _))| ParseError::Orphan {
-            line: *line,
-            key: stem.clone(),
-            suffix,
-        })
-}
-
 /// What a shell would read before the comment starts: a `#` that opens a word, and not one inside
 /// quotes. `A=1 # why` assigns `1`, `A=a#b` assigns `a#b`, and `A="a # b"` is one value.
 fn before_comment(line: &str) -> &str {
@@ -486,7 +500,15 @@ pub fn parse(text: &str) -> Result<Vec<Pin>, ParseError> {
     // A stem with a URL is fetched as a file, so it is no crate for `cargo install`.
     let downloads = crate::setup::downloads::stems(text);
     let pinned: Vec<&String> = versions.iter().map(|(_, stem, _)| stem).collect();
-    let unpinned = |suffix| orphan(&pinned, suffix, qualified.get(suffix)?);
+    // The first qualifier key whose stem no `*_VERSION` pins.
+    let unpinned = |suffix| {
+        let (stem, &(line, _)) = qualified
+            .get(suffix)?
+            .iter()
+            .find(|(stem, _)| !pinned.contains(stem))?;
+        let key = stem.clone();
+        Some(ParseError::Orphan { line, key, suffix })
+    };
     if let Some(orphan) = QUALIFIERS.into_iter().find_map(unpinned) {
         return Err(orphan);
     }
@@ -649,26 +671,21 @@ pub const SHIPPED: [&str; 14] = [
 mod tests {
     use super::*;
 
-    const OURS: &str = "# Header.\n\n# Why A.\nA_VERSION=2\nB_VERSION=1\nD_VERSION=4\n\n# Which chock.\nCHOCK_VERSION=0.2.0\n";
+    const OURS: &str = "# Header.\n\n# Why A.\nA_VERSION=2\nB_VERSION=1\nD_VERSION=4\n";
 
     #[test]
     fn an_older_pin_file_takes_chocks_pins_in_place_and_keeps_every_line_of_the_projects_own() {
-        let held = "# Old header.\n\n# Old why A.\nA_VERSION=1  # by hand\nOWN_REV=abc\nB_VERSION=1\n# Why.\nOWN_TOOLCHAIN=nightly\n# Loose.\n\n# Spaced.\nOWN_REPO=x\nCHOCK_VERSION=0.1.0\n# Trailing.\n";
+        let held = "# Old header.\n\n# Old why A.\nA_VERSION=1  # by hand\nOWN_REV=abc\nB_VERSION=1\n# Why.\nOWN_TOOLCHAIN=nightly\n# Loose.\n\n# Spaced.\nOWN_REPO=x\n\n# The chock that wrote this project's baselines. doctor holds you to it.\nCHOCK_VERSION=0.1.0\n# Trailing.\n";
         let moved = repinned(held, OURS).unwrap();
-        assert_eq!(moved.from, "0.1.0");
         assert_eq!(
             moved.text,
-            "# Old header.\n\n# Old why A.\nA_VERSION=2  # by hand\nOWN_REV=abc\nB_VERSION=1\n# Why.\nOWN_TOOLCHAIN=nightly\n# Loose.\n\n# Spaced.\nOWN_REPO=x\nCHOCK_VERSION=0.2.0\n# Trailing.\n\nD_VERSION=4\n"
+            "# Old header.\n\n# Old why A.\nA_VERSION=2  # by hand\nOWN_REV=abc\nB_VERSION=1\n# Why.\nOWN_TOOLCHAIN=nightly\n# Loose.\n\n# Spaced.\nOWN_REPO=x\n# Trailing.\n\nD_VERSION=4\n"
         );
         let own = "kept as this project's own: OWN_REV, OWN_TOOLCHAIN, OWN_REPO";
+        let removed = "removed CHOCK_VERSION: CI installs the newest chock";
         assert_eq!(
             moved.changes,
-            [
-                "A_VERSION 1 -> 2",
-                "added D_VERSION=4",
-                "CHOCK_VERSION 0.1.0 -> 0.2.0",
-                own
-            ]
+            ["A_VERSION 1 -> 2", "added D_VERSION=4", removed, own]
         );
         let again = repinned(&moved.text, OURS).unwrap();
         assert_eq!(
@@ -678,28 +695,26 @@ mod tests {
         let unspaced = repinned("OWN_REV=abc\nCHOCK_VERSION=0.1.0\n", OURS).unwrap();
         assert_eq!(
             unspaced.text,
-            "OWN_REV=abc\nCHOCK_VERSION=0.2.0\n\n# Why A.\nA_VERSION=2\nB_VERSION=1\nD_VERSION=4\n"
+            "OWN_REV=abc\n\n# Why A.\nA_VERSION=2\nB_VERSION=1\nD_VERSION=4\n"
         );
     }
 
     #[test]
     fn a_version_the_project_raised_past_chocks_is_kept() {
-        let held = "A_VERSION=1.0.0\nB_VERSION=1.26.1 # by hand\nCHOCK_VERSION=0.1.0\n";
-        let ours = "A_VERSION=2.0.0\nB_VERSION=1.26.0\nCHOCK_VERSION=0.2.0\n";
-        let moved = repinned(held, ours).unwrap();
-        let text = "A_VERSION=2.0.0\nB_VERSION=1.26.1 # by hand\nCHOCK_VERSION=0.2.0\n";
-        assert_eq!(moved.text, text);
-        let said = "A_VERSION 1.0.0 -> 2.0.0\nkept B_VERSION=1.26.1, newer than this chock's 1.26.0\n\
-                    CHOCK_VERSION 0.1.0 -> 0.2.0";
+        let held = "A_VERSION=1.0.0\nB_VERSION=1.26.1 # by hand\n";
+        let moved = repinned(held, "A_VERSION=2.0.0\nB_VERSION=1.26.0\n").unwrap();
+        assert_eq!(moved.text, "A_VERSION=2.0.0\nB_VERSION=1.26.1 # by hand\n");
+        let said =
+            "A_VERSION 1.0.0 -> 2.0.0\nkept B_VERSION=1.26.1, newer than this chock's 1.26.0";
         assert_eq!(moved.changes.join("\n"), said);
     }
 
     #[test]
-    fn a_pin_file_naming_no_chock_or_holding_a_stray_line_is_not_moved() {
+    fn a_chock_pin_alone_goes_and_a_file_sharing_no_key_or_holding_a_stray_line_is_not_moved() {
         let alone = repinned("CHOCK_VERSION=0.1.0\n", OURS).unwrap();
         assert_eq!(
             alone.text,
-            "CHOCK_VERSION=0.2.0\n\n# Why A.\nA_VERSION=2\nB_VERSION=1\nD_VERSION=4\n"
+            "# Why A.\nA_VERSION=2\nB_VERSION=1\nD_VERSION=4\n"
         );
         assert!(
             !alone
@@ -707,14 +722,10 @@ mod tests {
                 .iter()
                 .any(|change| change.starts_with("kept"))
         );
-        let close = repinned(
-            "CHOCK_VERSION=0.1.0\n",
-            "CHOCK_VERSION=0.2.0\nE_VERSION=5\n",
-        )
-        .unwrap();
-        assert_eq!(close.text, "CHOCK_VERSION=0.2.0\n\nE_VERSION=5\n");
-        assert_eq!(repinned("A_VERSION=1\n", OURS), None);
-        assert_eq!(repinned("CHOCK_VERSION=0.1.0\nstray\n", OURS), None);
+        let close = repinned("A_VERSION=1\n", "A_VERSION=2\nE_VERSION=5\n").unwrap();
+        assert_eq!(close.text, "A_VERSION=2\n\nE_VERSION=5\n");
+        assert_eq!(repinned("Z_VERSION=1\n", OURS), None);
+        assert_eq!(repinned("A_VERSION=1\nstray\n", OURS), None);
     }
 
     #[test]

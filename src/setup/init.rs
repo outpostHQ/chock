@@ -348,15 +348,6 @@ pub(crate) fn install_file(root: &Path, name: &str, content: &str) -> Result<Wri
     Ok(Written::Created(name.to_string()))
 }
 
-/// chock's own copy pins no `CHOCK_VERSION` — `Cargo.toml` is the source of truth here and a
-/// second copy drifts. An adopting project has none, so the pin is generated and `doctor` holds it.
-#[must_use]
-pub fn local_pin_file(chock_version: &str) -> String {
-    format!(
-        "{PIN_FILE}\n# The chock that wrote this project's baselines. doctor holds you to it.\nCHOCK_VERSION={chock_version}\n"
-    )
-}
-
 /// Why a gate on chock's own hooks and config is on before anything measured it.
 const WRITTEN_NOW: &str = "the hooks and the config that this command writes";
 
@@ -650,10 +641,10 @@ pub(crate) const OUTPOST_HAS_ONE_MOMENT: &str = "  note      outpost runs only a
 hook, so chock's message check and its compiler-bound gates have no moment here. The editor hook \
 answers on every edit, and `chock run` in CI is the backstop.\n";
 
-/// The pin file, then the other files `init --local` writes, a line for each.
+/// The pin file, then the other files `init --local` writes, a line for each. No project pins chock:
+/// CI installs the newest.
 fn install_files(root: &Path) -> Result<String, Error> {
-    let pin_file = local_pin_file(env!("CARGO_PKG_VERSION"));
-    let pins = super::repin::install_pins(root, &pin_file)?;
+    let pins = super::repin::install_pins(root, PIN_FILE)?;
     let deny = super::merge::install(root, "deny.toml", DENY)?;
     Ok(format!("{pins}\n{deny}\n"))
 }
@@ -1930,7 +1921,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(dir.join(project::PIN_FILE)).unwrap(),
-            local_pin_file(env!("CARGO_PKG_VERSION"))
+            PIN_FILE
         );
     }
 
@@ -2007,26 +1998,11 @@ mod tests {
     }
 
     #[test]
-    fn the_pin_file_a_project_gets_pins_chock_itself_last() {
-        let text = local_pin_file("0.3.1");
-        let parsed = pins::parse(&text).unwrap();
-        let last = parsed.last().unwrap();
-        assert_eq!(
-            (
-                last.key.as_str(),
-                last.crate_name.as_str(),
-                last.want.as_str()
-            ),
-            ("CHOCK_VERSION", "chock", "0.3.1")
-        );
-    }
-
-    #[test]
     fn chocks_own_pin_file_does_not_pin_chock() {
         let parsed = pins::parse(PIN_FILE).unwrap();
         assert!(
             !parsed.iter().any(|p| p.crate_name == "chock"),
-            "Cargo.toml is the source of truth here; a second copy would drift"
+            "no project pins chock: CI installs the newest"
         );
     }
 

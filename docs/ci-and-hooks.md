@@ -198,6 +198,7 @@ chock run              # a newer tool can count differently
 
 Commit `tool-versions.env` with any baseline that changes. `chock init` sets each pin that chock
 sets to the new chock's version, and keeps each key chock does not set. A version that the project
-raised past chock's pin also stays, since `init` never lowers a tool. chock does not move a file
-that names a newer chock than itself, and `chock init --global` does not replace a newer chock with
-an older pin. A tool already at its pin stays, so only the pins that moved are installed.
+raised past chock's pin also stays, since `init` never lowers a tool. No project pins chock: CI
+installs the newest, and `chock init` removes the `CHOCK_VERSION` line that an older chock wrote.
+`chock init --global` does not replace a newer chock with an older pin. A tool already at its pin
+stays, so only the pins that moved are installed.
