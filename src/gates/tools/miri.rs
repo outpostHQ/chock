@@ -353,7 +353,7 @@ fn crashed(stderr: &str) -> Option<String> {
     })?;
     Some(format!(
         "miri crashed, so it stopped before finishing: {what}. The fault is in the nightly \
-         toolchain, not in the code: run the gate on a nightly of another day"
+         toolchain, not in the code: run the gate on a nightly of another day."
     ))
 }
 
@@ -909,7 +909,7 @@ mod tests {
                         note: the compiler unexpectedly panicked. this is a bug.\n";
         let crash = "miri crashed, so it stopped before finishing:";
         let fault = "The fault is in the nightly toolchain, not in the code: run the gate on a \
-                     nightly of another day";
+                     nightly of another day.";
         for (said, what) in [
             (
                 internal,
@@ -922,7 +922,7 @@ mod tests {
         let failed = format!("        FAIL [   1.0s] chock cli::tests::stats\n{internal}");
         let why = judge(Path::new("/r"), &said(101, "", &failed)).unwrap_err();
         assert!(
-            why.ends_with(" It stopped in `chock cli::tests::stats`."),
+            why.ends_with("of another day. It stopped in `chock cli::tests::stats`."),
             "{why}"
         );
     }

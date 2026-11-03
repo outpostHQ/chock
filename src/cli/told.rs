@@ -92,6 +92,10 @@ mod tests {
 
     /// Only a hook counts the advisories; a person reads each one. Mutant: `!=` turned to `==`.
     #[test]
+    #[cfg_attr(
+        all(miri, target_os = "macos"),
+        ignore = "Miri crashes on a pipe's device number"
+    )]
     fn a_hook_counts_the_advisories_and_a_person_reads_them() {
         assert!(!leaves(Asker::Person).advisories);
         assert!(leaves(Asker::Hook).advisories);
