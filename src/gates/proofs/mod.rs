@@ -92,9 +92,11 @@ pub(crate) fn made(scratch: &Path) -> std::io::Result<()> {
     crate::project::document::rooted(scratch).and_then(|()| std::fs::create_dir_all(scratch))
 }
 
-/// Removes a scratch directory of chock's own; one that is not there is already clear.
+/// Removes a scratch directory of chock's own; one that is not there is already clear. A relative
+/// path is refused as `made` refuses it: it names what the directory chock runs in holds.
 pub(crate) fn cleared(scratch: &Path) -> Result<(), String> {
-    match std::fs::remove_dir_all(scratch) {
+    match crate::project::document::rooted(scratch).and_then(|()| std::fs::remove_dir_all(scratch))
+    {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
             Err(format!("cannot remove {}: {e}", scratch.display()))
         }
@@ -169,5 +171,25 @@ mod tests {
             "target/test-scratch/chock-made is not under a project root"
         );
         assert!(!relative.exists());
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_scratch_is_removed_only_at_an_absolute_path() {
+        let dir = crate::testdir::tree("proofs-cleared", &[("held/file", "x")]);
+        cleared(&dir.join("held")).unwrap();
+        assert!(!dir.join("held").exists());
+        assert_eq!(
+            cleared(&dir.join("held")),
+            Ok(()),
+            "a missing scratch is clear"
+        );
+        // An emptied root makes this path, and cargo runs a test in the real project's root.
+        let why = cleared(Path::new("target/test-scratch/chock-cleared")).unwrap_err();
+        assert_eq!(
+            why,
+            "cannot remove target/test-scratch/chock-cleared: target/test-scratch/chock-cleared \
+             is not under a project root"
+        );
     }
 }

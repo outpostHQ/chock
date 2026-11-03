@@ -63,7 +63,7 @@ pub fn holders(root: &Path) -> Vec<Kind> {
     if root.join(".git").exists() {
         held.push(Kind::Git);
     }
-    if root.join(".outpost").join(OUTPOST_MARKER).is_file() {
+    if holds_outpost(root) {
         held.push(Kind::Outpost);
     }
     held
@@ -307,9 +307,39 @@ pub fn repository_root(root: &Path, held: Option<Kind>) -> Option<std::path::Pat
             .map(|out| std::path::PathBuf::from(out.stdout.trim())),
         Kind::Outpost => root
             .ancestors()
-            .find(|dir| dir.join(".outpost").join(OUTPOST_MARKER).is_file())
+            .find(|dir| holds_outpost(dir))
             .map(Path::to_path_buf),
     }
+}
+
+/// The directory whose `.outpost` is this tree's Outpost repository: the tree, else for a git
+/// worktree (its `.git` is a file) the main checkout, since a worktree's `.outpost` holds none.
+#[must_use]
+pub fn outpost_home(root: &Path) -> Option<std::path::PathBuf> {
+    if holds_outpost(root) {
+        return Some(root.to_path_buf());
+    }
+    if !root.join(".git").is_file() {
+        return None;
+    }
+    let asked = ["rev-parse", "--path-format=absolute", "--git-common-dir"];
+    let main = main_checkout(&exec::run("git", &asked, root).ok()?)?;
+    holds_outpost(&main).then_some(main)
+}
+
+/// The checkout that owns git's common directory; `None` when git failed or the repository is
+/// bare, since a bare repository has no checkout.
+fn main_checkout(out: &exec::Output) -> Option<std::path::PathBuf> {
+    let common = Path::new(out.stdout.trim());
+    let checked_out = out.success() && common.file_name() == Some(std::ffi::OsStr::new(".git"));
+    checked_out
+        .then(|| common.parent())
+        .flatten()
+        .map(Path::to_path_buf)
+}
+
+fn holds_outpost(dir: &Path) -> bool {
+    dir.join(".outpost").join(OUTPOST_MARKER).is_file()
 }
 
 /// The pathspec a project's commits are read over: none at the repository root, `.` below it, so a
@@ -557,7 +587,7 @@ pub fn unpushed(root: &Path, held: Option<Kind>) -> Result<Vec<(String, String)>
 }
 
 /// HEAD's commit and its upstream's, the two ends of the commits a push would carry; `none` for one
-/// git does not have. `None` where git cannot be started.
+/// git does not have. Then Outpost's head where it holds the tree. `None` where a tool fails.
 #[must_use]
 pub fn tips(root: &Path) -> Option<String> {
     let id = |rev: &str| {
@@ -565,11 +595,24 @@ pub fn tips(root: &Path) -> Option<String> {
         let named = out.success().then(|| out.stdout.trim().to_string());
         Some(named.unwrap_or_else(|| "none".to_string()))
     };
-    Some(format!(
-        "{} {}",
-        id("HEAD^{commit}")?,
-        id("@{upstream}^{commit}")?
-    ))
+    let git = format!("{} {}", id("HEAD^{commit}")?, id("@{upstream}^{commit}")?);
+    with_outpost_head(root, git)
+}
+
+/// `git`, then Outpost's head where Outpost holds the tree: a tree both hold has two histories,
+/// and a gate counting commits may read either.
+fn with_outpost_head(root: &Path, git: String) -> Option<String> {
+    if outpost_home(root).is_none() {
+        return Some(git);
+    }
+    let head = outpost_tip(&exec::run("outpost", &["log", "--oneline", "-n", "1"], root).ok()?)?;
+    Some(format!("{git} {head}"))
+}
+
+/// The id of Outpost's newest commit, the first word `outpost log --oneline` prints.
+fn outpost_tip(out: &exec::Output) -> Option<String> {
+    let first = out.stdout.lines().next()?.split_whitespace().next();
+    out.success().then_some(first?.to_string())
 }
 
 /// The files this change touched, relative to the root: since the fork from the upstream, or in CI
@@ -1451,6 +1494,39 @@ mod tests {
         let root = repo("vcs-kind");
         assert_eq!(Kind::of(&root), Some(Kind::Git));
         assert_eq!(Kind::of(&crate::testdir::make("vcs-none")), None);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_worktree_walks_the_outpost_repository_of_its_main_checkout_and_none_other() {
+        let main = repo("vcs-worktree");
+        git(&main, &["worktree", "add", "--quiet", "wt"]);
+        let tree = main.join("wt");
+        std::fs::create_dir_all(tree.join(".outpost")).unwrap();
+        assert_eq!(outpost_home(&tree), None);
+        pretend_outpost_holds(&main);
+        let home = outpost_home(&tree).and_then(|dir| dir.canonicalize().ok());
+        assert_eq!(home, main.canonicalize().ok());
+        assert_eq!(outpost_home(&main), Some(main.to_path_buf()));
+    }
+
+    #[test]
+    fn outposts_head_is_the_first_word_of_its_newest_commit_and_none_when_the_log_failed() {
+        let log = "5e3e261 0.20.0: Windows records\n4a1b2c3 earlier\n";
+        assert_eq!(
+            outpost_tip(&exec::Output::of(Some(0), log, "")).as_deref(),
+            Some("5e3e261")
+        );
+        assert_eq!(outpost_tip(&exec::Output::of(Some(1), log, "")), None);
+        assert_eq!(outpost_tip(&exec::Output::of(Some(0), "", "")), None);
+    }
+
+    #[test]
+    fn the_main_checkout_is_the_parent_of_a_common_dir_named_dot_git() {
+        let common = said("/w/corbin/.git\n");
+        assert_eq!(main_checkout(&common), Some("/w/corbin".into()));
+        assert_eq!(main_checkout(&said("/w/remote.git\n")), None);
+        assert_eq!(main_checkout(&refused("/w/corbin/.git\n")), None);
     }
 
     /// `.cargo/config.toml` sets a git ceiling at the scratch root.

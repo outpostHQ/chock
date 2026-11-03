@@ -37,19 +37,20 @@ struct Leak {
 const REPOSITORY: &str = ".outpost";
 
 fn check(ctx: &Ctx) -> Result<Outcome, String> {
-    // Asked of `holders`, not the directory: outpost skips a `.outpost` that is not a repository
-    // and would scan one further up.
-    if !vcs::holders(&ctx.root).contains(&vcs::Kind::Outpost) {
+    // Asked of `vcs`, not the directory: outpost skips a `.outpost` that is not a repository and
+    // would scan one further up.
+    let Some(home) = vcs::outpost_home(&ctx.root) else {
         return Err(format!(
-            "no {REPOSITORY} repository here, so there is no history this scanner can walk"
+            "no {REPOSITORY} repository here or in the main checkout, so there is no history \
+             this scanner can walk"
         ));
-    }
+    };
     // Read before the expensive walk, so that a tree git does not hold stops first.
     let declared = declared_leaks(ctx)?;
     // Counted before the expensive walk, whose coverage is judged against this count.
     let held = vcs::commits(&ctx.root, ctx.vcs)?;
     let walk = ["scan", "secrets", "--history", "--json"];
-    let mut found = leaks(&outpost::spawn(&ctx.root, &walk)?, held, &ctx.accepted)?;
+    let mut found = leaks(&outpost::spawn(&home, &walk)?, held, &ctx.accepted)?;
     found.extend(declared);
     Ok(Outcome::of(found))
 }
@@ -295,7 +296,10 @@ mod tests {
         let root = crate::testdir::make("history-no-outpost");
         assert_eq!(
             check(&Ctx::at(&root)).err().as_deref(),
-            Some("no .outpost repository here, so there is no history this scanner can walk")
+            Some(
+                "no .outpost repository here or in the main checkout, so there is no history this \
+                 scanner can walk"
+            )
         );
     }
 

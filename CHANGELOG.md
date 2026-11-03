@@ -5,6 +5,30 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-11-02
+
+- **A scratch directory is removed only by an absolute path.** A mutant that emptied a project's
+  root made the path relative, so a test removed the scratch of a gate running beside it.
+- **The memory rule counts a cgroup's file cache as free.** The kernel reclaims `inactive_file`
+  before it runs out, so a slot that read many files no longer stops `mutest` with 25 MB free.
+- **`codeslop` measures a large workspace.** chock keeps only the fields of clippy's output that it
+  counts, so a repository whose full output passed the 16 MiB cap no longer reports `cannot_run`.
+- **`history` runs in a git worktree.** It finds the main checkout through `--git-common-dir` and
+  reads the Outpost repository there. Before, a worktree reported `no .outpost repository here`.
+- **`miri` builds only the targets that hold tests.** It runs `--tests`, so an example with
+  `crate-type = ["cdylib"]` no longer stops the run. A crate type that Miri cannot build, a
+  crash of Miri itself (an internal compiler error) and an unsupported operation report
+  `cannot_run` with the reason and the test it stopped in. A crash is not undefined behaviour to fix.
+- **A `mutest` run that measured nothing names the harness that did not build.** chock reads
+  `failed_builds` from mutest's `summary.json` into the reason.
+- **A gate name that this chock does not know is skipped with a note.** A config written by a
+  newer chock no longer stops an older one. A name near a gate's name is a typo, and chock still
+  refuses it and names the gate you meant.
+- **A verdict that changed names a chock version change.** For example: `…; chock went from 0.20.1
+  to 0.20.2 since then`.
+- **A recalled verdict holds Outpost's head too.** A gate that reads the commits was recalled stale
+  where Outpost's history moved and git's did not.
+
 ## [0.20.1] - 2026-11-02
 
 - **No project pins chock.** CI installs the newest chock, so a pin held CI on an older one.

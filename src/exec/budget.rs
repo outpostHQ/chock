@@ -59,12 +59,17 @@ fn meminfo_mb(meminfo: &str, key: &str) -> Option<u64> {
         .map(|kb| kb / 1024)
 }
 
-/// A cgroup v2 container's headroom in MB: its limit less what is charged; `None` for `max`.
+/// A cgroup v2 container's headroom in MB: its limit less what is charged, but for the file cache
+/// the kernel reclaims first (`inactive_file` in its `stat`); `None` for `max`.
 #[must_use]
-pub fn available_from_cgroup(limit: &str, current: &str) -> Option<u64> {
+pub fn available_from_cgroup(limit: &str, current: &str, stat: &str) -> Option<u64> {
     let limit: u64 = limit.trim().parse().ok()?;
     let current: u64 = current.trim().parse().ok().unwrap_or(0);
-    Some(limit.saturating_sub(current) / (1024 * 1024))
+    let cache = (stat
+        .lines()
+        .find_map(|line| line.strip_prefix("inactive_file ")))
+    .and_then(|bytes| bytes.trim().parse::<u64>().ok());
+    Some(limit.saturating_sub(current.saturating_sub(cache.unwrap_or(0))) / (1024 * 1024))
 }
 
 /// The cgroup v2 directories that hold this process, its own first and the root last, from what
@@ -85,20 +90,18 @@ pub fn cgroup_dirs(own: &str) -> Vec<String> {
 fn least(
     dirs: &[String],
     file: &dyn Fn(&str) -> Option<String>,
-    read: fn(&str, &str) -> Option<u64>,
+    read: fn(&str, &str, &str) -> Option<u64>,
 ) -> Option<u64> {
     let each = dirs.iter().filter_map(|dir| {
         let limit = file(&format!("{dir}/memory.max"))?;
-        read(
-            &limit,
-            &file(&format!("{dir}/memory.current")).unwrap_or_default(),
-        )
+        let charged = |name: &str| file(&format!("{dir}/{name}")).unwrap_or_default();
+        read(&limit, &charged("memory.current"), &charged("memory.stat"))
     });
     each.min()
 }
 
 /// What `least` reads from the cgroups that hold this process.
-fn cgroups(read: fn(&str, &str) -> Option<u64>) -> Option<u64> {
+fn cgroups(read: fn(&str, &str, &str) -> Option<u64>) -> Option<u64> {
     let own = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
     least(
         &cgroup_dirs(&own),
@@ -426,7 +429,10 @@ fn total_mb() -> Option<u64> {
     let host = std::fs::read_to_string("/proc/meminfo")
         .ok()
         .and_then(|text| total_from_meminfo(&text));
-    tightest(host, cgroups(|limit, _| available_from_cgroup(limit, "")))
+    tightest(
+        host,
+        cgroups(|limit, _, _| available_from_cgroup(limit, "", "")),
+    )
 }
 
 /// Why a tool whose processes hold `held` MB must stop now, or `None` while it may go on.
@@ -626,19 +632,25 @@ mod tests {
     #[test]
     fn a_cgroup_limit_less_what_is_charged_is_the_headroom() {
         assert_eq!(
-            available_from_cgroup("2147483648", "1073741824"),
+            available_from_cgroup("2147483648", "1073741824", ""),
             Some(1024)
         );
     }
 
     #[test]
+    fn file_cache_the_kernel_reclaims_first_counts_as_headroom_in_a_cgroup() {
+        let stat = "anon 1048576\nactive_file 1048576\ninactive_file 2097152\n";
+        assert_eq!(available_from_cgroup("8388608", "5242880", stat), Some(5));
+    }
+
+    #[test]
     fn an_unlimited_cgroup_is_no_reading_rather_than_none_available() {
-        assert_eq!(available_from_cgroup("max", "0"), None);
+        assert_eq!(available_from_cgroup("max", "0", ""), None);
     }
 
     #[test]
     fn a_cgroup_charged_past_its_limit_leaves_nothing_rather_than_wrapping() {
-        assert_eq!(available_from_cgroup("1048576", "2097152"), Some(0));
+        assert_eq!(available_from_cgroup("1048576", "2097152", ""), Some(0));
     }
 
     #[test]

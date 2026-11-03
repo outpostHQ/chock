@@ -8,19 +8,16 @@ use crate::run::{self, Ctx};
 
 /// Each gate whose verdict changed since the last run, with the files modified since then.
 #[expect(clippy::print_stderr, reason = "the CLI tells the user on stderr")]
-pub(super) fn told_after(
-    before: &std::collections::BTreeMap<String, (run::report::Verdict, u64)>,
-    result: &Run,
-    ctx: &Ctx,
-) {
+pub(super) fn told_after(before: &run::since::Last, result: &Run, ctx: &Ctx) {
     let modified = |at| {
         crate::project::listed_once(&ctx.listing, &ctx.root).map(|tree| tree.modified_since(at))
     };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
-    for line in run::since::told(before, &result.gates, &modified, now) {
-        eprintln!("{line}");
+    let moved = run::since::chock_moved(before.chock.as_deref(), &result.chock);
+    for line in run::since::told(&before.gates, &result.gates, &modified, now) {
+        eprintln!("{line}{moved}");
     }
 }
 

@@ -152,6 +152,32 @@ impl Results {
     pub(super) fn retained(&self) -> String {
         format!("; mutest results retained at {}", self.directory.display())
     }
+
+    /// What mutest's `summary.json` says did not build and `said` leaves out; empty with no summary.
+    pub(super) fn unbuilt(&self, said: &str) -> String {
+        std::fs::read_to_string(self.directory.join("summary.json"))
+            .map_or_else(|_| String::new(), |summary| unbuilt(&summary, said))
+    }
+}
+
+/// Each test harness a run summary names as unbuilt, which explains a run that evaluated nothing.
+fn unbuilt(summary: &str, said: &str) -> String {
+    let summary: serde_json::Value = serde_json::from_str(summary).unwrap_or_default();
+    let named: Vec<&str> = (summary
+        .get("failed_builds")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten())
+    .filter_map(serde_json::Value::as_str)
+    .filter(|harness| !said.contains(harness))
+    .collect();
+    match named.as_slice() {
+        [] => String::new(),
+        _ => format!(
+            "; mutest's summary.json says that {} did not build, so none of its mutations ran",
+            named.join(" and ")
+        ),
+    }
 }
 
 fn read(path: &Path) -> Result<String, String> {
@@ -482,6 +508,22 @@ fn joined(judged: Vec<(Mutation, Verdict)>) -> Joined {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_harness_the_summary_names_as_unbuilt_explains_the_run_unless_the_reason_named_it() {
+        let summary = r#"{"format_version": 1, "exit_code": 4, "failed_builds":
+            ["the test harness of `secrets` in package `outpost-git`"], "harnesses": []}"#;
+        assert_eq!(
+            unbuilt(summary, "mutest wrote no progress records"),
+            "; mutest's summary.json says that the test harness of `secrets` in package \
+             `outpost-git` did not build, so none of its mutations ran"
+        );
+        let said = "the test harness of `secrets` in package `outpost-git` did not build";
+        assert_eq!(unbuilt(summary, said), "");
+        for empty in [r#"{"failed_builds": []}"#, "not json", ""] {
+            assert_eq!(unbuilt(empty, ""), "", "{empty}");
+        }
+    }
 
     fn mutations(ops: &[&str]) -> String {
         let listed: Vec<String> = (1..)

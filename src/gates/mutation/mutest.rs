@@ -99,7 +99,7 @@ fn mutated<T>(
             .and_then(|measured| accounted(ctx, output, &results).map(|()| measured))
             .map_err(|error| results.with_stderr(output, &error))
     })
-    .map_err(|error| format!("{error}{}", results.retained()))?;
+    .map_err(|error| format!("{error}{}{}", results.unbuilt(&error), results.retained()))?;
     let kills = results.kills();
     results.accept()?;
     left_alone(before, suite::changes_and_new(ctx))?;

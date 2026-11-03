@@ -9,18 +9,39 @@ use crate::run::report::{GateReport, Run, Verdict};
 /// Most files one line names; the rest are counted.
 const NAMED: usize = 3;
 
-/// Each gate's verdict in the last run, and when it was taken, as seconds since the Unix epoch.
-/// Read before this run writes its own record over it.
+/// The last run: each gate's verdict with when it was taken, as seconds since the Unix epoch, and
+/// the chock that took them. Read before this run writes its own record over it.
+#[derive(Debug, Default)]
+pub struct Last {
+    /// Each gate's verdict, with when it was taken.
+    pub gates: BTreeMap<String, (Verdict, u64)>,
+    /// The version of the chock that took them; `None` when there is no last run to read.
+    pub chock: Option<String>,
+}
+
+/// The last run, empty when there is none or it cannot be read.
 #[must_use]
-pub fn before(root: &Path) -> BTreeMap<String, (Verdict, u64)> {
+pub fn before(root: &Path) -> Last {
     let text = std::fs::read_to_string(root.join(crate::run::report::LAST_RUN)).unwrap_or_default();
     let Ok(last) = serde_json::from_str::<Run>(&text) else {
-        return BTreeMap::new();
+        return Last::default();
     };
-    last.gates
-        .into_iter()
+    let gates = (last.gates.into_iter())
         .filter_map(|report| Some((report.gate, (report.verdict, report.ran_at?))))
-        .collect()
+        .collect();
+    Last {
+        gates,
+        chock: Some(last.chock),
+    }
+}
+
+/// What a line adds when another chock took the last verdicts, since its gates may judge otherwise.
+#[must_use]
+pub fn chock_moved(was: Option<&str>, is: &str) -> String {
+    match was {
+        Some(was) if was != is => format!("; chock went from {was} to {is} since then"),
+        _ => String::new(),
+    }
 }
 
 /// One line for each gate that passed in the last run and trips now, or the reverse, with the
@@ -234,13 +255,25 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn the_last_run_is_read_by_gate_with_its_time_and_an_unread_record_is_empty() {
         let dir = crate::testdir::make("since-before");
-        assert!(before(&dir).is_empty());
+        assert!(before(&dir).gates.is_empty());
+        assert_eq!(before(&dir).chock, None);
         let mut kept = report("testlint", Verdict::Pass);
         kept.ran_at = Some(1_000);
         crate::run::report::remember(&dir, &[kept], "0.1.0").unwrap();
         let held = before(&dir);
-        let (verdict, at) = held.get("testlint").copied().unwrap();
+        let (verdict, at) = held.gates.get("testlint").copied().unwrap();
         assert_eq!(verdict, Verdict::Pass);
         assert!(at > 1_000, "remember stamps the time it wrote: {at}");
+        assert_eq!(held.chock.as_deref(), Some("0.1.0"));
+    }
+
+    #[test]
+    fn a_flip_after_another_chock_took_the_last_verdict_names_both_versions() {
+        assert_eq!(
+            chock_moved(Some("0.20.1"), "0.20.2"),
+            "; chock went from 0.20.1 to 0.20.2 since then"
+        );
+        assert_eq!(chock_moved(Some("0.20.2"), "0.20.2"), "");
+        assert_eq!(chock_moved(None, "0.20.2"), "");
     }
 }

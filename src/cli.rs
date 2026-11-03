@@ -604,19 +604,46 @@ fn unknown_gate(name: &str) -> String {
 
 /// Registry order, not config order, so a cheap failure always reports first.
 fn enabled_by(config: &Config) -> Result<Vec<&'static run::Gate>, String> {
-    let known: Vec<&str> = gates::registry().iter().map(|g| g.name).collect();
-    let stale = config.unknown(&known);
-    if !stale.is_empty() {
-        return Err(format!(
-            "{} names what is no gate: {}",
-            project::config::FILE,
-            stale.join(", ")
-        ));
-    }
+    skip_unknown(config)?;
     Ok(gates::registry()
         .iter()
         .filter(|gate| config.is_on(gate.name))
         .collect())
+}
+
+/// The names the config holds that this chock has no gate for. One near a gate's name is a typo and
+/// refused, so a misspelt check never stops quietly; any other a newer chock wrote, so it is skipped.
+#[expect(clippy::print_stderr, reason = "the CLI tells the user on stderr")]
+fn skip_unknown(config: &Config) -> Result<(), String> {
+    let known: Vec<&str> = gates::registry().iter().map(|g| g.name).collect();
+    let stale = config.unknown(&known);
+    if let Some(typo) = stale
+        .iter()
+        .find(|name| crate::usage::closest(name, &known).is_some())
+    {
+        return Err(format!(
+            "{} names what is no gate: {typo}{}",
+            project::config::FILE,
+            crate::usage::guess(typo, &known, "")
+        ));
+    }
+    if let Some(note) = skipped(&stale) {
+        eprintln!("chock: {note}");
+    }
+    Ok(())
+}
+
+/// The note on the names a newer chock wrote, which this one skips; `None` when there are none.
+fn skipped(stale: &[String]) -> Option<String> {
+    (!stale.is_empty()).then(|| {
+        format!(
+            "{} names what chock {} has no gate for, so it skips them: {}; a newer chock may have \
+         them, and `chock gates` lists this one's",
+            project::config::FILE,
+            env!("CARGO_PKG_VERSION"),
+            stale.join(", ")
+        )
+    })
 }
 
 /// Refuses a config that lists under `clean_when_touched` a gate with no number for each file:
@@ -1152,10 +1179,13 @@ mod tests {
     }
 
     #[test]
-    fn a_config_naming_a_gate_that_no_longer_exists_is_refused_not_skipped() {
-        let config = Config::of(["lint", "codeslope"]);
+    fn a_config_misspelling_a_gate_is_refused_not_skipped() {
+        let config = Config::of(["lint", "codeslope", "from-a-newer-chock"]);
         let err = select(&[], Some(&config)).unwrap_err();
-        assert!(err.contains("codeslope"), "{err}");
+        assert!(
+            err.ends_with("no gate: codeslope; did you mean `codeslop`?"),
+            "{err}"
+        );
         assert!(err.contains(project::config::FILE), "{err}");
     }
 
@@ -1193,6 +1223,23 @@ mod tests {
     fn an_empty_config_runs_nothing_rather_than_quietly_running_everything() {
         let config = Config::of(Vec::<String>::new());
         assert!(select(&[], Some(&config)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_gate_name_from_a_newer_chock_in_the_config_is_skipped_with_a_note_and_the_rest_run() {
+        let config = Config::of(["test", "from-a-newer-chock"]);
+        let names: Vec<&str> = enabled_by(&config)
+            .unwrap()
+            .iter()
+            .map(|g| g.name)
+            .collect();
+        assert_eq!(names, ["test"]);
+        assert_eq!(skipped(&[]), None);
+        let note = skipped(&config.unknown(&["test"])).unwrap();
+        assert!(
+            note.contains("so it skips them: from-a-newer-chock; a newer chock"),
+            "{note}"
+        );
     }
 
     #[test]

@@ -128,30 +128,35 @@ struct Span {
 /// repeat counts once.
 #[must_use]
 pub fn hits(stdout: &str) -> Vec<Hit> {
-    let mut seen = BTreeSet::new();
-    for line in stdout.lines() {
-        // Other lines are bookkeeping, or the half line a killed run can leave.
-        let Ok(parsed) = serde_json::from_str::<CargoLine>(line) else {
-            continue;
-        };
-        let Some(message) = parsed.message else {
-            continue;
-        };
-        let Some(code) = message.code else {
-            continue;
-        };
-        if !code.code.starts_with("clippy::") {
-            continue;
-        }
-        // Every clippy lint counts, not only `LINTS`: one the project's config enables is debt too.
-        let primary = message.spans.iter().find(|span| span.is_primary);
-        seen.insert(Hit {
-            lint: code.code,
-            file: primary.and_then(|span| span.file_name.clone()),
-            line: primary.and_then(|span| span.line_start),
-        });
-    }
+    let seen: BTreeSet<Hit> = stdout.lines().filter_map(hit).collect();
     seen.into_iter().collect()
+}
+
+/// The clippy finding one cargo line carries; `None` for bookkeeping, another tool's diagnostic or
+/// the half line a killed run can leave.
+fn hit(line: &str) -> Option<Hit> {
+    let message = serde_json::from_str::<CargoLine>(line).ok()?.message?;
+    let code = message.code?;
+    // Every clippy lint counts, not only `LINTS`: one the project's config enables is debt too.
+    if !code.code.starts_with("clippy::") {
+        return None;
+    }
+    let primary = message.spans.iter().find(|span| span.is_primary);
+    Some(Hit {
+        lint: code.code,
+        file: primary.and_then(|span| span.file_name.clone()),
+        line: primary.and_then(|span| span.line_start),
+    })
+}
+
+/// One cargo line cut to the fields `hit` reads, so that a large workspace's clippy output stays
+/// under `exec::MAX_CAPTURE`; `None` for a line `hits` passes over.
+fn kept(line: &str) -> Option<String> {
+    let found = hit(line)?;
+    let span =
+        serde_json::json!({"file_name": found.file, "line_start": found.line, "is_primary": true});
+    let code = serde_json::json!({"code": found.lint});
+    Some(serde_json::json!({"message": {"code": code, "spans": [span]}}).to_string())
 }
 
 /// One number per lint that fired; a lint that did not fire is absent, not zero.
@@ -189,7 +194,8 @@ fn clippy_hits(out: &exec::Output) -> Result<Vec<Hit>, String> {
     }
     if out.truncated {
         return Err(format!(
-            "clippy printed over {} bytes; a count from the prefix chock kept would be wrong",
+            "clippy's findings came to over {} bytes, cut to the fields chock counts; a count \
+             from the prefix chock kept would be wrong",
             exec::MAX_CAPTURE
         ));
     }
@@ -252,8 +258,8 @@ fn did_not_finish(stderr: &str) -> String {
 
 fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let asked = [ctx.features.as_slice(), ctx.build.as_slice()].concat();
-    let ran = exec::run("cargo", &invocation(&asked), &ctx.root).map_err(|e| e.to_string())?;
-    all_hits(&ran, ctx).map(|found| measured(&found))
+    let ran = exec::run_kept("cargo", &invocation(&asked), &ctx.root, kept);
+    all_hits(&ran.map_err(|e| e.to_string())?, ctx).map(|found| measured(&found))
 }
 
 /// What clippy printed in `ran`, with what chock reads in the project's sources itself, in order.
@@ -714,12 +720,34 @@ mod tests {
     }
 
     #[test]
+    fn a_run_cut_to_the_counted_fields_counts_what_the_whole_run_counts() {
+        let spans = [
+            span("a.rs", 3, Role::Secondary),
+            span("a.rs", 4, Role::Primary),
+        ];
+        let placed = diagnostic(&lint("clippy::placed"), &spans);
+        let unplaced = diagnostic(&lint("clippy::unplaced"), &[]);
+        let whole = format!("{}{placed}\n{unplaced}\n{{\"half", real_run());
+        let cut: String = whole
+            .lines()
+            .filter_map(kept)
+            .map(|line| line + "\n")
+            .collect();
+        let counted = hits(&whole);
+        assert!(
+            counted.contains(&at("clippy::placed", "a.rs", 4)),
+            "{counted:?}"
+        );
+        assert_eq!(hits(&cut), counted);
+    }
+
+    #[test]
     fn truncated_output_is_refused_rather_than_counted_from_its_prefix() {
         assert_eq!(
             from_run(&cut_off(0, &real_run(), "")),
             Err(
-                "clippy printed over 16777216 bytes; a count from the prefix chock kept would be \
-                 wrong"
+                "clippy's findings came to over 16777216 bytes, cut to the fields chock counts; a \
+                 count from the prefix chock kept would be wrong"
                     .to_string()
             )
         );

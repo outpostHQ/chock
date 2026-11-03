@@ -209,6 +209,8 @@ mod tests {
         let _counted = enter(Some(Arc::clone(&gate)));
         let mut first = Sampled::with(&mut refuses, 6, counted);
         assert_eq!(first.poll(), Err("poll".to_string()));
+        // An hour ahead, so a slow interpreter cannot outlast the second this read covers.
+        first.read_at = Instant::now().checked_add(EVERY * 3600);
         assert_eq!(first.complete(), Err("complete".to_string()));
         first.poll().ok();
         assert_eq!(READS.load(Ordering::Relaxed), 1);

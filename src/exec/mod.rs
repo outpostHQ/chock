@@ -3,6 +3,7 @@
 
 pub mod budget;
 pub mod fixed;
+mod holding;
 mod marked;
 pub(crate) mod peak;
 mod process;
@@ -13,6 +14,7 @@ use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use holding::Holding;
 use marked::last_line;
 pub(crate) use marked::{marked, marked_at};
 use process::Process;
@@ -296,8 +298,38 @@ pub fn objected(out: &Output, tool: &str) -> Result<bool, String> {
 
 /// `run` with the capture cap as a parameter, so a test can use a small one.
 fn run_capped(program: &str, args: &[&str], cwd: &Path, cap: usize) -> Result<Output, ExecError> {
-    run_full(program, args, cwd, cap, &[], &mut (), None)
+    let held = Held { cap, keep: None };
+    run_full(program, args, cwd, held, &[], &mut (), None)
 }
+
+/// What a filtered read holds of one stdout line, `None` to drop it.
+pub type Keep = fn(&str) -> Option<String>;
+
+/// `run` holding only what `keep` makes of each stdout line, each distinct result once, so that a
+/// tool printing past `MAX_CAPTURE` is still read whole when what chock reads of it fits.
+/// # Errors
+/// When the program cannot start or be read, or is stopped before its end.
+pub fn run_kept(program: &str, args: &[&str], cwd: &Path, keep: Keep) -> Result<Output, ExecError> {
+    let held = Held {
+        cap: MAX_CAPTURE,
+        keep: Some(keep),
+    };
+    run_full(program, args, cwd, held, &[], &mut (), None)
+}
+
+/// How much of a process's output a run holds: `cap` bytes of each pipe, of stdout only what
+/// `keep` makes of its lines.
+#[derive(Clone, Copy)]
+struct Held {
+    cap: usize,
+    keep: Option<Keep>,
+}
+
+/// Every byte up to the cap, unfiltered.
+const ALL: Held = Held {
+    cap: MAX_CAPTURE,
+    keep: None,
+};
 
 /// `run` with extra environment variables, such as `RUSTDOCFLAGS`.
 /// # Errors
@@ -308,7 +340,7 @@ pub fn run_env(
     cwd: &Path,
     env: &[(&str, &str)],
 ) -> Result<Output, ExecError> {
-    run_full(program, args, cwd, MAX_CAPTURE, env, &mut (), None)
+    run_full(program, args, cwd, ALL, env, &mut (), None)
 }
 
 /// How a program is started: `run_env`, or a test's stand-in with fixed answers.
@@ -369,7 +401,7 @@ pub(crate) fn run_watched(
     moving: Moving,
 ) -> Result<Output, ExecError> {
     let pace = (moving, deadline());
-    run_full(program, args, cwd, MAX_CAPTURE, env, watchdog, Some(pace))
+    run_full(program, args, cwd, ALL, env, watchdog, Some(pace))
 }
 
 /// Whether an output line shows a tool still moving; each such line restarts a paced deadline.
@@ -389,7 +421,7 @@ pub fn run_paced(
     env: &[(&str, &str)],
     pace: Pace,
 ) -> Result<Output, ExecError> {
-    run_full(program, args, cwd, MAX_CAPTURE, env, &mut (), Some(pace))
+    run_full(program, args, cwd, ALL, env, &mut (), Some(pace))
 }
 
 /// The `Moving` of a tool with a deadline in all: no line restarts it.
@@ -569,11 +601,20 @@ const DRAIN: std::time::Duration = std::time::Duration::from_secs(20);
 /// Reads a pipe on its own thread and hands it back over a channel, so the read can be abandoned
 /// when a grandchild keeps the pipe open.
 fn captured(pipe: Option<impl std::io::Read + Send + 'static>, cap: usize) -> Capture {
+    captured_kept(pipe, cap, None)
+}
+
+/// `captured`, holding only what `keep` makes of each line.
+fn captured_kept(
+    pipe: Option<impl std::io::Read + Send + 'static>,
+    cap: usize,
+    keep: Option<Keep>,
+) -> Capture {
     let (tx, rx) = std::sync::mpsc::channel();
     let tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let writing = std::sync::Arc::clone(&tail);
     std::thread::spawn(move || {
-        let _ = tx.send(read_capped(pipe, cap, &writing));
+        let _ = tx.send(read_capped(pipe, cap, keep, &writing));
     });
     Capture { reading: rx, tail }
 }
@@ -715,7 +756,7 @@ fn run_full(
     program: &str,
     args: &[&str],
     cwd: &Path,
-    cap: usize,
+    held: Held,
     env: &[(&str, &str)],
     watchdog: &mut dyn Watchdog,
     pace: Option<Pace>,
@@ -754,8 +795,12 @@ fn run_full(
     let moved = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (counts, whole, idle) = pacing(pace);
     // Each pipe drains on its own thread: reading one to EOF first deadlocks once the other fills.
-    let reading_out = captured(counted(process.child.stdout.take(), counts, &moved), cap);
-    let reading_err = captured(counted(process.child.stderr.take(), counts, &moved), cap);
+    let out = counted(process.child.stdout.take(), counts, &moved);
+    let reading_out = captured_kept(out, held.cap, held.keep);
+    let reading_err = captured(
+        counted(process.child.stderr.take(), counts, &moved),
+        held.cap,
+    );
     let mut paced = Paced::new(watchdog, moved, idle);
     let mut sampled = peak::Sampled::new(&mut paced, process.child.id());
     finish_capture(
@@ -850,25 +895,23 @@ fn completed_capture<T>(
 fn read_capped<R: Read>(
     pipe: Option<R>,
     cap: usize,
+    keep: Option<Keep>,
     tail: &std::sync::Mutex<Vec<u8>>,
 ) -> Result<(String, bool), String> {
     let Some(mut reader) = pipe else {
         return Ok((String::new(), false));
     };
-    let mut held: Vec<u8> = Vec::new();
+    let mut holding = Holding::new(cap, keep);
     let mut chunk = [0u8; 8192];
-    let mut truncated = false;
     loop {
         let read = next_chunk(&mut reader, &mut chunk)?;
         if read.is_empty() {
             break;
         }
-        let room = cap.saturating_sub(held.len());
-        held.extend(read.iter().take(room));
-        truncated |= read.len() > room;
+        holding.take(read);
         store_tail(tail, read);
     }
-    Ok((String::from_utf8_lossy_owned(held), truncated))
+    Ok(holding.finish())
 }
 
 fn next_chunk<'a>(reader: &mut impl Read, chunk: &'a mut [u8]) -> Result<&'a [u8], String> {
@@ -1340,7 +1383,7 @@ mod tests {
         }
         let held = std::sync::Mutex::new(Vec::new());
         assert_eq!(
-            read_capped(Some(Interrupted(true)), 10, &held),
+            read_capped(Some(Interrupted(true)), 10, None, &held),
             Ok((String::new(), false))
         );
         let large = format!("{}last diagnostic", "x".repeat(DIAGNOSTIC_BYTES));
@@ -1372,22 +1415,36 @@ mod tests {
     }
 
     #[test]
+    fn a_kept_read_holds_each_kept_line_once_and_its_cap_counts_only_what_it_holds() {
+        let tail = std::sync::Mutex::new(Vec::new());
+        let not_b: Keep = |line| (line != "b").then(|| line.to_uppercase());
+        assert_eq!(
+            read_capped(Some(&b"a\nb\na\r\nc"[..]), 4, Some(not_b), &tail),
+            Ok(("A\nC\n".into(), false))
+        );
+        assert_eq!(
+            read_capped(Some(&b"a\nb\nc\n"[..]), 2, Some(not_b), &tail),
+            Ok(("A\n".into(), true))
+        );
+    }
+
+    #[test]
     fn direct_capture_distinguishes_exact_capacity_overflow_and_absent_input() {
         let tail = std::sync::Mutex::new(Vec::new());
         assert_eq!(
-            read_capped(Some(&b"abc"[..]), 3, &tail),
+            read_capped(Some(&b"abc"[..]), 3, None, &tail),
             Ok(("abc".into(), false))
         );
         assert_eq!(
-            read_capped(Some(&b"abcd"[..]), 3, &tail),
+            read_capped(Some(&b"abcd"[..]), 3, None, &tail),
             Ok(("abc".into(), true))
         );
         assert_eq!(
-            read_capped(Some(&b"ab"[..]), 3, &tail),
+            read_capped(Some(&b"ab"[..]), 3, None, &tail),
             Ok(("ab".into(), false))
         );
         assert_eq!(
-            read_capped(None::<std::io::Empty>, 0, &tail),
+            read_capped(None::<std::io::Empty>, 0, None, &tail),
             Ok((String::new(), false))
         );
         let exact = "x".repeat(DIAGNOSTIC_BYTES);

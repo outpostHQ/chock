@@ -153,9 +153,19 @@ fn with_stopped(mut outcome: Outcome, stopped: &[String]) -> Outcome {
 /// nextest's verdict, or why miri never tested the code.
 fn judge(root: &Path, out: &exec::Output) -> Result<Outcome, String> {
     if let Some(why) = never_ran(&out.stderr) {
-        return Err(why);
+        return Err(stopped_in(why, out));
     }
     Ok(judged(out, root))
+}
+
+/// Why miri never ran, with the tests nextest names as running when it stopped.
+fn stopped_in(why: String, out: &exec::Output) -> String {
+    let tests = super::suite::failing_tests(out);
+    let named: Vec<String> = tests.iter().map(|test| format!("`{test}`")).collect();
+    match named.as_slice() {
+        [] => why,
+        _ => format!("{why} It stopped in {}.", named.join(", ")),
+    }
 }
 
 /// Progress under miri: any line but nextest's note that a test still runs, which a hung test
@@ -262,6 +272,7 @@ fn asked(ctx: &Ctx) -> Result<Vec<String>, String> {
 }
 
 /// `--no-fail-fast`, so the run lists every test the interpreter rejects and not only the first.
+/// `--tests` builds only the targets that hold tests: miri cannot build an example `cdylib`.
 fn invocation(scope: &crate::project::config::Scope, features: &[String]) -> Vec<String> {
     let mut args = [
         "+nightly",
@@ -270,6 +281,7 @@ fn invocation(scope: &crate::project::config::Scope, features: &[String]) -> Vec
         "run",
         "--no-tests=fail",
         "--no-fail-fast",
+        "--tests",
     ]
     .map(String::from)
     .to_vec();
@@ -317,16 +329,50 @@ fn absent(stderr: &str) -> bool {
     stderr.contains("'cargo-miri' is not installed") || crate::gates::fixes::no_nightly(stderr)
 }
 
-/// Why miri never tested the code, if it did not: it is not installed, or it hit an operation it
-/// cannot emulate.
+/// Why miri never tested the code, if it did not: it is not installed, it crashed, it cannot build
+/// a target, or it hit an operation it cannot emulate.
 fn never_ran(stderr: &str) -> Option<String> {
     if absent(stderr) {
         return Some(ABSENT.to_string());
     }
-    let unsupported = stderr
-        .lines()
-        .find(|line| line.contains("unsupported operation:"))?;
-    let what = unsupported.split("unsupported operation: ").nth(1)?;
+    crashed(stderr)
+        .or_else(|| unbuildable(stderr))
+        .or_else(|| unemulated(stderr))
+}
+
+/// What follows `marker` on the first line of `stderr` that holds it.
+fn after<'a>(stderr: &'a str, marker: &str) -> Option<&'a str> {
+    (stderr.lines()).find_map(|line| line.split_once(marker).map(|(_, rest)| rest.trim()))
+}
+
+/// A crash of the interpreter itself, which says nothing of the code it ran.
+fn crashed(stderr: &str) -> Option<String> {
+    let what = after(stderr, "internal compiler error: ").or_else(|| {
+        (stderr.contains("the compiler unexpectedly panicked"))
+            .then(|| after(stderr, "panicked at ").unwrap_or("the interpreter panicked"))
+    })?;
+    Some(format!(
+        "miri crashed, so it stopped before finishing: {what}. The fault is in the nightly \
+         toolchain, not in the code: run the gate on a nightly of another day"
+    ))
+}
+
+/// A target miri cannot build, such as a `cdylib`, which stops the run before any test.
+fn unbuildable(stderr: &str) -> Option<String> {
+    let line = (stderr.lines()).find(|line| line.contains("does not support these crate types"))?;
+    let what = line
+        .split_once("error: ")
+        .map_or(line, |(_, said)| said)
+        .trim();
+    Some(format!(
+        "miri cannot build a target of the suite, so it never ran: {what}. {}",
+        instead(what)
+    ))
+}
+
+/// An operation miri cannot emulate, such as starting a process.
+fn unemulated(stderr: &str) -> Option<String> {
+    let what = after(stderr, "unsupported operation: ")?;
     Some(format!(
         "miri cannot emulate something the suite does, so it stopped before finishing: {what}. \
          {}",
@@ -409,20 +455,9 @@ mod tests {
         };
         let flags = ["--no-default-features", "--features", "testkit"].map(String::from);
         assert_eq!(
-            invocation(&scope, &flags),
-            [
-                "+nightly",
-                "miri",
-                "nextest",
-                "run",
-                "--no-tests=fail",
-                "--no-fail-fast",
-                "-p",
-                "fixture",
-                "--no-default-features",
-                "--features",
-                "testkit"
-            ]
+            invocation(&scope, &flags).join(" "),
+            "+nightly miri nextest run --no-tests=fail --no-fail-fast --tests -p fixture \
+             --no-default-features --features testkit"
         );
     }
 
@@ -855,6 +890,41 @@ mod tests {
         let said = "error: Undefined Behavior: attempting a read access\n";
         assert_eq!(never_ran(said), None);
         assert_eq!(never_ran(""), None);
+    }
+
+    #[test]
+    fn a_target_miri_cannot_build_is_a_run_that_never_started_and_names_the_target() {
+        let target = "cannot produce cdylib for `cd` as `t` does not support these crate types";
+        let why = never_ran(&format!("   Compiling cd\nerror: {target}\n")).unwrap();
+        let said = format!("miri cannot build a target of the suite, so it never ran: {target}. ");
+        assert!(why.starts_with(&said), "{why}");
+    }
+
+    /// The span of a crash points into `std`; read as a finding, it is undefined behaviour to fix.
+    #[test]
+    fn a_crash_of_the_interpreter_is_a_gate_that_could_not_run_and_names_the_test_it_was_in() {
+        let internal = "error: internal compiler error: /rustc/3e92/value.rs:179:32: Signed value \
+                        does not fit in 32 bits\n    --> library/std/src/sys/fs/unix.rs:2114:9\n";
+        let panicked = "thread 'rustc' panicked at src/tools/miri/src/shims/x.rs:9:5:\nboom\n\
+                        note: the compiler unexpectedly panicked. this is a bug.\n";
+        let crash = "miri crashed, so it stopped before finishing:";
+        let fault = "The fault is in the nightly toolchain, not in the code: run the gate on a \
+                     nightly of another day";
+        for (said, what) in [
+            (
+                internal,
+                "/rustc/3e92/value.rs:179:32: Signed value does not fit in 32 bits",
+            ),
+            (panicked, "src/tools/miri/src/shims/x.rs:9:5:"),
+        ] {
+            assert_eq!(never_ran(said).unwrap(), format!("{crash} {what}. {fault}"));
+        }
+        let failed = format!("        FAIL [   1.0s] chock cli::tests::stats\n{internal}");
+        let why = judge(Path::new("/r"), &said(101, "", &failed)).unwrap_err();
+        assert!(
+            why.ends_with(" It stopped in `chock cli::tests::stats`."),
+            "{why}"
+        );
     }
 
     /// The span miri prints points into `std`; read as a finding, it would blame the wrong file.
