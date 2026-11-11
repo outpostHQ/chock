@@ -78,7 +78,7 @@ pub const UNUSED: Gate = Gate {
     about: "dependencies nothing references, by source scan, against the count recorded",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(Reads::tree_and(&["cargo", "cargo-machete"]).versioned("unused-v1")),
     // A ratchet, since `cargo machete` objects to most existing projects.
     kind: Kind::Ratchet {
         measure: machete::unused,
@@ -104,7 +104,7 @@ pub const SORT: Gate = Gate {
     about: "manifests whose dependency tables are out of order, against the count recorded",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(Reads::tree_and(&["cargo", "cargo-sort"]).versioned("sort-v1")),
     // A ratchet, since `cargo sort --check` objects to most existing projects.
     kind: Kind::Ratchet {
         measure: sort,
@@ -119,7 +119,7 @@ pub const TYPOS: Gate = Gate {
     about: "misspellings in source, comments and docs, per file and word",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(Reads::tree_and(&["typos"]).versioned("typos-v1")),
     kind: Kind::Ratchet {
         measure: typos,
         keys: Keys::Items,

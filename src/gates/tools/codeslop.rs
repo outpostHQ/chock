@@ -23,7 +23,9 @@ pub const GATE: Gate = Gate {
             length, which is `slop`",
     group: Group::Quality,
     builds: true,
-    reads: None,
+    reads: Some(
+        crate::run::verdicts::Reads::tree_and(&["cargo", "clippy-driver"]).versioned("codeslop-v1"),
+    ),
     kind: Kind::AnnotatedRatchet {
         measure,
         // Keys are lint names, and a lint with no hit has no key: one the baseline lacks is a
