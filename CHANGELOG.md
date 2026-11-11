@@ -5,6 +5,11 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- **Two new gates, on by default: `clone-abuse` and `blocking-async`.** `clone-abuse` trips when
+  one more `.clone()` is chained on another, or made on every pass through a loop. `blocking-async`
+  trips when one more blocking `std::fs`, `std::thread::sleep` or `std::net` call runs inside an
+  `async fn`. chock now checks a Rust project with 74 gates, 43 of them on by default.
+
 ## [0.20.2] - 2026-11-02
 
 - **A scratch directory is removed only by an absolute path.** A mutant that emptied a project's

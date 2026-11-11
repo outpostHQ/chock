@@ -286,8 +286,8 @@ fn manifest_targets(tree: &Tree, dir: &str) -> Vec<String> {
 
 /// The first double-quoted run in a line.
 fn quoted(text: &str) -> Option<String> {
-    let start = text.find('"')? + 1;
-    let end = text[start..].find('"')? + start;
+    let start = text.find('"')?.wrapping_add(1);
+    let end = text[start..].find('"')?.wrapping_add(start);
     Some(text[start..end].to_string())
 }
 

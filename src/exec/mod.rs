@@ -227,7 +227,7 @@ const DIAGNOSTIC_BYTES: usize = 4096;
 fn text_tail(text: &str, cap: usize) -> &str {
     let mut start = text.len().saturating_sub(cap);
     while !text.is_char_boundary(start) {
-        start += 1;
+        start = start.saturating_add(1);
     }
     text.get(start..).unwrap_or_default()
 }
@@ -776,7 +776,7 @@ fn run_full(
         .env_remove_each(&GIT_STATE)
         .envs(crash_report(std::env::var_os("RUSTC_ICE").as_deref()))
         .envs(env.iter().copied())
-        .env(DEPTH, (depth() + 1).to_string())
+        .env(DEPTH, depth().saturating_add(1).to_string())
         .envs(crate::exec::budget::caps(env))
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -938,10 +938,10 @@ fn store_tail(tail: &std::sync::Mutex<Vec<u8>>, chunk: &[u8]) {
 
 fn remember_tail(tail: &mut Vec<u8>, chunk: &[u8]) {
     let take = chunk.len().min(DIAGNOSTIC_BYTES);
-    let retain = DIAGNOSTIC_BYTES - take;
+    let retain = DIAGNOSTIC_BYTES.saturating_sub(take);
     let remove = tail.len().saturating_sub(retain);
     tail.drain(..remove);
-    tail.extend(chunk.iter().skip(chunk.len() - take));
+    tail.extend(chunk.iter().skip(chunk.len().saturating_sub(take)));
 }
 
 #[cfg(test)]
@@ -1232,8 +1232,8 @@ mod tests {
     /// What `yes WORD | head -c N` writes: whole `WORD\n` lines, then a cut-off tail.
     fn repeated(word: &str, bytes: usize) -> String {
         let line = format!("{word}\n");
-        let mut out = line.repeat(bytes / line.len());
-        out.push_str(&word[..bytes % line.len()]);
+        let mut out = line.repeat(bytes.checked_div(line.len()).unwrap_or(0));
+        out.push_str(&word[..bytes.checked_rem(line.len()).unwrap_or(0)]);
         out
     }
 

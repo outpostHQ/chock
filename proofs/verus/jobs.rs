@@ -6,7 +6,7 @@ use vstd::prelude::*;
 verus! {
 
 // code: src/exec/budget.rs::jobs
-// The copy reads the available memory as a number, where chock reads it only when nobody asked.
+// Reads available memory as a number when nobody asked; real code adds a `checked_div` clippy guard.
 pub fn jobs(cpus: usize, per_job_mb: u64, available_mb: u64, asked: Option<usize>) -> (count: usize)
     requires
         per_job_mb >= 1,
@@ -56,7 +56,7 @@ pub fn tightest(host: Option<u64>, container: Option<u64>) -> (tight: Option<u64
 }
 
 // code: src/exec/budget.rs::shared
-// The copy takes the count of lanes that run at once, which chock reads from `RUNNING`.
+// Takes the lane count chock reads from `RUNNING`; real code adds a `checked_div` clippy guard.
 pub fn shared(jobs: usize, running: usize) -> (share: usize)
     ensures
         share >= 1,

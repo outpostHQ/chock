@@ -24,7 +24,7 @@
     },
     "bigfiles": {},
     "binsize": {
-      "chock": 4725288
+      "chock": 5029248
     },
     "binsize@macos": {
       "chock": 3580192
@@ -32,6 +32,7 @@
     "binsize@windows": {
       "chock": 5659136
     },
+    "blocking-async": {},
     "boundaries": {
       "mixed_directory_foreign_files_production": 5,
       "scattered_groups_production": 2
@@ -39,6 +40,58 @@
     "calls": {},
     "citations": {},
     "claims": {},
+    "clone-abuse": {
+      "src/gates/cargo/features.rs#clone-in-loop": 2,
+      "src/gates/cargo/modcheck.rs#clone-in-loop": 1,
+      "src/gates/cargo/profile.rs#clone-in-loop": 1,
+      "src/gates/metrics/admits.rs#clone-in-loop": 1,
+      "src/gates/metrics/admits/covers.rs#clone-in-loop": 2,
+      "src/gates/metrics/complexity.rs#clone-in-loop": 1,
+      "src/gates/metrics/dead.rs#clone-in-loop": 1,
+      "src/gates/metrics/duplication.rs#clone-in-loop": 2,
+      "src/gates/metrics/lean.rs#clone-in-loop": 1,
+      "src/gates/metrics/lean/repeats.rs#clone-in-loop": 1,
+      "src/gates/metrics/lean/report.rs#clone-in-loop": 1,
+      "src/gates/metrics/lean/shapes.rs#clone-in-loop": 2,
+      "src/gates/metrics/splits.rs#clone-in-loop": 1,
+      "src/gates/metrics/testlint/mod.rs#clone-in-loop": 4,
+      "src/gates/mutation/proved/prover.rs#clone-in-loop": 1,
+      "src/gates/mutation/scope.rs#clone-in-loop": 1,
+      "src/gates/mutation/watch.rs#clone-in-loop": 2,
+      "src/gates/outpost/measures.rs#clone-in-loop": 1,
+      "src/gates/outpost/wrappers.rs#clone-in-loop": 1,
+      "src/gates/proofs/laws/rust.rs#clone-in-loop": 2,
+      "src/gates/proofs/links.rs#clone-in-loop": 1,
+      "src/gates/proofs/links/tree.rs#clone-in-loop": 1,
+      "src/gates/proofs/tla.rs#clone-in-loop": 1,
+      "src/gates/proofs/tla/apalache.rs#clone-in-loop": 2,
+      "src/gates/proofs/tla/engines.rs#clone-in-loop": 1,
+      "src/gates/proofs/tla/tlaps.rs#clone-in-loop": 2,
+      "src/gates/rules/calls/broken.rs#clone-in-loop": 1,
+      "src/gates/rules/owners.rs#clone-in-loop": 1,
+      "src/gates/source/mod.rs#clone-in-loop": 2,
+      "src/gates/source/shipped.rs#clone-in-loop": 2,
+      "src/gates/text/claims.rs#clone-in-loop": 1,
+      "src/gates/text/pinned.rs#clone-in-loop": 3,
+      "src/gates/tools/codeslop.rs#clone-in-loop": 2,
+      "src/gates/tools/codeslop/literals.rs#clone-in-loop": 1,
+      "src/gates/tools/codeslop/names.rs#clone-in-loop": 2,
+      "src/gates/tools/deps.rs#clone-in-loop": 1,
+      "src/gates/tools/miri.rs#clone-in-loop": 1,
+      "src/gates/tools/miri/groups.rs#clone-in-loop": 5,
+      "src/gates/tools/proof.rs#clone-in-loop": 1,
+      "src/oracle.rs#clone-in-loop": 1,
+      "src/project/config.rs#clone-in-loop": 1,
+      "src/project/vcs.rs#clone-in-loop": 2,
+      "src/project/vcs/hooks.rs#clone-in-loop": 1,
+      "src/run/baseline.rs#clone-in-loop": 1,
+      "src/run/mod.rs#clone-in-loop": 1,
+      "src/run/report/settle.rs#clone-in-loop": 3,
+      "src/run/workers.rs#clone-in-loop": 1,
+      "src/setup/downloads.rs#clone-in-loop": 1,
+      "src/setup/merge.rs#clone-in-loop": 1,
+      "src/tokens.rs#clone-in-loop": 2
+    },
     "codeslop": {
       "chock::long_literal": 8,
       "chock::short_name": 110,
@@ -463,7 +516,7 @@
       "hazard_unordered_into_ordered": 0
     },
     "lines": {
-      "total": 105172
+      "total": 105815
     },
     "links": {},
     "manifest": {},
@@ -794,10 +847,12 @@
     "admits": "unchecked proof step(s)",
     "assertions": "length assertion(s)",
     "binsize": "byte(s)",
+    "blocking-async": "call(s)",
     "boundaries": "file(s) off one concern, tree-wide",
     "calls": "unpaired call(s)",
     "citations": "stale citation(s)",
     "claims": "stale claim(s)",
+    "clone-abuse": "clone(s)",
     "codeslop": "findings",
     "commands": "declared finding(s)",
     "commands-build": "declared finding(s)",

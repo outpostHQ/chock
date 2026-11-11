@@ -110,7 +110,8 @@ impl Rules {
         };
         let mut counts = BTreeMap::<String, u64>::new();
         for finding in &found {
-            *counts.entry(key(finding)).or_default() += 1;
+            let count = counts.entry(key(finding)).or_default();
+            *count = count.saturating_add(1);
         }
         found
             .into_iter()

@@ -84,13 +84,7 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
         };
         keep_over_bar(scored, &mut series, &mut details);
     }
-    Ok(Measurement {
-        series,
-        findings: Vec::new(),
-        details,
-        unmeasured: Vec::new(),
-        faults: Vec::new(),
-    })
+    Ok(Measurement::detailed(series, details))
 }
 
 /// Each of one file's functions over the bar, with its detail.

@@ -9,6 +9,7 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::{AttrStyle, Attribute, ItemMod, Meta};
 
+use crate::gates::rules::production;
 use crate::project;
 use crate::run::baseline::Series;
 
@@ -61,6 +62,23 @@ pub fn is_test_path(path: &str) -> bool {
 /// The parsed file, or `line N: reason` for the caller to prefix with the path.
 pub(crate) fn parse_rust(src: &str) -> Result<syn::File, String> {
     syn::parse_file(src).map_err(|e| format!("line {}: {e}", e.span().start().line))
+}
+
+/// A visitor that collects pattern/line hits, so [`visited`] can hand its own back out.
+pub(crate) trait IntoHits {
+    fn into_hits(self) -> Vec<(&'static str, u32)>;
+}
+
+/// Parses `src`, visits its production items with `visitor`, and returns what it collected.
+pub(crate) fn visited<V>(src: &str, mut visitor: V) -> Result<Vec<(&'static str, u32)>, String>
+where
+    V: for<'ast> Visit<'ast> + IntoHits,
+{
+    let file = parse_rust(src)?;
+    for item in production(&file.items) {
+        visitor.visit_item(item);
+    }
+    Ok(visitor.into_hits())
 }
 
 /// Each production file with its line count.
@@ -378,6 +396,37 @@ where
     series
 }
 
+/// Most hits of one key its finding names as places; the rest are counted, not shown.
+const PLACES: usize = 20;
+
+/// Like [`keyed`], but keeps where a hit was made: the first under a key stands for its `line`;
+/// a further one becomes a `role` place, capped at [`PLACES`].
+pub(crate) fn tallied<K>(
+    read: Vec<(String, Vec<(K, u32)>)>,
+    role: &str,
+) -> (Series, crate::run::Details)
+where
+    K: std::fmt::Display,
+{
+    use crate::run::Details;
+    use crate::run::report::{Detail, Place};
+    let mut series = Series::new();
+    let mut details = Details::new();
+    for (shown, hits) in read {
+        for (sub, line) in hits {
+            let key = format!("{shown}#{sub}");
+            series.set(&key, series.get(&key).unwrap_or(0) + 1);
+            let detail: &mut Detail = details.entry(key).or_default();
+            if detail.line.is_none() {
+                detail.line = Some(line);
+            } else if detail.places.len() < PLACES {
+                detail.places.push(Place::at(role, &shown, line));
+            }
+        }
+    }
+    (series, details)
+}
+
 /// Every Rust source, test files and `tests` directories too; fixture crates are left out.
 /// # Errors
 /// When the tree cannot be walked.
@@ -430,6 +479,7 @@ fn walked(ctx: &crate::run::Ctx, kept: Kept) -> Result<(Vec<PathBuf>, Vec<String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::run::report::Place;
     use crate::testdir::tree;
 
     fn count(src: &str) -> Result<usize, String> {
@@ -438,6 +488,30 @@ mod tests {
 
     fn lines(src: &str) -> usize {
         count(src).unwrap_or_else(|e| panic!("{src:?} did not parse: {e}"))
+    }
+
+    #[test]
+    fn tallied_keeps_the_first_hit_as_the_line_and_the_rest_as_places() {
+        let read = vec![("a.rs".to_string(), vec![("x", 1u32), ("x", 2u32)])];
+        let (series, details) = tallied(read, "hit");
+        assert_eq!(series.get("a.rs#x"), Some(2));
+        let detail = details.get("a.rs#x").unwrap();
+        assert_eq!(detail.line, Some(1));
+        assert_eq!(detail.places, vec![Place::at("hit", "a.rs", 2)]);
+    }
+
+    #[test]
+    fn tallied_caps_places_at_the_floor_not_past_it() {
+        let places = u32::try_from(PLACES).unwrap();
+        let count = places + 2;
+        let hits: Vec<(&str, u32)> = (0..count).map(|line| ("x", line)).collect();
+        let read = vec![("a.rs".to_string(), hits)];
+        let (_, details) = tallied(read, "hit");
+        let detail = details.get("a.rs#x").unwrap();
+        let expected: Vec<Place> = (1..=places)
+            .map(|line| Place::at("hit", "a.rs", line))
+            .collect();
+        assert_eq!(detail.places, expected);
     }
 
     #[test]

@@ -4,6 +4,8 @@
 pub mod admits;
 pub mod assertions;
 pub mod bigfiles;
+pub mod blocking;
+pub mod clones;
 pub mod complexity;
 pub mod dead;
 pub mod duplication;

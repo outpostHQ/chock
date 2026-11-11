@@ -33,7 +33,10 @@ pub fn jobs(
     if let Some(asked) = asked {
         return asked.max(1);
     }
-    let by_memory = usize::try_from(available_mb() / per_job_mb).unwrap_or(usize::MAX);
+    let by_memory = available_mb()
+        .checked_div(per_job_mb)
+        .and_then(|mb| usize::try_from(mb).ok())
+        .unwrap_or(usize::MAX);
     cpus.min(by_memory).max(1)
 }
 
@@ -123,7 +126,9 @@ pub fn available_from_vm_stat(text: &str) -> Option<u64> {
         let count = text.lines().find_map(|line| line.strip_prefix(name))?;
         count.trim().trim_end_matches('.').parse::<u64>().ok()
     };
-    let bytes = (pages("Pages free:")? + pages("Pages inactive:")?) * page.parse::<u64>().ok()?;
+    let bytes = pages("Pages free:")?
+        .saturating_add(pages("Pages inactive:")?)
+        .saturating_mul(page.parse::<u64>().ok()?);
     Some(bytes / (1024 * 1024))
 }
 
@@ -280,7 +285,9 @@ pub fn cap() -> usize {
 
 /// The lane's share of `jobs`, which the lanes of compiling gates that run at once share equally.
 fn shared(jobs: usize) -> usize {
-    (jobs / RUNNING.load(Ordering::Relaxed).max(1)).max(1)
+    jobs.checked_div(RUNNING.load(Ordering::Relaxed).max(1))
+        .unwrap_or(1)
+        .max(1)
 }
 
 /// The job cap of the whole machine, before the lanes share it.

@@ -27,8 +27,8 @@ pub(super) fn matched(
     let (mut at, mut next) = (0, 0);
     while let Some(rest) = matcher.get(next..).filter(|rest| !rest.is_empty()) {
         let (used, written) = step(rest, input.get(at..).unwrap_or_default(), bound)?;
-        at += used;
-        next += written;
+        at = at.saturating_add(used);
+        next = next.saturating_add(written);
     }
     Ok(at)
 }
@@ -59,7 +59,7 @@ fn step(
         {
             let (separator, op, written) = operator(after)?;
             let used = repeated(&trees(&group.stream()), separator, op, input, bound)?;
-            Ok((used, 2 + written))
+            Ok((used, written.saturating_add(2)))
         }
         [TokenTree::Group(group), ..] => match input.first() {
             Some(TokenTree::Group(given)) if given.delimiter() == group.delimiter() => {
@@ -128,7 +128,7 @@ fn repeated(
     while op != '?' || times == 0 {
         let start = match separator {
             Some(separator) if times > 0 => match input.get(at) {
-                Some(given) if same(separator, given) => at + 1,
+                Some(given) if same(separator, given) => at.saturating_add(1),
                 _ => break,
             },
             _ => at,

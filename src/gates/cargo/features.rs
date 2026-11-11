@@ -364,9 +364,9 @@ fn gated(tokens: TokenStream, out: &mut Vec<Site>) {
 
 /// The parenthesised condition after a `cfg` ident, stepping over the `!` of the macro form.
 fn condition(trees: &[TokenTree], at: usize) -> Option<TokenStream> {
-    let next = trees.get(at + 1)?;
+    let next = trees.get(at.wrapping_add(1))?;
     let holder = match next {
-        TokenTree::Punct(bang) if bang.as_char() == '!' => trees.get(at + 2)?,
+        TokenTree::Punct(bang) if bang.as_char() == '!' => trees.get(at.wrapping_add(2))?,
         other => other,
     };
     match holder {

@@ -1,6 +1,6 @@
 # The gates
 
-`chock gates` prints this list from the binary: 72 gates, 41 on by default and 31 opt-in.
+`chock gates` prints this list from the binary: 74 gates, 43 on by default and 31 opt-in.
 `chock gates --json` gives the same list to a program.
 
 A gate is one of two kinds.
@@ -52,6 +52,8 @@ A gate is one of two kinds.
 | `coverage` | ✓ | a file gains lines no test executes; the run names every line of that file no test ran |
 | `binsize` | ✓ | a release binary grows by more than 1% or 256 KiB, whichever is larger |
 | `unsafety` | ✓ | a file gains an `unsafe` block, function, trait, impl or `extern` |
+| `clone-abuse` | ✓ | one more `.clone()` is chained on another, or made on every pass through a loop |
+| `blocking-async` | ✓ | one more blocking `std::fs`, `std::thread::sleep` or `std::net` call runs inside an `async fn` |
 | `admits` | ✓ | a proof gains a step that nothing checks: `sorry`, `admit`, `native_decide` or `axiom` in Lean code; `assume(`, `admit(`, `assume_specification` or `verifier::external` in a Verus file; `kani::assume`; or a TLA+ `ASSUME`, `ASSUMPTION` or `AXIOM` that names no constant. `.chock/escapes.json` keeps one with its reason, and a `// checked: <crate> <test>` cover keeps a Rust one with a test. Lake's `.lake` and `lakefile.lean` do not count, and a tree with no proof passes |
 | `citations` | ✓ | a doc comment names one more path the repository does not have |
 | `assertions` | ✓ | a test gains an assertion about *how many* instead of *what* |

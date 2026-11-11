@@ -102,7 +102,7 @@ fn installing(tool: &str) -> &'static str {
     found.map_or(PINNED, |(_, repair)| repair)
 }
 
-const FIXES: [(&str, &str); 72] = [
+const FIXES: [(&str, &str); 74] = [
     (
         "test",
         "run the rerun command, read each failing test's output, and fix the code or the test; a crate with no tests needs one",
@@ -324,6 +324,14 @@ const FIXES: [(&str, &str); 72] = [
     (
         "unsafety",
         "replace the `unsafe` with a safe API, or move it into one audited module",
+    ),
+    (
+        "clone-abuse",
+        "clone once outside the loop, or borrow instead of chaining a second `.clone()`",
+    ),
+    (
+        "blocking-async",
+        "move the blocking call off the executor with `spawn_blocking`, or await its async equivalent",
     ),
     (
         "admits",

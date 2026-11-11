@@ -38,6 +38,18 @@ impl Measurement {
         }
     }
 
+    /// A series and its per-key detail, with no scope notes.
+    #[must_use]
+    pub fn detailed(series: Series, details: Details) -> Self {
+        Self {
+            series,
+            findings: Vec::new(),
+            details,
+            unmeasured: Vec::new(),
+            faults: Vec::new(),
+        }
+    }
+
     /// Baseline output keeps scope notes visible without recording them as measured debt.
     #[must_use]
     pub fn notes(&self, gate: &str) -> String {

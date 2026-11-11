@@ -23,7 +23,7 @@ impl Peak {
     /// One tree now holds `to` MB where it held `from`.
     fn moved(&self, from: u64, to: u64) {
         let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-        held.0 = held.0.saturating_sub(from) + to;
+        held.0 = held.0.saturating_sub(from).saturating_add(to);
         held.1 = held.1.max(held.0);
     }
 }

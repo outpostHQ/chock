@@ -122,6 +122,9 @@ pub(super) fn explain(name: &str) -> ExitCode {
 
 /// `now` is a parameter so a test can fix it. A record from a clock that is ahead gives `None`.
 pub(super) fn ago(ran_at: Option<u64>, now: std::time::SystemTime) -> Option<String> {
-    let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(ran_at?);
-    Some(crate::setup::doctor::how_long(now.duration_since(at).ok()?))
+    let dur = std::time::Duration::from_secs(ran_at?);
+    let elapsed = std::time::UNIX_EPOCH
+        .checked_add(dur)
+        .and_then(|at| now.duration_since(at).ok())?;
+    Some(crate::setup::doctor::how_long(elapsed))
 }

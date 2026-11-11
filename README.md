@@ -6,7 +6,7 @@
 
 **Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers.**
 
-chock checks a Rust project with 72 gates and gives one answer with one exit code. The gates cover
+chock checks a Rust project with 74 gates and gives one answer with one exit code. The gates cover
 your tests, clippy, rustfmt, coverage, mutation testing, the supply chain, complexity, duplication,
 and formal proofs: TLA+ models (TLC, Apalache, TLAPS), Kani and Verus.
 
@@ -196,7 +196,7 @@ with each field explained.
 
 ## The gates
 
-72 gates: 41 are on by default and 31 are opt-in. `chock gates` prints the list from the binary,
+74 gates: 43 are on by default and 31 are opt-in. `chock gates` prints the list from the binary,
 and [docs/gates.md](docs/gates.md) says when each one trips.
 
 | topic | on by default | opt-in |
@@ -205,7 +205,7 @@ and [docs/gates.md](docs/gates.md) says when each one trips.
 | Proofs and models | `links` | `tla`, `proof`, `verus`, `laws` |
 | Lints and format | `lint`, `codeslop`, `source`, `typos` | `fmt`, `shellcheck` |
 | Docs and comments | `doc`, `slop`, `echoes`, `citations`, `claims`, `pinned` | `phrases` |
-| Code shape | `complexity`, `nesting`, `bigfiles`, `splits`, `lean`, `duplication`, `unsafety`, `modcheck` | `duplicates`, `dead`, `lines` |
+| Code shape | `complexity`, `nesting`, `bigfiles`, `splits`, `lean`, `duplication`, `unsafety`, `clone-abuse`, `blocking-async`, `modcheck` | `duplicates`, `dead`, `lines` |
 | Dependencies | `deps`, `manifest`, `placement`, `features`, `sort`, `dupdeps`, `unused`, `supply` | `unused-deep`, `acl` |
 | Build and release | `msrv`, `profile`, `toolchain`, `binsize` | `bsize` |
 | Repository | `commits`, `hygiene`, `wiring`, `workflows` | `history` |
