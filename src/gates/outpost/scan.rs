@@ -164,6 +164,26 @@ mod tests {
     }
 
     #[test]
+    fn places_under_one_key_stop_growing_at_the_cap_rather_than_past_it() {
+        let hits: Vec<String> = (0..PLACES + 2)
+            .map(|n| {
+                found_at(
+                    "src/a.rs",
+                    "discarded-result",
+                    3 + u32::try_from(n).unwrap(),
+                )
+            })
+            .collect();
+        let read = read_scan(&scanned(51, &hits.join(","))).unwrap();
+        let detail = read.details.get("src/a.rs#discarded-result").unwrap();
+        let places: Vec<Place> = (1..=PLACES)
+            .map(|n| Place::at("hit", "src/a.rs", 3 + u32::try_from(n).unwrap()))
+            .collect();
+        assert_eq!(detail.line, Some(3));
+        assert_eq!(detail.places, places);
+    }
+
+    #[test]
     fn findings_in_different_files_are_held_apart() {
         let both = format!(
             "{},{}",
