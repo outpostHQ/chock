@@ -33,7 +33,7 @@ jobs:
       # Downloads prebuilt binaries rather than compiling each tool, which is minutes against tens
       # of minutes. It falls back to `cargo install` for anything with no release to fetch.
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@81df5c23b0dc775b009efdfc9895c5965b7a4e40 # v1.26.1
+        uses: cargo-bins/cargo-binstall@5885714d0a40a14b2535c6ffc051fd8e49aa9665 # v1.27.0
 
       - name: Install the pinned tools these gates need
         run: |
@@ -100,7 +100,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@81df5c23b0dc775b009efdfc9895c5965b7a4e40 # v1.26.1
+        uses: cargo-bins/cargo-binstall@5885714d0a40a14b2535c6ffc051fd8e49aa9665 # v1.27.0
 
       # A tool whose KEY_OS leaves out this system is not installed; `chock run` names its gate.
       - name: Install the pinned tools
@@ -255,7 +255,7 @@ jobs:
 
       # One test runs cargo-crap, so each job that runs the tests installs the pinned one.
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@81df5c23b0dc775b009efdfc9895c5965b7a4e40 # v1.26.1
+        uses: cargo-bins/cargo-binstall@5885714d0a40a14b2535c6ffc051fd8e49aa9665 # v1.27.0
 
       - name: Install cargo-crap
         run: |
@@ -290,13 +290,13 @@ jobs:
         run: Get-CimInstance Win32_Process | Format-Table ProcessId, ParentProcessId, Name, CommandLine -Wrap | Out-String -Width 300
 
       - name: Put mutest's journals beside its results
-        if: failure() || cancelled()
+        if: always()
         run: |
           for dir in $(printf '%s\n' "${TMPDIR:-/tmp}" "${TEMP:-/tmp}" | sort -u); do
             cp "$dir"/mutest-journal-* target/test-scratch/ 2> /dev/null || true
           done
       - name: Keep mutest's results
-        if: failure() || cancelled()
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutest-results-${{ matrix.system }}
