@@ -13,7 +13,7 @@ pub const GATE: Gate = Gate {
     about: "dependencies that execute code during a build, by crate and kind",
     group: Group::Quality,
     builds: false,
-    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("supply-v1")),
+    reads: Some(crate::run::verdicts::Reads::tree_and(&["cargo"]).versioned("supply-v1")),
     kind: Kind::Ratchet {
         measure,
         keys: Keys::Items,

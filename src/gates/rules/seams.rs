@@ -19,7 +19,7 @@ pub const GATE: Gate = Gate {
     about: "a path or crate listed under `seams` is used outside the files or packages it names",
     group: Group::OptIn,
     builds: false,
-    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("seams-v1")),
+    reads: Some(crate::run::verdicts::Reads::tree_and(&["cargo"]).versioned("seams-v1")),
     kind: Kind::Debt {
         inspect,
         unit: "use(s) past a seam",
