@@ -602,10 +602,10 @@ pub fn tips(root: &Path) -> Option<String> {
 /// `git`, then Outpost's head where Outpost holds the tree: a tree both hold has two histories,
 /// and a gate counting commits may read either.
 fn with_outpost_head(root: &Path, git: String) -> Option<String> {
-    if outpost_home(root).is_none() {
+    let Some(home) = outpost_home(root) else {
         return Some(git);
-    }
-    let head = outpost_tip(&exec::run("outpost", &["log", "--oneline", "-n", "1"], root).ok()?)?;
+    };
+    let head = outpost_tip(&exec::run("outpost", &["log", "--oneline", "-n", "1"], &home).ok()?)?;
     Some(format!("{git} {head}"))
 }
 
