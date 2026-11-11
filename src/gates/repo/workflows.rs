@@ -18,7 +18,7 @@ pub const GATE: Gate = Gate {
             can move",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("workflows-v1")),
     kind: Kind::Binary(check),
 };
 
