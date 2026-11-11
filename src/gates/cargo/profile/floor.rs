@@ -69,13 +69,17 @@ const CLIPPY_LINTS: [&str; 16] = [
 
 /// Pedantic lints the floor names. The `pedantic` group meets each one, unless the table lowers
 /// that one lint itself.
-const PEDANTIC_LINTS: [&str; 6] = [
+const PEDANTIC_LINTS: [&str; 10] = [
     "missing_panics_doc",
     "missing_errors_doc",
     "fn_params_excessive_bools",
     "struct_excessive_bools",
     "cast_possible_truncation",
     "cast_sign_loss",
+    "needless_pass_by_value",
+    "implicit_clone",
+    "cloned_instead_of_copied",
+    "option_as_ref_cloned",
 ];
 
 /// The groups among the floor. Each takes a lower priority than the single lints it holds.
@@ -385,6 +389,22 @@ mod tests {
             gaps_in(&crate_of(&no_group, Floor::Enforced)),
             ["clippy::pedantic"]
         );
+    }
+
+    #[test]
+    fn a_table_allowing_one_of_four_more_pedantic_lints_has_a_gap_for_only_that_one() {
+        for lint in [
+            "needless_pass_by_value",
+            "implicit_clone",
+            "cloned_instead_of_copied",
+            "option_as_ref_cloned",
+        ] {
+            let allowed = format!("{FLOOR}{lint} = \"allow\"\n");
+            assert_eq!(
+                gaps_in(&crate_of(&allowed, Floor::Enforced)),
+                [format!("clippy::{lint}")]
+            );
+        }
     }
 
     /// `explicit_outlives_requirements` is a member of `rust_2018_idioms`, so the group meets it
