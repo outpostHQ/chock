@@ -587,7 +587,7 @@ pub fn unpushed(root: &Path, held: Option<Kind>) -> Result<Vec<(String, String)>
 }
 
 /// HEAD's commit and its upstream's, the two ends of the commits a push would carry; `none` for one
-/// git does not have. Then Outpost's head where it holds the tree. `None` where a tool fails.
+/// git does not have. Then, where Outpost holds the tree, its own head and its remote's tip.
 #[must_use]
 pub fn tips(root: &Path) -> Option<String> {
     let id = |rev: &str| {
@@ -596,17 +596,14 @@ pub fn tips(root: &Path) -> Option<String> {
         Some(named.unwrap_or_else(|| "none".to_string()))
     };
     let git = format!("{} {}", id("HEAD^{commit}")?, id("@{upstream}^{commit}")?);
-    with_outpost_head(root, git)
-}
-
-/// `git`, then Outpost's head where Outpost holds the tree: a tree both hold has two histories,
-/// and a gate counting commits may read either.
-fn with_outpost_head(root: &Path, git: String) -> Option<String> {
     let Some(home) = outpost_home(root) else {
         return Some(git);
     };
     let head = outpost_tip(&exec::run("outpost", &["log", "--oneline", "-n", "1"], &home).ok()?)?;
-    Some(format!("{git} {head}"))
+    let remote = remote_tip(&home)
+        .ok()?
+        .unwrap_or_else(|| "none".to_string());
+    Some(format!("{git} {head} {remote}"))
 }
 
 /// The id of Outpost's newest commit, the first word `outpost log --oneline` prints.
