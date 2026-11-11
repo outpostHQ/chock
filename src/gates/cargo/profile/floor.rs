@@ -34,13 +34,18 @@ impl Floor {
 }
 
 /// The rustc lints and the one rustc group the floor names.
-const RUSTC_LINTS: [&str; 5] = [
+const RUSTC_LINTS: [&str; 6] = [
     "missing_docs",
     "missing_debug_implementations",
     "unreachable_pub",
     "unsafe_op_in_unsafe_fn",
     "rust_2018_idioms",
+    "unused_lifetimes",
 ];
+
+/// `rust_2018_idioms` lints the floor names besides the group check. The group meets each one,
+/// unless the table lowers that one lint itself.
+const IDIOM_LINTS: [&str; 1] = ["explicit_outlives_requirements"];
 
 /// Two clippy groups, then lints outside every group, which only a lint table turns on.
 const CLIPPY_LINTS: [&str; 14] = [
@@ -95,7 +100,7 @@ pub(super) struct Table<'a> {
 /// read the table.
 pub(super) fn hold(table: &Table<'_>, floor: Floor, promise: Option<Release>, review: &mut Review) {
     let tools = [
-        (RUST, &RUSTC_LINTS[..], &[][..]),
+        (RUST, &RUSTC_LINTS[..], &IDIOM_LINTS[..]),
         (CLIPPY, &CLIPPY_LINTS[..], &PEDANTIC_LINTS[..]),
     ];
     for (tool, named, pedantic) in tools {
@@ -247,13 +252,14 @@ mod tests {
     use super::*;
 
     /// A lint table that meets each entry of the floor, written out in full: `[lints.clippy]` is
-    /// line 7.
+    /// line 8.
     const FLOOR: &str = "[lints.rust]\n\
         missing_docs = \"deny\"\n\
         missing_debug_implementations = \"deny\"\n\
         unreachable_pub = \"deny\"\n\
         unsafe_op_in_unsafe_fn = \"deny\"\n\
         rust_2018_idioms = { level = \"deny\", priority = -1 }\n\
+        unused_lifetimes = \"deny\"\n\
         [lints.clippy]\n\
         all = { level = \"deny\", priority = -1 }\n\
         pedantic = { level = \"warn\", priority = -1 }\n\
@@ -272,7 +278,8 @@ mod tests {
 
     /// The item of each gap in a lint table that sets nothing, in the order the gate names them.
     const EVERY_LINT: &str = "rust::missing_docs rust::missing_debug_implementations \
-        rust::unreachable_pub rust::unsafe_op_in_unsafe_fn rust::rust_2018_idioms clippy::all \
+        rust::unreachable_pub rust::unsafe_op_in_unsafe_fn rust::rust_2018_idioms \
+        rust::unused_lifetimes clippy::all \
         clippy::pedantic clippy::unwrap_used clippy::allow_attributes \
         clippy::allow_attributes_without_reason clippy::undocumented_unsafe_blocks \
         clippy::multiple_unsafe_ops_per_block clippy::clone_on_ref_ptr clippy::dbg_macro \
@@ -376,6 +383,41 @@ mod tests {
         );
     }
 
+    /// `explicit_outlives_requirements` is a member of `rust_2018_idioms`, so the group meets it
+    /// unless the table lowers that one lint itself, the same shape as a pedantic lint.
+    #[test]
+    fn the_rust_2018_idioms_group_holds_explicit_outlives_requirements_unless_the_table_allows_it()
+    {
+        let allowed = FLOOR.replace(
+            "rust_2018_idioms = { level = \"deny\", priority = -1 }\n",
+            "rust_2018_idioms = { level = \"deny\", priority = -1 }\n\
+             explicit_outlives_requirements = \"allow\"\n",
+        );
+        assert_eq!(
+            gaps_in(&crate_of(&allowed, Floor::Enforced)),
+            ["rust::explicit_outlives_requirements"]
+        );
+        let no_group = FLOOR.replace(
+            "rust_2018_idioms = { level = \"deny\", priority = -1 }\n",
+            "",
+        );
+        assert_eq!(
+            gaps_in(&crate_of(&no_group, Floor::Enforced)),
+            ["rust::rust_2018_idioms"]
+        );
+    }
+
+    /// `unused_lifetimes` sits outside every rustc group the floor checks, so only the table can
+    /// turn it on: a table without it has a gap, and `FLOOR`, which sets it, has none.
+    #[test]
+    fn a_table_without_unused_lifetimes_has_a_gap() {
+        let without = FLOOR.replace("unused_lifetimes = \"deny\"\n", "");
+        assert_eq!(
+            gaps_in(&crate_of(&without, Floor::Enforced)),
+            ["rust::unused_lifetimes"]
+        );
+    }
+
     #[test]
     fn allowing_module_name_repetitions_or_must_use_candidate_is_no_gap() {
         let allowed =
@@ -441,14 +483,14 @@ mod tests {
         let said = |from: &str, to: &str| {
             failures(&crate_of(&FLOOR.replace(from, to), Floor::Enforced)).join("\n")
         };
-        let unwrap = "Cargo.toml:7: clippy::unwrap_used: add unwrap_used = \"deny\" under \
+        let unwrap = "Cargo.toml:8: clippy::unwrap_used: add unwrap_used = \"deny\" under \
                       [lints.clippy] (`allow-unwrap-in-tests = true` in clippy.toml keeps it out \
                       of tests)";
         assert_eq!(said("unwrap_used = \"deny\"\n", ""), unwrap);
-        let all = "Cargo.toml:7: clippy::all: add all = { level = \"deny\", priority = -1 } under \
+        let all = "Cargo.toml:8: clippy::all: add all = { level = \"deny\", priority = -1 } under \
                    [lints.clippy]";
         assert_eq!(said("all = { level = \"deny\", priority = -1 }\n", ""), all);
-        let todo = "Cargo.toml:7: clippy::todo: set todo = \"deny\" under [lints.clippy], in place \
+        let todo = "Cargo.toml:8: clippy::todo: set todo = \"deny\" under [lints.clippy], in place \
                     of \"allow\"";
         assert_eq!(said("todo = \"deny\"", "todo = \"allow\""), todo);
     }
@@ -487,7 +529,7 @@ mod tests {
         }
         assert_eq!(
             failures(&sources),
-            ["Cargo.toml:8: clippy::todo: add todo = \"deny\" under [workspace.lints.clippy]"]
+            ["Cargo.toml:9: clippy::todo: add todo = \"deny\" under [workspace.lints.clippy]"]
         );
     }
 
@@ -500,7 +542,7 @@ mod tests {
             sources.promises.insert(String::new(), promise);
             failures(&sources)
         };
-        let gap = "Cargo.toml:7: clippy::allow_attributes: add allow_attributes = \"deny\" under \
+        let gap = "Cargo.toml:8: clippy::allow_attributes: add allow_attributes = \"deny\" under \
                    [lints.clippy]";
         assert_eq!(
             promised("1.70"),

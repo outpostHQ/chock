@@ -463,7 +463,7 @@
       "hazard_unordered_into_ordered": 0
     },
     "lines": {
-      "total": 105070
+      "total": 105113
     },
     "links": {},
     "manifest": {},
@@ -485,9 +485,9 @@
       "duplicate_lines_production": 20,
       "duplicate_lines_test": 155,
       "duplicate_lines_unknown": 5,
-      "excess_lines": 461,
+      "excess_lines": 463,
       "excess_lines_production": 3,
-      "excess_lines_test": 458,
+      "excess_lines_test": 460,
       "excess_lines_unknown": 0,
       "god_files_production": 1,
       "hard_to_follow": 2,
