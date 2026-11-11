@@ -11,7 +11,7 @@ pub const GATE: Gate = Gate {
     about: "comment blocks longer than two lines, per file",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("slop-v1")),
     kind: Kind::Ratchet {
         measure,
         keys: Keys::Items,
