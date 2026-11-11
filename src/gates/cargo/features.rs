@@ -751,6 +751,18 @@ mod tests {
     }
 
     #[test]
+    fn a_bang_cfg_macro_inside_another_macro_s_body_is_still_read() {
+        let src = "fn f() {\n    my_macro!(cfg!(feature = \"slow\"))\n}\n";
+        assert_eq!(features_of(src), ["slow"]);
+    }
+
+    #[test]
+    fn a_cfg_word_with_no_group_after_it_names_nothing() {
+        let src = "fn f() {\n    my_macro!(cfg; nothing)\n}\n";
+        assert_eq!(features_of(src), Vec::<String>::new());
+    }
+
+    #[test]
     fn a_local_binding_called_feature_is_not_a_cfg() {
         assert_eq!(
             features_of("fn f() {\n    let feature = \"nightly\";\n    drop(feature);\n}\n"),

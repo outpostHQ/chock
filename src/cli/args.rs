@@ -28,8 +28,8 @@ pub enum Command<'a> {
         miri_part: Option<Part>,
         /// Gates left out, from `--skip=NAME,...`: CI runs the slow ones in jobs of their own.
         skip: Vec<&'a str>,
-        /// What `--package` and `--filter` narrow the `test` gate to, `--mutate` the `mutest`
-        /// gate, and `--model` the `tla` gate.
+        /// What `--package` and `--filter` narrow the `test` gate to, and `--mutate` the `mutest`
+        /// gate.
         scope: Scope,
     },
     /// `cache clear`: removes every kept verdict.
@@ -136,17 +136,8 @@ const FILTER: &str = "--filter=";
 
 const MUTATE: &str = "--mutate=";
 
-const MODEL: &str = "--model=";
-
 /// The flags of `run` that take a value, which may follow as the next word.
-const VALUED: [&str; 6] = [
-    "--skip",
-    "--package",
-    "--filter",
-    "--mutate",
-    "--model",
-    PARTITION,
-];
+const VALUED: [&str; 5] = ["--skip", "--package", "--filter", "--mutate", PARTITION];
 
 /// `run --skip miri` as `run --skip=miri`, so a flag of `run` that takes a value takes it either
 /// way.
@@ -169,10 +160,10 @@ pub(super) fn joined(args: &[&str]) -> Vec<String> {
 }
 
 /// A flag of `run`: `--fast`, `--ci`, `--no-cache`, `--verbose`, `--miri-partition=K/N`,
-/// `--skip=NAME,...`, `--package=NAME`, `--filter=TEXT`, `--mutate=FILE,...` or `--model=NAME,...`.
+/// `--skip=NAME,...`, `--package=NAME`, `--filter=TEXT` or `--mutate=FILE,...`.
 fn known(flag: &str) -> bool {
     matches!(flag, "--fast" | "--ci" | "--no-cache" | "--verbose")
-        || [PARTITION, SKIP, PACKAGE, FILTER, MUTATE, MODEL]
+        || [PARTITION, SKIP, PACKAGE, FILTER, MUTATE]
             .iter()
             .any(|at| flag.starts_with(at))
 }
@@ -203,14 +194,13 @@ fn listed(names: &[&str], flag: &str) -> Result<Vec<String>, String> {
     }
 }
 
-/// `--package` and `--filter` narrow the `test` gate alone, `--mutate` the `mutest` gate alone,
-/// and `--model` the `tla` gate alone, so a run that gives one names that gate and no other.
+/// `--package` and `--filter` narrow the `test` gate alone, and `--mutate` the `mutest` gate
+/// alone, so a run that gives one names that gate and no other.
 fn scope(names: &[&str]) -> Result<Scope, String> {
     let scope = Scope {
         package: valued(names, PACKAGE)?,
         filter: valued(names, FILTER)?,
         mutate: listed(names, MUTATE)?,
-        models: listed(names, MODEL)?,
     };
     let gates: Vec<&str> = names
         .iter()
@@ -224,7 +214,6 @@ fn scope(names: &[&str]) -> Result<Scope, String> {
             "test",
         ),
         (!scope.mutate.is_empty(), "`--mutate` narrows", "mutest"),
-        (!scope.models.is_empty(), "`--model` narrows", "tla"),
     ];
     match narrowed
         .into_iter()
@@ -697,19 +686,6 @@ mod tests {
         let none = usage("`--mutate` names nothing");
         assert_eq!(parse(&["run", "mutest", "--mutate=,"]), none);
         assert_eq!(parse(&["run", "mutest", "--mutate="]), none);
-    }
-
-    #[test]
-    fn a_list_of_models_narrows_the_tla_gate_alone() {
-        let models = ["RunLock".to_string(), "BaselineWrite".to_string()];
-        let given = listed(&["tla", "--model=RunLock,,BaselineWrite"], MODEL);
-        assert_eq!(given, Ok(models.to_vec()));
-        assert_eq!(listed(&["tla"], MODEL), Ok(Vec::new()));
-        let none = "`--model` names nothing".to_string();
-        assert_eq!(listed(&["tla", "--model=,"], MODEL), Err(none));
-        let alone = "`--model` narrows the `tla` gate alone, so name `tla` and no other gate";
-        let refused = parse(&["run", "lint", "--model=RunLock"]);
-        assert_eq!(refused, Command::Usage(alone.to_string()));
     }
 
     #[test]

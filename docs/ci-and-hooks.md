@@ -96,18 +96,8 @@ Install the pinned tools, then run every gate but the `local_only` ones:
 - run: chock run --ci
 ```
 
-`chock init --global` also fetches the pinned downloads of the gates that are on, such as TLC for
-`tla`. A job that runs only `tla` or `verus` can run `chock init --downloads`, which installs no
-cargo tool. TLC and Apalache run on Java, so give such a job Java 21 first:
-
-```yaml
-- uses: actions/setup-java@v6
-  with:
-    distribution: temurin
-    java-version: '21'
-- run: chock init --downloads
-- run: chock run tla
-```
+`chock init --global` also fetches every pinned download that `tool-versions.env` names. A job that
+needs only the downloads, not a cargo tool, can run `chock init --downloads` instead.
 
 A tool that `tool-versions.env` pins to a git commit, such as `cargo-deny` with `CARGO_DENY_GIT`,
 has no prebuilt file, so `chock init --global` compiles it. That step takes some minutes.

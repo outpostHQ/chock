@@ -5,8 +5,6 @@ use std::process::Command;
 
 use super::Error;
 use crate::exec::Start;
-use crate::project;
-use crate::project::config::Config;
 use crate::setup::fetching::{
     Fetch, fetch_args, kept, not_a_crate, not_fetched, replacing, starting,
 };
@@ -21,7 +19,7 @@ pub(super) fn setup_command(line: &str) -> Option<(&str, Vec<&str>)> {
 }
 
 /// How often a setup line runs before its install counts as failed, and the wait that grows before
-/// each new attempt: the line downloads, and GitHub once answered Kani's bundle with a 500.
+/// each new attempt: the line downloads, and GitHub once answered a tool's bundle with a 500.
 const SETUP_ATTEMPTS: u32 = 3;
 
 pub(super) const SETUP_PAUSE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -94,38 +92,24 @@ pub(super) fn joined(installed: Result<(), Error>, failed: Vec<String>) -> Resul
     }
 }
 
-/// Download pins, each checked against its SHA-256. A gate's own tool comes only while the project
-/// has that gate on, so a project without `tla` never fetches 200 MB of Java.
+/// Download pins, each checked against its SHA-256.
 #[expect(
     clippy::print_stdout,
     reason = "each download is said as it is decided, since the next one can take minutes"
 )]
 pub(super) fn fetch_downloads(
     downloads: &[crate::setup::downloads::Download],
-    root: Option<&Path>,
     tools: &crate::gates::proofs::Tools,
 ) -> Vec<String> {
-    let config = root.and_then(|root| project::document::read::<Config>(root).ok().flatten());
-    let on = |gate: &str| config.as_ref().is_some_and(|held| held.is_on(gate));
-    let wanted: Vec<_> = downloads
-        .iter()
-        .filter(|pin| match pin.gate().filter(|gate| !on(gate)) {
-            Some(gate) => {
-                println!("  skipped   {} — the `{gate}` gate is off", pin.name);
-                false
-            }
-            None => true,
-        })
-        .collect();
-    if wanted.is_empty() {
+    if downloads.is_empty() {
         return Vec::new();
     }
     let Some(home) = tools.home.as_deref() else {
         println!("  FAILED    downloads — no home directory holds them; set CHOCK_TOOLS");
-        return wanted.iter().map(|pin| pin.name.clone()).collect();
+        return downloads.iter().map(|pin| pin.name.clone()).collect();
     };
-    wanted
-        .into_iter()
+    downloads
+        .iter()
         .filter(|pin| {
             !(reported(&crate::setup::downloads::fetch(pin, home, tools)) && set_up(pin, home))
         })

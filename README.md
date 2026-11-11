@@ -6,9 +6,9 @@
 
 **Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers.**
 
-chock checks a Rust project with 74 gates and gives one answer with one exit code. The gates cover
-your tests, clippy, rustfmt, coverage, mutation testing, the supply chain, complexity, duplication,
-and formal proofs: TLA+ models (TLC, Apalache, TLAPS), Kani and Verus.
+chock checks a Rust project with 69 gates and gives one answer with one exit code. The gates cover
+your tests, clippy, rustfmt, coverage, mutation testing, the supply chain, complexity, and
+duplication.
 
 Most projects hold debt on the day they adopt chock. You do not have to fix it first. chock writes
 today's numbers into a file that you commit, and from then on:
@@ -196,13 +196,12 @@ with each field explained.
 
 ## The gates
 
-74 gates: 43 are on by default and 31 are opt-in. `chock gates` prints the list from the binary,
+69 gates: 42 are on by default and 27 are opt-in. `chock gates` prints the list from the binary,
 and [docs/gates.md](docs/gates.md) says when each one trips.
 
 | topic | on by default | opt-in |
 |---|---|---|
 | Tests | `test`, `coverage`, `crap`, `assertions`, `testlint`, `admits` | `mutest`, `idempotent`, `miri` |
-| Proofs and models | `links` | `tla`, `proof`, `verus`, `laws` |
 | Lints and format | `lint`, `codeslop`, `source`, `typos` | `fmt`, `shellcheck` |
 | Docs and comments | `doc`, `slop`, `echoes`, `citations`, `claims`, `pinned` | `phrases` |
 | Code shape | `complexity`, `nesting`, `bigfiles`, `splits`, `lean`, `duplication`, `unsafety`, `clone-abuse`, `blocking-async`, `modcheck` | `duplicates`, `dead`, `lines` |
@@ -212,12 +211,9 @@ and [docs/gates.md](docs/gates.md) says when each one trips.
 | Your own checks | | `commands`, `commands-build`, `seams`, `owners`, `calls` |
 | [Outpost](https://github.com/outpostHQ) | | `padding`, `boundaries`, `scan`, `hazards`, `unreferenced`, `wrappers`, `lenses`, `measures`, `unread` |
 
-Five gates do [formal verification](docs/gates.md#proofs-and-models). `tla` checks each TLA+ model
-with TLC, Apalache and TLAPS, `proof` each Kani harness, and `verus` each Verus proof; a planted
-fault must make each one fail. `links` holds each `code:` comment in a model or a proof to the item
-that it names. `laws` pins the text of each theorem, contract and harness, so a weaker law cannot
-pass as the same one. `admits` counts each proof step that nothing checks. chock checks its own run
-lock, baseline writes and job counts this way.
+`admits` counts each proof step that nothing checks, such as an unaudited `kani::assume` or a bare
+`ASSUME`, in whatever proof tooling a project uses on its own code. chock checks its own run lock,
+baseline writes and job counts this way.
 
 ## Documentation
 
@@ -232,7 +228,7 @@ lock, baseline writes and job counts this way.
 
 ## Limits
 
-- **Rust only.** chock reads `.rs` files, `Cargo.toml`, and the TLA+ and Verus files next to them.
+- **Rust only.** chock reads `.rs` files and `Cargo.toml`.
 - **The baseline is trusted.** Anyone can raise a record with `chock baseline`; chock makes that
   visible in the diff, and reviewers have to look.
 - **A record is keyed by name.** Renaming a function, or splitting a file, drops the old record and

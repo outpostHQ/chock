@@ -157,37 +157,3 @@ mod tests {
         assert_eq!(promises(&metadata), BTreeMap::from(keyed));
     }
 }
-
-#[cfg(kani)]
-mod proofs {
-    use super::*;
-
-    /// Raising `rust-version` never closes a feature: a feature open to a promise is open to every
-    /// later one, and to a crate with no promise.
-    #[kani::proof]
-    fn a_later_promise_keeps_every_feature_open() {
-        let since = Release::new(kani::any(), kani::any());
-        let feature = Feature { what: "", since };
-        let (low, high) = (
-            Release::new(kani::any(), kani::any()),
-            Release::new(kani::any(), kani::any()),
-        );
-        if low <= high && feature.open_to(Some(low)) {
-            assert!(feature.open_to(Some(high)));
-        }
-        assert!(feature.open_to(None));
-        assert!(feature.open_to(Some(since)));
-    }
-
-    /// A later major release with a smaller minor number still comes after: 2.0 is after 1.81.
-    #[kani::proof]
-    fn the_major_number_decides_before_the_minor() {
-        let (a, b) = (
-            Release::new(kani::any(), kani::any()),
-            Release::new(kani::any(), kani::any()),
-        );
-        if a.major < b.major {
-            assert!(a < b);
-        }
-    }
-}

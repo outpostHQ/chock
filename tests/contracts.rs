@@ -115,26 +115,6 @@ fn cargo_machete_still_names_a_dependency_nothing_uses() {
     done(&dir);
 }
 
-#[test]
-#[ignore = "runs the installed kani, which compiles and solves"]
-fn kani_still_lists_and_proves_a_harness_the_way_the_proof_gate_reads_it() {
-    let lib = "#[cfg(kani)]\n#[kani::proof]\nfn doubling_a_small_byte_fits() {\n    \
-               let x: u8 = kani::any();\n    kani::assume(x < 100);\n    \
-               assert!(u16::from(x) * 2 < 256);\n}\n";
-    let dir = scratch_crate(
-        "contract-kani",
-        "\n[lints.rust]\nunexpected_cfgs = { level = \"allow\", check-cfg = [\"cfg(kani)\"] }\n",
-        &[("src/lib.rs", lib)],
-    );
-    let report = judged(&chock::gates::tools::proof::GATE, &dir);
-    assert_eq!(
-        (report.verdict, report.cannot_run_reason.clone()),
-        (Verdict::Pass, None),
-        "{report:?}"
-    );
-    done(&dir);
-}
-
 /// `x * 2` and `x + 2` agree at 2, so the one test cannot kill that mutation.
 #[test]
 #[ignore = "runs the installed cargo-mutest on its nightly"]

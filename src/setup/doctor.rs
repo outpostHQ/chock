@@ -197,15 +197,14 @@ pub fn git_hooks(installed: &[(String, Option<String>)]) -> Vec<Row> {
         .collect()
 }
 
-/// Commands a toolchain itself ships, the nightly's miri among them, and Java, which the system
-/// gives and the `java` row checks. Nobody pins these; `cargo` stands for the toolchain.
-const TOOLCHAIN: [&str; 6] = [
+/// Commands a toolchain itself ships, the nightly's miri among them. Nobody pins these; `cargo`
+/// stands for the toolchain.
+const TOOLCHAIN: [&str; 5] = [
     "cargo",
     "rustfmt",
     "clippy-driver",
     "rustdoc",
     "cargo +nightly miri",
-    "java",
 ];
 
 /// Tools a gate runs without declaring them for its verdict cache. `test` and `coverage` are absent
@@ -338,32 +337,6 @@ fn miri_in(
     on.then(|| inspected(name, standing()))
 }
 
-/// Java runs TLC and Apalache for `tla`. No pin holds it, so doctor runs the one the gate finds.
-fn java_in(
-    config: &Result<Option<crate::project::config::Config>, String>,
-    start: crate::exec::Start<'_>,
-    root: &std::path::Path,
-    home: Option<std::ffi::OsString>,
-) -> Option<Row> {
-    let on = matches!(config, Ok(Some(config)) if config.is_on("tla"));
-    on.then(|| {
-        let java = crate::gates::proofs::tla::java_program(home);
-        let standing = match start(&java, &["-version"], root, &[]) {
-            // `java -version` prints its version to stderr.
-            Ok(out) if out.success() => {
-                let said = out.stderr.lines().next().unwrap_or_default();
-                (Verdict::Pass, said.to_string())
-            }
-            _ => {
-                let missing = crate::gates::fixes::not_installed("java");
-                let repair = crate::gates::fixes::repair(&missing).unwrap_or_default();
-                (Verdict::Tripped, format!("`{java}` does not run: {repair}"))
-            }
-        };
-        inspected("java", standing)
-    })
-}
-
 fn inspected(command: &str, (verdict, message): (Verdict, String)) -> Row {
     Row {
         command: command.to_string(),
@@ -391,12 +364,6 @@ pub fn gathered(
     rows.extend(miri_in(&config, &|| {
         crate::setup::miri::standing(start, root)
     }));
-    rows.extend(java_in(
-        &config,
-        start,
-        root,
-        crate::gates::proofs::tla::java_home(),
-    ));
     rows.extend(machine_health(root, extra));
     // Doctor does not report on an editor hook that chock did not wire into the settings it writes.
     let wired = std::fs::read_to_string(root.join(".claude/settings.json"))
@@ -501,13 +468,9 @@ pub fn machine_health(
         crate::exec::run("rustup", &["toolchain", "list"], root).map_err(|e| e.to_string())
     };
     let mut rows = additional(extra, &listing);
-    let on = |gate: &str| {
-        crate::project::document::read::<crate::project::config::Config>(root)
-            .is_ok_and(|held| held.is_some_and(|held| held.is_on(gate)))
-    };
     let home = crate::setup::downloads::home();
     // outpost: ignore[rust-path-traversal] the tools directory is the user's own setting.
-    rows.extend(downloaded(&extra.downloads, home.as_deref(), &on));
+    rows.extend(downloaded(&extra.downloads, home.as_deref()));
     if let Some((top, below)) = hooks_declared_at(root) {
         let declarations = crate::project::vcs::git_hook_declarations(&top);
         let path = crate::exec::search_path();
@@ -525,17 +488,9 @@ pub fn machine_health(
 }
 
 /// A download pin is ok once its file for this machine is fetched and stamped with the pinned hash.
-/// One a gate claims waits for that gate, so a project that leaves `tla` off fetches nothing.
 #[must_use]
-pub fn downloaded(
-    downloads: &[Download],
-    home: Option<&std::path::Path>,
-    on: &dyn Fn(&str) -> bool,
-) -> Vec<Row> {
+pub fn downloaded(downloads: &[Download], home: Option<&std::path::Path>) -> Vec<Row> {
     let status = |pin: &Download| {
-        if let Some(gate) = pin.gate().filter(|gate| !on(gate)) {
-            return Status::available(format!("not needed while the `{gate}` gate is off"));
-        }
         let file = match pin.here() {
             Err(why) => return Status::broken(why),
             Ok(None) => return Status::available("the pin has no file for this machine".into()),
@@ -1033,22 +988,6 @@ mod tests {
         let rows = unpinned(&on, &[], &[]);
         let named: Vec<&str> = rows.iter().map(|row| row.command.as_str()).collect();
         assert_eq!(named, ["cargo-bsize", "cargo-crap", "cargo-nextest"]);
-    }
-
-    /// Verus is no crate: a download pin fetches it, so that pin is the one `unpinned` looks for.
-    #[test]
-    fn a_download_pin_pins_the_tool_it_names_and_no_other() {
-        let sha = "b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4";
-        let pin =
-            |stem: &str| format!("{stem}_VERSION=1\n{stem}_URL=https://x\n{stem}_SHA256={sha}\n");
-        let verus = crate::setup::downloads::parse(&pin("VERUS")).unwrap();
-        let tlapm = crate::setup::downloads::parse(&pin("TLAPM")).unwrap();
-        let named = |downloads: &[Download]| -> Vec<String> {
-            let rows = unpinned(&|gate| gate == "verus", &[], downloads);
-            rows.into_iter().map(|row| row.command).collect()
-        };
-        assert_eq!(named(&verus), Vec::<String>::new());
-        assert_eq!(named(&tlapm), ["verus"]);
     }
 
     /// A manual gate is the project's choice, so its row passes; naming it keeps it in sight.
@@ -1809,43 +1748,6 @@ mod tests {
         assert_eq!(describe(&row.status), "no `rust-src`");
     }
 
-    #[test]
-    fn java_gets_a_row_where_tla_is_on_and_no_pin_is_asked_for_it() {
-        use crate::project::config::Config;
-        let root = std::path::Path::new(".");
-        let java = |code: i32| {
-            move |program: &str, args: &[&str], _: &std::path::Path, _: &[(&str, &str)]| {
-                assert_eq!((program, args), ("java", &["-version"][..]));
-                Ok(crate::exec::Output::of(
-                    Some(code),
-                    "",
-                    "openjdk version \"21.0.4\" 2024-07-16\nOpenJDK Runtime\n",
-                ))
-            }
-        };
-        let row =
-            |on: &str, code: i32| java_in(&Ok(Some(Config::of([on]))), &java(code), root, None);
-        assert_eq!(row("lint", 0), None);
-        assert_eq!(java_in(&Ok(None), &java(0), root, None), None);
-        let ok = row("tla", 0).unwrap();
-        assert_eq!((ok.command.as_str(), ok.verdict()), ("java", Verdict::Pass));
-        assert_eq!(
-            describe(&ok.status),
-            "openjdk version \"21.0.4\" 2024-07-16"
-        );
-        let absent = row("tla", 127).unwrap();
-        assert_eq!(absent.verdict(), Verdict::Tripped);
-        assert_eq!(
-            describe(&absent.status),
-            "`java` does not run: install a Java runtime, 21 or newer, such as Temurin 21, or set \
-             JAVA_HOME to one"
-        );
-        let tla = crate::gates::registry()
-            .iter()
-            .find(|gate| gate.name == "tla");
-        assert_eq!(tools_of(tla.unwrap()), Vec::<&str>::new());
-    }
-
     fn pin(command: &str, want: &str) -> Pin {
         Pin {
             key: format!("{}_VERSION", command.to_uppercase()),
@@ -2120,43 +2022,26 @@ mod tests {
 
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
-    fn a_download_pin_is_ok_once_fetched_and_waits_while_its_gate_is_off() {
+    fn a_download_pin_is_ok_once_fetched_and_each_broken_or_absent_pin_is_named() {
         let root = crate::testdir::make("doctor-downloaded");
         let other = if cfg!(windows) { "linux" } else { "windows" };
         let text = format!(
-            "{}APALACHE_VERSION=1\nAPALACHE_URL=https://x/a.jar\nAPALACHE_SHA256=b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4\nVERUS_VERSION=1\nVERUS_URL=https://x/v.zip\nVERUS_SHA256=b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4\nB_VERSION=1\nB_URL=http://x\nB_SHA256=b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4\nE_VERSION=1\nE_URL_{other}=https://x\nE_SHA256_{other}=b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4\n",
-            crate::testdir::fetched(&root, "TLA_TOOLS", "t.jar")
+            "{}EXAMPLE_A_VERSION=1\nEXAMPLE_A_URL=https://x/a.jar\nEXAMPLE_A_SHA256=b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4\nB_VERSION=1\nB_URL=http://x\nB_SHA256=b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4\nE_VERSION=1\nE_URL_{other}=https://x\nE_SHA256_{other}=b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4\n",
+            crate::testdir::fetched(&root, "EXAMPLE_TOOL", "t.jar")
         );
         let downloads = crate::setup::downloads::parse(&text).unwrap();
         let home = root.join("tools");
-        let rows = downloaded(&downloads, Some(&home), &|gate| gate == "tla");
+        let rows = downloaded(&downloads, Some(&home));
         let statuses: Vec<Status> = rows.into_iter().map(|row| row.status).collect();
-        let off = "not needed while the `verus` gate is off";
         let expected = [
             Status::Matches("1".into()),
             Status::Missing { want: "1".into() },
-            Status::available(off.into()),
             Status::broken("B_URL must start with https://".into()),
             Status::available("the pin has no file for this machine".into()),
         ];
         assert_eq!(statuses, expected);
-        let homeless = downloaded(&downloads[..1], None, &|_| true);
+        let homeless = downloaded(&downloads[..1], None);
         let why = "no home directory holds downloads; set CHOCK_TOOLS";
         assert_eq!(homeless[0].status, Status::unreadable(why.into()));
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
-    fn machine_health_reads_the_project_s_gates_for_a_claimed_download() {
-        let root = crate::testdir::make("doctor-claimed");
-        let pin = "TLA_TOOLS_VERSION=1\nTLA_TOOLS_URL=https://x/t.jar\nTLA_TOOLS_SHA256=b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4\n";
-        let extra = crate::setup::pins::additional(pin).unwrap();
-        let off = Status::available("not needed while the `tla` gate is off".into());
-        assert_eq!(machine_health(&root, &extra)[0].status, off);
-        let file = root.join(crate::project::config::FILE);
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        let config = crate::project::config::Config::of(["tla"]);
-        std::fs::write(&file, crate::project::document::render(&config)).unwrap();
-        assert_ne!(machine_health(&root, &extra)[0].status, off);
     }
 }

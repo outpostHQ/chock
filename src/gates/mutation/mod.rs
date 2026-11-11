@@ -5,7 +5,6 @@ pub mod kills;
 pub(super) mod mutest;
 #[cfg(target_os = "linux")]
 mod progress;
-mod proved;
 mod results;
 mod scope;
 pub mod survivors;

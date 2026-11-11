@@ -81,11 +81,7 @@ const PIN_DOWNLOADS: &str = "run `chock init --local`: it adds the download pins
 const FETCH: &str = "run `chock init --downloads`: it fetches the downloads of each gate that is on, so for a gate that is off, run `chock enable GATE` first";
 
 /// The repair for each tool that `chock init --global` does not install from `tool-versions.env`.
-const INSTALLS: [(&str, &str); 7] = [
-    (
-        "java",
-        "install a Java runtime, 21 or newer, such as Temurin 21, or set JAVA_HOME to one",
-    ),
+const INSTALLS: [(&str, &str); 6] = [
     ("cargo-mutest", tool::REPAIR),
     ("rustfmt", "run `rustup component add rustfmt`"),
     ("clippy-driver", "run `rustup component add clippy`"),
@@ -102,7 +98,7 @@ fn installing(tool: &str) -> &'static str {
     found.map_or(PINNED, |(_, repair)| repair)
 }
 
-const FIXES: [(&str, &str); 74] = [
+const FIXES: [(&str, &str); 69] = [
     (
         "test",
         "run the rerun command, read each failing test's output, and fix the code or the test; a crate with no tests needs one",
@@ -229,26 +225,6 @@ const FIXES: [(&str, &str); 74] = [
     (
         "scan",
         "fix the pattern at the line; validate untrusted input before it reaches the sink",
-    ),
-    (
-        "proof",
-        "run the failing harness with `cargo kani --harness <name>` and fix the code or the proof",
-    ),
-    (
-        "tla",
-        "run TLC on the named cfg and read its trace: fix the model, or the cfg's `\\* expect:` line",
-    ),
-    (
-        "verus",
-        "run `verus <file> --crate-type=lib` and fix the proof it names; for a mutant that verifies, make the proof state what the mutant breaks; for a recorded function the run no longer verifies, restore it, or, when the change is meant, ask a person to run `chock baseline verus`",
-    ),
-    (
-        "links",
-        "write each `code:` link as `file.rs::Type::fn` or `Type::fn` that names one item; for a drifted item, read the model against the code, then commit the model",
-    ),
-    (
-        "laws",
-        "restore the text of the law, or, when the new law is meant, ask a person to run `chock baseline laws` so a reviewer sees it",
     ),
     (
         "deps",
@@ -421,8 +397,8 @@ mod tests {
     fn a_gate_that_a_missing_tool_stopped_is_told_the_install_for_that_tool() {
         let told = |tool: &str| repair(&not_installed(tool));
         assert_eq!(
-            not_installed("kani"),
-            "`kani` is not installed, so this gate has nothing to run"
+            not_installed("cargo-fuzz"),
+            "`cargo-fuzz` is not installed, so this gate has nothing to run"
         );
         assert_eq!(told("cargo-mutest"), Some(tool::REPAIR));
         assert_eq!(told("rustfmt"), Some("run `rustup component add rustfmt`"));
@@ -433,13 +409,13 @@ mod tests {
         let rust = Some("install Rust with rustup: https://rustup.rs");
         assert_eq!([told("cargo"), told("rustdoc")], [rust, rust]);
         assert_eq!(
-            [told("kani"), told("cargo-acl")],
+            [told("cargo-fuzz"), told("cargo-acl")],
             [Some(PINNED), Some(PINNED)]
         );
-        let fetch = not_fetched("tla-tools");
+        let fetch = not_fetched("example-tool");
         assert_eq!(
             fetch,
-            "`tla-tools` is not fetched, so this gate has nothing to run"
+            "`example-tool` is not fetched, so this gate has nothing to run"
         );
         assert_eq!(repair(&fetch), Some(FETCH));
     }
@@ -449,9 +425,12 @@ mod tests {
         assert_eq!(repair("the suite does not compile"), None);
         // The sentence without a quoted tool names nothing to install.
         assert_eq!(repair(NOTHING_TO_RUN), None);
-        assert_eq!(repair(&format!("kani{NOTHING_TO_RUN}")), None);
-        assert_eq!(repair(&format!("`kani{NOTHING_TO_RUN}")), None);
-        assert_eq!(repair(&format!("{} today", not_installed("kani"))), None);
+        assert_eq!(repair(&format!("cargo-fuzz{NOTHING_TO_RUN}")), None);
+        assert_eq!(repair(&format!("`cargo-fuzz{NOTHING_TO_RUN}")), None);
+        assert_eq!(
+            repair(&format!("{} today", not_installed("cargo-fuzz"))),
+            None
+        );
     }
 
     #[test]

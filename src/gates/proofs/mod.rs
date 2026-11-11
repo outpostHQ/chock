@@ -1,14 +1,7 @@
-//! Gates over the proofs that stand beside the code: TLA+ models, which TLC and Apalache check,
-//! Verus proofs and their mutants, and the links from a model back to the code it describes.
-
-pub mod laws;
-pub mod links;
-pub(crate) mod patch;
-pub mod tla;
-pub mod verus;
+//! Where a tool chock downloads for itself finds its command, and the scratch directories chock
+//! makes and clears for its own use.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use crate::exec;
 
@@ -61,31 +54,6 @@ fn strs(argv: &[String]) -> Vec<&str> {
     argv.iter().map(String::as_str).collect()
 }
 
-/// One run of a proof tool: the directory it runs in, its arguments, and the seconds it may take.
-pub(crate) struct Run {
-    pub dir: PathBuf,
-    pub argv: Vec<String>,
-    pub limit: u64,
-}
-
-/// Each run of `program`, as many at once as `workers`; a run past its limit is stopped and comes
-/// back hung. The results are in the order of `runs`.
-pub(crate) fn run_all(
-    tools: &Tools,
-    program: &str,
-    runs: &[Run],
-    workers: usize,
-) -> Vec<Result<exec::Output, exec::ExecError>> {
-    let lanes: Vec<Vec<usize>> = runs.iter().enumerate().map(|(at, _)| vec![at]).collect();
-    let one = |run: &Run| {
-        let (first, argv) = tools.command(program, &strs(&run.argv));
-        let pace: exec::Pace = (|_| false, Duration::from_secs(run.limit));
-        exec::run_paced(&first, &strs(&argv), &run.dir, &[], pace)
-    };
-    let outs = crate::run::workers::on_workers(runs, &lanes, workers.max(1), &one);
-    outs.into_iter().flatten().collect()
-}
-
 /// Makes a scratch directory of chock's own. A relative path would put it in the directory that
 /// chock runs in, so chock refuses one.
 pub(crate) fn made(scratch: &Path) -> std::io::Result<()> {
@@ -108,29 +76,10 @@ pub(crate) fn cleared(scratch: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn run(dir: &Path, script: &str, limit: u64) -> Run {
-        let argv = ["-c", script].map(str::to_string).to_vec();
-        Run {
-            dir: dir.to_path_buf(),
-            argv,
-            limit,
-        }
-    }
-
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
-    fn runs_come_back_in_their_order_behind_the_launcher_and_one_past_its_limit_hangs() {
-        let dir = crate::testdir::tree("proofs-ran", &[("a/keep", "")]);
-        let runs = [
-            run(&dir.join("a"), "ls", 30),
-            run(&dir, "echo two; exit 3", 30),
-            run(&dir, "sleep 5", 1),
-        ];
-        let outs = run_all(&Tools::default(), "sh", &runs, 0);
-        assert_eq!(outs[0].as_ref().unwrap().stdout.trim(), "keep");
-        let second = outs[1].as_ref().unwrap();
-        assert_eq!((second.stdout.trim(), second.code), ("two", Some(3)));
-        assert!(outs[2].as_ref().unwrap_err().hung());
+    fn a_tool_runs_behind_its_launcher_and_a_bare_one_runs_alone() {
+        let dir = crate::testdir::tree("proofs-ran", &[]);
         let behind = Tools {
             home: None,
             launcher: vec!["sh".into(), "-c".into(), "echo \"$0 $*\"".into()],

@@ -671,52 +671,6 @@ impl Hasher for Fnv {
     }
 }
 
-/// Kani proofs over every input within the bound; only `cargo kani` builds them.
-#[cfg(kani)]
-mod proofs {
-    use super::*;
-
-    /// Largest node count the proofs cover; a proof says nothing past it.
-    const SIZE_BOUND: usize = 64;
-
-    /// The ceiling `largest_comparable` is derived from: two multisets share at most the whole of
-    /// the smaller one, and `similarity` scores `shared * 20_000 / total`.
-    fn best_possible(smaller: usize, larger: usize) -> u64 {
-        let shared = u64::try_from(smaller).unwrap_or(u64::MAX);
-        let total = u64::try_from(smaller + larger).unwrap_or(u64::MAX);
-        if total == 0 {
-            return 0;
-        }
-        shared.saturating_mul(20_000) / total
-    }
-
-    /// `link_near` stops at this bound, so a bound too small would skip a near copy silently.
-    #[kani::proof]
-    fn a_shape_past_the_bound_could_not_have_reached_the_threshold() {
-        let smaller: usize = kani::any();
-        let larger: usize = kani::any();
-        kani::assume(smaller <= SIZE_BOUND);
-        kani::assume(larger <= SIZE_BOUND);
-        kani::assume(smaller <= larger);
-        let threshold: u64 = kani::any();
-        kani::assume(threshold > 0 && threshold <= 10_000);
-        kani::assume(larger > largest_comparable(smaller, threshold));
-        assert!(best_possible(smaller, larger) < threshold);
-    }
-
-    /// The converse: a shape at the bound can still reach the threshold, so the bound is tight.
-    #[kani::proof]
-    fn the_bound_itself_is_never_ruled_out() {
-        let smaller: usize = kani::any();
-        kani::assume(smaller > 0 && smaller <= SIZE_BOUND);
-        let threshold: u64 = kani::any();
-        kani::assume(threshold > 0 && threshold <= 10_000);
-        let bound = largest_comparable(smaller, threshold);
-        kani::assume(bound <= SIZE_BOUND && bound >= smaller);
-        assert!(best_possible(smaller, bound) >= threshold);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;

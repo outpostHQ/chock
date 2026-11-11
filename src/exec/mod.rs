@@ -181,15 +181,6 @@ impl Output {
             .unwrap_or("no reason given")
     }
 
-    /// The first error a compiler marked and its place, from stderr, then from stdout, where Kani
-    /// writes it while stderr holds cargo's summary; else `why_it_failed`.
-    #[must_use]
-    pub fn why_it_stopped(&self) -> String {
-        marked_at(&self.stderr)
-            .or_else(|| marked_at(&self.stdout))
-            .unwrap_or_else(|| self.why_it_failed().to_string())
-    }
-
     /// What a signal that ended a process says: the kernel ends one with SIGKILL (exit 137) when
     /// memory runs out, which the tool's own words do not say.
     fn signal_note(&self) -> &'static str {
@@ -1034,21 +1025,6 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_that_marks_its_error_on_stdout_stops_with_that_error_and_its_place() {
-        let kani =
-            "Compiling a v0.1.0\nerror[E0308]: mismatched types\n  --> src/a.rs:4:20\n   |\n";
-        let summary = "error: could not compile `a` (lib) due to 1 previous error\n";
-        assert_eq!(
-            said(kani, summary).why_it_stopped(),
-            "error[E0308]: mismatched types at src/a.rs:4:20"
-        );
-        // stderr's own marked error comes first, and a run that marks none keeps `why_it_failed`.
-        let both = said(kani, "error[E0432]: unresolved import `x`\n");
-        assert_eq!(both.why_it_stopped(), "error[E0432]: unresolved import `x`");
-        assert_eq!(said("done\n", summary).why_it_stopped(), summary.trim_end());
-    }
-
-    #[test]
     fn the_failure_details_give_a_marked_error_the_place_the_tails_may_have_lost() {
         let warnings = "warning: unused\n".repeat(400);
         let stderr = format!("error[E0252]: `r` is defined twice\n --> tests/a.rs:3:5\n{warnings}");
@@ -1245,6 +1221,16 @@ mod tests {
         assert_eq!(out.stdout, "hello\n");
         assert!(out.success());
         assert!(!out.truncated);
+        assert_eq!(out.exit(), Exit::Success);
+    }
+
+    /// `exit` reads the same code as `success`, for a reader that wants `Exit` rather than a bool.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_failed_command_s_exit_is_failure_not_success() {
+        let out = run("false", &[], &here()).unwrap();
+        assert!(!out.success());
+        assert_eq!(out.exit(), Exit::Failure);
     }
 
     /// The limit is passed in, since `deadline` reads chock's own environment, not the child's.

@@ -85,15 +85,6 @@ pub struct Config {
     /// Flags mutest takes after chock's own, such as `--timings`; the results directory then stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mutest_args: Option<Vec<String>>,
-    /// Whether a Kani harness that fails on a mutation no test detects kills it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mutest_proofs: Option<bool>,
-    /// The most Kani harnesses `proof` verifies at once; each solver can hold several GB.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proof_jobs: Option<u32>,
-    /// Settings of the `proof` gate: the packages Kani verifies, and how long it may take.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proof: Option<Proof>,
     /// Checks whose tool CI cannot install: the hooks still run them, `chock run --ci` does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_only: Option<Vec<String>>,
@@ -130,12 +121,6 @@ pub struct Config {
     /// The project's own credential shapes, which `hygiene` and `history` find with their own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secrets: Option<Vec<Secret>>,
-    /// Settings of the `tla` gate: where the models are, and how long TLC may take.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tla: Option<Tla>,
-    /// Settings of the `verus` gate: the files Verus must verify, and the mutants it must refute.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verus: Option<Verus>,
 }
 
 /// One declared check. A pass/fail command fails its gate by exiting non-zero; a counting one
@@ -246,78 +231,6 @@ pub struct Unmutated {
     pub path: String,
     /// Why `mutest` leaves it alone.
     pub why: String,
-}
-
-/// What the `proof` gate verifies. A field left out keeps chock's default.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Proof {
-    /// The packages Kani lists and verifies, each as `-p`; the whole workspace when left out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub packages: Option<Vec<String>>,
-    /// Seconds the Kani run of every harness may take, and of each mutant; chock's tool limit
-    /// when left out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout_s: Option<u64>,
-    /// The directory of mutant patches, each of which a harness must fail on;
-    /// `proofs/kani/mutants` when left out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mutants: Option<String>,
-    /// Whether each harness must declare a `kani::cover!`; not when left out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub require_cover: Option<bool>,
-}
-
-/// What the `verus` gate verifies. A field left out keeps chock's default.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Verus {
-    /// Paths or globs from the root of the files Verus must verify; `proofs/verus/*.rs` when left
-    /// out. A crate's `lib.rs` verifies its modules with it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub files: Option<Vec<String>>,
-    /// The directory of mutant patches, each of which Verus must refute; `proofs/verus/mutants`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mutants: Option<String>,
-    /// The arguments each Verus run takes after the file; `["--crate-type=lib"]` when left out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub args: Option<Vec<String>>,
-    /// Seconds one Verus run may take; 600 when left out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout_s: Option<u64>,
-}
-
-/// How the `tla` gate checks TLA+ models. A field left out keeps chock's default.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Tla {
-    /// Directories, from the root, whose `.cfg` files TLC checks; `proofs/tla` when left out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dirs: Option<Vec<String>>,
-    /// Worker threads of one TLC run, and of one tlapm run; 2 when left out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workers: Option<u32>,
-    /// Seconds one cfg, one Apalache check, or the tlapm proof of one module may run; 300 when left out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout_s: Option<u64>,
-    /// Seconds for the cfgs of one model, or for one cfg, by the model's name or the cfg's stem.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub timeouts: BTreeMap<String, u64>,
-    /// The models Apalache proves inductive, each with its inductive invariant. Left out, every
-    /// model whose own cfg lists `IndInv`; `{}` proves none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inductive: Option<BTreeMap<String, String>>,
-    /// Steps of a bounded Apalache check from `Init` after the proof; none when left out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub length: Option<u32>,
-    /// The SMT encoding of Apalache, by the model's name, as `--smt-encoding` names it; Apalache's
-    /// own when left out. The `tla` gate refuses a name that Apalache does not take.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub smt_encoding: BTreeMap<String, String>,
-    /// The engines that check a model's cfgs, `tlc` and `apalache`, by the model's name; both when
-    /// left out. Apalache alone proves the own cfg and refutes each variant by a bounded run.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub engines: BTreeMap<String, Vec<String>>,
 }
 
 /// What the `history` gate accepts as it reads every commit.
@@ -483,9 +396,6 @@ impl Config {
             test_wrapper: None,
             mutest_exhaustive: None,
             mutest_args: None,
-            mutest_proofs: None,
-            proof_jobs: None,
-            proof: None,
             local_only: None,
             strict: None,
             clean_when_touched: None,
@@ -494,8 +404,6 @@ impl Config {
             forbidden: None,
             not_mutated: None,
             history: None,
-            tla: None,
-            verus: None,
             seams: None,
             owners: None,
             calls: None,

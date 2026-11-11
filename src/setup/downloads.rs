@@ -13,15 +13,6 @@ const SHA256: &str = "_SHA256";
 /// The file of a fetched tool that says which hash it was checked against; written last.
 pub(crate) const STAMP: &str = ".chock-sha256";
 
-/// The download pins a gate needs. `init --global` fetches one only where its gate is on, so a
-/// project without that gate never downloads hundreds of MB for nothing.
-pub const CLAIMED: [(&str, &str); 4] = [
-    ("TLA_TOOLS", "tla"),
-    ("APALACHE", "tla"),
-    ("TLAPM", "tla"),
-    ("VERUS", "verus"),
-];
-
 /// The end of the reason a gate gives when the project pins no download it needs.
 pub const NOT_PINNED: &str = " is not pinned in tool-versions.env, so this gate has nothing to run";
 
@@ -43,9 +34,9 @@ pub struct File {
 /// with a platform suffix, such as `X_URL_x86_linux`, once for each system.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Download {
-    /// The key before `_VERSION`, such as `TLA_TOOLS`.
+    /// The key before `_VERSION`, such as `EXAMPLE_TOOL`.
     pub stem: String,
-    /// The stem as a command is named, `tla-tools` for `TLA_TOOLS`.
+    /// The stem as a command is named, `example-tool` for `EXAMPLE_TOOL`.
     pub name: String,
     /// The `_VERSION` value.
     pub want: String,
@@ -145,13 +136,13 @@ pub fn parse(text: &str) -> Result<Vec<Download>, ParseError> {
         .into_iter()
         .filter_map(|(stem, want)| {
             let files: Vec<File> = files.remove(&stem)?.into_values().collect();
-            let claimed = CLAIMED.iter().any(|(owned, _)| *owned == stem);
-            if !claimed && files.iter().all(|file| file.url.is_none()) {
+            let setup = setups.get(&stem).cloned();
+            if setup.is_none() && files.iter().all(|file| file.url.is_none()) {
                 return None;
             }
             Some(Download {
                 name: stem.to_lowercase().replace('_', "-"),
-                setup: setups.get(&stem).cloned(),
+                setup,
                 stem,
                 want,
                 files,
@@ -275,15 +266,6 @@ impl Download {
             .collect();
         home.join(format!("{}-{want}-{}", self.name, &sha256[..12]))
     }
-
-    /// The gate whose tool this is, for a pin that only one gate uses.
-    #[must_use]
-    pub fn gate(&self) -> Option<&'static str> {
-        CLAIMED
-            .iter()
-            .find(|(stem, _)| *stem == self.stem)
-            .map(|(_, gate)| *gate)
-    }
 }
 
 /// chock's tools directory: `CHOCK_TOOLS`, else `chock-tools` in cargo's home. A relative path
@@ -315,7 +297,13 @@ pub fn fetched(dir: &Path, sha256: &str) -> bool {
 
 /// A missing URL key, with the line chock's own pin file holds for it, where it holds one.
 fn unset_url(key: &str) -> String {
-    let shipped = super::init::PIN_FILE
+    unset_url_in(super::init::PIN_FILE, key)
+}
+
+/// `unset_url`, against `pin_file` instead of chock's own shipped one; kept separate so a test
+/// can check the "chock ships a line for this key" branch without a real shipped URL pin.
+fn unset_url_in(pin_file: &str, key: &str) -> String {
+    let shipped = pin_file
         .lines()
         .find(|line| line.split_once('=').is_some_and(|(name, _)| name == key));
     match shipped {
@@ -324,7 +312,7 @@ fn unset_url(key: &str) -> String {
     }
 }
 
-/// The path of `wanted`, a file name such as `tla2tools.jar`, inside the download a gate needs.
+/// The path of `wanted`, a file name such as `example-tool.jar`, inside the download a gate needs.
 /// # Errors
 /// When the pin is missing or wrong, has no file here, or its download is not fetched or lacks it.
 pub fn located(
@@ -354,7 +342,7 @@ pub fn located(
     find(&dir, wanted, 4).ok_or_else(|| format!("{} holds no {wanted}", dir.display()))
 }
 
-/// The version the project pins `stem` at, such as `1.7.4` for `TLA_TOOLS_VERSION=1.7.4`.
+/// The version the project pins `stem` at, such as `1.7.4` for `EXAMPLE_TOOL_VERSION=1.7.4`.
 pub fn version(root: &Path, stem: &str) -> Option<String> {
     let text = std::fs::read_to_string(root.join(crate::project::PIN_FILE)).ok()?;
     let pin = parse(&text)
@@ -365,7 +353,7 @@ pub fn version(root: &Path, stem: &str) -> Option<String> {
 }
 
 /// The first `wanted` at most `depth` directories down, in name order so every run finds the same.
-/// `wanted` is a file name, or one with a `*` for any text, such as `tla2tools*.jar`.
+/// `wanted` is a file name, or one with a `*` for any text, such as `example-tool*.jar`.
 fn matches(name: &str, wanted: &str) -> bool {
     match wanted.split_once('*') {
         Some((head, tail)) => {
@@ -381,7 +369,7 @@ fn find(dir: &Path, wanted: &str, depth: u32) -> Option<PathBuf> {
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .collect();
     entries.sort();
-    // A file only: a download often holds a directory named as its program, such as `tlapm/`.
+    // A file only: a download often holds a directory named as its program, such as `example-tool/`.
     let named = |path: &&PathBuf| {
         path.is_file()
             && path
@@ -501,15 +489,28 @@ mod tests {
     const SHA: &str = "b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4";
 
     #[test]
+    fn a_missing_url_names_the_line_chock_ships_when_chock_pins_that_key_itself() {
+        assert_eq!(
+            unset_url_in("FOO_VERSION=1\nFOO_URL=https://x\n", "FOO_URL"),
+            "FOO_URL is missing; add the line chock ships: FOO_URL=https://x"
+        );
+        assert_eq!(
+            unset_url_in("FOO_VERSION=1\n", "FOO_URL"),
+            "FOO_URL is missing"
+        );
+    }
+
+    #[test]
     fn a_url_and_a_hash_make_a_download_pin_and_no_crate_pin() {
         let text = format!(
-            "# pins\n\nAPALACHE_VERSION=0.62.4\nAPALACHE_URL=https://x/apalache-0.62.4.tgz\nAPALACHE_SHA256={SHA}\nCARGO_DENY_VERSION=0.20.2\n"
+            "# pins\n\nEXAMPLE_TOOL_VERSION=0.62.4\nEXAMPLE_TOOL_URL=https://x/example-tool-0.62.4.tgz\n\
+             EXAMPLE_TOOL_SHA256={SHA}\nCARGO_DENY_VERSION=0.20.2\n"
         );
         let downloads = parse(&text).unwrap();
         let names: Vec<&str> = downloads.iter().map(|pin| pin.name.as_str()).collect();
-        assert_eq!(names, ["apalache"]);
+        assert_eq!(names, ["example-tool"]);
         let chosen = downloads[0].chosen("linux", "x86_64").unwrap().unwrap();
-        assert_eq!(chosen.url, "https://x/apalache-0.62.4.tgz");
+        assert_eq!(chosen.url, "https://x/example-tool-0.62.4.tgz");
         let crates = pins::parse(&text).unwrap();
         let crates: Vec<String> = crates.into_iter().map(|pin| pin.crate_name).collect();
         assert_eq!(crates, ["cargo-deny"]);
@@ -562,20 +563,11 @@ mod tests {
     }
 
     #[test]
-    fn a_half_pin_a_plain_url_and_a_short_hash_are_each_named() {
+    fn an_unclaimed_pin_with_no_url_is_dropped_a_plain_url_and_a_short_hash_are_each_named() {
         let pin = |extra: &str| parse(&format!("T_VERSION=1\n{extra}")).unwrap()[0].here();
-        let claimed = parse(&format!("VERUS_VERSION=1\nVERUS_SHA256={SHA}\n")).unwrap();
-        assert!(
-            claimed[0]
-                .here()
-                .unwrap_err()
-                .contains("VERUS_URL is missing")
-        );
-        let tla = parse(&format!("TLA_TOOLS_VERSION=1\nTLA_TOOLS_SHA256={SHA}\n")).unwrap();
         assert_eq!(
-            tla[0].here().unwrap_err(),
-            "TLA_TOOLS_URL is missing; add the line chock ships: TLA_TOOLS_URL=https://github.com/\
-             tlaplus/tlaplus/releases/download/v${TLA_TOOLS_VERSION}/tla2tools.jar"
+            parse(&format!("T_VERSION=1\nT_SHA256={SHA}\n")).unwrap(),
+            Vec::<Download>::new()
         );
         assert!(
             pin("T_URL=https://x\n")
@@ -609,16 +601,16 @@ mod tests {
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_new_hash_gets_a_new_directory_and_only_a_stamped_one_counts() {
         let text = format!(
-            "TLA_TOOLS_VERSION=1.8.0-20261015.1\nTLA_TOOLS_URL=https://x/t.jar\nTLA_TOOLS_SHA256={SHA}\n"
+            "EXAMPLE_TOOL_VERSION=1.8.0-20261015.1\nEXAMPLE_TOOL_URL=https://x/t.jar\n\
+             EXAMPLE_TOOL_SHA256={SHA}\n"
         );
         let pin = &parse(&text).unwrap()[0];
         let home = crate::testdir::make("downloads-dir");
         let dir = pin.dir(&home, SHA);
         assert_eq!(
             dir.file_name().unwrap(),
-            "tla-tools-1.8.0-20261015.1-b781b53bba32"
+            "example-tool-1.8.0-20261015.1-b781b53bba32"
         );
-        assert_eq!(pin.gate(), Some("tla"));
         std::fs::create_dir_all(dir.join("lib")).unwrap();
         std::fs::write(dir.join("lib").join("t.jar"), "").unwrap();
         assert!(!fetched(&dir, SHA));
@@ -635,14 +627,16 @@ mod tests {
     #[test]
     fn two_files_for_one_machine_a_setup_line_and_an_odd_version_are_each_read() {
         let text = format!(
-            "VERUS_VERSION=1+a\nVERUS_SETUP=\"sh -c true\"\nVERUS_SHA256_linux={SHA}\nT_VERSION=1\nT_URL_linux=https://x/${{T\nT_SHA256_linux={SHA}\nT_URL_x86_64_linux=https://y\nT_SHA256_x86_64_linux={SHA}\n"
+            "EXAMPLE_TOOL_VERSION=1+a\nEXAMPLE_TOOL_SETUP=\"sh -c true\"\nEXAMPLE_TOOL_SHA256_linux={SHA}\n\
+             T_VERSION=1\nT_URL_linux=https://x/${{T\nT_SHA256_linux={SHA}\nT_URL_x86_64_linux=https://y\n\
+             T_SHA256_x86_64_linux={SHA}\n"
         );
         let pins = parse(&text).unwrap();
         assert_eq!(pins[0].setup.as_deref(), Some("sh -c true"));
         let missing = pins[0].chosen("linux", "x86_64").unwrap_err();
-        assert_eq!(missing, "VERUS_URL_linux is missing");
+        assert_eq!(missing, "EXAMPLE_TOOL_URL_linux is missing");
         let dir = pins[0].dir(Path::new("t"), SHA);
-        assert_eq!(dir.file_name().unwrap(), "verus-1-a-b781b53bba32");
+        assert_eq!(dir.file_name().unwrap(), "example-tool-1-a-b781b53bba32");
         let both = pins[1].chosen("linux", "x86_64").unwrap_err();
         assert_eq!(
             both,
@@ -679,21 +673,21 @@ mod tests {
         let home = root.join("tools");
         let at = |stem: &str, wanted: &str| located(&root, Some(&home), stem, wanted);
         assert_eq!(
-            at("TLA_TOOLS", "t.jar").unwrap_err(),
-            format!("`tla-tools`{NOT_PINNED}")
+            at("EXAMPLE_TOOL", "t.jar").unwrap_err(),
+            format!("`example-tool`{NOT_PINNED}")
         );
-        assert_eq!(version(&root, "TLA_TOOLS"), None);
-        let pin = crate::testdir::fetched(&root, "TLA_TOOLS", "t.jar");
+        assert_eq!(version(&root, "EXAMPLE_TOOL"), None);
+        let pin = crate::testdir::fetched(&root, "EXAMPLE_TOOL", "t.jar");
         let other = format!("E_VERSION=2\nE_URL_{OTHER}=https://x\nE_SHA256_{OTHER}={SHA}\n");
         std::fs::write(root.join(crate::project::PIN_FILE), format!("{pin}{other}")).unwrap();
         let dir = parse(&pin).unwrap()[0].dir(&home, SHA);
-        assert_eq!(at("TLA_TOOLS", "t*.jar").unwrap(), dir.join("t.jar"));
+        assert_eq!(at("EXAMPLE_TOOL", "t*.jar").unwrap(), dir.join("t.jar"));
         let pinned = |stem: &str| version(&root, stem);
-        assert_eq!(pinned("TLA_TOOLS").as_deref(), Some("1"));
+        assert_eq!(pinned("EXAMPLE_TOOL").as_deref(), Some("1"));
         assert_eq!((pinned("E").as_deref(), pinned("F")), (Some("2"), None));
         let none = format!("{} holds no x.jar", dir.display());
-        assert_eq!(at("TLA_TOOLS", "x.jar").unwrap_err(), none);
-        let homeless = located(&root, None, "TLA_TOOLS", "t.jar").unwrap_err();
+        assert_eq!(at("EXAMPLE_TOOL", "x.jar").unwrap_err(), none);
+        let homeless = located(&root, None, "EXAMPLE_TOOL", "t.jar").unwrap_err();
         assert_eq!(
             homeless,
             "no home directory holds chock's tools; set CHOCK_TOOLS"
@@ -702,8 +696,8 @@ mod tests {
         let elsewhere = format!("the E pin has no file for {os} on {arch}{NO_FILE}");
         assert_eq!(at("E", "e").unwrap_err(), elsewhere);
         std::fs::remove_file(dir.join(STAMP)).unwrap();
-        let missing = crate::gates::fixes::not_fetched("tla-tools");
-        assert_eq!(at("TLA_TOOLS", "t.jar").unwrap_err(), missing);
+        let missing = crate::gates::fixes::not_fetched("example-tool");
+        assert_eq!(at("EXAMPLE_TOOL", "t.jar").unwrap_err(), missing);
         std::fs::write(root.join(crate::project::PIN_FILE), "E_URL=${NOPE}\n").unwrap();
         assert!(at("E", "e").unwrap_err().starts_with("tool-versions.env: "));
     }

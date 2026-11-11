@@ -14,16 +14,14 @@ pub struct Pin {
     pub key: String,
     /// The crate `cargo install` knows it by, e.g. `cargo-nextest`.
     pub crate_name: String,
-    /// The executable on `PATH`, which differs from the crate: `kani-verifier` installs `kani`, and
-    /// `typos-cli` installs `typos`.
+    /// The executable on `PATH`, which differs from the crate: `typos-cli` installs `typos`.
     pub command: String,
     /// The version this project pins.
     pub want: String,
     /// A command to run once the crate is installed, for a tool that fetches the rest of itself.
-    /// `kani-verifier` installs a shim and pulls its solver and toolchain on first use.
     pub setup: Option<String>,
     /// The systems the tool runs on, as `std::env::consts::OS` names them; `None` is every one.
-    /// cackle refuses to compile off Linux, and Kani publishes no Windows build.
+    /// cackle refuses to compile off Linux.
     pub systems: Option<Vec<String>>,
     /// The repository and commit to compile instead of the crates.io release: a fork with a fix that
     /// no release has yet. `want` stays the version its manifest says.
@@ -589,51 +587,6 @@ fn systems(list: &str) -> Vec<String> {
         .collect()
 }
 
-/// Kani proofs over one crate pin and one download pin, each named from three tools; only
-/// `cargo kani` builds them.
-#[cfg(kani)]
-mod proofs {
-    use super::*;
-    use crate::setup::downloads::Download;
-
-    const TOOLS: [&str; 3] = ["kani", "verus", "tlapm"];
-
-    fn any_tool() -> usize {
-        usize::from(kani::any::<u8>()) % TOOLS.len()
-    }
-
-    /// A tool is pinned exactly when a crate pin names it by its command or its crate, or a
-    /// download pin names it.
-    #[kani::proof]
-    #[kani::unwind(6)]
-    fn a_tool_is_pinned_exactly_when_a_pin_names_it() {
-        let (tool, command, crate_name, name) = (any_tool(), any_tool(), any_tool(), any_tool());
-        let crate_pin = Pin {
-            key: String::new(),
-            crate_name: TOOLS[crate_name].to_string(),
-            command: TOOLS[command].to_string(),
-            want: String::new(),
-            setup: None,
-            systems: None,
-            git: None,
-        };
-        let download = Download {
-            stem: String::new(),
-            name: TOOLS[name].to_string(),
-            want: String::new(),
-            files: Vec::new(),
-            setup: None,
-        };
-        let (with_crate, with_download): (bool, bool) = (kani::any(), kani::any());
-        let (crates, downloads) = ([crate_pin], [download]);
-        let pins = &crates[..usize::from(with_crate)];
-        let fetched = &downloads[..usize::from(with_download)];
-        let named = (with_crate && (tool == command || tool == crate_name))
-            || (with_download && tool == name);
-        assert_eq!(pinned(TOOLS[tool], pins, fetched), named);
-    }
-}
-
 /// A pin of `crate_name` at `want`, with no setup line and no systems line.
 #[cfg(test)]
 pub fn version_pinned(crate_name: &str, want: &str) -> Pin {
@@ -650,7 +603,7 @@ pub fn version_pinned(crate_name: &str, want: &str) -> Pin {
 
 /// The command of each pin in the shipped file, in the file's order.
 #[cfg(test)]
-pub const SHIPPED: [&str; 14] = [
+pub const SHIPPED: [&str; 13] = [
     "cargo-binstall",
     "cargo-nextest",
     "cargo-llvm-cov",
@@ -663,7 +616,6 @@ pub const SHIPPED: [&str; 14] = [
     "cargo-bsize",
     "typos",
     "cargo-mutest",
-    "kani",
     "outpost",
 ];
 
