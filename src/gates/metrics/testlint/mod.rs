@@ -24,7 +24,7 @@ pub const GATE: Gate = Gate {
     about: "tests that assert nothing, cannot fail, return before they check, are skipped with no reason or are named for no claim, per file and rule",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("testlint-v1")),
     kind: Kind::Debt {
         inspect,
         unit: "test defect(s)",
