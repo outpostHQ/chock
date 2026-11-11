@@ -75,13 +75,7 @@ fn keyed<'a>(findings: impl Iterator<Item = &'a Found>) -> Measurement {
     for found in findings {
         let key = format!("{}#{}", found.file, found.rule);
         series.set(&key, series.get(&key).unwrap_or(0) + 1);
-        let Some(line) = found.line else { continue };
-        let detail: &mut Detail = details.entry(key).or_default();
-        if detail.line.is_none() {
-            detail.line = Some(line);
-        } else if detail.places.len() < PLACES {
-            detail.places.push(Place::at("hit", &found.file, line));
-        }
+        site(&mut details, key, found);
     }
     Measurement {
         series,
@@ -89,6 +83,18 @@ fn keyed<'a>(findings: impl Iterator<Item = &'a Found>) -> Measurement {
         details,
         unmeasured: Vec::new(),
         faults: Vec::new(),
+    }
+}
+
+/// A finding with no line leaves no detail. The first line under a key becomes its `line`; a
+/// further one becomes a place, capped at [`PLACES`].
+fn site(details: &mut Details, key: String, found: &Found) {
+    let Some(line) = found.line else { return };
+    let detail: &mut Detail = details.entry(key).or_default();
+    if detail.line.is_none() {
+        detail.line = Some(line);
+    } else if detail.places.len() < PLACES {
+        detail.places.push(Place::at("hit", &found.file, line));
     }
 }
 
