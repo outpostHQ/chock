@@ -596,6 +596,11 @@ pub fn tips(root: &Path) -> Option<String> {
         Some(named.unwrap_or_else(|| "none".to_string()))
     };
     let git = format!("{} {}", id("HEAD^{commit}")?, id("@{upstream}^{commit}")?);
+    outpost_tips(root, git)
+}
+
+/// Outpost's own head and its remote's tip, joined to `git`; `git` alone where Outpost holds none.
+fn outpost_tips(root: &Path, git: String) -> Option<String> {
     let Some(home) = outpost_home(root) else {
         return Some(git);
     };
@@ -1438,6 +1443,24 @@ mod tests {
         assert_eq!(head(&pushed), head(&reworded), "only the upstream moved");
         let alone = tips(&repo("vcs-tips-alone")).unwrap();
         assert!(alone.ends_with(" none"), "{alone}");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn where_outpost_holds_the_tree_tips_also_carries_its_head_and_remote() {
+        // Skipped where outpost is not installed.
+        let Some(root) = outpost_repo("vcs-tips-outpost") else {
+            return;
+        };
+        let run = |args: &[&str]| exec::run("outpost", args, &root).unwrap();
+        std::fs::write(root.join("a.rs"), "").unwrap();
+        assert!(run(&["add", "."]).success() && run(&["commit", "-m", "first"]).success());
+        let first = tips(&root).unwrap();
+        assert!(first.ends_with(" none"), "{first}");
+        std::fs::write(root.join("a.rs"), "fn f() {}\n").unwrap();
+        assert!(run(&["add", "."]).success() && run(&["commit", "-m", "second"]).success());
+        let second = tips(&root).unwrap();
+        assert_ne!(second, first, "a new outpost commit moves its own head");
     }
 
     #[test]
