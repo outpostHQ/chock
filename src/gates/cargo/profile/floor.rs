@@ -48,7 +48,7 @@ const RUSTC_LINTS: [&str; 6] = [
 const IDIOM_LINTS: [&str; 1] = ["explicit_outlives_requirements"];
 
 /// Two clippy groups, then lints outside every group, which only a lint table turns on.
-const CLIPPY_LINTS: [&str; 14] = [
+const CLIPPY_LINTS: [&str; 16] = [
     "all",
     "pedantic",
     "unwrap_used",
@@ -63,6 +63,8 @@ const CLIPPY_LINTS: [&str; 14] = [
     "print_stderr",
     "panic_in_result_fn",
     "as_conversions",
+    "redundant_clone",
+    "rc_buffer",
 ];
 
 /// Pedantic lints the floor names. The `pedantic` group meets each one, unless the table lowers
@@ -274,7 +276,9 @@ mod tests {
         print_stdout = \"deny\"\n\
         print_stderr = \"deny\"\n\
         panic_in_result_fn = \"deny\"\n\
-        as_conversions = \"deny\"\n";
+        as_conversions = \"deny\"\n\
+        redundant_clone = \"deny\"\n\
+        rc_buffer = \"deny\"\n";
 
     /// The item of each gap in a lint table that sets nothing, in the order the gate names them.
     const EVERY_LINT: &str = "rust::missing_docs rust::missing_debug_implementations \
@@ -284,7 +288,7 @@ mod tests {
         clippy::allow_attributes_without_reason clippy::undocumented_unsafe_blocks \
         clippy::multiple_unsafe_ops_per_block clippy::clone_on_ref_ptr clippy::dbg_macro \
         clippy::todo clippy::print_stdout clippy::print_stderr clippy::panic_in_result_fn \
-        clippy::as_conversions";
+        clippy::as_conversions clippy::redundant_clone clippy::rc_buffer";
 
     /// One crate whose manifest is `manifest`, with a clippy config at zero, held as `floor` says.
     fn crate_of(manifest: &str, floor: Floor) -> Sources {
@@ -442,6 +446,19 @@ mod tests {
         assert_eq!(
             gaps_in(&crate_of(FLOOR, Floor::Enforced)),
             Vec::<String>::new()
+        );
+    }
+
+    /// `redundant_clone` (nursery) and `rc_buffer` (restriction) sit outside every group this floor
+    /// turns on, so only the table itself can hold them.
+    #[test]
+    fn a_table_without_redundant_clone_or_rc_buffer_has_one_gap_for_each() {
+        let without = FLOOR
+            .replace("redundant_clone = \"deny\"\n", "")
+            .replace("rc_buffer = \"deny\"\n", "");
+        assert_eq!(
+            gaps_in(&crate_of(&without, Floor::Enforced)),
+            ["clippy::redundant_clone", "clippy::rc_buffer"]
         );
     }
 
