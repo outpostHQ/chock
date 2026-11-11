@@ -20,7 +20,7 @@ pub const GATE: Gate = Gate {
     about: "every `mod` declaration names a file, and every module file is declared",
     group: Group::Gates,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("modcheck-v1")),
     kind: Kind::Debt {
         inspect,
         unit: "orphan module file(s)",

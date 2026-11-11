@@ -26,7 +26,7 @@ pub const GATE: Gate = Gate {
             be a module of its own",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("splits-v1")),
     kind: Kind::AnnotatedRatchet {
         measure,
         // Keyed by file and counted in parts, so an edit inside a part never trips the gate.

@@ -22,7 +22,7 @@ pub const GATE: Gate = Gate {
             feature the package declares",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&["cargo"]).versioned("features-v1")),
     kind: Kind::Debt {
         inspect,
         unit: "feature declaration issue(s)",

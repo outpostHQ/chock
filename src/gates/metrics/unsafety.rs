@@ -15,7 +15,7 @@ pub const GATE: Gate = Gate {
     about: "`unsafe` outside test code, counted per file and shape",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("unsafety-v1")),
     kind: Kind::Ratchet {
         measure,
         keys: Keys::Items,

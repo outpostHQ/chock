@@ -27,7 +27,7 @@ pub const GATE: Gate = Gate {
             and `// checked: <crate> <test>` right above a Rust escape keeps it with a test",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("admits-v1")),
     kind: Kind::AnnotatedRatchet {
         measure,
         keys: Keys::Items,

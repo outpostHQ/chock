@@ -25,7 +25,7 @@ pub const GATE: Gate = Gate {
             table meets the lint floor",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&["cargo"]).versioned("profile-v1")),
     kind: Kind::Binary(check),
 };
 
