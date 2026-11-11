@@ -14,7 +14,7 @@ use super::results::{Joined, Reads, Results};
 use super::scope;
 use super::survivors::{self, Survivor};
 use super::tool;
-use crate::gates::tools::{proof, suite};
+use crate::gates::tools::suite;
 
 const CALL_GRAPH_DEPTH: &str = "3";
 const TIMEOUT_LIMIT: u64 = 2;
@@ -74,10 +74,7 @@ fn whole(ctx: &Ctx, named: &Series) -> Result<Measurement, String> {
 }
 
 /// How a finished run's output and results are read.
-type Judge<T> = fn(&exec::Output, Survivors<'_>, Proved<'_>, &Series) -> Result<T, String>;
-
-/// What the proofs leave of the survivors, with a lead for each one they kill.
-type Proved<'a> = &'a dyn Fn(Joined) -> Result<(Joined, Vec<Finding>), String>;
+type Judge<T> = fn(&exec::Output, Survivors<'_>, &Series) -> Result<T, String>;
 
 /// Runs mutest over `filter`, and reads its results with `judge`.
 fn mutated<T>(
@@ -92,10 +89,8 @@ fn mutated<T>(
     let argv = invocation(&ctx.features, &flag, filter, &added(ctx, &results));
     let before = suite::changes_and_new(ctx);
     let tree = Worktree::of(before.as_ref());
-    let kani = proof::kani(proof::limit(ctx.proof.timeout_s));
-    let proved = |found: Joined| super::proved::killed(ctx, found, &kani);
     let measured = ran(ctx, ctx.wrapped("cargo", &argv), &|output| {
-        judge(output, &|| results.survivors(), &proved, was)
+        judge(output, &|| results.survivors(), was)
             .and_then(|measured| accounted(ctx, output, &results).map(|()| measured))
             .map_err(|error| results.with_stderr(output, &error))
     })
@@ -215,15 +210,14 @@ fn added<'a>(ctx: &'a Ctx, results: &Results) -> Vec<&'a str> {
 /// What a run's results name once joined, with their totals.
 type Survivors<'a> = &'a dyn Fn() -> Result<Joined, String>;
 
-/// What one run measured: its exit from its output, totals and survivors from what `results` read
-/// less those `proved` kills, and where each telling survivor past the record `was` is.
+/// What one run measured: its exit from its output, totals and survivors from what `results` read,
+/// and where each telling survivor past the record `was` is.
 pub(super) fn read(
     out: &exec::Output,
     results: Survivors<'_>,
-    proved: Proved<'_>,
     was: &Series,
 ) -> Result<Measurement, String> {
-    let (found, killed) = read_survivors(out, results).and_then(proved)?;
+    let found = read_survivors(out, results)?;
     let mut findings = ineligible(out);
     let rerun = if confirmed(out) {
         Rerun::Confirmed
@@ -233,7 +227,6 @@ pub(super) fn read(
     findings.extend(timeouts(&found.timed_out, rerun));
     findings.extend(survivors::sites_over(&found.survivors, was));
     findings.extend(found.tests);
-    findings.extend(killed);
     Ok(Measurement::of(
         Series(survivors::telling(&found.survivors)),
         findings,
@@ -312,14 +305,13 @@ fn untrusted(out: &exec::Output, totals: &survivors::Totals) -> bool {
 fn read_within(
     out: &exec::Output,
     results: Survivors<'_>,
-    proved: Proved<'_>,
     was: &Series,
 ) -> Result<Option<Measurement>, String> {
     let totals = results().ok().and_then(|found| found.totals);
     if totals.is_some_and(|totals| untrusted(out, &totals)) {
         Ok(None)
     } else {
-        read(out, results, proved, was).map(Some)
+        read(out, results, was).map(Some)
     }
 }
 
@@ -492,7 +484,6 @@ mod tests {
             file: "src/a.rs".to_string(),
             line: 7,
             what: "does a thing".to_string(),
-            edits: Vec::new(),
         }
     }
 
@@ -552,11 +543,8 @@ mod tests {
     }
 
     fn unrecorded(out: &exec::Output, results: Survivors<'_>) -> Result<Measurement, String> {
-        read(out, results, UNPROVED, &Series::default())
+        read(out, results, &Series::default())
     }
-
-    /// No proof kills, as with `mutest_proofs` off: these tests read what mutest found.
-    const UNPROVED: Proved<'static> = &|found| Ok((found, Vec::new()));
 
     #[test]
     fn each_line_mutest_prints_shows_progress_and_a_blank_one_does_not() {
@@ -642,10 +630,7 @@ mod tests {
             ["src/a.rs:7: no test caught: does a thing (eq_op_invert)"]
         );
         let was = Series([("src/a.rs#eq_op_invert".to_string(), 1)].into());
-        assert_eq!(
-            read(&out, &one, UNPROVED, &was).unwrap().findings,
-            Vec::new()
-        );
+        assert_eq!(read(&out, &one, &was).unwrap().findings, Vec::new());
     }
 
     #[test]
@@ -680,12 +665,7 @@ mod tests {
         let past = totalled(&one, Some(counts(1, 4, 10)));
         let series = counted(&ran(CONFIRMED_PAST, Some(3)), &past).unwrap();
         assert_eq!(series.get("src/a.rs#eq_op_invert"), Some(1));
-        let within = read_within(
-            &ran(CONFIRMED_PAST, Some(3)),
-            &past,
-            UNPROVED,
-            &Series::default(),
-        );
+        let within = read_within(&ran(CONFIRMED_PAST, Some(3)), &past, &Series::default());
         assert!(
             within.unwrap().is_some(),
             "confirmed hangs need no whole-crate run"
@@ -699,7 +679,7 @@ mod tests {
             })
         };
         let was = Series([("src/a.rs#eq_op_invert".to_string(), 1)].into());
-        let some = read(&ran(CONFIRMED_PAST, Some(3)), &timed, UNPROVED, &was).unwrap();
+        let some = read(&ran(CONFIRMED_PAST, Some(3)), &timed, &was).unwrap();
         let said: Vec<String> = Finding::rendered(&some.findings);
         assert_eq!(
             said,
@@ -718,21 +698,16 @@ mod tests {
             read.map(|read| read.map(|read| read.series))
         };
         let past = totalled(&one, Some(counts(1, 4, 10)));
-        let left = read_within(&out, &past, UNPROVED, &Series::default());
+        let left = read_within(&out, &past, &Series::default());
         assert_eq!(series(left), Ok(None));
         let unread = || Err("the results were read".to_string());
-        let refused = read_within(&out, &unread, UNPROVED, &Series::default());
+        let refused = read_within(&out, &unread, &Series::default());
         assert_eq!(series(refused), Err("the results were read".to_string()));
         let at = totalled(&one, Some(counts(1, 1, 50)));
-        let read = series(read_within(&out, &at, UNPROVED, &Series::default()));
+        let read = series(read_within(&out, &at, &Series::default()));
         let at_limit = read.unwrap().unwrap();
         assert_eq!(at_limit.get("src/a.rs#eq_op_invert"), Some(1));
-        let nothing = read_within(
-            &ran("", Some(1)),
-            &unevaluated,
-            UNPROVED,
-            &Series::default(),
-        );
+        let nothing = read_within(&ran("", Some(1)), &unevaluated, &Series::default());
         assert_eq!(
             series(nothing),
             Err(
@@ -763,7 +738,7 @@ mod tests {
                 totals: Some(counts(1, 1, 50)),
             })
         };
-        let some = read(&ran(totals, Some(3)), &timed, UNPROVED, &was).unwrap();
+        let some = read(&ran(totals, Some(3)), &timed, &was).unwrap();
         let said: Vec<String> = Finding::rendered(&some.findings);
         assert_eq!(
             said,
@@ -773,7 +748,7 @@ mod tests {
             ]
         );
         assert_eq!(some.findings[0].grade, crate::run::report::Grade::Candidate);
-        let none = read(&ran(TOTALS, Some(2)), &one, UNPROVED, &was).unwrap();
+        let none = read(&ran(TOTALS, Some(2)), &one, &was).unwrap();
         assert!(none.findings.is_empty(), "{:?}", none.findings);
     }
 
@@ -874,7 +849,7 @@ mod tests {
         let mut out = ran(TOTALS, Some(2));
         out.stderr = SKIPPED.to_string();
         let was = Series([("src/a.rs#eq_op_invert".to_string(), 1)].into());
-        let measured = read(&out, &one, UNPROVED, &was).unwrap();
+        let measured = read(&out, &one, &was).unwrap();
         assert_eq!(measured.series.get("src/a.rs#eq_op_invert"), Some(1));
         assert_eq!(
             measured.findings,
@@ -1067,7 +1042,7 @@ mod tests {
                 ..joined
             })
         };
-        let measured = read(&ran(TOTALS, Some(2)), &tested, UNPROVED, &Series::default()).unwrap();
+        let measured = read(&ran(TOTALS, Some(2)), &tested, &Series::default()).unwrap();
         assert_eq!(measured.findings.last(), Some(&lead));
     }
 

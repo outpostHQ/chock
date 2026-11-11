@@ -117,14 +117,6 @@ jobs:
           cargo binstall -y --locked cargo-udeps@"$CARGO_UDEPS_VERSION"
           cargo binstall -y --locked cargo-bsize@"$CARGO_BSIZE_VERSION"
           cargo binstall -y --locked typos-cli@"$TYPOS_CLI_VERSION"
-          if here "$KANI_VERIFIER_OS"; then cargo binstall -y --locked kani-verifier@"$KANI_VERIFIER_VERSION"; fi
-
-      # Installing the crate is half of it: the solver bundle and the nightly kani needs are fetched
-      # on first use. Doing that here rather than inside the gate keeps a failed download legible.
-      - name: Fetch kani's backend
-        run: |
-          . ./tool-versions.env
-          if [[ ",$KANI_VERIFIER_OS," == *",$SYSTEM,"* ]]; then cargo kani --version; fi
 
       # cackle analyses a build script by running it, so it runs it inside bubblewrap. Ubuntu 23.10
       # and newer refuse unprivileged user namespaces until AppArmor is told otherwise.
@@ -137,13 +129,6 @@ jobs:
 
       - name: Install chock from this checkout
         run: cargo install --locked --path .
-
-      # The `tla` gate runs TLC and Apalache on Java 21, from the jars that `--downloads` fetches.
-      - name: Setup Java
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
-        with:
-          distribution: temurin
-          java-version: '21'
 
       - name: Fetch the pinned downloads
         run: chock init --downloads

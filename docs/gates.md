@@ -1,6 +1,6 @@
 # The gates
 
-`chock gates` prints this list from the binary: 74 gates, 43 on by default and 31 opt-in.
+`chock gates` prints this list from the binary: 69 gates, 42 on by default and 27 opt-in.
 `chock gates --json` gives the same list to a program.
 
 A gate is one of two kinds.
@@ -11,7 +11,7 @@ A gate is one of two kinds.
   the record. A count that the record does not hold trips when it is above zero.
 
 [On by default](#on-by-default) · [Opt-in](#opt-in) · [Outpost gates](#outpost-gates) ·
-[Proofs and models](#proofs-and-models) · [What a gate needs](#what-a-gate-needs) · [Records by machine and system](#records-by-machine-and-system) ·
+[Pins and downloads](#pins-and-downloads) · [What a gate needs](#what-a-gate-needs) · [Records by machine and system](#records-by-machine-and-system) ·
 [How `crap` counts](#how-crap-counts) · [What a gate leaves out](#what-a-gate-leaves-out)
 
 ## On by default
@@ -60,7 +60,6 @@ A gate is one of two kinds.
 | `testlint` | ✓ | a file gains a test that asserts nothing, cannot fail, returns before it checks, is skipped with no reason or has a name that states no claim |
 | `claims` | ✓ | a document gains a citation of a line past the end of its file, or names as absent a thing that the tree holds |
 | `pinned` | ✓ | a document's `test:<file>#<name>` pin names a test or a table row that the file no longer has, or a pin on record leaves the documents |
-| `links` | ✓ | a `code:` comment in a TLA+ model or a Verus proof gains a link to an item the code does not have, or the code it links changes after the model last did |
 
 ## Opt-in
 
@@ -81,11 +80,7 @@ records the reason under `left_off` in the config.
 | `dead` | | a private function nothing in the crate names |
 | `acl` | | a dependency reaches an API its `cackle.toml` entry does not grant |
 | `idempotent` | | the suite passes once and fails the second time |
-| `proof` | ✓ | a Kani harness does not verify, a mutant does not make its harness fail, or a harness on record is gone |
-| `laws` | ✓ | the text of a law changes or goes: a TLA+ theorem, a Verus `requires` or `ensures`, or a Kani harness's attributes and checks |
 | `miri` | | a test fails under Miri; the run lists every failing test |
-| `tla` | | TLC finds a fault in a model, a bad variant of a model passes, Apalache cannot prove the inductive invariant, or TLAPS does not prove a theorem |
-| `verus` | ✓ | Verus does not verify a proof file, verifies a mutant, a patch that puts a fault in one function, or no longer verifies a function on record |
 | `unused-deep` | | a real (nightly) compile shows an unused dependency |
 | `fmt` | | rustfmt would change a file; needs no compiler, so a commit can run it |
 | `shellcheck` | ✓ | shellcheck has one more thing to say about a shell script the repository tracks, per file and check |
@@ -112,182 +107,15 @@ whole tree.
 | `lenses` | ✓ | hazard lens stops reporting, or lens with no record reports a hazard |
 | `measures` | ✓ | Outpost measure grows, stops arriving, or arrives above zero with no record |
 
-## Proofs and models
+## Pins and downloads
 
-Five gates check proofs: `tla` the TLA+ models, `verus` the Verus proofs, `proof` Kani harnesses,
-`links` their ties to the code, and `laws` the text of each law. Only `links` is on by default; it
-finds nothing with no model. `admits`, on by default too, counts the proof steps that nothing
-checks.
-
-```
-   proofs/tla/M.tla ──── tla ────► TLC: M.cfg passes, and each bad variant fails
-          │                        Apalache: IndInv holds in every state
-          │                        TLAPS: each theorem is proved, and no proof is left out
-          │
-   proofs/verus/*.rs ─── verus ──► Verus: each proof verifies, and each mutant fails
-          │
-          ├───────────── links ──► each `code:` comment names one item of the code,
-          │                        and the item did not change after the model's last commit
-          │
-          └───────────── laws ───► each theorem, contract and harness keeps its text on record
-```
-
-To start, switch the gates on, pin the tools, fetch them, then run the gates:
+`tool-versions.env` can pin a file to download instead of a crate to install, by its URL and its
+SHA-256:
 
 ```sh
-chock enable tla verus     # `links` is on already
-chock init --local         # adds the TLC, Apalache and Verus pins to tool-versions.env
-chock init --downloads     # fetches the pinned files of the gates that are on
-chock run tla verus links
-```
-
-### `tla`
-
-The gate reads each directory of `tla.dirs`, `proofs/tla` when left out. For a model `M.tla`, TLC
-checks each cfg file whose name starts with `M`:
-
-| cfg | TLC must |
-|---|---|
-| `M.cfg` | pass: each invariant and property of the model holds |
-| `M_live.cfg` | pass: each liveness property holds |
-| `M_reach.cfg` | fail. Its invariant says that a state the model guards is never reached, so the failure shows that TLC reaches it. Each model needs one. |
-| any other `M_*.cfg` | fail with a violation: it is a bad variant of the model |
-
-A line `\* expect: pass`, `\* expect: deadlock` or `\* expect: violation` in a cfg sets what TLC
-must do with it. Each invariant of `M.cfg` must fail in at least one bad variant, except
-`IndInv` and the invariants whose names start with `Type`. A conjunction is covered when each of
-its parts fails in a variant.
-
-Apalache checks the inductive invariant `IndInv` of each model whose `M.cfg` lists it. It proves
-three things: `Init` makes `IndInv` true, one step keeps it true, and `IndInv` implies each
-invariant. `tla.inductive` names the models and their invariants yourself, and `{}` proves none.
-`tla.length` adds a bounded Apalache run of that many steps from `Init`. `tla.smt_encoding` sets
-the SMT encoding of Apalache for a model, such as `{"OpHeads": "arrays"}`: `oopsla19`, `arrays`
-or `funArrays`; the gate refuses another name.
-
-`tla.engines` gives a model the engines that check its cfgs, such as `{"M": ["apalache"]}`:
-`tlc`, `apalache` or both, and both when the model is left out. Apalache alone runs no TLC. The
-inductive proof judges `M.cfg`, and one Apalache run of `tla.length` steps from `Init` must find
-each other cfg violated. Apalache names only the first invariant in a cfg that a run violates, so
-the gate then runs each invariant that no variant named alone, on each variant that checks it. The
-gate refuses Apalache alone for a model with no inductive invariant, for a cfg that lists a
-`PROPERTY` or checks for a deadlock (write `CHECK_DEADLOCK FALSE`), for a variant that must pass,
-and for an `M.cfg` that must fail.
-
-`chock run tla --model=M,...` checks only the cfgs of the named models, and proves only the
-theorems of their modules. A name with no cfg and no theorem stops the run with an error.
-
-TLAPS proves each module that states a `THEOREM`, `LEMMA`, `PROPOSITION` or `COROLLARY`. The gate
-trips on an obligation that no backend of tlapm proves, on an `OMITTED` proof, and on a step with
-no proof, and it names the file and the line of each. `BY OBVIOUS` is a proof, because a backend
-must prove it. chock pins tlapm as `TLAPM` in `tool-versions.env`, for Linux x86_64 and macOS
-arm64. Upstream rebuilds 1.6.0-pre with new files, so the pin names fixed copies on a chock
-release. Where the pin has no file for the machine, or the project has no pin, the gate gives a note
-and proves no theorem. `tla.timeout_s` and `tla.timeouts`, by the module's name, limit the proof
-of each module, and `tla.workers` sets the threads of tlapm.
-
-TLC needs Java 11 or later, and Apalache needs Java 21 or later. The gate uses
-`$JAVA_HOME/bin/java`, else the `java` on `PATH`. TLC writes its states, and tlapm its cache,
-under `target/test-scratch/chock/tla`.
-
-### `verus`
-
-The gate runs Verus on each file of `verus.files`, `proofs/verus/*.rs` when left out, and each file
-must verify. A crate's `lib.rs` verifies its modules with it.
-
-The gate records each function that a proof file's crate holds, one row each, such as
-`proofs/verus/jobs.rs#shares` for `shares` in the crate root. A run that no longer verifies a
-recorded function trips the gate, as when a proof is deleted or renamed. When the change is meant,
-`chock baseline verus` writes the new list. A file that does not verify trips the gate whatever the
-record holds.
-
-A mutant is a patch in `proofs/verus/mutants` that puts a fault in one function. Verus must fail
-on each mutant. A mutant that verifies shows that the proof does not say what the function must
-do.
-
-```diff
---- ../../crates/k/src/cas.rs
-+++ cas::put
-@@ -2,3 +2,3 @@
- a
--b
-+B
- c
-```
-
-Line 1 names the file, as a path from the directory that holds `mutants/`. Line 2 names the
-function: `module::function`, or a bare name for a function in the crate root. The hunks follow.
-chock patches a copy under `target/test-scratch/chock/verus`, never your file, and Verus checks
-only the named function. A mutant that stops Verus before it verifies, such as one that does not
-compile, refutes nothing, and the gate reports it.
-
-Verus runs on the Rust toolchain that its release names. The `VERUS_SETUP` line of the pin
-installs it, so `chock init --downloads` adds it. When that toolchain is not installed, the gate
-names the `rustup install` command to run.
-
-### `links`
-
-A link comment ties a model to the code that it describes:
-
-```
-\* code: src/run/lock.rs::once
-\* and Lock::release
-Next == ...
-```
-
-In a Rust file under a `proofs` directory that holds a `verus!` block, the comment starts with
-`// code:`. A link comment goes on over the comment lines after it, up to a line of code, an empty
-comment or another label, such as `bad:`. A link never names an item of the model file that holds
-it.
-
-| you write | it names |
-|---|---|
-| `lock.rs::once` | the item `once` in the one source file whose path ends in `lock.rs` |
-| `src/run/lock.rs Lock::release` | the item `Lock::release` in that file: a file word just before a path limits the path to the file |
-| `Lock::release` | the one item with that path in the code |
-| `lock.rs` | the whole file |
-| `code: none; why` | no code, on purpose; the text after `;` says why |
-
-The gate counts a stale link for each of these:
-
-- a comment that names no code: `unlinked`
-- a link to no item, or to more than one item
-- a link to a file outside the project: `outside`. The gate reads only the project's code, and a
-  record read on another machine cannot hold a path out of the project.
-- an item that changed after the model's last commit. Read the model against the code, change the
-  model where it is wrong, then commit the model. Only a git repository shows this.
-
-`links` is a ratchet: its first run records the stale links that the tree has.
-
-### `laws`
-
-`laws` pins the text of each law, so a weaker law cannot pass as the same one. A law is one of
-these:
-
-| law | its text |
-|---|---|
-| a `THEOREM`, `LEMMA`, `PROPOSITION` or `COROLLARY` at column 0 of a `.tla` file | the statement before its proof, and each definition at column 0 that the statement reaches |
-| a function with `requires` or `ensures` in a Rust file with a `verus!` block | its signature, and each `spec fn` that the signature reaches |
-| a function with `#[kani::proof]` or `#[kani::proof_for_contract]` | its `kani::` attributes, and each `assert!`, `kani::assert` and `kani::assume` in it |
-
-chock takes out the comments and the blank lines and hashes the text. In TLA+, the indent of a line
-stays, because a conjunction list reads by its indent. The key of a law is its file, its name and
-its hash, such as `proofs/tla/M.tla#THEOREM Safe@9f…`. A change to a proof, or to the code that a
-harness runs, keeps the key.
-
-A law that changes gets a new key, so the gate trips twice: the new key is not on record, and the
-old key is not measured. To accept the new law, a person runs `chock baseline laws`, and the
-reviewer sees the change in `.chock/baseline.json`. The first run records the laws that the tree
-has.
-
-### Pins and downloads
-
-`tool-versions.env` pins each file that a proof gate downloads, by its URL and its SHA-256:
-
-```sh
-TLA_TOOLS_VERSION=1.7.4
-TLA_TOOLS_URL=https://github.com/tlaplus/tlaplus/releases/download/v${TLA_TOOLS_VERSION}/tla2tools.jar
-TLA_TOOLS_SHA256=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+EXAMPLE_TOOL_VERSION=1.7.4
+EXAMPLE_TOOL_URL=https://example.invalid/releases/download/v${EXAMPLE_TOOL_VERSION}/example-tool.jar
+EXAMPLE_TOOL_SHA256=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
 ```
 
 | key | what it says |
@@ -299,7 +127,7 @@ TLA_TOOLS_SHA256=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e8
 | `X_GIT`, `X_REV` | a cargo tool that `chock init --global` builds from one commit of a repository, such as `CARGO_DENY_GIT` |
 
 chock keeps the files in `CHOCK_TOOLS`, else in `chock-tools` in cargo's home, such as
-`~/.cargo/chock-tools`. `chock init --global` fetches the files of the gates that are on, and
+`~/.cargo/chock-tools`. `chock init --global` fetches every pinned download, and
 `chock init --downloads` fetches only those files.
 
 ## Notes on some gates
@@ -491,32 +319,6 @@ chock keeps the files in `CHOCK_TOOLS`, else in `chock-tools` in cargo's home, s
   keeps one escape of its line. An escape that still counts says why at its place: no cover, no
   such crate, or no such test. chock asks `cargo metadata` for the crates only when a cover is
   there.
-- **How `proof` keeps each harness.** Kani lists the harnesses of `proof.packages`, or of the whole
-  workspace, and verifies them in one run. Each harness is one row of the record, 0 when it
-  verifies. A harness that fails trips the gate whatever the record holds, and chock records
-  nothing from that run. A harness that leaves the code trips the gate until `chock baseline proof`
-  records that change. A run past `proof.timeout_s` trips with every harness unproven.
-- **Where `proof` reads Kani's settings.** Kani reads `metadata.kani`, such as its `unstable`
-  features, only from the root manifest: `[workspace.metadata.kani]`, or `[package.metadata.kani]`
-  when the root is a package. chock reads the same tables. A member's own `metadata.kani` table
-  turns on nothing, and the gate adds a note that asks you to move it to `[workspace.metadata.kani]`.
-- **`proof.require_cover` asks each harness for a cover.** When it is true, a harness with no
-  `kani::cover!` trips the gate. A satisfied cover shows that some case gets past the harness's
-  `kani::assume` calls. A cover that no case satisfies trips the gate whatever the setting.
-- **How `proof` refutes a mutant.** A mutant is a patch in `proof.mutants`, `proofs/kani/mutants`
-  when left out, that puts a fault in one file. Line 1 names the file, as a path from the project
-  root. Line 2 names the harness that must fail, as Kani lists it, such as
-  `+++ proofs::put_keeps_len`. chock patches a copy of the project under
-  `target/test-scratch/chock/kani`, never your file, and Kani runs only that harness. The run
-  builds in the project's target directory, so it reuses the build of the dependencies. A mutant
-  that verifies, that stops Kani before it checks the harness, or that names a harness Kani does
-  not list trips the gate. The mutants run only when every harness verifies. A path dependency
-  outside the project root does not resolve in the copy.
-- **Where a mutant hunk applies.** A hunk of a `proof` or `verus` mutant applies at its line. When
-  an edit above it moved the code, the hunk applies at the one place where its old lines match.
-  A hunk that matches at no place, or at more than one place, trips the gate with `make the mutant
-  again`, since the fault could go into the wrong function. A later hunk moves as far as the one
-  before it.
 - **`unused` and `dead` give leads.** Neither sees a dependency used only in a doc example, or a
   function reached only through a name a macro builds; mark such a function `#[expect(dead_code)]`.
 - **What `hygiene` reads.** It names a tracked file by its name alone, such as `.env`, a `.pem`,
@@ -646,12 +448,12 @@ One compiler process for every gate would not make a run faster, so chock does n
 
 - Rust has had no plugin interface since 1.75. A tool that reads the compiler's own data is a
   driver: a program that links one exact nightly and runs in place of `rustc`.
-- `clippy`, `miri`, `mutest-rs` and `kani` are four drivers. Each one needs a different build of
-  the same source, so they cannot share one compilation.
+- `clippy`, `miri` and `mutest-rs` are three drivers. Each one needs a different build of the same
+  source, so they cannot share one compilation.
 - Dylint shares one driver between lints only. `rustc_public`, the stable view of the compiler's
   data, is not stable yet.
-- Most of a run is code that executes: tests, mutants, Miri and proofs. A shared compiler would
-  save none of that time.
+- Most of a run is code that executes: tests, mutants and Miri. A shared compiler would save none
+  of that time.
 
 chock shares what can be shared: one target directory, one build for the gates that take the
 same flags, and a kept verdict for each gate whose inputs did not change.
@@ -667,14 +469,11 @@ says which of them this machine has. These gates need more:
 | `unused-deep`, `miri` | the `nightly` toolchain, and for `miri` its `miri` and `rust-src` components; `chock init --global` installs all three |
 | `msrv` | the Rust release that `rust-version` in `Cargo.toml` names; `chock init --global` installs it in the crate it runs in |
 | `mutest` | Outpost's fork of [mutest-rs](https://github.com/outpostHQ/mutest-rs) and the nightly it names; `chock init --global` builds the newest commit of the fork's `main`, which needs `git` |
-| `proof` | `#[kani::proof]` functions; Linux or macOS |
-| `tla` | Java 11 or later for TLC, and Java 21 or later for Apalache; the pinned jars and tlapm, which `chock init --downloads` fetches |
-| `verus` | the pinned Verus, which `chock init --downloads` fetches, and the Rust toolchain that this Verus names, which its `VERUS_SETUP` line installs |
 | `acl` | a `cackle.toml`, and bubblewrap; Linux only |
 | `commits`, `hygiene`, `history` | a git or Outpost repository; outside one they report that they could not run |
 | Outpost gates, `history`, `duplicates`, `unread` | [Outpost](https://github.com/outpostHQ) on `PATH`, one whose `check` reports the grouping measures by default (2026-10-18 on) |
 
-On a system a gate's tool does not run on (`acl` off Linux, `proof` on Windows), `chock run` leaves
+On a system a gate's tool does not run on (`acl` off Linux), `chock run` leaves
 that gate out and says so; a Linux run enforces it.
 
 ## Write only some keys

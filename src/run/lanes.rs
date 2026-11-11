@@ -36,11 +36,6 @@ pub(super) fn lanes_of(
         .filter(|(_, gate)| gate.builds)
         .map(|(at, _)| at)
         .partition(|&at| crate::gates::builds_apart(gates[at].name, &ctx.build));
-    let proofs = if ctx.mutest_proofs {
-        crate::gates::MutestProofs::On
-    } else {
-        crate::gates::MutestProofs::Off
-    };
     let peak = |at: &usize| {
         peaks
             .iter()
@@ -50,7 +45,7 @@ pub(super) fn lanes_of(
     let alone = alone(
         &beside,
         &apart,
-        &|at| crate::gates::builds_alone(gates[at].name, proofs),
+        &|at| crate::gates::builds_alone(gates[at].name),
         &peak,
         room,
     );

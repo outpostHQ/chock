@@ -94,18 +94,7 @@ pub struct Ctx {
     pub exhaustive: bool,
     /// How `profile` holds each lint table to the lint floor, from `lint_floor`.
     pub lint_floor: Option<bool>,
-    /// Whether a Kani harness that fails on a mutation no test detects kills it, from
-    /// `mutest_proofs`.
-    pub mutest_proofs: bool,
-    /// The most Kani harnesses `proof` verifies at once, from `proof_jobs`.
-    pub proof_jobs: Option<u32>,
-    /// Which packages `proof` verifies and how long Kani may take, from `proof`.
-    pub proof: crate::project::config::Proof,
-    /// Where the TLA+ models are and how `tla` checks them, from `tla`.
-    pub tla: crate::project::config::Tla,
-    /// What `verus` verifies and which mutants it must refute, from `verus`.
-    pub verus: crate::project::config::Verus,
-    /// Where `tla` and `verus` find Java, TLC, Apalache and Verus.
+    /// Where chock finds the command of a tool it downloaded for itself.
     pub tools: crate::gates::proofs::Tools,
 }
 
@@ -150,11 +139,6 @@ impl Ctx {
             mutest_args: Vec::new(),
             exhaustive: false,
             lint_floor: None,
-            mutest_proofs: false,
-            proof_jobs: None,
-            proof: crate::project::config::Proof::default(),
-            tla: crate::project::config::Tla::default(),
-            verus: crate::project::config::Verus::default(),
             tools: crate::gates::proofs::Tools::here(),
         }
     }
@@ -210,11 +194,6 @@ impl Ctx {
                 .unwrap_or_default(),
             exhaustive: config.and_then(|set| set.mutest_exhaustive) == Some(true),
             lint_floor: config.and_then(|set| set.lint_floor),
-            mutest_proofs: config.and_then(|set| set.mutest_proofs) == Some(true),
-            proof_jobs: config.and_then(|set| set.proof_jobs),
-            proof: config.and_then(|set| set.proof.clone()).unwrap_or_default(),
-            tla: config.and_then(|set| set.tla.clone()).unwrap_or_default(),
-            verus: config.and_then(|set| set.verus.clone()).unwrap_or_default(),
             ..Self::for_root(PathBuf::new(), Baseline::default())
         }
     }
@@ -441,8 +420,8 @@ pub fn coverage_for(config: Option<&crate::project::config::Config>) -> Coverage
     coverage
 }
 
-/// What `--package=NAME` and `--filter=TEXT` narrow `test` to, `--mutate=FILE,...` narrows
-/// `mutest` to, and `--model=NAME,...` narrows `tla` to; the default is all of it.
+/// What `--package=NAME` and `--filter=TEXT` narrow `test` to, and `--mutate=FILE,...` narrows
+/// `mutest` to; the default is all of it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Scope {
     /// The one package `test` runs, from `--package`.
@@ -451,8 +430,6 @@ pub struct Scope {
     pub filter: Option<String>,
     /// The files `mutest` mutates, from `--mutate`.
     pub mutate: Vec<String>,
-    /// The models `tla` checks, from `--model`.
-    pub models: Vec<String>,
 }
 
 impl Scope {
@@ -460,23 +437,15 @@ impl Scope {
     #[must_use]
     pub fn named(&self) -> Option<String> {
         let mutate = (!self.mutate.is_empty()).then(|| self.mutate.join(","));
-        let models = (!self.models.is_empty()).then(|| self.models.join(","));
         let parts: Vec<String> = [
             ("package", &self.package),
             ("filter", &self.filter),
             ("mutate", &mutate),
-            ("model", &models),
         ]
         .into_iter()
         .filter_map(|(name, value)| value.as_ref().map(|value| format!("{name}={value}")))
         .collect();
         (!parts.is_empty()).then(|| parts.join(":"))
-    }
-
-    /// Whether the `tla` gate checks `model`: every model when `--model` names none.
-    #[must_use]
-    pub fn asks_model(&self, model: &str) -> bool {
-        self.models.is_empty() || self.models.iter().any(|named| named == model)
     }
 }
 
@@ -611,21 +580,6 @@ mod tests {
             plain.wrapped("cargo", &["mutest"]),
             ("cargo", vec!["mutest"])
         );
-    }
-
-    #[test]
-    fn mutest_lets_proofs_kill_its_survivors_only_where_the_config_turns_it_on() {
-        let on = Config {
-            mutest_proofs: Some(true),
-            ..Config::of(["mutest"])
-        };
-        assert!(Ctx::from_config(Some(&on)).mutest_proofs);
-        let off = Config {
-            mutest_proofs: Some(false),
-            ..on
-        };
-        assert!(!Ctx::from_config(Some(&off)).mutest_proofs);
-        assert!(!Ctx::from_config(None).mutest_proofs);
     }
 
     #[test]

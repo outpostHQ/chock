@@ -366,8 +366,8 @@ fn absent_tool(gate: &Gate, ctx: &Ctx) -> Option<&'static str> {
     })
 }
 
-/// Whether the project pins `tool` as a download, such as `VERUS` for `verus`, and it is fetched.
-/// `chock init --downloads` puts it under the tools home, not on `PATH`.
+/// Whether the project pins `tool` as a download, and it is fetched. `chock init --downloads`
+/// puts it under the tools home, not on `PATH`.
 fn fetched(ctx: &Ctx, tool: &str) -> bool {
     let stem = tool.to_uppercase().replace('-', "_");
     let program = format!("{tool}{}", std::env::consts::EXE_SUFFIX);
@@ -977,7 +977,7 @@ mod tests {
     #[test]
     fn a_configured_build_reaches_cargo_and_a_tool_that_cannot_take_it_refuses() {
         let mut ctx = ctx_with("slop", &[]);
-        assert_eq!(ctx.default_build("cargo kani"), Ok(()));
+        assert_eq!(ctx.default_build("cargo miri"), Ok(()));
         ctx.features = vec!["--all-features".to_string()];
         ctx.build = ["--target", "wasm32-wasip1", "--profile", "dist"]
             .map(String::from)
@@ -996,8 +996,8 @@ mod tests {
         assert_eq!(ctx.build_flag("--profile"), Some("dist"));
         assert_eq!(ctx.build_flag("--features"), None);
         assert_eq!(
-            ctx.default_build("cargo kani"),
-            Err("cargo kani cannot be told the configured `--target wasm32-wasip1 --profile dist`, \
+            ctx.default_build("cargo miri"),
+            Err("cargo miri cannot be told the configured `--target wasm32-wasip1 --profile dist`, \
                  so it would measure another build"
                 .to_string())
         );
@@ -2339,15 +2339,11 @@ mod tests {
         let cases = [
             (&gates::tools::TEST, "features-v1:input"),
             (&gates::tools::IDEMPOTENT, "features-v1:input"),
-            (
-                &gates::tools::proof::GATE,
-                "proof-v4:scope-v2:lowers-v1:input",
-            ),
             (&gates::tools::binsize::GATE, "targets-v1:lowers-v1:input"),
             (&gates::tools::DOC, "targets-v1:input"),
             (
                 &gates::tools::MUTEST,
-                "watchdog-v1:isolated-v1:results-v1:scoped-v1:proofs-v1:scope-v2:lowers-v1:input",
+                "watchdog-v1:isolated-v1:results-v1:scoped-v1:scope-v2:lowers-v1:input",
             ),
         ];
         for (gate, expected) in cases {
@@ -2643,28 +2639,6 @@ mod tests {
             lanes::lanes_of(&gates, &ctx, &[], 1000),
             none,
             "no record, no lane"
-        );
-    }
-
-    /// With `mutest_proofs` on, mutest builds Kani harnesses in the suite's target directory, so it
-    /// stays in the suite's lane.
-    #[test]
-    fn a_mutest_that_runs_proofs_stays_in_the_lane_of_the_suite() {
-        let named = |name| Gate {
-            name,
-            builds: true,
-            ..gate_of(Kind::Binary(agreeable))
-        };
-        let (test, mutest, miri) = (named("test"), named("mutest"), named("miri"));
-        let bsize = named("bsize");
-        let gates = [&test, &mutest, &miri, &bsize];
-        let mut ctx = ctx_with("probe", &[]);
-        ctx.mutest_proofs = true;
-        let peaks =
-            [("mutest", 9), ("miri", 7), ("test", 2)].map(|(gate, mb)| (gate.to_string(), mb));
-        assert_eq!(
-            lanes::lanes_of(&gates, &ctx, &peaks, 18),
-            [vec![0, 1], vec![3], vec![2]]
         );
     }
 

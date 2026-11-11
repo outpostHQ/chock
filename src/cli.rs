@@ -1246,8 +1246,8 @@ mod tests {
     fn an_unknown_gate_name_is_refused_and_lists_the_real_ones() {
         let err = select(&["nope"], None).unwrap_err();
         assert_eq!(err, "no gate named `nope` (`chock gates` lists every gate)");
-        let typo = select(&["lnks"], None).unwrap_err();
-        assert!(typo.ends_with("gate); did you mean `links`?"), "{typo}");
+        let typo = select(&["lnt"], None).unwrap_err();
+        assert!(typo.ends_with("gate); did you mean `lint`?"), "{typo}");
     }
 
     #[test]
@@ -1292,19 +1292,19 @@ mod tests {
     #[test]
     fn a_gate_whose_tool_cannot_run_here_is_left_out_and_named_never_passed() {
         let chosen = || {
-            ["test", "acl", "proof"]
+            ["test", "acl"]
                 .map(|name| gates::find(name).unwrap())
                 .to_vec()
         };
         let names = |kept: &[&run::Gate]| kept.iter().map(|gate| gate.name).collect::<Vec<_>>();
         let (kept, said) = here(chosen(), "linux");
-        assert_eq!((names(&kept), said), (vec!["test", "acl", "proof"], None));
+        assert_eq!((names(&kept), said), (vec!["test", "acl"], None));
         let (kept, said) = here(chosen(), "windows");
         assert_eq!(names(&kept), ["test"]);
         assert_eq!(
             said.as_deref(),
             Some(
-                "chock: left out on windows, where its tool does not run: acl, proof; a Linux run enforces it"
+                "chock: left out on windows, where its tool does not run: acl; a Linux run enforces it"
             )
         );
     }

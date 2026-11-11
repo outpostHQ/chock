@@ -202,7 +202,7 @@ pub const SKIPPED: [&str; 12] = [
 pub const FIXTURE_DIRS: [&str; 2] = ["fixtures", "testdata"];
 
 /// Files chock's own gates write. Walked, since `coverage` reads one, but left out of the digest.
-pub const PRODUCED: [&str; 2] = ["lcov.info", "kani-list.json"];
+pub const PRODUCED: [&str; 1] = ["lcov.info"];
 
 /// The marker file of a build cache; cargo writes one in each target directory it creates.
 const CACHE_MARKER: &str = "CACHEDIR.TAG";

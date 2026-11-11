@@ -29,11 +29,9 @@ const DENY: &str = include_str!("../../deny.toml");
 
 /// The baselines are deliberately absent: they are the shared reference the gates measure against,
 /// so they belong in git. `last-run.json` is this machine's cache of the last run and does not.
-pub(crate) const IGNORES: [&str; 11] = [
+pub(crate) const IGNORES: [&str; 10] = [
     "/target",
     "lcov.info",
-    // What `proof` leaves behind.
-    "kani-list.json",
     ".chock/last-run.json",
     ".chock/run.lock",
     // What the last `mutest` run killed, in the tree as it was then.
@@ -109,7 +107,7 @@ pub struct Scope {
     pub fast: bool,
     /// Print what the options are and do nothing.
     pub help: bool,
-    /// Of the global half, fetch only the download pins, such as the jars of the `tla` gate.
+    /// Of the global half, fetch only the download pins.
     pub downloads: bool,
 }
 
@@ -121,7 +119,7 @@ chock init [--global] [--local] [--fast] [--downloads]
   --global     install the pinned tools, once per machine: this project's pins, or chock's own
   --local      write this project's hooks, pins and config
   --fast       measure only the gates that need no compiler; skips the builds
-  --downloads  fetch only the pinned downloads, such as TLC for the `tla` gate; implies --global
+  --downloads  fetch only the pinned downloads; implies --global
   --help       this text
 
   With neither --global nor --local, `chock init` does both. After you install a newer chock,
@@ -223,7 +221,7 @@ pub fn run(args: &[&str]) -> ExitCode {
         install_global(&parsed, &*patient, root.as_deref())
     };
     let tools = crate::gates::proofs::Tools::here();
-    let failed = fetch_downloads(&downloads, root.as_deref(), &tools);
+    let failed = fetch_downloads(&downloads, &tools);
     match joined(installed, failed) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -1304,7 +1302,7 @@ mod tests {
         ));
     }
 
-    /// The false red this answers: one 500 from GitHub for Kani's bundle failed the whole install.
+    /// The false red this answers: one 500 from GitHub for a tool's bundle failed the whole install.
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
     fn a_setup_line_that_fails_runs_three_times_and_one_that_passes_runs_once() {
@@ -1902,7 +1900,7 @@ mod tests {
                  \x20 created   tool-versions.env\n\
                  \x20 created   deny.toml\n\
                  \x20 created   .chock/config.json\n\
-                 \x20 gitignore 11 lines added\n\
+                 \x20 gitignore 10 lines added\n\
                  \x20 editor    .claude/settings.json runs chock on every edit\n\
                  \x20 note      an editor session already open may not fire it until it reloads\n\
                  \x20 created   .chock/agents.md\n\
@@ -2029,7 +2027,7 @@ mod tests {
             let written = fs::read_to_string(dir.join(file)).unwrap();
             assert!(written.contains("lcov.info"), "{file}: {written}");
         }
-        assert!(said.contains("outpostignore 11 lines added"), "{said}");
+        assert!(said.contains("outpostignore 10 lines added"), "{said}");
     }
 
     /// `*` matches the empty string in a gitignore, so `*.chock` spells `.chock` and hides the whole
@@ -2051,15 +2049,15 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_gitignore_gains_only_the_entries_it_lacks_and_is_rewritten_only_when_it_gains_one() {
-        let all = "/target\nlcov.info\nkani-list.json\n.chock/last-run.json\n\
+        let all = "/target\nlcov.info\n.chock/last-run.json\n\
                    .chock/run.lock\n.chock/mutest-kills.json\n.chock/verdicts.json\n.chock/last-edit\nrustc-ice-*.txt\n\
                    ?*.chock\n?*.chock.[0-9]*\n";
-        let already = "target/\n/lcov.info\nkani-list.json\n.chock/last-run.json\n\
+        let already = "target/\n/lcov.info\n.chock/last-run.json\n\
                        .chock/run.lock\n.chock/mutest-kills.json\n.chock/verdicts.json\n.chock/last-edit\n\
                        rustc-ice-*.txt\n?*.chock\n?*.chock.[0-9]*";
         for (name, before, added, want) in [
-            ("init-ignores-new", None, 11, all),
-            ("init-ignores-bare-last-line", Some("/target"), 10, all),
+            ("init-ignores-new", None, 10, all),
+            ("init-ignores-bare-last-line", Some("/target"), 9, all),
             ("init-ignores-covered", Some(already), 0, already),
         ] {
             let dir = crate::testdir::make(name);
@@ -2098,19 +2096,12 @@ mod tests {
             home: Some(root.join("tools")),
             launcher: vec!["chock-no-such-program".into()],
         };
-        let text = format!(
-            "{kept}J_SETUP=\"sh -c true\"\n{plain}TLA_TOOLS_VERSION=1\nTLA_TOOLS_URL=https://x/t.jar\nTLA_TOOLS_SHA256=b781b53bba32fac14ac2e02b0332e1dc2edc64cb7b850c0608d8142cc7aa2ef4\n"
-        );
+        let text = format!("{kept}J_SETUP=\"sh -c true\"\n{plain}");
         let pins = |text: &str| crate::setup::downloads::parse(text).unwrap();
-        let fetched = |text: &str, root, tools| fetch_downloads(&pins(text), root, tools);
-        assert_eq!(fetched(&text, Some(&root), &tools), Vec::<String>::new());
-        let config = crate::project::config::Config::of(["tla"]);
-        let file = root.join(crate::project::config::FILE);
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, crate::project::document::render(&config)).unwrap();
-        assert_eq!(fetched(&text, Some(&root), &tools), ["tla-tools"]);
+        let fetched = |text: &str, tools| fetch_downloads(&pins(text), tools);
+        assert_eq!(fetched(&text, &tools), Vec::<String>::new());
         let failing = text.replace("sh -c true", "sh -c false");
-        assert_eq!(fetched(&failing, Some(&root), &tools), ["j", "tla-tools"]);
+        assert_eq!(fetched(&failing, &tools), ["j"]);
         let home = root.join("tools");
         let set = |text: &str, at: usize| set_up(&pins(text)[at], &home);
         assert_eq!(
@@ -2118,10 +2109,6 @@ mod tests {
             (true, false, true)
         );
         let homeless = crate::gates::proofs::Tools::default();
-        assert_eq!(
-            fetched(&text, Some(&root), &homeless),
-            ["j", "k", "tla-tools"]
-        );
-        assert_eq!(fetched(&text, None, &homeless), ["j", "k"]);
+        assert_eq!(fetched(&text, &homeless), ["j", "k"]);
     }
 }

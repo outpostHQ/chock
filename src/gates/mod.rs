@@ -51,11 +51,6 @@ static REGISTRY: &[Gate] = &[
     outpost::intel::UNREAD,
     outpost::scan::GATE,
     outpost::wrappers::GATE,
-    tools::proof::GATE,
-    proofs::tla::GATE,
-    proofs::verus::GATE,
-    proofs::links::GATE,
-    proofs::laws::GATE,
     tools::DEPS,
     tools::SORT,
     tools::dupdeps::GATE,
@@ -102,13 +97,12 @@ pub fn registry() -> &'static [Gate] {
     REGISTRY
 }
 
-/// Whether a gate's tool runs on `os` at all: cackle refuses to compile off Linux, and Kani
-/// publishes no Windows build. A run elsewhere leaves such a gate out and names it, never passes it.
+/// Whether a gate's tool runs on `os` at all: cackle refuses to compile off Linux. A run elsewhere
+/// leaves such a gate out and names it, never passes it.
 #[must_use]
 pub fn runs_on(gate: &str, os: &str) -> bool {
     match gate {
         "acl" => os == "linux",
-        "proof" => os != "windows",
         _ => true,
     }
 }
@@ -208,7 +202,7 @@ pub fn holds_each_file(name: &str) -> bool {
 
 /// Gates that build in a cargo target directory of their own and run no test suite. Cargo locks
 /// a directory while it builds, so each can build beside the gates that run the suite.
-const BUILDS_APART: [&str; 4] = ["binsize", "bsize", "proof", "acl"];
+const BUILDS_APART: [&str; 3] = ["binsize", "bsize", "acl"];
 
 /// Whether `gate` builds apart under the project's `build` flags: `binsize` with a named profile
 /// may share the suite's directory.
@@ -222,19 +216,9 @@ pub fn builds_apart(gate: &str, build: &[String]) -> bool {
 /// own beside the suite's once its recorded memory fits. A coverage build is instrumented.
 pub(crate) const BUILDS_ALONE: [&str; 3] = ["mutest", "miri", "coverage"];
 
-/// Whether mutest runs Kani harnesses on each mutation that no test detects: `mutest_proofs`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MutestProofs {
-    /// mutest runs the harnesses, which build in the suite's target directory.
-    On,
-    /// mutest runs only the tests.
-    Off,
-}
-
-/// Whether `gate` may take a lane of its own. mutest's proofs build in the suite's target
-/// directory, so with them on it runs in the suite's lane, and never beside the `proof` gate.
-pub(crate) fn builds_alone(gate: &str, proofs: MutestProofs) -> bool {
-    BUILDS_ALONE.contains(&gate) && !(proofs == MutestProofs::On && gate == tools::MUTEST.name)
+/// Whether `gate` may take a lane of its own.
+pub(crate) fn builds_alone(gate: &str) -> bool {
+    BUILDS_ALONE.contains(&gate)
 }
 
 /// A gate that reads what another writes, and that gate: it runs in that gate's lane when it has one.
@@ -372,27 +356,21 @@ mod tests {
     }
 
     #[test]
-    fn mutest_with_proofs_runs_in_the_suite_lane_so_two_kani_jobs_never_meet() {
-        let (on, off) = (MutestProofs::On, MutestProofs::Off);
-        assert!(builds_alone("mutest", off));
-        assert!(!builds_alone("mutest", on));
-        assert!(builds_alone("miri", on) && builds_alone("coverage", on));
-        assert!(!builds_alone("proof", off) && !builds_alone("proof", on));
+    fn mutest_miri_and_coverage_each_take_a_lane_of_their_own() {
+        assert!(builds_alone("mutest"));
+        assert!(builds_alone("miri") && builds_alone("coverage"));
+        assert!(!builds_alone("acl"));
     }
 
     #[test]
-    fn acl_runs_on_linux_alone_proof_everywhere_but_windows_and_the_rest_anywhere() {
+    fn acl_runs_on_linux_alone_and_the_rest_runs_anywhere() {
         let systems = ["linux", "macos", "windows"];
         let on = |gate: &str| -> Vec<&str> {
             systems.into_iter().filter(|os| runs_on(gate, os)).collect()
         };
         assert_eq!(on("acl"), ["linux"]);
-        assert_eq!(on("proof"), ["linux", "macos"]);
         assert_eq!(on("test"), systems);
-        assert!(
-            find("acl").is_some() && find("proof").is_some(),
-            "both names are gates"
-        );
+        assert!(find("acl").is_some(), "acl is a gate");
     }
 
     /// A survey runs on a tree that never adopted chock, so it cannot ask for a gate the project

@@ -41,7 +41,6 @@ Without the parent, the gate cannot run.
 | `test_wrapper` | a command your suite runs under, such as a script that starts a service; the suite, coverage and `mutest` commands follow it |
 | `mutest_exhaustive` | `true` runs every test on each mutation, so `mutest` names each test that detects no mutation |
 | `mutest_args` | flags `cargo mutest run` takes after chock's own, such as `--timings` |
-| `mutest_proofs` | `true` lets a Kani harness that fails on a mutation no test detects kill it |
 | `not_shipped` | members nobody receives (fuzz harnesses, benchmarks), held to test-code rules |
 | `miri` | `packages` or `exclude` names the packages Miri runs over; `flags` replaces chock's `-Zmiri-disable-isolation -Zmiri-strict-provenance` |
 | `commands` | your own checks: a `name` and a `run` command; one that `counts` is ratcheted per item |
@@ -50,10 +49,6 @@ Without the parent, the gate cannot run.
 | `owners` | calls, such as `std::env::var`, whose value one file alone may read; the `owners` gate holds them |
 | `calls` | calls that need another call in the same function, `after` it or `with` it; the `calls` gate holds them |
 | `secrets` | the project's own credential shapes, by `name`, `prefix` and `tail`; `hygiene` and `history` find them |
-| `proof_jobs` | the most Kani harnesses `proof` verifies at once; a lower number uses less memory |
-| `proof` | how the `proof` gate runs Kani: `packages`, each passed as `-p` (the whole workspace), `timeout_s` of the verification run (1800, or `CHOCK_TIMEOUT`), `mutants` (`proofs/kani/mutants`), and `require_cover`, which makes a harness with no `kani::cover!` trip (`false`) |
-| `tla` | how the `tla` gate checks TLA+ models: `dirs` (`["proofs/tla"]`), `workers` of one TLC or tlapm run (2), `timeout_s` of one cfg or of the proof of one module (300), `timeouts` by model or cfg, `inductive` (the models Apalache proves, each with its invariant; `{}` proves none), `length` (the steps of a bounded Apalache run) and `engines` (the engines of a model, `tlc`, `apalache` or both; both when left out) |
-| `verus` | how the `verus` gate runs Verus: `files` (`["proofs/verus/*.rs"]`), `mutants` (`proofs/verus/mutants`), `args` after the file (`["--crate-type=lib"]`) and `timeout_s` of one run (600) |
 | `not_mutated` | Rust files `mutest` does not mutate, each a `path` from the root with the `why`; a path that is no source mutest mutates fails the run |
 | `history` | `accepted`: credentials published on purpose, such as a test key, each named by `commit`, `path` and `rule` with the `reason` it is safe; `history` no longer reports them |
 | `vcs` | `git` or `outpost`, for a tree both hold, when you want to name the one chock reads |
@@ -130,12 +125,6 @@ An inline module and a function around a nested function are parts of the name t
 the strongest verdict and the tests of each target. The hash changes when the text of the
 function changes, and not when another function changes. Any SHA-256 of the same bytes gives the
 same hash, so another tool can compare its own hash of a function with the row.
-
-`"mutest_proofs": true` lets Kani kill a mutation that no test detects. chock rebuilds the mutated
-file in a copy of the project under `target/test-scratch/`. It runs the harnesses that the file
-defines, and the harnesses that check the contracts of its functions. A harness counts only where it
-verifies on the file as it is. Kani runs one job at a time, so `mutest` then runs in the suite's
-lane. Each mutation builds the crate again, so a run takes longer.
 
 mutest writes each type in its code with a full path, such as
 `::alloc::vec::Vec<u8, ::alloc::alloc::Global>`. Where the code of a mutation names `::alloc`, the

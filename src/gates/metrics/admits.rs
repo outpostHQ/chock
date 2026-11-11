@@ -5,17 +5,18 @@ mod covers;
 mod lean;
 mod reasons;
 mod rust;
+mod tla;
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::gates::proofs::tla::text::{self, Unit};
 use crate::project;
 use crate::run::baseline::{Keys, Series};
 use crate::run::report::Place;
 use crate::run::{Ctx, Gate, Group, Kind, Measurement};
 use covers::Covers;
 use reasons::Kept;
+use tla::Unit;
 
 /// The `admits` gate: proof steps that nothing checked, counted per file and word.
 pub const GATE: Gate = Gate {
@@ -127,17 +128,17 @@ fn steps(shown: &str, text: &str) -> Vec<(&'static str, usize)> {
 /// Each `ASSUME`, `ASSUMPTION` or `AXIOM` at column 0 that names no constant of its module: one that
 /// does bounds what a model may set, which TLC checks, and one that does not is a bare fact.
 fn assumed(text: &str) -> Vec<(&'static str, usize)> {
-    let units = text::units(&text::uncommented(text));
+    let units = tla::units(&tla::uncommented(text));
     let declares = |unit: &&Unit| matches!(unit.first(), "CONSTANT" | "CONSTANTS");
     let constant_units = units.iter().filter(declares);
     let constants: BTreeSet<&str> = constant_units
-        .flat_map(|unit| text::words(&unit.text))
+        .flat_map(|unit| tla::words(&unit.text))
         .collect();
     let fact = |unit: &Unit| {
         let word = ASSUMED.into_iter().find(|word| unit.first() == *word)?;
         // `ASSUME … PROVE` at column 0 is the statement of a theorem, not an assumption.
         let bounds = |name: &str| constants.contains(name) || name == "PROVE";
-        let bounded = text::words(&unit.text).any(bounds);
+        let bounded = tla::words(&unit.text).any(bounds);
         (!bounded).then_some((word, unit.line))
     };
     units.iter().filter_map(fact).collect()

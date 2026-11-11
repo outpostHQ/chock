@@ -35,10 +35,8 @@
     "hygiene",
     "idempotent",
     "lean",
-    "laws",
     "lenses",
     "lines",
-    "links",
     "lint",
     "manifest",
     "measures",
@@ -53,7 +51,6 @@
     "pinned",
     "placement",
     "profile",
-    "proof",
     "scan",
     "seams",
     "slop",
@@ -63,7 +60,6 @@
     "supply",
     "test",
     "testlint",
-    "tla",
     "toolchain",
     "typos",
     "unread",
@@ -71,7 +67,6 @@
     "unsafety",
     "unused",
     "unused-deep",
-    "verus",
     "wiring",
     "workflows",
     "wrappers"
@@ -132,7 +127,6 @@
     "binsize": "ci",
     "bsize": "ci",
     "miri": "ci",
-    "mutest": "ci",
-    "proof": "ci"
+    "mutest": "ci"
   }
 }

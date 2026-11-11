@@ -9,6 +9,10 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   one more `.clone()` is chained on another, or made on every pass through a loop. `blocking-async`
   trips when one more blocking `std::fs`, `std::thread::sleep` or `std::net` call runs inside an
   `async fn`. chock now checks a Rust project with 74 gates, 43 of them on by default.
+- **Removes the `proof`, `tla` and `verus` gates, and `links` and `laws` with them.** Kani, TLA+
+  and Verus proofs move to a separate tool, `proofhouse`, gate by gate. `admits` still counts an
+  unaudited escape, such as `kani::assume` or a bare `ASSUME`, in whatever proof tooling a project
+  keeps using on its own code.
 
 ## [0.20.2] - 2026-11-02
 
@@ -306,10 +310,10 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `proc_macro2` in the gates and the token reader, and `std::process::Command` in `exec`, `init`
   and the oracle's sandbox. `owners` keeps each environment variable in one reader, so `PATH`
   and `JAVA_HOME` each have one now. `calls` wants a write before each `std::fs::rename`.
-- **chock proves its job counts with Verus.** `proofs/verus/jobs.rs` holds copies of six
-  functions that plan the jobs of a run. Verus proves that each gives at least one job, and no
-  more than the cores, the memory or the person allow. Each of its 8 mutants breaks one function,
-  and Verus must fail on it.
+- **chock proves its job counts with Verus.** A proof file holds copies of six functions that
+  plan the jobs of a run. Verus proves that each gives at least one job, and no more than the
+  cores, the memory or the person allow. Each of its 8 mutants breaks one function, and Verus
+  must fail on it. (Removed in 0.21.0, with the rest of the Verus, Kani and TLA+ gates.)
 - **`chock init --downloads` installs the Rust toolchain that the pinned Verus names.** The new
   `VERUS_SETUP` line runs `rustup toolchain install 1.99.1 --profile minimal`, so the `verus`
   gate runs in a new CI job too.

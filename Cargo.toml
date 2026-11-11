@@ -66,8 +66,8 @@ debug = "line-tables-only"
 
 # The lint floor that the `profile` gate holds a project to, and chock to it.
 [lints.rust]
-# mutest-rs and kani each set their own cfg while running; declaring them keeps cargo quiet.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(mutest)", "cfg(kani)"] }
+# mutest-rs sets its own cfg while running; declaring it keeps cargo quiet.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(mutest)"] }
 unsafe_code = "deny"
 missing_docs = "warn"
 missing_debug_implementations = "warn"

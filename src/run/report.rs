@@ -986,13 +986,15 @@ mod tests {
 
     #[test]
     fn a_gate_a_tool_stopped_says_the_install_in_the_run_as_it_ends_and_in_baseline() {
-        let reason = "`kani` is not installed, so this gate has nothing to run";
-        let mut stopped = GateReport::cannot_run("proof", "chock run proof", reason);
+        let reason = "`cargo-machete` is not installed, so this gate has nothing to run";
+        let mut stopped = GateReport::cannot_run("machete", "chock run machete", reason);
         stopped.fix = Some("run `chock init --global`".to_string());
-        let block = "\nproof — chock run proof\n  fix: run `chock init --global`";
+        let block = "\nmachete — chock run machete\n  fix: run `chock init --global`";
         assert_eq!(
             stopped.progress(),
-            format!("chock: proof CANNOT RUN after 0 s\n  proof      CANNOT RUN  {reason}{block}")
+            format!(
+                "chock: machete CANNOT RUN after 0 s\n  machete    CANNOT RUN  {reason}{block}"
+            )
         );
         let run = Run::new("0.1.0", vec![stopped]);
         assert!(
@@ -1175,8 +1177,8 @@ mod tests {
             "0.1.0",
             vec![
                 refused(
-                    "proof",
-                    "cargo kani could not list harnesses: error: could not compile `chock` (lib)",
+                    "machete",
+                    "cargo machete could not run: error: could not compile `chock` (lib)",
                 ),
                 refused(
                     "coverage",
@@ -1233,7 +1235,7 @@ mod tests {
         let run = Run::new(
             "0.1.0",
             vec![
-                refused("proof", "error[E0425]: cannot find function `f`"),
+                refused("machete", "error[E0425]: cannot find function `f`"),
                 refused(
                     "binsize",
                     "the release build failed: error[E0432]: unresolved import",
@@ -1280,7 +1282,11 @@ mod tests {
             "0.1.0",
             vec![
                 GateReport::cannot_run("acl", "chock run acl", "cargo-acl is not installed"),
-                GateReport::cannot_run("proof", "chock run proof", "kani is not installed"),
+                GateReport::cannot_run(
+                    "machete",
+                    "chock run machete",
+                    "cargo-machete is not installed",
+                ),
             ],
         );
         assert_eq!(other.not_compiling(), None);

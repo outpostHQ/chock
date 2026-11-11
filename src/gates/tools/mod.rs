@@ -8,7 +8,6 @@ mod doc;
 pub mod dupdeps;
 pub mod machete;
 pub mod miri;
-pub mod proof;
 pub mod shellcheck;
 pub(in crate::gates) mod suite;
 
@@ -146,10 +145,10 @@ pub const MUTEST: Gate = Gate {
     group: Group::OptIn,
     builds: true,
     // Both halves are in the tree: the code it mutates and the tests that fail to notice. A local
-    // run mutates only the files the change touched. The config says whether proofs kill too.
+    // run mutates only the files the change touched.
     reads: Some(
         Reads::tree_and(&["cargo", "cargo-mutest"])
-            .versioned("watchdog-v1:isolated-v1:results-v1:scoped-v1:proofs-v1")
+            .versioned("watchdog-v1:isolated-v1:results-v1:scoped-v1")
             .and_change_set(),
     ),
     kind: Kind::AnnotatedRatchet {
@@ -630,7 +629,7 @@ fn typos_with_rules(
 }
 
 /// Files chock's own gates write into the tree, which typos must not read.
-const WRITTEN_BY_CHOCK: [&str; 3] = ["**/lcov.info", "**/kani-list.json", "**/.chock/**"];
+const WRITTEN_BY_CHOCK: [&str; 2] = ["**/lcov.info", "**/.chock/**"];
 
 /// A word typos does not know, and the file holding it; never the line, which moves with edits.
 #[derive(serde::Deserialize)]
@@ -1333,8 +1332,6 @@ mod tests {
                 "**/vendor/**",
                 "--exclude",
                 "**/lcov.info",
-                "--exclude",
-                "**/kani-list.json",
                 "--exclude",
                 "**/.chock/**"
             ]
