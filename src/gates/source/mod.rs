@@ -33,7 +33,7 @@ pub const GATE: Gate = Gate {
     about: "lints blanket-disabled or suppressed without a reason, and two security shapes",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&["cargo"]).versioned("source-v1")),
     // A ratchet: a mature tree can hold many suppressions, so the gate only stops them growing.
     kind: Kind::Ratchet {
         measure,
