@@ -25,7 +25,7 @@ fn first_record(gate: &Gate, ctx: &Ctx, read: Measurement, keys: Keys, unit: &st
     let total = now.summed();
     let mut report = numbered(gate, Verdict::Pass, total, total, unit);
     report.findings = first_notes(gate, read.findings);
-    if let Err(why) = touched(&mut report, gate, ctx, &now, &now, keys) {
+    if let Err(why) = touched(&mut report, gate, ctx, &now, &now, keys, &read.details) {
         return GateReport::cannot_run(gate.name, rerun(gate.name).as_str(), &why);
     }
     report.tightened = Some(now);
@@ -60,7 +60,7 @@ pub(super) fn measured_ratchet(
     let mut report = numbered(gate, verdict, total, against.summed(), unit);
     report.findings = findings;
     report.findings.extend(read.findings);
-    if let Err(why) = touched(&mut report, gate, ctx, &now, &against, keys) {
+    if let Err(why) = touched(&mut report, gate, ctx, &now, &against, keys, &read.details) {
         return GateReport::cannot_run(gate.name, rerun(gate.name).as_str(), &why);
     }
     lock_in(&mut report, gate, ctx, now.tightened(&was, keys), &was);

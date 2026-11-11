@@ -225,13 +225,14 @@ fn called_from_outside(name: &str, attrs: &[syn::Attribute]) -> bool {
     name == "main" || attrs.iter().any(excuses)
 }
 
-/// Attributes that hand a function to something outside this crate: an exported symbol, a bench or
-/// kani harness, or a binding another language calls.
-const BY_NAME: [&str; 8] = [
+/// Attributes that hand a function to something outside this crate: an exported symbol, a bench,
+/// kani, or bounded-proof harness, or a binding another language calls.
+const BY_NAME: [&str; 9] = [
     "no_mangle",
     "export_name",
     "bench",
     "proof",
+    "bounded",
     "pyfunction",
     "pymodule",
     "wasm_bindgen",
@@ -629,6 +630,11 @@ mod tests {
         assert!(is_entry_point("#[test]\nfn t() {}\n", "t").unwrap());
         assert!(is_entry_point("fn main() {}\n", "main").unwrap());
         assert!(!is_entry_point("fn plain() {}\n", "plain").unwrap());
+    }
+
+    #[test]
+    fn a_bounded_proof_harness_is_an_entry_point() {
+        assert!(is_entry_point("#[laws::bounded]\nfn b() {}\n", "b").unwrap());
     }
 
     #[test]

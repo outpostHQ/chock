@@ -5,7 +5,8 @@ use serde::Deserialize;
 use crate::exec;
 use crate::gates::metrics::prodlines;
 use crate::run::baseline::{Keys, Series};
-use crate::run::{Ctx, Gate, Group, Kind};
+use crate::run::report::{Detail, Place};
+use crate::run::{Ctx, Details, Gate, Group, Kind, Measurement};
 
 /// Counts defects that shipped before, and untrusted input that reaches a sink.
 pub const GATE: Gate = Gate {
@@ -14,14 +15,14 @@ pub const GATE: Gate = Gate {
     group: Group::OptIn,
     builds: false,
     reads: Some(crate::run::verdicts::OUTPOST),
-    kind: Kind::Ratchet {
+    kind: Kind::AnnotatedRatchet {
         measure,
         keys: Keys::Items,
         unit: "finding(s)",
     },
 };
 
-fn measure(ctx: &Ctx) -> Result<Series, String> {
+fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     read_scan(&super::spawn(&ctx.root, &["scan", "rules", "--json"])?)
 }
 
@@ -46,11 +47,13 @@ struct Language {
 struct Found {
     rule: String,
     file: String,
+    #[serde(default)]
+    line: Option<u32>,
 }
 
 /// Rule and taint findings outside the files only tests build, which Outpost may miss; a scan
 /// that read no files is an error, not a clean tree.
-fn read_scan(out: &exec::Output) -> Result<Series, String> {
+fn read_scan(out: &exec::Output) -> Result<Measurement, String> {
     let scan: Scan = super::read(out, "scan")?;
     if scan.languages.values().all(|read| read.files == 0) {
         return Err(super::nothing_read("rule"));
@@ -61,14 +64,32 @@ fn read_scan(out: &exec::Output) -> Result<Series, String> {
     ))
 }
 
-/// Keyed by file and rule, not line, so an edit above a finding does not read as a new one.
-fn keyed<'a>(findings: impl Iterator<Item = &'a Found>) -> Series {
+/// Most hits of one key its finding names as places; Outpost's own output holds the rest.
+const PLACES: usize = 20;
+
+/// Keyed by file and rule, not line, so an edit above a finding does not read as a new one. The
+/// first line stands for the key; each further one past it becomes a place `chock explain` shows.
+fn keyed<'a>(findings: impl Iterator<Item = &'a Found>) -> Measurement {
     let mut series = Series::new();
+    let mut details = Details::new();
     for found in findings {
         let key = format!("{}#{}", found.file, found.rule);
         series.set(&key, series.get(&key).unwrap_or(0) + 1);
+        let Some(line) = found.line else { continue };
+        let detail: &mut Detail = details.entry(key).or_default();
+        if detail.line.is_none() {
+            detail.line = Some(line);
+        } else if detail.places.len() < PLACES {
+            detail.places.push(Place::at("hit", &found.file, line));
+        }
     }
-    series
+    Measurement {
+        series,
+        findings: Vec::new(),
+        details,
+        unmeasured: Vec::new(),
+        faults: Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -89,14 +110,18 @@ mod tests {
         )
     }
 
+    fn found_at(file: &str, rule: &str, line: u32) -> String {
+        format!(r#"{{"file":"{file}","rule":"{rule}","line":{line}}}"#)
+    }
+
     fn found(file: &str, rule: &str) -> String {
-        format!(r#"{{"file":"{file}","rule":"{rule}","line":1}}"#)
+        found_at(file, rule, 1)
     }
 
     #[test]
     fn a_finding_is_keyed_by_the_file_and_the_rule_that_found_it() {
         let out = scanned(51, &found("src/a.rs", "interpolated-command"));
-        let series = read_scan(&out).unwrap();
+        let series = read_scan(&out).unwrap().series;
         assert_eq!(series.get("src/a.rs#interpolated-command"), Some(1));
     }
 
@@ -107,8 +132,29 @@ mod tests {
             found("src/a.rs", "discarded-result"),
             found("src/a.rs", "discarded-result")
         );
-        let series = read_scan(&scanned(51, &both)).unwrap();
+        let series = read_scan(&scanned(51, &both)).unwrap().series;
         assert_eq!(series.get("src/a.rs#discarded-result"), Some(2));
+    }
+
+    #[test]
+    fn a_finding_keeps_the_line_outpost_gave_it() {
+        let out = scanned(51, &found_at("src/a.rs", "interpolated-command", 7));
+        let read = read_scan(&out).unwrap();
+        let detail = read.details.get("src/a.rs#interpolated-command").unwrap();
+        assert_eq!(detail.line, Some(7));
+    }
+
+    #[test]
+    fn a_second_hit_under_one_key_is_a_place_beside_the_first_line() {
+        let both = format!(
+            "{},{}",
+            found_at("src/a.rs", "discarded-result", 3),
+            found_at("src/a.rs", "discarded-result", 9)
+        );
+        let read = read_scan(&scanned(51, &both)).unwrap();
+        let detail = read.details.get("src/a.rs#discarded-result").unwrap();
+        assert_eq!(detail.line, Some(3));
+        assert_eq!(detail.places, [Place::at("hit", "src/a.rs", 9)]);
     }
 
     #[test]
@@ -118,7 +164,7 @@ mod tests {
             found("src/a.rs", "half-an-inverse"),
             found("src/b.rs", "half-an-inverse")
         );
-        let series = read_scan(&scanned(51, &both)).unwrap();
+        let series = read_scan(&scanned(51, &both)).unwrap().series;
         assert_eq!(series.get("src/a.rs#half-an-inverse"), Some(1));
         assert_eq!(series.get("src/b.rs#half-an-inverse"), Some(1));
     }
@@ -130,7 +176,7 @@ mod tests {
             &found("src/a.rs", "discarded-result"),
             &found("src/cli.rs", "rust-path-traversal"),
         );
-        let series = read_scan(&out).unwrap();
+        let series = read_scan(&out).unwrap().series;
         assert_eq!(series.get("src/a.rs#discarded-result"), Some(1));
         assert_eq!(series.get("src/cli.rs#rust-path-traversal"), Some(1));
     }
@@ -138,7 +184,7 @@ mod tests {
     #[test]
     fn a_tree_whose_only_problem_is_a_flow_does_not_read_as_clean() {
         let out = flowed(55, "", &found("src/cli.rs", "rust-command-injection"));
-        let series = read_scan(&out).unwrap();
+        let series = read_scan(&out).unwrap().series;
         assert_eq!(series.get("src/cli.rs#rust-command-injection"), Some(1));
     }
 
@@ -154,12 +200,12 @@ mod tests {
         let out = flowed(9, &tested.join(","), &shipped);
         let mut only = Series::new();
         only.set("crates/a/src/lib.rs#unwrap-in-production", 1);
-        assert_eq!(read_scan(&out).unwrap(), only);
+        assert_eq!(read_scan(&out).unwrap().series, only);
     }
 
     #[test]
     fn a_tree_with_nothing_wrong_in_it_holds_nothing() {
-        assert_eq!(read_scan(&scanned(51, "")).unwrap(), Series::new());
+        assert_eq!(read_scan(&scanned(51, "")).unwrap().series, Series::new());
     }
 
     #[test]

@@ -887,6 +887,7 @@ fn touched(
     now: &Series,
     was: &Series,
     keys: Keys,
+    details: &Details,
 ) -> Result<(), String> {
     if keys != Keys::Items || !clean_when_touched(gate, ctx) {
         return Ok(());
@@ -905,7 +906,9 @@ fn touched(
         })
         .map(|(key, count)| {
             let said = format!("{count} {unit} in a file this change touched: `clean_when_touched` holds it to zero");
-            placed(key, &said).numbers(*count, was.get(key))
+            placed(key, &said)
+                .numbers(*count, was.get(key))
+                .detailed(details.get(key))
         })
         .collect();
     if !held.is_empty() {
@@ -951,7 +954,7 @@ mod tests {
     use crate::gates::tools::miri::Part;
     use crate::run::baseline::Baseline;
     use crate::run::compare::finding_for;
-    use crate::run::report::{Gating, locked_in};
+    use crate::run::report::{Detail, Gating, locked_in};
     use std::path::PathBuf;
 
     fn ctx_with(gate: &str, pairs: &[(&str, u64)]) -> Ctx {
@@ -1173,6 +1176,33 @@ mod tests {
         series.set("src/a.rs#over_record", 4);
         series.set("src/b.rs#untouched", 5);
         Ok(series)
+    }
+
+    fn one_file_four_ways_detailed(ctx: &Ctx) -> Result<Measurement, String> {
+        let mut read = Measurement::of(one_file_four_ways(ctx)?, Vec::new());
+        read.details.insert(
+            "src/a.rs#at_record".to_string(),
+            Detail {
+                line: Some(42),
+                places: Vec::new(),
+                fix: None,
+            },
+        );
+        Ok(read)
+    }
+
+    /// A finding `touched` raises for a file this change touched must still carry the line its
+    /// gate's own detail named, not a bare key with no place to open.
+    #[test]
+    fn a_finding_a_touched_file_holds_to_zero_keeps_the_line_its_detail_names() {
+        let gate = annotated_of(one_file_four_ways_detailed, Keys::Items, "lines");
+        let report = run_one(&gate, &kept_clean(Ok(vec!["src/a.rs".to_string()])));
+        let held = report
+            .findings
+            .iter()
+            .find(|f| f.item.as_deref() == Some("at_record"))
+            .unwrap();
+        assert_eq!(held.line, Some(42));
     }
 
     fn kept_clean(changed: Result<Vec<String>, String>) -> Ctx {
