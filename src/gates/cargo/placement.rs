@@ -15,7 +15,7 @@ pub const GATE: Gate = Gate {
     about: "every dependency is declared where a clone can build it, for the builds that use it",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&["cargo"]).versioned("placement-v1")),
     kind: Kind::Debt {
         inspect,
         unit: "misplaced dependency declaration(s)",
