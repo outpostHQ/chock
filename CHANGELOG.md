@@ -5,6 +5,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-12
+
 - **Two new gates, on by default: `clone-abuse` and `blocking-async`.** `clone-abuse` trips when
   one more `.clone()` is chained on another, or made on every pass through a loop. `blocking-async`
   trips when one more blocking `std::fs`, `std::thread::sleep` or `std::net` call runs inside an
