@@ -82,6 +82,21 @@ const PEDANTIC_LINTS: [&str; 10] = [
     "option_as_ref_cloned",
 ];
 
+/// Lints whose fix shortens the call site. Nothing requires one on its own; a gap fires only
+/// where a crate table lowers one a project's own workspace already turned on.
+const SHORTENING_LINTS: [&str; 10] = [
+    "match_bool",
+    "single_match_else",
+    "unnecessary_wraps",
+    "match_same_arms",
+    "needless_collect",
+    "map_unwrap_or",
+    "redundant_closure_for_method_calls",
+    "needless_continue",
+    "redundant_else",
+    "manual_let_else",
+];
+
 /// The groups among the floor. Each takes a lower priority than the single lints it holds.
 const GROUPS: [&str; 3] = ["rust_2018_idioms", "all", "pedantic"];
 
@@ -105,9 +120,14 @@ pub(super) struct Table<'a> {
 /// Holds one lint table to the floor. `promise` is the lowest `rust-version` among the crates that
 /// read the table.
 pub(super) fn hold(table: &Table<'_>, floor: Floor, promise: Option<Release>, review: &mut Review) {
+    let lowered_only: Vec<&'static str> = PEDANTIC_LINTS
+        .iter()
+        .chain(&SHORTENING_LINTS)
+        .copied()
+        .collect();
     let tools = [
         (RUST, &RUSTC_LINTS[..], &IDIOM_LINTS[..]),
-        (CLIPPY, &CLIPPY_LINTS[..], &PEDANTIC_LINTS[..]),
+        (CLIPPY, &CLIPPY_LINTS[..], &lowered_only[..]),
     ];
     for (tool, named, pedantic) in tools {
         let set = set_levels(table.doc, table.key, tool.name);
@@ -389,6 +409,24 @@ mod tests {
             gaps_in(&crate_of(&no_group, Floor::Enforced)),
             ["clippy::pedantic"]
         );
+    }
+
+    /// `FLOOR` names none of the shortening lints, so leaving each unset is no gap; a crate table
+    /// that lowers one back to `allow` is a gap for that lint alone.
+    #[test]
+    fn a_shortening_lint_left_unset_is_no_gap_but_lowered_to_allow_it_is_one() {
+        assert_eq!(
+            gaps_in(&crate_of(FLOOR, Floor::Enforced)),
+            Vec::<String>::new()
+        );
+        for name in SHORTENING_LINTS {
+            let allowed = format!("{FLOOR}{name} = \"allow\"\n");
+            assert_eq!(
+                gaps_in(&crate_of(&allowed, Floor::Enforced)),
+                [format!("clippy::{name}")],
+                "{name}"
+            );
+        }
     }
 
     #[test]

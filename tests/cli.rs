@@ -21,7 +21,10 @@ const OVER_LIMIT: &str = "// the first line\n// the second line\n// the third li
 
 const AT_LIMIT: &str = "// the first line\n// the second line\nfn main() {}\n";
 
-const MANIFEST: &str = "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n";
+// An empty [workspace] table, so cargo treats each fixture as its own workspace root instead of
+// joining the one at the real chock repo root, several directories up from `target/test-scratch`.
+const MANIFEST: &str =
+    "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[workspace]\n";
 
 /// A pin no machine can satisfy, so `doctor` has exactly one answer available to it.
 const IMPOSSIBLE_PIN: &str = "CHOCK_NOT_A_REAL_TOOL_VERSION=9.9.9\n";
@@ -2237,7 +2240,7 @@ fn feature_debt_can_be_adopted_but_a_new_feature_issue_cannot_hide_in_it() {
     put(
         &dir,
         "Cargo.toml",
-        &format!("{MANIFEST}\n[workspace]\n[features]\nstale = []\n"),
+        &format!("{MANIFEST}\n[features]\nstale = []\n"),
     );
     turn_on(&dir, &["features"]);
     exits(&dir, &["run", "features", "--ci", "--json"], 1);
