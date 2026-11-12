@@ -455,7 +455,7 @@
       "hazard_unordered_into_ordered": 0
     },
     "lines": {
-      "total": 95282
+      "total": 95475
     },
     "manifest": {},
     "measures": {
@@ -531,10 +531,10 @@
       "sparse_production": 6,
       "sparse_test": 160,
       "sparse_unknown": 0,
-      "stale_citations": 1,
+      "stale_citations": 3,
       "stale_citations_production": 1,
       "stale_citations_test": 0,
-      "stale_citations_unknown": 0,
+      "stale_citations_unknown": 3,
       "tracked_build_output": 0,
       "tracked_credentials": 0,
       "tracked_secret_files": 0,

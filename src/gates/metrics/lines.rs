@@ -1,11 +1,14 @@
 //! Every line of every text file the repository tracks, blank ones included, as `wc -l` counts
 //! them. A leaner tree holds this total down; chock's own records under `.chock` do not count.
 
+use std::collections::BTreeMap;
 use std::io::BufRead;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use crate::project::vcs::Kind as Vcs;
 use crate::run::baseline::{Keys, Series};
-use crate::run::{Ctx, Gate, Group, Kind};
+use crate::run::report::Finding;
+use crate::run::{Ctx, Gate, Group, Kind, Measurement};
 
 /// The `lines` gate: the line count of every tracked text file.
 pub const GATE: Gate = Gate {
@@ -16,7 +19,7 @@ pub const GATE: Gate = Gate {
     group: Group::OptIn,
     builds: false,
     reads: None,
-    kind: Kind::Ratchet {
+    kind: Kind::AnnotatedRatchet {
         measure,
         keys: Keys::Items,
         unit: "line(s)",
@@ -26,8 +29,17 @@ pub const GATE: Gate = Gate {
 /// The one key: the total over the tree, so a line that moves to another file is no change.
 const TOTAL: &str = "total";
 
+/// Most packages a note names; the rest grew too, but a short list reads better than a long one.
+const NAMED: usize = 3;
+
+fn measure(ctx: &Ctx) -> Result<Measurement, String> {
+    let series = totals(ctx)?;
+    let findings = grown_packages(ctx)?;
+    Ok(Measurement::of(series, findings))
+}
+
 /// A record that another gate changes would move this total, so chock's own files do not count.
-fn measure(ctx: &Ctx) -> Result<Series, String> {
+fn totals(ctx: &Ctx) -> Result<Series, String> {
     let mut total = 0;
     for shown in crate::project::vcs::tracked(&ctx.root, ctx.vcs)? {
         if !shown.starts_with(".chock/") {
@@ -37,6 +49,102 @@ fn measure(ctx: &Ctx) -> Result<Series, String> {
     let mut series = Series::new();
     series.set(TOTAL, total);
     Ok(series)
+}
+
+/// Lines a file gained and lost since `HEAD`, summed by package.
+#[derive(Default)]
+struct Delta {
+    grown: u64,
+    shrunk: u64,
+}
+
+/// The packages whose tracked lines grew most since `HEAD`, most grown first, as notes that name
+/// no file. Git only: an Outpost-tracked project has no match for `git show` at a revision.
+fn grown_packages(ctx: &Ctx) -> Result<Vec<Finding>, String> {
+    if ctx.vcs != Some(Vcs::Git) {
+        return Ok(Vec::new());
+    }
+    let dirty = crate::project::vcs::dirty(&ctx.root, ctx.vcs)?;
+    let dirs = package_dirs(ctx)?;
+    if dirty.is_empty() || dirs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut by_package: BTreeMap<String, Delta> = BTreeMap::new();
+    for shown in &dirty {
+        held_delta(ctx, &dirs, shown, &mut by_package)?;
+    }
+    Ok(named(by_package))
+}
+
+/// `shown`'s line delta since `HEAD`, added into its package's running total; a path with no
+/// package of its own, such as `.chock/`, adds nothing.
+fn held_delta(
+    ctx: &Ctx,
+    dirs: &[(PathBuf, String)],
+    shown: &str,
+    by_package: &mut BTreeMap<String, Delta>,
+) -> Result<(), String> {
+    if shown.starts_with(".chock/") {
+        return Ok(());
+    }
+    let Some(name) = nearest(dirs, &ctx.root.join(shown)) else {
+        return Ok(());
+    };
+    let before = match crate::project::vcs::text_at(&ctx.root, "HEAD", shown)? {
+        Some(text) => counted(text.as_bytes()).map_err(|e| format!("{shown}: {e}"))?,
+        None => 0,
+    };
+    let after = newlines(&ctx.root.join(shown)).map_err(|e| format!("{shown}: {e}"))?;
+    let held = by_package.entry(name.to_string()).or_default();
+    if after >= before {
+        held.grown += after - before;
+    } else {
+        held.shrunk += before - after;
+    }
+    Ok(())
+}
+
+/// The packages that grew net, most grown first, as a note each with no file.
+fn named(by_package: BTreeMap<String, Delta>) -> Vec<Finding> {
+    let mut grown: Vec<(String, u64)> = by_package
+        .into_iter()
+        .filter_map(|(name, d)| (d.grown > d.shrunk).then(|| (name, d.grown - d.shrunk)))
+        .collect();
+    grown.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    grown
+        .into_iter()
+        .take(NAMED)
+        .map(|(name, delta)| Finding::at("", &format!("{name} grew by {delta} line(s)")))
+        .collect()
+}
+
+/// Each workspace member's directory and name, from `cargo metadata`.
+fn package_dirs(ctx: &Ctx) -> Result<Vec<(PathBuf, String)>, String> {
+    let metadata_json = crate::project::metadata(&ctx.root)?;
+    let metadata: crate::project::workspace::Metadata =
+        serde_json::from_str(&metadata_json).map_err(|e| format!("cargo metadata: {e}"))?;
+    let members: std::collections::HashSet<&str> = metadata
+        .workspace_members
+        .iter()
+        .map(String::as_str)
+        .collect();
+    Ok(metadata
+        .packages
+        .into_iter()
+        .filter(|package| members.contains(package.id.as_str()))
+        .filter_map(|package| {
+            let dir = Path::new(&package.manifest_path).parent()?.to_path_buf();
+            Some((dir, package.name))
+        })
+        .collect())
+}
+
+/// The package whose directory is the deepest ancestor of `file`.
+fn nearest<'a>(dirs: &'a [(PathBuf, String)], file: &Path) -> Option<&'a str> {
+    dirs.iter()
+        .filter(|(dir, _)| file.starts_with(dir))
+        .max_by_key(|(dir, _)| dir.components().count())
+        .map(|(_, name)| name.as_str())
 }
 
 /// The newline bytes in the file at `path`. A path that holds no file, such as a link, a submodule
@@ -123,10 +231,57 @@ mod tests {
         let baseline = crate::run::baseline::Baseline::empty("0.1.0");
         let mut ctx = Ctx::for_root(dir.to_path_buf(), baseline);
         ctx.vcs = Some(crate::project::vcs::Kind::Git);
-        let series = measure(&ctx).unwrap();
+        let series = measure(&ctx).unwrap().series;
         let keys = crate::testdir::rows(&series);
         assert_eq!(keys, [("total", 4)]);
         ctx.vcs = None;
         assert!(measure(&ctx).unwrap_err().contains("no repository"));
+    }
+
+    /// Two workspace members, one committed, then `a` grows and `b` shrinks on disk with nothing
+    /// committed: the note names `a` alone, by how much it grew net of what it lost.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_package_that_grew_on_disk_since_head_is_named_with_its_net_delta() {
+        let dir = crate::testdir::repo(
+            "lines-grown",
+            &[
+                ("Cargo.toml", "[workspace]\nmembers = [\"a\", \"b\"]\n"),
+                (
+                    "a/Cargo.toml",
+                    "[package]\nname = \"a\"\nversion = \"0.1.0\"\n",
+                ),
+                ("a/src/lib.rs", "fn a() {}\nfn a2() {}\n"),
+                (
+                    "b/Cargo.toml",
+                    "[package]\nname = \"b\"\nversion = \"0.1.0\"\n",
+                ),
+                ("b/src/lib.rs", "fn b() {}\nfn b2() {}\nfn b3() {}\n"),
+            ],
+        );
+        std::fs::write(
+            dir.join("a/src/lib.rs"),
+            "fn a() {}\nfn a2() {}\nfn a3() {}\nfn a4() {}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("b/src/lib.rs"), "fn b() {}\n").unwrap();
+        let baseline = crate::run::baseline::Baseline::empty("0.1.0");
+        let mut ctx = Ctx::for_root(dir.to_path_buf(), baseline);
+        ctx.vcs = Some(crate::project::vcs::Kind::Git);
+        let findings = grown_packages(&ctx).unwrap();
+        assert_eq!(Finding::rendered(&findings), ["?: a grew by 2 line(s)"]);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn a_tree_with_nothing_dirty_or_outside_git_names_no_package() {
+        let dir = crate::testdir::repo("lines-no-growth", &[("src/lib.rs", "fn a() {}\n")]);
+        let baseline = crate::run::baseline::Baseline::empty("0.1.0");
+        let mut ctx = Ctx::for_root(dir.to_path_buf(), baseline);
+        ctx.vcs = Some(crate::project::vcs::Kind::Git);
+        assert_eq!(grown_packages(&ctx).unwrap(), Vec::new());
+        ctx.vcs = Some(crate::project::vcs::Kind::Outpost);
+        std::fs::write(dir.join("src/lib.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+        assert_eq!(grown_packages(&ctx).unwrap(), Vec::new());
     }
 }
