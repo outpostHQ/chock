@@ -18,7 +18,7 @@ pub const GATE: Gate = Gate {
     about: "a document citing a line past the end of its file, or naming as absent a thing the tree holds, per file and rule",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("claims-v1")),
     kind: Kind::Debt {
         inspect,
         unit: "stale claim(s)",

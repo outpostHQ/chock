@@ -14,7 +14,7 @@ pub const GATE: Gate = Gate {
     about: "a function defined in this crate that nothing in it names",
     group: Group::OptIn,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("dead-v1")),
     kind: Kind::Binary(check),
 };
 

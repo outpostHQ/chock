@@ -12,7 +12,7 @@ pub const GATE: Gate = Gate {
     about: "every dependency names an immutable version or revision",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&["cargo"]).versioned("manifest-v1")),
     kind: Kind::Debt {
         inspect,
         unit: "unpinned dependency declaration(s)",

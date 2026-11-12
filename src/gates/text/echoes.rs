@@ -16,7 +16,7 @@ pub const GATE: Gate = Gate {
     about: "comments that say only what the code line under them says, per file",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("echoes-v1")),
     kind: Kind::AnnotatedRatchet {
         measure,
         keys: Keys::Items,

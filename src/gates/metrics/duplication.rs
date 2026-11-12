@@ -23,7 +23,7 @@ pub const GATE: Gate = Gate {
     about: "a function body copied elsewhere in the tree, exactly or near enough to merge",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("duplication-v1")),
     kind: Kind::AnnotatedRatchet {
         measure,
         // Keyed by item, so a new copy the baseline never saw trips the gate.

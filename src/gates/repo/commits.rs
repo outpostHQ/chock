@@ -10,7 +10,11 @@ pub const GATE: Gate = Gate {
     about: "every commit not yet upstream has a subject that fits and a body that is not an essay",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(
+        crate::run::verdicts::Reads::tree_and(&[])
+            .and_commits()
+            .versioned("commits-v1"),
+    ),
     kind: Kind::Binary(check),
 };
 

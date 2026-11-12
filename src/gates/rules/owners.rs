@@ -17,7 +17,7 @@ pub const GATE: Gate = Gate {
     about: "a value read through a call listed under `owners` is read in more than one file",
     group: Group::OptIn,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("owners-v1")),
     kind: Kind::Debt {
         inspect,
         unit: "read(s) of a value another file reads",

@@ -17,7 +17,7 @@ pub const GATE: Gate = Gate {
     about: "a function makes a call listed under `calls` without the call it must come after or with",
     group: Group::OptIn,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("calls-v1")),
     kind: Kind::Debt {
         inspect,
         unit: "unpaired call(s)",

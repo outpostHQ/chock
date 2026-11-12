@@ -10,7 +10,7 @@ pub const GATE: Gate = Gate {
     about: "a phrase the project lists under `forbidden` appears in its source",
     group: Group::OptIn,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("phrases-v1")),
     kind: Kind::Debt {
         inspect,
         unit: "forbidden phrase(s)",

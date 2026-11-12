@@ -21,7 +21,7 @@ pub const GATE: Gate = Gate {
             pin that leaves the documents trips until the record lets it go",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("pinned-v1")),
     kind: Kind::AnnotatedRatchet {
         measure,
         // One row per pin, zero while its test is there, so a pin taken out is a row that stops.

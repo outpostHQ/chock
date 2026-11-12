@@ -11,7 +11,7 @@ pub const GATE: Gate = Gate {
     about: "crates the dependency graph compiles more than once, against the count recorded",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&["cargo"]).versioned("dupdeps-v1")),
     // A ratchet, since most graphs already carry some duplicates.
     kind: Kind::Ratchet {
         measure,

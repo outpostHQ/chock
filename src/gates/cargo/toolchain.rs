@@ -11,7 +11,7 @@ pub const GATE: Gate = Gate {
             moves",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("toolchain-v1")),
     kind: Kind::Binary(check),
 };
 

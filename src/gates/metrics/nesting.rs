@@ -12,7 +12,7 @@ pub const GATE: Gate = Gate {
     about: "how deeply blocks nest inside a function, past a depth of four",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("nesting-v1")),
     kind: Kind::Ratchet {
         measure,
         keys: Keys::Items,

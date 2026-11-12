@@ -14,7 +14,7 @@ pub const GATE: Gate = Gate {
     about: "a Rust file over 1000 production lines grew, or a new one crossed the budget",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("bigfiles-v1")),
     kind: Kind::AnnotatedRatchet {
         measure,
         keys: Keys::Items,

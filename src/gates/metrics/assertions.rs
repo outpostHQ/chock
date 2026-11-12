@@ -16,7 +16,7 @@ pub const GATE: Gate = Gate {
     about: "tests asserting a length or a count rather than the values, per test",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("assertions-v1")),
     kind: Kind::Ratchet {
         measure,
         keys: Keys::Items,

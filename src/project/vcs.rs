@@ -587,7 +587,7 @@ pub fn unpushed(root: &Path, held: Option<Kind>) -> Result<Vec<(String, String)>
 }
 
 /// HEAD's commit and its upstream's, the two ends of the commits a push would carry; `none` for one
-/// git does not have. Then Outpost's head where it holds the tree. `None` where a tool fails.
+/// git does not have. Then, where Outpost holds the tree, its own head and its remote's tip.
 #[must_use]
 pub fn tips(root: &Path) -> Option<String> {
     let id = |rev: &str| {
@@ -596,17 +596,19 @@ pub fn tips(root: &Path) -> Option<String> {
         Some(named.unwrap_or_else(|| "none".to_string()))
     };
     let git = format!("{} {}", id("HEAD^{commit}")?, id("@{upstream}^{commit}")?);
-    with_outpost_head(root, git)
+    outpost_tips(root, git)
 }
 
-/// `git`, then Outpost's head where Outpost holds the tree: a tree both hold has two histories,
-/// and a gate counting commits may read either.
-fn with_outpost_head(root: &Path, git: String) -> Option<String> {
-    if outpost_home(root).is_none() {
+/// Outpost's own head and its remote's tip, joined to `git`; `git` alone where Outpost holds none.
+fn outpost_tips(root: &Path, git: String) -> Option<String> {
+    let Some(home) = outpost_home(root) else {
         return Some(git);
-    }
-    let head = outpost_tip(&exec::run("outpost", &["log", "--oneline", "-n", "1"], root).ok()?)?;
-    Some(format!("{git} {head}"))
+    };
+    let head = outpost_tip(&exec::run("outpost", &["log", "--oneline", "-n", "1"], &home).ok()?)?;
+    let remote = remote_tip(&home)
+        .ok()?
+        .unwrap_or_else(|| "none".to_string());
+    Some(format!("{git} {head} {remote}"))
 }
 
 /// The id of Outpost's newest commit, the first word `outpost log --oneline` prints.
@@ -1441,6 +1443,24 @@ mod tests {
         assert_eq!(head(&pushed), head(&reworded), "only the upstream moved");
         let alone = tips(&repo("vcs-tips-alone")).unwrap();
         assert!(alone.ends_with(" none"), "{alone}");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn where_outpost_holds_the_tree_tips_also_carries_its_head_and_remote() {
+        // Skipped where outpost is not installed.
+        let Some(root) = outpost_repo("vcs-tips-outpost") else {
+            return;
+        };
+        let run = |args: &[&str]| exec::run("outpost", args, &root).unwrap();
+        std::fs::write(root.join("a.rs"), "").unwrap();
+        assert!(run(&["add", "."]).success() && run(&["commit", "-m", "first"]).success());
+        let first = tips(&root).unwrap();
+        assert!(first.ends_with(" none"), "{first}");
+        std::fs::write(root.join("a.rs"), "fn f() {}\n").unwrap();
+        assert!(run(&["add", "."]).success() && run(&["commit", "-m", "second"]).success());
+        let second = tips(&root).unwrap();
+        assert_ne!(second, first, "a new outpost commit moves its own head");
     }
 
     #[test]

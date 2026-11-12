@@ -28,7 +28,7 @@ pub const GATE: Gate = Gate {
     about: "no function is harder to follow than the baseline records",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("complexity-v1")),
     kind: Kind::AnnotatedRatchet {
         measure,
         keys: Keys::Items,

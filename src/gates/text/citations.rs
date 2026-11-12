@@ -12,7 +12,7 @@ pub const GATE: Gate = Gate {
     about: "a doc comment naming a file this repository does not have, per file",
     group: Group::Quality,
     builds: false,
-    reads: None,
+    reads: Some(crate::run::verdicts::Reads::tree_and(&[]).versioned("citations-v1")),
     kind: Kind::Ratchet {
         measure,
         keys: Keys::Items,
