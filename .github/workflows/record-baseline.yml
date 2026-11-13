@@ -1,0 +1,181 @@
+name: record-baseline
+
+# Manual: re-records coverage and crap as every OS's CI sees them, not just one machine. Chains
+# linux -> macos -> windows so each `chock baseline` merges against the one before it.
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: record-baseline
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    name: Record on linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          components: llvm-tools-preview
+          cache: false
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          prefix-key: record-baseline
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@5885714d0a40a14b2535c6ffc051fd8e49aa9665 # v1.27.0
+
+      - name: Install the tools coverage and crap need
+        run: |
+          . ./tool-versions.env
+          cargo binstall -y --locked cargo-nextest@"$CARGO_NEXTEST_VERSION"
+          cargo binstall -y --locked cargo-llvm-cov@"$CARGO_LLVM_COV_VERSION"
+          cargo binstall -y --locked cargo-crap@"$CARGO_CRAP_VERSION"
+
+      - name: Install chock from this checkout
+        run: cargo install --locked --path .
+
+      - name: Fetch the pinned downloads
+        run: chock init --downloads
+
+      - name: Record coverage and crap as this system measures them
+        run: chock baseline coverage crap
+
+      - name: Keep the recorded baseline
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: baseline-after-linux
+          include-hidden-files: true
+          path: |
+            .chock/baseline.json
+            .chock/crap-baseline.json
+
+  macos:
+    name: Record on macos
+    needs: linux
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Take the baseline linux just recorded
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: baseline-after-linux
+          path: .
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          components: llvm-tools-preview
+          cache: false
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          prefix-key: record-baseline
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@5885714d0a40a14b2535c6ffc051fd8e49aa9665 # v1.27.0
+
+      - name: Install the tools coverage and crap need
+        run: |
+          . ./tool-versions.env
+          cargo binstall -y --locked cargo-nextest@"$CARGO_NEXTEST_VERSION"
+          cargo binstall -y --locked cargo-llvm-cov@"$CARGO_LLVM_COV_VERSION"
+          cargo binstall -y --locked cargo-crap@"$CARGO_CRAP_VERSION"
+
+      - name: Install chock from this checkout
+        run: cargo install --locked --path .
+
+      - name: Fetch the pinned downloads
+        run: chock init --downloads
+
+      - name: Record coverage and crap as this system measures them
+        run: chock baseline coverage crap
+
+      - name: Keep the recorded baseline
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: baseline-after-macos
+          include-hidden-files: true
+          path: |
+            .chock/baseline.json
+            .chock/crap-baseline.json
+
+  windows:
+    name: Record on windows
+    needs: macos
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Take the baseline macos just recorded
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: baseline-after-macos
+          path: .
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          components: llvm-tools-preview
+          cache: false
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          prefix-key: record-baseline
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@5885714d0a40a14b2535c6ffc051fd8e49aa9665 # v1.27.0
+
+      - name: Install the tools coverage and crap need
+        run: |
+          . ./tool-versions.env
+          cargo binstall -y --locked cargo-nextest@"$CARGO_NEXTEST_VERSION"
+          cargo binstall -y --locked cargo-llvm-cov@"$CARGO_LLVM_COV_VERSION"
+          cargo binstall -y --locked cargo-crap@"$CARGO_CRAP_VERSION"
+
+      - name: Install chock from this checkout
+        run: cargo install --locked --path .
+
+      - name: Fetch the pinned downloads
+        run: chock init --downloads
+
+      - name: Record coverage and crap as this system measures them
+        run: chock baseline coverage crap
+
+      - name: Keep the recorded baseline
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: baseline-recorded
+          include-hidden-files: true
+          path: |
+            .chock/baseline.json
+            .chock/crap-baseline.json
