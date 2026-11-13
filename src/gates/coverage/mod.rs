@@ -36,8 +36,7 @@ fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {FILE}: {e}"))?;
     let read = uncovered(&text, &ctx.root)?;
     let said = listed(&ctx.root, &read.lines)
-        .map(|listed| format!(" (every file's lines: {listed})"))
-        .unwrap_or_default();
+        .map_or_default(|listed| format!(" (every file's lines: {listed})"));
     let mut measured = read.held_to(&ctx.named_against(GATE.name));
     for finding in &mut measured.findings {
         finding.message.push_str(&said);
@@ -171,9 +170,7 @@ pub fn unmerged(ctx: &Ctx) -> Vec<String> {
         .report
         .get()
         .and_then(|report| report.as_ref().ok());
-    report
-        .map(|report| report.unmerged.clone())
-        .unwrap_or_default()
+    report.map_or_default(|report| report.unmerged.clone())
 }
 
 /// Refuses a record from a run that left a profile out: what that profile ran would read as debt.

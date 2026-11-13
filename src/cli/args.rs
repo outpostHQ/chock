@@ -276,7 +276,7 @@ fn miri_part(names: &[&str]) -> Result<Option<Part>, String> {
     match (asked.next(), asked.next()) {
         (_, Some(_)) => Err(format!("`{PARTITION}` is given twice")),
         (first, None) => first
-            .map(|value| Part::parse(value.strip_prefix('=').unwrap_or(value)))
+            .map(|value| Part::parse(value.trim_prefix('=')))
             .transpose(),
     }
 }

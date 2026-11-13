@@ -432,7 +432,7 @@ A workspace `[workspace.lints]` table takes the lowest promise among the members
 A file that `chock edited` names takes the promise of the nearest `Cargo.toml` above it.
 
 The `msrv` gate builds each crate on the release that its `rust-version` names. chock itself
-builds on Rust 1.99, which `rust-toolchain.toml` pins and its own `rust-version` promises. The
+builds on Rust 1.100, which `rust-toolchain.toml` pins and its own `rust-version` promises. The
 `toolchain` gate gives an advisory for a pin before `1.96.0`, as each such Cargo has a security
 fault that a later release fixes:
 

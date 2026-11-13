@@ -350,8 +350,7 @@ pub fn note_firing(root: &std::path::Path) {
 fn firing_at(now: std::time::SystemTime) -> String {
     let since = now
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|gone| gone.as_secs())
-        .unwrap_or_default();
+        .map_or_default(|gone| gone.as_secs());
     format!("{since}\n")
 }
 

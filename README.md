@@ -39,7 +39,7 @@ complexity — chock run complexity
 
 ## Quick start
 
-You need Rust 1.99.0 or newer, and a git or [Outpost](https://github.com/outpostHQ) repository.
+You need Rust 1.100.0 or newer, and a git or [Outpost](https://github.com/outpostHQ) repository.
 
 ```sh
 # once on each machine

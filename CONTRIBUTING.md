@@ -5,7 +5,7 @@
 - rustup, git, a C linker (`build-essential` on Debian or Ubuntu) and
   [just](https://github.com/casey/just).
 
-`just setup`, from the root of a clone, does the rest: the Rust 1.99.1 that `rust-toolchain.toml`
+`just setup`, from the root of a clone, does the rest: the Rust 1.100.0 that `rust-toolchain.toml`
 pins with `llvm-tools-preview` for the coverage checks, a nightly for `unused-deep`, this chock,
 every tool a gate runs at its version in `tool-versions.env`, and the hooks. The table
 [What a gate needs](docs/gates.md#what-a-gate-needs) says what each gate needs.
@@ -19,9 +19,8 @@ chock run             # every check this project has on
 
 chock checks itself. CI runs the same checks on Linux, macOS and Windows, with
 `RUSTFLAGS=-D warnings` and without Outpost, so run `RUSTFLAGS='-D warnings' chock run --ci` to
-see what it will see. `mutest` is the slow one here (about four minutes), then `proof` (five Kani
-harnesses, about a minute). `history` stays off because this is a git repository, not an Outpost
-one.
+see what it will see. `mutest` is the slow one here (about four minutes). `history` stays off because this is a git
+repository, not an Outpost one.
 
 The rules for changing the code, and for adding a check, are in [`AGENTS.md`](AGENTS.md).
 

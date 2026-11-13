@@ -828,8 +828,7 @@ fn finish_capture(
         .as_ref()
         .ok()
         .and_then(|(text, _)| marked(text))
-        .map(|line| format!("\nwhat it marked as the error: {line}"))
-        .unwrap_or_default();
+        .map_or_default(|line| format!("\nwhat it marked as the error: {line}"));
     let printed = waited
         .is_err()
         .then(|| stopped_streams(&out, &err))

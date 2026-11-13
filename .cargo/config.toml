@@ -2,3 +2,8 @@
 # and rewrote its hook declarations: git that cargo starts here stops looking at the scratch root.
 [env]
 GIT_CEILING_DIRECTORIES = { value = "target/test-scratch", relative = true }
+
+# Skips a dependency version published in the last 3 days, so a bad or compromised release
+# cannot reach a resolve the day it goes out.
+[registry]
+global-min-publish-age = "3 days"

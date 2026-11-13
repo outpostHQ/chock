@@ -387,7 +387,7 @@ fn switches_off(path: &syn::Path) -> bool {
 
 /// The lints an `allow(...)` or `expect(...)` names, with `reason = "…"` left out.
 fn lint_names(list: &syn::MetaList) -> Vec<String> {
-    listed(list).map(|(lints, _)| lints).unwrap_or_default()
+    listed(list).map_or_default(|(lints, _)| lints)
 }
 
 /// The sorted, deduplicated lints a list names and whether it states a reason; `None` if the

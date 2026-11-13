@@ -188,7 +188,7 @@ pub fn detail(file: &Parted) -> Option<Detail> {
 /// The file a part moves to: a child of the module it leaves.
 fn target(shown: &str, owner: &str) -> String {
     let name = snake(owner);
-    let stem = shown.strip_suffix(".rs").unwrap_or(shown);
+    let stem = shown.trim_suffix(".rs");
     match stem.rsplit_once('/') {
         Some((parent, "mod" | "lib" | "main")) => format!("{parent}/{name}.rs"),
         None if matches!(stem, "mod" | "lib" | "main") => format!("{name}.rs"),
@@ -199,7 +199,7 @@ fn target(shown: &str, owner: &str) -> String {
 /// The name of the module a file holds: its stem, or its directory's name for a `mod.rs`. A crate
 /// root has none.
 fn module_name(shown: &str) -> Option<&str> {
-    let stem = shown.strip_suffix(".rs").unwrap_or(shown);
+    let stem = shown.trim_suffix(".rs");
     let (parent, name) = stem.rsplit_once('/').unwrap_or(("", stem));
     match name {
         "lib" | "main" => None,

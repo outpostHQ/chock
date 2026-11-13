@@ -118,7 +118,7 @@ fn defined(
                 .replace('-', "_");
             let under = dir.strip_prefix(&printed).map(|rel| canonical.join(rel));
             let dir = under.unwrap_or_else(|_| dir.to_path_buf());
-            (name, dir.strip_prefix(&base).unwrap_or(&dir).to_path_buf())
+            (name, dir.trim_prefix(&base).to_path_buf())
         })
         .collect();
     let mut tests: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();

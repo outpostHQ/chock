@@ -14,7 +14,7 @@ and [the words chock uses](../README.md#words-chock-uses) first.
 
 ## 1. Install
 
-Do this once on each machine. You need Rust 1.99.0 or newer and a linker: `build-essential` on
+Do this once on each machine. You need Rust 1.100.0 or newer and a linker: `build-essential` on
 Debian and Ubuntu, `xcode-select --install` on macOS, the MSVC Build Tools on Windows.
 
 ```sh

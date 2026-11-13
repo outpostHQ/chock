@@ -157,8 +157,8 @@ impl Ctx {
                 .and_then(|set| set.not_shipped.clone())
                 .unwrap_or_default(),
             miri: config.and_then(|set| set.miri.clone()).unwrap_or_default(),
-            features: config.map(Config::cargo_features).unwrap_or_default(),
-            build: config.map(Config::cargo_build).unwrap_or_default(),
+            features: config.map_or_default(Config::cargo_features),
+            build: config.map_or_default(Config::cargo_build),
             commands: config
                 .and_then(|set| set.commands.clone())
                 .unwrap_or_default(),
@@ -367,7 +367,7 @@ pub fn runner_for(config: Option<&crate::project::config::Config>) -> Runner {
     let mut runner = default_runner();
     runner
         .argv
-        .extend(config.map(Config::cargo_features).unwrap_or_default());
+        .extend(config.map_or_default(Config::cargo_features));
     // nextest's own `--profile` is a nextest profile; cargo's is spelled `--cargo-profile` there.
     let build = config.map(Config::cargo_build);
     runner
@@ -407,7 +407,7 @@ pub fn coverage_for(config: Option<&crate::project::config::Config>) -> Coverage
     let mut coverage = default_coverage();
     coverage
         .argv
-        .extend(config.map(Config::cargo_features).unwrap_or_default());
+        .extend(config.map_or_default(Config::cargo_features));
     // `cargo llvm-cov nextest` documents no way to be told either, so it would cover the host.
     if config.is_some_and(|set| !set.cargo_build().is_empty()) {
         coverage.report = std::sync::Arc::new(std::sync::OnceLock::from(Err(

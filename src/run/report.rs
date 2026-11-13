@@ -419,8 +419,7 @@ pub fn remember(
     let held = std::fs::read_to_string(&path)
         .ok()
         .and_then(|text| serde_json::from_str::<Run>(&text).ok())
-        .map(|last| last.gates)
-        .unwrap_or_default();
+        .map_or_default(|last| last.gates);
     let record = Run::new(chock_version, merged(held, stamped(reports)));
     crate::project::document::write(&path, &record.render_json())
 }

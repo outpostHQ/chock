@@ -249,7 +249,7 @@ pub fn unpinned(enabled: &dyn Fn(&str) -> bool, pins: &[Pin], downloads: &[Downl
 /// Every tool `gate` needs installed, from what it declares plus the list above, less the
 /// toolchain's own.
 fn tools_of(gate: &crate::run::Gate) -> Vec<&'static str> {
-    let declared = gate.reads.map(|reads| reads.tools).unwrap_or_default();
+    let declared = gate.reads.map_or_default(|reads| reads.tools);
     let undeclared = UNDECLARED
         .iter()
         .filter(|(name, _)| *name == gate.name)

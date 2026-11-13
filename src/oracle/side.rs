@@ -49,7 +49,7 @@ pub(super) struct Side<'a> {
 /// A path as a program prints it: Windows adds a prefix to a resolved path that no program shows.
 fn printed(path: &Path) -> String {
     let shown = path.to_string_lossy();
-    shown.strip_prefix(r"\\?\").unwrap_or(&shown).to_string()
+    shown.trim_prefix(r"\\?\").to_string()
 }
 
 impl<'a> Side<'a> {

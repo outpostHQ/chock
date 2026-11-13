@@ -131,7 +131,7 @@ pub(super) fn failure(out: &exec::Output, test: &str, what: &str) -> String {
         let lines = plain_lines(text);
         let at = lines.iter().position(|line| line.starts_with(&head))?;
         let place = &lines[at][head.len()..];
-        let place = place.strip_suffix(':').unwrap_or(place);
+        let place = place.trim_suffix(':');
         let said: Vec<&str> = (lines[at + 1..].iter().map(String::as_str))
             .take_while(|line| !line.is_empty() && !line.starts_with("note:"))
             .take(TAIL)
@@ -234,8 +234,7 @@ fn log_kept(root: &Path, gate: &str, out: &exec::Output) -> String {
         format!("--- tests: {tests} ---\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}");
     std::fs::create_dir_all(root.join(KEPT))
         .and_then(|()| crate::project::document::write(&root.join(&path), &text))
-        .map(|()| format!(" (the whole output: {path})"))
-        .unwrap_or_default()
+        .map_or_default(|()| format!(" (the whole output: {path})"))
 }
 
 /// How many tests passed, failed and were ignored, by their verdict lines: nextest's, or libtest's

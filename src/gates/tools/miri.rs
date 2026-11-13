@@ -234,8 +234,7 @@ fn limited(ctx: &Ctx, asked: &[String]) -> Result<(Limit, Vec<String>), String> 
 fn stamp() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_nanos())
-        .unwrap_or_default()
+        .map_or_default(|since| since.as_nanos())
 }
 
 /// The suite's verdict, naming each failed test: a failed assertion prints no span chock reads.

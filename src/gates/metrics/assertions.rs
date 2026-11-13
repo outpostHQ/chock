@@ -197,7 +197,7 @@ fn is_test(attrs: &[syn::Attribute]) -> bool {
 /// Whether an assertion macro compares a count. Only the compared values are read, never the panic
 /// message, and a size the test set up is excused.
 fn counts(macro_name: &str, tokens: proc_macro2::TokenStream, given: &Given) -> bool {
-    let name = macro_name.strip_prefix("debug_").unwrap_or(macro_name);
+    let name = macro_name.trim_prefix("debug_");
     assertion_kind(name).is_some_and(|(arity, judge)| {
         (|input: syn::parse::ParseStream<'_>| assertion_args(input, arity))
             .parse2(tokens)

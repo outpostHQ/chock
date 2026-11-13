@@ -55,7 +55,7 @@ fn within(root: &Path, workspace: &Path) -> String {
             joined
         })
     };
-    root.strip_prefix(&workspace).map(parts).unwrap_or_default()
+    root.strip_prefix(&workspace).map_or_default(parts)
 }
 
 /// One workflow command for each finding of a tripped gate and for each gate that could not run.

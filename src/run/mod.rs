@@ -698,8 +698,7 @@ fn said_nothing(said: Option<&str>) -> String {
     // The tail is often a build script's `cargo:` lines; a missing system library is far above.
     let marked = said
         .and_then(crate::exec::marked)
-        .map(|line| format!(" What it marked as the error: {line}."))
-        .unwrap_or_default();
+        .map_or_default(|line| format!(" What it marked as the error: {line}."));
     format!("{SAID_NOTHING}.{marked} {LAST_LINES}:\n{tail}")
 }
 

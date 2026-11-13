@@ -378,9 +378,8 @@ pub fn walk(
     enter: &dyn Fn(&str) -> bool,
     keep: &dyn Fn(&str, &Path) -> bool,
 ) -> Result<Vec<PathBuf>, String> {
-    let ignored = std::fs::read_to_string(root.join(".gitignore"))
-        .map(|text| ignored_dirs(&text))
-        .unwrap_or_default();
+    let ignored =
+        std::fs::read_to_string(root.join(".gitignore")).map_or_default(|text| ignored_dirs(&text));
     let mut found = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {

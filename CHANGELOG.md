@@ -5,6 +5,16 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-11-13
+
+- **Raises the minimum Rust to 1.100.0.** `rust-toolchain.toml` and `rust-version` both move to
+  1.100.0; the new clippy lints that toolchain carries needed fixing across the tree.
+- **Adopts `cargo::unused_dependencies` and `min-publish-age` from 1.100.0.** `Cargo.toml` turns on
+  the new `[lints.cargo]` lint; `.cargo/config.toml` sets `global-min-publish-age = "3 days"`, so a
+  dependency version published in the last three days is skipped while resolving.
+- **Moves `strip_prefix(...).unwrap_or(...)` call sites to 1.100.0's `trim_prefix`/`trim_suffix`.**
+  Internal only; no behaviour change.
+
 ## [0.21.0] - 2026-11-12
 
 - **Two new gates, on by default: `clone-abuse` and `blocking-async`.** `clone-abuse` trips when

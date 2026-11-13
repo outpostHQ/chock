@@ -74,7 +74,7 @@ pub(super) fn unified(resolved: &str, root: &Path) -> Result<BTreeSet<String>, S
         else {
             continue;
         };
-        let direct = edges.get(id).map(Vec::as_slice).unwrap_or_default();
+        let direct = edges.get(id).map_or_default(Vec::as_slice);
         let entries = package["dependencies"].as_array().into_iter().flatten();
         for entry in entries.filter(|entry| {
             entry["features"]
@@ -110,7 +110,7 @@ fn reached_otherwise(target: &str, direct: &[&str], edges: &BTreeMap<&str, Vec<&
         if !seen.insert(pkg) {
             continue;
         }
-        let deps = edges.get(pkg).map(Vec::as_slice).unwrap_or_default();
+        let deps = edges.get(pkg).map_or_default(Vec::as_slice);
         if deps.contains(&target) {
             return true;
         }
@@ -184,7 +184,7 @@ fn unnamed_anywhere(objected: &Series, sources: &BTreeMap<String, Vec<String>>) 
     let mut kept = Series::new();
     for (key, count) in &objected.0 {
         let (manifest, dependency) = key.split_once('#').unwrap_or((key.as_str(), ""));
-        let held = sources.get(manifest).map(Vec::as_slice).unwrap_or_default();
+        let held = sources.get(manifest).map_or_default(Vec::as_slice);
         if !names_crate(held, dependency) {
             kept.set(key, *count);
         }

@@ -387,7 +387,7 @@ impl Scored {
             Some(was) => format!("was {was:.1}"),
             None => "not in the baseline".to_string(),
         };
-        let why = self.inputs().map(|now| now.told(was)).unwrap_or_default();
+        let why = self.inputs().map_or_default(|now| now.told(was));
         Finding::at(
             &crate::project::relative(root, Path::new(&self.file)),
             &format!("CRAP {:.1}, {against}{why}", self.crap),
@@ -461,7 +461,7 @@ fn held_to(measured: &[Scored], record: &[Scored], root: &Path) -> BTreeMap<usiz
 /// # Errors
 /// Returns `Err` when the measured report does not parse.
 pub fn floors(measured: &str, record: &str, root: &Path) -> Result<BTreeMap<usize, f64>, String> {
-    let record = read(record).map(|held| held.entries).unwrap_or_default();
+    let record = read(record).map_or_default(|held| held.entries);
     Ok(held_to(&read(measured)?.entries, &record, root))
 }
 

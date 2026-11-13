@@ -522,11 +522,10 @@ pub fn leaves_out(root: &Path, own: &[&str]) -> Vec<String> {
 /// `own` for git's command line, which reads a pattern with a slash from the top of the repository.
 fn excludes(root: &Path, own: &[&str]) -> Vec<String> {
     let prefix = exec::run("git", &["rev-parse", "--show-prefix"], root)
-        .map(|out| out.stdout.trim().to_string())
-        .unwrap_or_default();
+        .map_or_default(|out| out.stdout.trim().to_string());
     own.iter()
         .map(|glob| {
-            let bare = glob.strip_prefix('/').unwrap_or(glob);
+            let bare = glob.trim_prefix('/');
             if glob.starts_with('/') || bare.trim_end_matches('/').contains('/') {
                 format!("--exclude=/{prefix}{bare}")
             } else {
@@ -540,11 +539,10 @@ fn excludes(root: &Path, own: &[&str]) -> Vec<String> {
 fn listed(root: &Path, args: &[&str]) -> Vec<String> {
     on_commit_index(root, args)
         .filter(exec::Output::success)
-        .map(|out| {
+        .map_or_default(|out| {
             let paths = out.stdout.split('\0').filter(|path| !path.is_empty());
             paths.map(str::to_string).collect()
         })
-        .unwrap_or_default()
 }
 
 /// Whether a file git tracks at or below `path` differs between the work tree and the index of

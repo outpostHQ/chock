@@ -297,8 +297,14 @@ impl Corpus {
         let mut units = Vec::new();
         let mut own = 1_u64 << 63;
         for holder in &self.holders {
-            for at in holder.first..holder.first + holder.len {
-                symbols.push(self.units[at].symbol.unwrap_or_else(|| {
+            for (at, unit) in self
+                .units
+                .iter()
+                .enumerate()
+                .skip(holder.first)
+                .take(holder.len)
+            {
+                symbols.push(unit.symbol.unwrap_or_else(|| {
                     own += 1;
                     own
                 }));

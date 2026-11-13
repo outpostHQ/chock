@@ -1,8 +1,8 @@
 [package]
 name = "chock"
-version = "0.21.0"
+version = "0.22.0"
 edition = "2024"
-rust-version = "1.99.0"
+rust-version = "1.100.0"
 description = "Quality gates for Rust: new code must be clean, and old debt has a limit that each fix lowers."
 license = "Apache-2.0"
 readme = "README.md"
@@ -98,3 +98,6 @@ panic_in_result_fn = "warn"
 as_conversions = "warn"
 redundant_clone = "warn"
 rc_buffer = "warn"
+
+[lints.cargo]
+unused_dependencies = "warn"

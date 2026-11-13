@@ -10,7 +10,7 @@ pub fn from_cargo_listing(listing: &str, crate_name: &str) -> Option<String> {
             return None;
         }
         let rest = line.strip_prefix(crate_name)?.strip_prefix(" v")?;
-        let version = rest.strip_suffix(':').unwrap_or(rest);
+        let version = rest.trim_suffix(':');
         version.split_whitespace().next().map(str::to_string)
     })
 }

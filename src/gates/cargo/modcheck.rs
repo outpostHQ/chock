@@ -343,7 +343,7 @@ fn base_dir(path: &str, role: Role) -> String {
     if role == Role::CrateRoot || stem(path) == "mod" {
         return beside(path);
     }
-    path.strip_suffix(".rs").unwrap_or(path).to_string()
+    path.trim_suffix(".rs").to_string()
 }
 
 /// The directory the file itself sits in, which is the anchor a top-level `#[path]` resolves from.
@@ -354,7 +354,7 @@ fn beside(path: &str) -> String {
 
 fn stem(path: &str) -> &str {
     let name = path.rsplit('/').next().unwrap_or(path);
-    name.strip_suffix(".rs").unwrap_or(name)
+    name.trim_suffix(".rs")
 }
 
 /// `.` and `..` resolved, so a `#[path]` reaching out of its own directory still matches a key.

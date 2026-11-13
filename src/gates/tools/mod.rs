@@ -829,7 +829,7 @@ pub fn rust_version(manifest: &str) -> Option<String> {
             "[workspace.package]" => &mut workspace,
             _ => continue,
         };
-        let key = line.strip_prefix("package.").unwrap_or(line);
+        let key = line.trim_prefix("package.");
         if held.is_none() {
             *held = declared_version(key);
         }

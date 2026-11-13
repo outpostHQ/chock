@@ -156,7 +156,7 @@ pub fn crates(root: &Path, metadata_json: &str) -> Result<Vec<Crate>, String> {
     let manifests: Vec<PathBuf> = members.iter().map(|package| manifest_of(package)).collect();
     let dirs: Vec<PathBuf> = manifests
         .iter()
-        .map(|manifest| manifest.parent().map(Path::to_path_buf).unwrap_or_default())
+        .map(|manifest| manifest.parent().map_or_default(Path::to_path_buf))
         .collect();
     let files = rust_files(root)?;
     let mut read = Vec::new();
@@ -196,15 +196,14 @@ fn rust_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 /// production, where it can hide a finding but never make one.
 fn sort(held: &mut Crate, dir: &Path, file: &Path) -> Result<(), String> {
     let src = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
-    let within = file.strip_prefix(dir).unwrap_or(file);
+    let within = file.trim_prefix(dir);
     let first = within
         .components()
         .next()
         .map(|part| part.as_os_str().to_string_lossy());
     let name = file
         .file_name()
-        .map(|name| name.to_string_lossy())
-        .unwrap_or_default();
+        .map_or_default(|name| name.to_string_lossy());
     let testing = matches!(first.as_deref(), Some("tests" | "benches" | "examples"))
         || crate::gates::metrics::prodlines::is_test_file(&name);
     if testing {

@@ -187,7 +187,7 @@ mod tests {
     fn each_scalar_keeps_the_line_it_starts_on() {
         let document = only("a: 1\nb:\n  - x\n  - {c: y}\n");
         assert_eq!(document.get("a"), Some(&scalar("1", 1)));
-        let items = document.get("b").map(Node::items).unwrap_or_default();
+        let items = document.get("b").map_or_default(Node::items);
         assert_eq!(items[0], scalar("x", 3));
         assert_eq!(items[1].get("c"), Some(&scalar("y", 4)));
     }

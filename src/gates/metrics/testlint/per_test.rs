@@ -98,8 +98,8 @@ const PLACEHOLDERS: [&str; 22] = [
 
 /// A name without the `test_` and the `_test` that say only that it is a test.
 fn claim(name: &str) -> &str {
-    let name = name.strip_prefix("test_").unwrap_or(name);
-    name.strip_suffix("_test").unwrap_or(name)
+    let name = name.trim_prefix("test_");
+    name.trim_suffix("_test")
 }
 
 fn placeholder_name(_: &FileScan, t: &TestItem) -> Option<String> {

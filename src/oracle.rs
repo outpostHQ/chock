@@ -345,7 +345,7 @@ fn tree(root: &Path, dir: &Path, into: &mut BTreeMap<String, u64>) -> Result<(),
         if STORES.iter().any(|store| path.ends_with(store)) {
             continue;
         }
-        let shown = path.strip_prefix(root).unwrap_or(&path).to_string_lossy();
+        let shown = path.trim_prefix(root).to_string_lossy();
         let (enter, hash) = held(&path).map_err(unread)?;
         into.insert(shown.replace('\\', "/"), hash);
         if enter {

@@ -45,7 +45,7 @@ pub(super) fn named_files(held: &syn::ItemMod, dir: &str, base: &str) -> Vec<Str
         return vec![format!("{dir}/{redirect}")];
     }
     let name = held.ident.to_string();
-    let name = name.strip_prefix("r#").unwrap_or(&name);
+    let name = name.trim_prefix("r#");
     vec![format!("{base}/{name}.rs"), format!("{base}/{name}/mod.rs")]
 }
 

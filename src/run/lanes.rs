@@ -118,8 +118,7 @@ pub(crate) fn recorded_tests(
     let mut gates = last_run(root);
     gates
         .find(|report| report.gate == gate)
-        .map(|report| report.tests_ms)
-        .unwrap_or_default()
+        .map_or_default(|report| report.tests_ms)
 }
 
 #[cfg(test)]
