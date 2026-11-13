@@ -35,7 +35,9 @@ jobs:
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@5885714d0a40a14b2535c6ffc051fd8e49aa9665 # v1.27.0
 
+      # cargo-deny builds from source; the setup step's build-warnings: deny stays off just here.
       - name: Install the pinned tools these gates need
+        env: { CARGO_BUILD_WARNINGS: warn }
         run: |
           . ./tool-versions.env
           cargo install --locked --git "$CARGO_DENY_GIT" --rev "$CARGO_DENY_REV" cargo-deny
@@ -102,8 +104,10 @@ jobs:
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@5885714d0a40a14b2535c6ffc051fd8e49aa9665 # v1.27.0
 
-      # A tool whose KEY_OS leaves out this system is not installed; `chock run` names its gate.
+      # A tool missing from KEY_OS is skipped (`chock run` names its gate); cargo-deny builds
+      # from source, so the setup step's build-warnings: deny stays off just here.
       - name: Install the pinned tools
+        env: { CARGO_BUILD_WARNINGS: warn }
         run: |
           . ./tool-versions.env
           here() { [[ -z "$1" || ",$1," == *",$SYSTEM,"* ]]; }
