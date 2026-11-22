@@ -121,6 +121,7 @@ jobs:
           path: |
             .chock/baseline.json
             .chock/crap-baseline.json
+            .chock/crap-baseline@macos.json
 
   windows:
     name: Record on windows
@@ -179,3 +180,5 @@ jobs:
           path: |
             .chock/baseline.json
             .chock/crap-baseline.json
+            .chock/crap-baseline@macos.json
+            .chock/crap-baseline@windows.json
