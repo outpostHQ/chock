@@ -77,11 +77,17 @@ impl std::ops::DerefMut for Held {
 /// compiles stops a gate.
 pub const UNPARSABLE: [(&str, &str); 2] = [("Cargo.toml", ""), ("src/lib.rs", "fn broken( {\n")];
 
+/// Where `fence` plants its trap. Fixed, not per-run: `.cargo/config.toml` points
+/// `GIT_CEILING_DIRECTORIES` at this exact path, so the trap must sit exactly there too.
+fn scratch_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch")
+}
+
 /// A fresh empty scratch directory, named for the caller so a leftover says who left it.
 #[must_use]
 pub fn make(name: &str) -> Scratch {
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch");
+    let root = scratch_root();
     fence(&root);
     let dir = root.join(format!("{name}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -90,11 +96,14 @@ pub fn make(name: &str) -> Scratch {
     Scratch(dir)
 }
 
-/// An empty git repository at the scratch root, where git stops if a mutant clears the ceiling that
-/// `.cargo/config.toml` sets, so that git never reaches the repository around the crate.
+/// An empty git repository at the scratch root, where git stops if a mutant clears the ceiling
+/// `.cargo/config.toml` sets. Marked with the nextest run that built it, so a later gate redoes it.
 fn fence(root: &Path) {
     let git = root.join(".git");
-    if git.join("HEAD").is_file() {
+    let run = std::env::var("NEXTEST_RUN_ID").unwrap_or_default();
+    let marker = git.join("fenced-by");
+    let seen = std::fs::read_to_string(&marker).ok();
+    if git.join("HEAD").is_file() && seen.as_deref() == Some(run.as_str()) {
         return;
     }
     let _ = std::fs::create_dir_all(git.join("objects"));
@@ -103,6 +112,9 @@ fn fence(root: &Path) {
     let part = git.join(format!("HEAD.{}", std::process::id()));
     let _ = std::fs::write(&part, "ref: refs/heads/main\n");
     let _ = std::fs::rename(&part, git.join("HEAD"));
+    let mpart = git.join(format!("fenced-by.{}", std::process::id()));
+    let _ = std::fs::write(&mpart, &run);
+    let _ = std::fs::rename(&mpart, &marker);
 }
 
 /// A scratch directory that holds `files`; a path that names directories gets them made.
@@ -202,8 +214,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn fencing_an_already_fenced_root_leaves_head_untouched() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch");
+        let root = scratch_root();
         fence(&root);
         let head = root.join(".git/HEAD");
         let before = std::fs::read_to_string(&head).unwrap();
