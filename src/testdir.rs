@@ -200,4 +200,16 @@ mod tests {
         let shown = path.display().to_string();
         assert!(!path.exists(), "it was left behind: {shown}");
     }
+
+    #[test]
+    fn fencing_an_already_fenced_root_leaves_head_untouched() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch");
+        fence(&root);
+        let head = root.join(".git/HEAD");
+        let before = std::fs::read_to_string(&head).unwrap();
+        // A second fence on the same root must take the early return, not rewrite HEAD.
+        fence(&root);
+        let after = std::fs::read_to_string(&head).unwrap();
+        assert_eq!(before, after, "fencing an already-fenced root rewrote HEAD");
+    }
 }

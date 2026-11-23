@@ -80,13 +80,7 @@ jobs:
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: baseline-after-linux
-          path: .baseline-staging
-
-      - name: Move the downloaded baseline into .chock
-        run: |
-          mkdir -p .chock
-          mv .baseline-staging/* .chock/
-          rmdir .baseline-staging
+          path: .chock
 
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
@@ -145,13 +139,7 @@ jobs:
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: baseline-after-macos
-          path: .baseline-staging
-
-      - name: Move the downloaded baseline into .chock
-        run: |
-          mkdir -p .chock
-          mv .baseline-staging/* .chock/
-          rmdir .baseline-staging
+          path: .chock
 
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
