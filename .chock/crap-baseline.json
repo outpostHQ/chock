@@ -1824,7 +1824,7 @@
     {"coverage":80.0,"crap":2.032,"crate":"chock","cyclomatic":2.0,"file":"src/project/vcs.rs","function":"outpost_diff","line":770,"uncovered":[{"end":770,"start":770}]},
     {"coverage":81.81818181818183,"crap":5.150262960180315,"crate":"chock","cyclomatic":5.0,"file":"src/project/vcs.rs","function":"outpost_home","line":318,"uncovered":[{"end":319,"start":319},{"end":327,"start":327}]},
     {"coverage":100.0,"crap":3.0,"crate":"chock","cyclomatic":3.0,"file":"src/project/vcs.rs","function":"outpost_tip","line":613},
-    {"coverage":90.0,"crap":4.016,"crate":"chock","cyclomatic":4.0,"file":"src/project/vcs.rs","function":"outpost_tips","line":601,"uncovered":[{"end":604,"start":604}]},
+    {"coverage":44.44444444444444,"crap":6.743484224965707,"crate":"chock","cyclomatic":4.0,"file":"src/project/vcs.rs","function":"outpost_tips","line":601,"uncovered":[{"end":609,"start":605}]},
     {"coverage":28.57142857142857,"crap":11.282658170232136,"crate":"chock","cyclomatic":4.0,"file":"src/project/vcs.rs","function":"outpost_unpushed","line":801,"uncovered":[{"end":814,"start":804}]},
     {"coverage":100.0,"crap":2.0,"crate":"chock","cyclomatic":2.0,"file":"src/project/vcs.rs","function":"own_paths","line":347},
     {"coverage":72.72727272727273,"crap":5.507137490608565,"crate":"chock","cyclomatic":5.0,"file":"src/project/vcs.rs","function":"paths","line":210,"uncovered":[{"end":212,"start":212},{"end":217,"start":217},{"end":221,"start":221}]},
