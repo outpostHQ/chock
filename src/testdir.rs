@@ -216,7 +216,10 @@ mod tests {
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn fencing_an_already_fenced_root_leaves_head_untouched() {
-        let root = scratch_root();
+        // Its own root, never touched by another test's `make()`, so both of fence's branches
+        // are this test's own doing, not a race against whichever other test ran first.
+        let root = scratch_root().join("fence-own");
+        let _ = std::fs::remove_dir_all(&root);
         fence(&root);
         let head = root.join(".git/HEAD");
         let before = std::fs::read_to_string(&head).unwrap();
@@ -224,5 +227,6 @@ mod tests {
         fence(&root);
         let after = std::fs::read_to_string(&head).unwrap();
         assert_eq!(before, after, "fencing an already-fenced root rewrote HEAD");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
