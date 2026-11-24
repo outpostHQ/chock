@@ -294,18 +294,21 @@ jobs:
             target/test-scratch/mutest-journal-*
           if-no-files-found: ignore
 
-  # The whole Miri suite on one runner, as a user's `chock run` gets it: its time is the gate's.
+  # The Miri suite split 4 ways per OS, each part on its own runner: CI's wall-clock no longer
+  # equals one `chock run miri`'s true local cost, traded away for speed (owner, 2026-11-24).
   miri:
-    name: Miri on ${{ matrix.system }}
+    name: Miri on ${{ matrix.system }} (${{ matrix.part }}/4)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
+        system: [linux, macos, windows]
+        part: [1, 2, 3, 4]
         include:
-          - { os: ubuntu-latest, system: linux }
-          - { os: macos-latest, system: macos }
-          - { os: windows-latest, system: windows }
+          - { system: linux, os: ubuntu-latest }
+          - { system: macos, os: macos-latest }
+          - { system: windows, os: windows-latest }
     defaults:
       run:
         shell: bash
@@ -324,7 +327,7 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          prefix-key: miri
+          prefix-key: miri-${{ matrix.part }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # nextest's own prebuilt file: on macOS, binstall timed out and built it from source (6 min).
@@ -349,4 +352,4 @@ jobs:
 
       # One gate by name here: the job above runs every gate, and chock refuses a name it lacks.
       - name: The Miri suite
-        run: chock run --ci miri
+        run: chock run --ci miri --miri-partition=${{ matrix.part }}/4
