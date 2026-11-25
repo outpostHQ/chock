@@ -474,7 +474,8 @@ pub fn run_one(gate: &Gate, ctx: &Ctx) -> GateReport {
     let kept = key
         .as_deref()
         .filter(|_| !ctx.no_cache)
-        .and_then(|key| crate::run::verdicts::recall(&ctx.root, gate.name, key));
+        .and_then(|key| crate::run::verdicts::recall(&ctx.root, gate.name, key))
+        .filter(|report| crate::run::verdicts::recallable(gate.reads, report));
     if let Some(mut report) = kept {
         // Marked, so a recalled verdict never reads as one taken now.
         report.recalled = true;
@@ -488,7 +489,8 @@ pub fn run_one(gate: &Gate, ctx: &Ctx) -> GateReport {
     report.peak_mb = peak.most();
     report.fix = advice(&report);
     report.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    if let Some(key) = kept_under(gate, ctx, key) {
+    let recallable = crate::run::verdicts::recallable(gate.reads, &report);
+    if let Some(key) = kept_under(gate, ctx, key).filter(|_| recallable) {
         crate::run::verdicts::keep(&ctx.root, gate.name, &key, &report);
     }
     report
@@ -1708,6 +1710,30 @@ mod tests {
         // What it judged took the place of the verdict kept before.
         let later = run_one(&declaring(never_checked), &ctx);
         assert_eq!((later.verdict, later.recalled), (Verdict::Tripped, true));
+    }
+
+    /// A failure of the tests may come from an environment variable that no key names, so it is not
+    /// kept, and one that an older chock kept answers nothing; a pass still answers.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_failure_of_the_tests_is_judged_again_and_a_pass_is_recalled() {
+        fn broken(_ctx: &Ctx) -> Result<Outcome, String> {
+            Ok(Outcome::failed(vec![Finding::at("a.rs", "broken")]))
+        }
+        let testing = |check: Check| Gate {
+            reads: Some(crate::run::verdicts::Reads::tree_and(&[]).and_tests()),
+            ..gate_of(Kind::Binary(check))
+        };
+        let dir = crate::testdir::tree("run-tests-again", &[("a.rs", "fn a() {}\n")]);
+        let ctx = Ctx::at(&dir);
+        let key = keyed(&testing(broken), &ctx).unwrap();
+        let tripped = run_one(&testing(broken), &ctx);
+        assert_eq!(tripped.verdict, Verdict::Tripped);
+        assert_eq!(crate::run::verdicts::recall(&dir, "probe", &key), None);
+        crate::run::verdicts::keep(&dir, "probe", &key, &tripped);
+        let again = run_one(&testing(agreeable), &ctx);
+        assert_eq!((again.verdict, again.recalled), (Verdict::Pass, false));
+        assert!(run_one(&testing(never_checked), &ctx).recalled);
     }
 
     /// Passes without reading anything, so the first run has a verdict worth keeping.

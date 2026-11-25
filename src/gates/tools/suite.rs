@@ -7,8 +7,12 @@ use std::path::Path;
 use super::{spans, verdict, whole};
 use crate::exec;
 use crate::project::config::Command;
+use crate::project::workspace::Metadata;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Outcome, Scope};
+
+mod features;
+pub(in crate::gates) mod printed;
 
 pub(super) fn test(ctx: &Ctx) -> Result<Outcome, String> {
     let (out, changed) = first_run(ctx)?;
@@ -121,8 +125,8 @@ pub(super) fn libtest_failure(line: &str) -> Option<String> {
         .map(|named| named.trim().to_string())
 }
 
-/// `what`, with the panic of `test` when either stream holds it: `panicked at <where>:` over its
-/// message, or the older one-line `panicked at '<message>', <where>`.
+/// `what`, with the panic of `test` from either stream (`panicked at <where>:` over its message, or
+/// `panicked at '<message>', <where>`), else on the lines below what its harness printed under it.
 pub(super) fn failure(out: &exec::Output, test: &str, what: &str) -> String {
     // libtest names a test's thread by its path; nextest puts its binary first.
     let path = test.rsplit(' ').next().unwrap_or(test);
@@ -143,7 +147,8 @@ pub(super) fn failure(out: &exec::Output, test: &str, what: &str) -> String {
         })
     });
     let Some(panic) = panic else {
-        return what.to_string();
+        return printed::under(out, test)
+            .map_or_else(|| what.to_string(), |it| format!("{what}\n{it}"));
     };
     let mut quoted: String = panic.chars().take(PANIC_CHARS).collect();
     if quoted.len() < panic.len() {
@@ -220,8 +225,10 @@ const KEPT: &str = "target/test-scratch/chock";
 /// own. A file that cannot be written leaves the findings as they are.
 fn kept_for(root: &Path, gate: &str, out: &exec::Output, found: &mut [Finding]) {
     let said = log_kept(root, gate, out);
+    // At the end of the first line, above what a harness printed under a failed test.
     for finding in found.iter_mut().filter(|finding| finding.file.is_empty()) {
-        finding.message.push_str(&said);
+        let end = finding.message.find('\n').unwrap_or(finding.message.len());
+        finding.message.insert_str(end, &said);
     }
 }
 
@@ -388,7 +395,7 @@ fn written_on_purpose(commands: &[Command], path: &str) -> bool {
 /// Runs whatever the project's `runner` setting names, since some suites need their own setup.
 /// A run that was stopped keeps what it printed under `gate`'s name.
 pub(super) fn suite(ctx: &Ctx, gate: &str) -> Result<exec::Output, String> {
-    let command = narrowed(&ctx.runner.argv, &ctx.scope)?;
+    let command = narrowed(&ctx.runner.argv, &ctx.scope, || members(&ctx.root))?;
     let (program, args) = command
         .split_first()
         .ok_or("the configured `runner` names no command")?;
@@ -396,9 +403,19 @@ pub(super) fn suite(ctx: &Ctx, gate: &str) -> Result<exec::Output, String> {
     exec::run(program, &args, &ctx.root).map_err(|e| stopped_run(&ctx.root, gate, &e))
 }
 
-/// The runner's argv narrowed to `scope`: `--package NAME` in place of `--workspace`, and the
-/// filter after the options, before any `--`. Only `cargo test` and `cargo nextest run` take both.
-fn narrowed(argv: &[String], scope: &Scope) -> Result<Vec<String>, String> {
+/// The workspace's members, read only for a run of one package that names features.
+fn members(root: &Path) -> Result<Metadata, String> {
+    serde_json::from_str(&crate::project::metadata(root)?)
+        .map_err(|e| format!("cargo metadata produced something unreadable: {e}"))
+}
+
+/// The runner's argv narrowed to `scope`: `--package NAME` for `--workspace`, the features it can
+/// take, and the filter after the options, before any `--`; only `cargo test` and nextest take them.
+fn narrowed(
+    argv: &[String],
+    scope: &Scope,
+    members: impl FnOnce() -> Result<Metadata, String>,
+) -> Result<Vec<String>, String> {
     if scope.named().is_none() {
         return Ok(argv.to_vec());
     }
@@ -420,15 +437,12 @@ fn narrowed(argv: &[String], scope: &Scope) -> Result<Vec<String>, String> {
         .position(|arg| arg == "--")
         .unwrap_or(tail.len());
     let (options, passed) = tail.split_at(end);
-    let whole = |arg: &&String| matches!(arg.as_str(), "--workspace" | "--all");
     let mut narrowed = head.to_vec();
-    if let Some(package) = &scope.package {
-        narrowed.extend(["--package".to_string(), package.clone()]);
-    }
-    let kept = options
-        .iter()
-        .filter(|arg| scope.package.is_none() || !whole(arg));
-    narrowed.extend(kept.cloned());
+    narrowed.extend(features::options(
+        options,
+        scope.package.as_deref(),
+        members,
+    )?);
     narrowed.extend(scope.filter.iter().cloned());
     narrowed.extend(passed.iter().cloned());
     Ok(narrowed)
@@ -455,6 +469,9 @@ mod tests {
         let named = format!("this test failed (the whole output: {path})");
         assert_eq!(found[0].message, named);
         assert_eq!(found[1].message, "expected `u8`");
+        let mut printed = [Finding::at("", "this test failed\n- left")];
+        kept_for(&root, "test", &out, &mut printed);
+        assert_eq!(printed[0].message, format!("{named}\n- left"));
         let kept = std::fs::read_to_string(root.join(path)).unwrap();
         let tests = "--- tests: 1 passed, 1 failed, 0 ignored ---";
         let whole = format!("{tests}\n--- stdout ---\n{failed}\n--- stderr ---\nit broke");
@@ -600,24 +617,61 @@ mod tests {
         };
         let nextest = argv("cargo nextest run --workspace --no-fail-fast");
         let whole = Scope::default();
-        assert_eq!(narrowed(&nextest, &whole), Ok(nextest.clone()));
+        assert_eq!(narrowed(&nextest, &whole, unread), Ok(nextest.clone()));
         let both = scope(Some("chock"), Some("rules::"));
         let expected = "cargo nextest run --package chock --no-fail-fast rules::";
-        assert_eq!(narrowed(&nextest, &both), Ok(argv(expected)));
+        assert_eq!(narrowed(&nextest, &both, unread), Ok(argv(expected)));
         let filter = scope(None, Some("rules::"));
         let expected = "cargo nextest run --workspace --no-fail-fast rules::";
-        assert_eq!(narrowed(&nextest, &filter), Ok(argv(expected)));
+        assert_eq!(narrowed(&nextest, &filter, unread), Ok(argv(expected)));
         let test = argv("sh wrap.sh cargo test --all --locked -- --include-ignored");
         let expected =
             "sh wrap.sh cargo test --package chock --locked rules:: -- --include-ignored";
-        assert_eq!(narrowed(&test, &both), Ok(argv(expected)));
+        assert_eq!(narrowed(&test, &both, unread), Ok(argv(expected)));
         let own = argv("make check");
-        let refused = narrowed(&own, &filter).unwrap_err();
+        let refused = narrowed(&own, &filter, unread).unwrap_err();
         assert!(
             refused.ends_with("the suite runs `make check`"),
             "{refused}"
         );
-        assert_eq!(narrowed(&own, &whole), Ok(own));
+        assert_eq!(narrowed(&own, &whole, unread), Ok(own));
+    }
+
+    /// The members are read only where they decide something: one package, and a feature flag.
+    fn unread() -> Result<Metadata, String> {
+        Err("read the members".to_string())
+    }
+
+    #[test]
+    fn one_package_keeps_the_features_it_can_take_and_the_workspace_keeps_them_all() {
+        let argv = |line: &str| line.split(' ').map(str::to_string).collect::<Vec<_>>();
+        let asked = argv("cargo nextest run --workspace --features a/x,b/y -- --exact");
+        let one = Scope {
+            package: Some("a".to_string()),
+            ..Scope::default()
+        };
+        let read = || {
+            serde_json::from_str(
+                r#"{"packages":[{"id":"a","name":"a","features":{"x":[]}},
+                   {"id":"b","name":"b","features":{"y":[]}}]}"#,
+            )
+            .map_err(|e: serde_json::Error| e.to_string())
+        };
+        let kept = argv("cargo nextest run --package a --features a/x -- --exact");
+        assert_eq!(narrowed(&asked, &one, read), Ok(kept));
+        assert_eq!(
+            narrowed(&asked, &one, unread),
+            Err("read the members".to_string())
+        );
+        let filtered = Scope {
+            filter: Some("t".to_string()),
+            ..Scope::default()
+        };
+        let all = argv("cargo nextest run --workspace --features a/x,b/y t -- --exact");
+        assert_eq!(narrowed(&asked, &filtered, unread), Ok(all));
+        let plain = argv("cargo nextest run --workspace --locked");
+        let only = argv("cargo nextest run --package a --locked");
+        assert_eq!(narrowed(&plain, &one, unread), Ok(only));
     }
 
     #[test]

@@ -19,7 +19,7 @@ pub const GATE: Gate = Gate {
     group: Group::OptIn,
     builds: true,
     // Asked through the nightly that holds it, so a new nightly is a new key.
-    reads: Some(Reads::tree_and(&["cargo +nightly miri", "cargo-nextest"])),
+    reads: Some(Reads::tree_and(&["cargo +nightly miri", "cargo-nextest"]).and_tests()),
     kind: Kind::Binary(checked),
 };
 

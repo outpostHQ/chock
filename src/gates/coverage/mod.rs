@@ -130,8 +130,9 @@ fn write_report(ctx: &Ctx) -> Result<Report, String> {
     .map_err(|e| format!("{e} — this gate needs a command that writes {FILE}"))?;
     if !run.success() {
         return Err(format!(
-            "the coverage run failed, so there is nothing to measure: {}",
-            run.failure_details()
+            "the coverage run failed, so there is nothing to measure: {}{}",
+            run.failure_details(),
+            crate::gates::tools::suite::printed::quoted(&run)
         ));
     }
     wrote(&path)?;

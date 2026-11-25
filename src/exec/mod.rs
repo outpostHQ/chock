@@ -464,7 +464,7 @@ impl Watchdog for Paced<'_> {
         }
         if past(self.since.elapsed(), self.limit) {
             Err(format!(
-                "no progress for {}s; cleanup requested",
+                "no progress for {}s{RAISED}; cleanup requested",
                 self.limit.as_secs()
             ))
         } else {
@@ -532,6 +532,9 @@ pub const TIMEOUT_SECS: u64 = 30 * 60;
 
 /// The environment variable that overrides `TIMEOUT_SECS`.
 pub const TIMEOUT: &str = "CHOCK_TIMEOUT";
+
+/// What a stopped run says after its limit, which every caller takes from `deadline`.
+const RAISED: &str = ", the limit that CHOCK_TIMEOUT=<seconds> raises";
 
 /// The per-tool deadline: `CHOCK_TIMEOUT` seconds if set, else `TIMEOUT_SECS`.
 #[must_use]
@@ -685,7 +688,7 @@ fn wait_until(
             return Err((
                 Stage::Hung,
                 format!(
-                    "still running after {}s; cleanup requested",
+                    "still running after {}s{RAISED}; cleanup requested",
                     limit.as_secs()
                 ),
             ));
@@ -1243,6 +1246,7 @@ mod tests {
         let cleaned = child.finish();
         assert_eq!(stage, Stage::Hung);
         assert!(why.contains("still running after"), "{why}");
+        assert!(why.contains("CHOCK_TIMEOUT=<seconds> raises"), "{why}");
         assert!(cleaned.is_ok(), "{cleaned:?}");
         assert!(started.elapsed() < std::time::Duration::from_secs(20));
     }
@@ -1553,7 +1557,7 @@ mod tests {
         );
         assert_eq!(
             paced.poll(),
-            Err("no progress for 0s; cleanup requested".to_string())
+            Err(format!("no progress for 0s{RAISED}; cleanup requested"))
         );
         assert_eq!(paced.complete(), Ok(()));
 

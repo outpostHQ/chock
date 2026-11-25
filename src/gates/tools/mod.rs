@@ -149,7 +149,8 @@ pub const MUTEST: Gate = Gate {
     reads: Some(
         Reads::tree_and(&["cargo", "cargo-mutest"])
             .versioned("watchdog-v1:isolated-v1:results-v1:scoped-v1")
-            .and_change_set(),
+            .and_change_set()
+            .and_tests(),
     ),
     kind: Kind::AnnotatedRatchet {
         measure: super::mutation::mutest::measure,
@@ -1157,6 +1158,17 @@ mod tests {
         let place = "panicked at src/a.rs:1:1: ";
         let kept = "x".repeat(PANIC_CHARS - place.len());
         assert_eq!(quoted, format!("this test failed: {place}{kept}…"));
+    }
+
+    /// mutest-rs's UI harness prints its diff under the `... FAILED` line, and no panic.
+    #[test]
+    fn a_failure_with_no_panic_quotes_what_its_harness_printed_under_it() {
+        let out = "test ui/a ... FAILED\n    exited with code 1\nstderr:\n- left\n+ right\n\n\
+                   test ui/b ... ok\n";
+        let quoted = failure(&ran(out, Some(101)), "ui/a", "this test failed");
+        let under = "    exited with code 1\nstderr:\n- left\n+ right";
+        assert_eq!(quoted, format!("this test failed\n{under}"));
+        assert_eq!(failure(&ran(out, Some(101)), "ui/b", "x"), "x");
     }
 
     /// nextest prints what a failed test wrote, and libtest's verdict line is in it.

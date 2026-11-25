@@ -34,20 +34,30 @@ pub struct Reads {
     pub change_set: bool,
     /// Whether the answer also reads the commits above the upstream, such as their messages.
     pub commits: bool,
+    /// Whether the answer comes from running the project's tests, which may read any environment
+    /// variable. No key can name those, so such a gate keeps its passes and judges a failure again.
+    pub tests: bool,
 }
 
 impl Reads {
+    /// The tree alone: no tool, runner, coverage, reader, change set, commits or tests.
+    const TREE: Self = Self {
+        tree: true,
+        tools: &[],
+        runner: false,
+        coverage: false,
+        reader: "",
+        change_set: false,
+        commits: false,
+        tests: false,
+    };
+
     /// A gate's answer depends on the tree and these tools only: no runner, coverage or change set.
     #[must_use]
     pub const fn tree_and(tools: &'static [&'static str]) -> Self {
         Self {
-            tree: true,
             tools,
-            runner: false,
-            coverage: false,
-            reader: "",
-            change_set: false,
-            commits: false,
+            ..Self::TREE
         }
     }
 
@@ -56,6 +66,7 @@ impl Reads {
     pub const fn tree_runner_and(tools: &'static [&'static str]) -> Self {
         Self {
             runner: true,
+            tests: true,
             ..Self::tree_and(tools)
         }
     }
@@ -65,6 +76,16 @@ impl Reads {
     pub const fn and_coverage(self) -> Self {
         Self {
             coverage: true,
+            tests: true,
+            ..self
+        }
+    }
+
+    /// The same inputs, with an answer that comes from running the project's tests.
+    #[must_use]
+    pub const fn and_tests(self) -> Self {
+        Self {
+            tests: true,
             ..self
         }
     }
@@ -234,6 +255,13 @@ pub fn clear(root: &Path) -> std::io::Result<usize> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
         Err(e) => Err(e),
     }
+}
+
+/// Whether a later run may recall this verdict of a gate that reads `reads`: not a failure of the
+/// project's tests, which an environment variable may have caused, and which no key can name.
+#[must_use]
+pub fn recallable(reads: Option<Reads>, report: &GateReport) -> bool {
+    report.verdict == Verdict::Pass || !reads.is_some_and(|reads| reads.tests)
 }
 
 /// Whether something was measured and no record waits to be written.
@@ -920,6 +948,31 @@ mod tests {
         );
         assert_eq!(recall(&dir, "probe", "def"), None);
         assert_eq!(recall(&dir, "other", "abc"), None);
+    }
+
+    /// A failure of the project's tests may come from an environment variable that no key names.
+    #[test]
+    fn only_a_pass_of_a_gate_that_runs_the_tests_is_recalled() {
+        let tripped = GateReport::new("probe", Verdict::Tripped, "chock run probe");
+        let runs = Reads::tree_runner_and(&["cargo"]);
+        assert!(recallable(Some(runs), &passed()));
+        assert!(!recallable(Some(runs), &tripped));
+        assert!(!recallable(
+            Some(Reads::tree_and(&[]).and_coverage()),
+            &tripped
+        ));
+        assert!(!recallable(
+            Some(Reads::tree_and(&[]).and_tests()),
+            &tripped
+        ));
+        assert!(recallable(Some(Reads::tree_and(&["cargo"])), &tripped));
+        let mut running: Vec<&str> = (crate::gates::registry().iter())
+            .filter(|gate| gate.reads.is_some_and(|reads| reads.tests))
+            .map(|gate| gate.name)
+            .collect();
+        running.sort_unstable();
+        let named = ["coverage", "crap", "idempotent", "miri", "mutest", "test"];
+        assert_eq!(running, named);
     }
 
     #[test]
