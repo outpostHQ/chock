@@ -51,10 +51,16 @@ fn inspect(ctx: &Ctx) -> Result<Inspection, String> {
     let targets = modcheck::reach(&ctx.root)?;
     let sources = prodlines::sources(ctx)?.into_iter();
     let shown = sources.map(|path| (project::relative(&ctx.root, &path), path));
+    let code = prodlines::TestCode::of(ctx)?;
     let mut scans = Vec::new();
     for (shown, path) in shown.filter(|(shown, _)| targets.compiles(shown)) {
         let raw = std::fs::read_to_string(&path).map_err(|e| format!("{shown}: {e}"))?;
-        scans.push(scan::scan_source(&shown, &raw));
+        let built = if code.whole(&shown) {
+            scan::Built::OnlyForTests
+        } else {
+            scan::Built::ByItsPath
+        };
+        scans.push(scan::scan_code(&shown, &raw, built));
     }
     let mut found: Vec<Finding> = scans.iter().flat_map(per_test::in_file).collect();
     found.extend(assertionless(&scans));
@@ -87,7 +93,7 @@ fn assertionless(scans: &[FileScan]) -> Vec<Finding> {
         let generated =
             |t: &TestItem| (t.attrs.end..t.body.start).any(|i| s.lexed.ident(i) == "in");
         let checks = |t: &TestItem| has_an_assertion(&s.lexed, t.body.clone(), &helpers);
-        let asserts = |t: &TestItem| generated(t) || checks(t);
+        let asserts = |t: &TestItem| generated(t) || per_test::expects_a_panic(s, t) || checks(t);
         let silent = |t: &&TestItem| !waived(t, NO_ASSERTION) && !asserts(t);
         found.extend(s.tests.iter().filter(silent).map(|t| {
             let detail = format!("`{}` asserts nothing", t.name);
@@ -416,6 +422,16 @@ mod tests {
         let src = "#[tokio::test]\nasync fn pushes_and_pulls() -> R { push().await?; Ok(()) }\n";
         let expected = "src/thing.rs:1: no-assertion: `pushes_and_pulls` asserts nothing";
         assert_eq!(found(src), [expected]);
+    }
+
+    #[test]
+    fn a_should_panic_that_names_its_panic_is_the_test_s_assertion() {
+        let test = "fn join_needs_the_input_length() { join(&[]); }\n";
+        let named = format!("#[test]\n#[should_panic(expected = \"the input length\")]\n{test}");
+        assert_eq!(found(&named), [""; 0]);
+        let bare = found(&format!("#[test]\n#[should_panic]\n{test}"));
+        let silent = "src/thing.rs:1: no-assertion: `join_needs_the_input_length` asserts nothing";
+        assert!(bare.iter().any(|line| line == silent), "{bare:?}");
     }
 
     #[test]
@@ -834,6 +850,36 @@ mod tests {
                 .to_string(),
         ];
         assert_eq!(Finding::rendered(&inspection.debt), expected);
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_helper_in_a_file_only_tests_build_asserts_for_the_tests_that_call_it() {
+        let ctx = crate::testdir::Held::tree(
+            "testlint-gated-helper",
+            &[
+                ("Cargo.toml", ""),
+                (
+                    "src/lib.rs",
+                    "#[cfg(all(test, feature = \"test\"))]\nmod contract;\nmod own;\n\
+                     #[cfg(test)]\nmod tests;\n",
+                ),
+                (
+                    "src/contract/mod.rs",
+                    "pub fn paints_in(seen: bool) {\n    assert!(seen);\n}\n",
+                ),
+                (
+                    "src/own.rs",
+                    "#![cfg(test)]\npub fn says(seen: bool) {\n    assert!(seen);\n}\n",
+                ),
+                (
+                    "src/tests.rs",
+                    "#[test]\nfn the_title_is_large() { crate::contract::paints_in(large()); }\n\
+                     #[test]\nfn the_lead_is_muted() { crate::own::says(muted()); }\n",
+                ),
+            ],
+        );
+        assert_eq!(Finding::rendered(&inspect(&ctx).unwrap().debt), [""; 0]);
     }
 
     #[test]

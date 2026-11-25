@@ -380,6 +380,81 @@ pub fn for_each_source<T>(
     Ok(out)
 }
 
+/// Like [`for_each_source`], but leaves out each file that [`TestCode`] calls test code as a whole.
+/// # Errors
+/// As [`for_each_source`] and [`TestCode::of`].
+pub fn for_each_shipped<T>(
+    ctx: &crate::run::Ctx,
+    of: &dyn Fn(&str) -> Result<T, String>,
+) -> Result<Vec<(String, T)>, String> {
+    let code = TestCode::of(ctx)?;
+    let mut read = for_each_source(ctx, of)?;
+    read.retain(|(shown, _)| !code.whole(shown));
+    Ok(read)
+}
+
+/// Where a tree's test code is: a whole file by its path, a parent's `#[cfg(test)] mod x;` or its
+/// own `#![cfg(test)]`, and each `#[cfg(test)]` module of the other files.
+#[derive(Debug, Default)]
+pub struct TestCode {
+    root: PathBuf,
+    /// The files and directories that a test-only module puts its code in.
+    gated: Vec<PathBuf>,
+    /// The line spans of the test modules in each production file, by root-relative path.
+    spans: std::collections::BTreeMap<String, Vec<(usize, usize)>>,
+}
+
+impl TestCode {
+    /// Parses each production source once. A file that cannot be read or parsed holds no known
+    /// test code; the gate that reads it says why.
+    /// # Errors
+    /// When the tree cannot be walked.
+    pub fn of(ctx: &crate::run::Ctx) -> Result<Self, String> {
+        let root = &ctx.root;
+        let mut code = Self {
+            root: root.clone(),
+            ..Self::default()
+        };
+        for path in walked(ctx, Kept::Production)?.0 {
+            let shown = project::relative(root, &path);
+            let Some(file) = fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| parse_rust(&s).ok())
+            else {
+                continue;
+            };
+            let mut mods = Mods::default();
+            mods.visit_file(&file);
+            code.gated.extend(gated_paths(&path, &mods.found));
+            if file.attrs.iter().any(is_test_gate) {
+                code.gated.extend(module_dir(&path));
+                code.gated.push(path);
+            }
+            code.spans
+                .insert(shown, mods.found.iter().map(|m| (m.from, m.to)).collect());
+        }
+        Ok(code)
+    }
+
+    /// Whether only tests build the whole file, given by its root-relative path.
+    #[must_use]
+    pub fn whole(&self, file: &str) -> bool {
+        let at = self.root.join(file);
+        is_test_path(file) || self.gated.iter().any(|gated| at.starts_with(gated))
+    }
+
+    /// Whether only tests build line `line` of a file, given by its root-relative path.
+    #[must_use]
+    pub fn holds(&self, file: &str, line: usize) -> bool {
+        let inside = |&(from, to): &(usize, usize)| (from..=to).contains(&line);
+        self.whole(file)
+            || self
+                .spans
+                .get(file)
+                .is_some_and(|spans| spans.iter().any(inside))
+    }
+}
+
 /// One row per `file#key` from what `for_each_source` read. Never keyed by line, which moves with
 /// every edit above it.
 pub(crate) fn keyed<I, K>(read: Vec<(String, I)>) -> Series

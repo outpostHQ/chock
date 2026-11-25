@@ -5,11 +5,11 @@ use syn::Expr;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
-use crate::gates::rules::{is_test, line_of};
+use crate::gates::rules::{Aliases, is_test, line_of, walk_production};
 use crate::run::baseline::Keys;
 use crate::run::{Ctx, Gate, Group, Kind, Measurement};
 
-use super::prodlines::{IntoHits, for_each_source, tallied, visited};
+use super::prodlines::{for_each_shipped, tallied};
 
 /// The `blocking-async` gate: a blocking filesystem, sleep or network call inside an async fn.
 pub const GATE: Gate = Gate {
@@ -26,7 +26,7 @@ pub const GATE: Gate = Gate {
 };
 
 fn measure(ctx: &Ctx) -> Result<Measurement, String> {
-    let read = for_each_source(ctx, &|src| hits(src))?;
+    let read = for_each_shipped(ctx, &|src| hits(src))?;
     let (series, details) = tallied(read, "call");
     Ok(Measurement::detailed(series, details))
 }
@@ -56,29 +56,24 @@ const WRAPPERS: [&str; 3] = ["asyncify", "spawn_blocking", "block_in_place"];
 
 /// Every blocking call inside an async fn, in a file's production code, by pattern and line.
 fn hits(src: &str) -> Result<Vec<(&'static str, u32)>, String> {
-    visited(
-        src,
-        Blocking {
-            asyncs: 0,
-            wrappers: 0,
-            hits: Vec::new(),
-        },
-    )
+    let with = |aliases| Blocking {
+        aliases,
+        asyncs: 0,
+        wrappers: 0,
+        hits: Vec::new(),
+    };
+    Ok(walk_production(src, with)?.hits)
 }
 
 struct Blocking {
+    /// What the file's `use` items bring in: a name from a crate other than `std` blocks nothing.
+    aliases: Aliases,
     /// How many `async fn` ancestors this point in the walk sits inside; a sync fn nested inside
     /// one does not leave it, since an ancestor further up still is one.
     asyncs: u32,
     /// How many wrapper calls, such as `spawn_blocking`, this point sits inside the arguments of.
     wrappers: u32,
     hits: Vec<(&'static str, u32)>,
-}
-
-impl IntoHits for Blocking {
-    fn into_hits(self) -> Vec<(&'static str, u32)> {
-        self.hits
-    }
 }
 
 impl Blocking {
@@ -139,11 +134,32 @@ impl<'ast> Visit<'ast> for Blocking {
         }
         if self.asyncs > 0
             && self.wrappers == 0
-            && let Some(pattern) = path_of(node).and_then(|parts| classify(&parts))
+            && let Some(pattern) = self.std_path(node).and_then(|parts| classify(&parts))
         {
             self.hits.push((pattern, line_of(node.func.span())));
         }
         syn::visit::visit_expr_call(self, node);
+    }
+
+    /// A call whose result is awaited returns a future, which no blocking `std` call does.
+    fn visit_expr_await(&mut self, node: &'ast syn::ExprAwait) {
+        match &*node.base {
+            Expr::Call(call) if !is_wrapper_call(call) => syn::visit::visit_expr_call(self, call),
+            _ => syn::visit::visit_expr_await(self, node),
+        }
+    }
+}
+
+impl Blocking {
+    /// The callee's path as written, unless a `use` brings its first name in from outside `std`.
+    fn std_path(&self, call: &syn::ExprCall) -> Option<Vec<String>> {
+        let Expr::Path(path) = &*call.func else {
+            return None;
+        };
+        let written = path_of(call)?;
+        let full = self.aliases.full(&path.path);
+        let elsewhere = full != written && full.first().is_none_or(|first| first != "std");
+        (!elsewhere).then_some(written)
     }
 }
 
@@ -212,12 +228,7 @@ mod tests {
     use super::*;
 
     fn lines(src: &str, pattern: &str) -> Vec<u32> {
-        hits(src)
-            .unwrap()
-            .into_iter()
-            .filter(|(found, _)| *found == pattern)
-            .map(|(_, line)| line)
-            .collect()
+        crate::gates::metrics::lines_of(hits(src), pattern)
     }
 
     #[test]
@@ -246,6 +257,26 @@ mod tests {
         assert_eq!(lines(qualified, "net-in-async"), [2]);
         let bare = "use std::net::TcpStream;\nasync fn f() {\n    TcpStream::connect(\"a\").unwrap();\n}\n";
         assert_eq!(lines(bare, "net-in-async"), [3]);
+    }
+
+    #[test]
+    fn a_name_brought_in_from_outside_std_blocks_nothing() {
+        let call = "async fn f() {\n    let l = TcpListener::bind(&a);\n    fs::read(\"x\");\n}\n";
+        let tokio = format!("use tokio::net::TcpListener;\nuse tokio::fs;\n{call}");
+        assert_eq!(hits(&tokio).unwrap(), Vec::<(&str, u32)>::new());
+        let std = format!("use std::net::TcpListener;\nuse std::fs;\n{call}");
+        assert_eq!(lines(&std, "net-in-async"), [4]);
+        assert_eq!(lines(&std, "fs-in-async"), [5]);
+    }
+
+    #[test]
+    fn an_awaited_call_is_no_blocking_std_call_but_its_arguments_may_be() {
+        let awaited = "async fn f() {\n    TcpListener::bind(&a).await.unwrap();\n}\n";
+        assert_eq!(hits(awaited).unwrap(), Vec::<(&str, u32)>::new());
+        let inside = "async fn f() {\n    send(std::fs::read(\"x\")).await;\n}\n";
+        assert_eq!(lines(inside, "fs-in-async"), [2]);
+        let unawaited = "async fn f() {\n    let l = TcpListener::bind(&a);\n}\n";
+        assert_eq!(lines(unawaited, "net-in-async"), [2]);
     }
 
     #[test]

@@ -60,22 +60,34 @@ fn tautology(s: &FileScan, t: &TestItem) -> Option<String> {
     shape.map(|shape| format!("`{}` contains {shape}", t.name))
 }
 
+/// The test's attributes named `word`, each as the tokens inside its brackets.
+fn named<'a>(s: &'a FileScan, t: &TestItem, word: &str) -> impl Iterator<Item = &'a [Tok]> {
+    let lexed = &s.lexed;
+    let attrs = lexed.attrs(t.attrs.clone());
+    let word = word.to_string();
+    attrs
+        .filter(move |&open| lexed.ident(open + 1) == word)
+        .map(|open| lexed.inside(open))
+}
+
+/// Whether an attribute holds a string with something in it.
+fn stated(inside: &[Tok]) -> bool {
+    let mut strings = inside.iter().filter_map(|tok| match tok {
+        Tok::Literal(text) => text.split('"').nth(1),
+        _ => None,
+    });
+    strings.next().is_some_and(|text| !text.trim().is_empty())
+}
+
 /// The test's first attribute named `word` that holds no string with something in it.
 fn bare<'a>(s: &'a FileScan, t: &TestItem, word: &str) -> Option<&'a [Tok]> {
-    let lexed = &s.lexed;
-    let named = lexed
-        .attrs(t.attrs.clone())
-        .filter(|&open| lexed.ident(open + 1) == word);
-    let stated = |inside: &[Tok]| {
-        let mut strings = inside.iter().filter_map(|tok| match tok {
-            Tok::Literal(text) => text.split('"').nth(1),
-            _ => None,
-        });
-        strings.next().is_some_and(|text| !text.trim().is_empty())
-    };
-    named
-        .map(|open| lexed.inside(open))
-        .find(|inside| !stated(inside))
+    named(s, t, word).find(|inside| !stated(inside))
+}
+
+/// Whether the test names the panic it expects: `#[should_panic(expected = "...")]` fails the
+/// test when the body does not panic with that text, so it is an assertion.
+pub(super) fn expects_a_panic(s: &FileScan, t: &TestItem) -> bool {
+    named(s, t, "should_panic").any(stated)
 }
 
 fn bare_ignore(s: &FileScan, t: &TestItem) -> Option<String> {

@@ -132,6 +132,22 @@ pub(crate) fn production(items: &[syn::Item]) -> Vec<&syn::Item> {
     kept
 }
 
+/// Walks a source's production items with the visitor that `with` makes from the file's `use`
+/// aliases, and gives the visitor back.
+/// # Errors
+/// When the source does not parse.
+pub(crate) fn walk_production<V>(src: &str, with: impl FnOnce(Aliases) -> V) -> Result<V, String>
+where
+    V: for<'ast> Visit<'ast>,
+{
+    let file = crate::gates::metrics::prodlines::parse_rust(src)?;
+    let mut visitor = with(Aliases::of(&file));
+    for item in production(&file.items) {
+        visitor.visit_item(item);
+    }
+    Ok(visitor)
+}
+
 pub(crate) fn longer(prefix: &[String], ident: &syn::Ident) -> Vec<String> {
     let mut path = prefix.to_vec();
     path.push(ident.to_string());
@@ -206,10 +222,14 @@ pub(crate) fn line_of(span: proc_macro2::Span) -> u32 {
     u32::try_from(span.start().line).unwrap_or(u32::MAX)
 }
 
-/// Whether an item is test code: gated on `test`, or a `#[test]` function.
+/// Whether an item is test code: gated on `test`, or a test function such as `#[test]` or
+/// `#[tokio::test]`, whose attribute path ends in `test`.
 pub(crate) fn is_test(attrs: &[syn::Attribute]) -> bool {
-    crate::gates::metrics::prodlines::is_test_gated(attrs)
-        || attrs.iter().any(|attr| attr.path().is_ident("test"))
+    let marks_a_test = |attr: &syn::Attribute| {
+        let last = attr.path().segments.last();
+        last.is_some_and(|segment| segment.ident == "test")
+    };
+    crate::gates::metrics::prodlines::is_test_gated(attrs) || attrs.iter().any(marks_a_test)
 }
 
 #[cfg(test)]
@@ -295,6 +315,10 @@ mod tests {
         let attrs = |src: &str| syn::parse_str::<syn::ItemFn>(src).unwrap().attrs;
         assert!(is_test(&attrs("#[test]\nfn t() {}")));
         assert!(is_test(&attrs("#[cfg(test)]\nfn t() {}")));
+        assert!(is_test(&attrs(
+            "#[tokio::test(flavor = \"multi_thread\")]\nasync fn t() {}"
+        )));
+        assert!(!is_test(&attrs("#[tokio::main]\nasync fn t() {}")));
         assert!(!is_test(&attrs("#[inline]\nfn t() {}")));
         let item = syn::parse_str::<syn::ItemFn>("\n\nfn f() {}").unwrap();
         assert_eq!(line_of(item.sig.ident.span()), 3);

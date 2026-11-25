@@ -16,3 +16,13 @@ pub mod prodlines;
 pub mod splits;
 pub mod testlint;
 pub mod unsafety;
+
+/// The lines where a rule's `hits` found `pattern`; the tests of `blocking` and `clones` read it.
+#[cfg(test)]
+fn lines_of(hits: Result<Vec<(&'static str, u32)>, String>, pattern: &str) -> Vec<u32> {
+    let hits = hits.unwrap();
+    hits.into_iter()
+        .filter(|(found, _)| *found == pattern)
+        .map(|(_, line)| line)
+        .collect()
+}

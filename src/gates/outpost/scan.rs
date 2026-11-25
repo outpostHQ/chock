@@ -23,8 +23,13 @@ pub const GATE: Gate = Gate {
 };
 
 fn measure(ctx: &Ctx) -> Result<Measurement, String> {
-    read_scan(&super::spawn(&ctx.root, &["scan", "rules", "--json"])?)
+    let out = super::spawn(&ctx.root, &["scan", "rules", "--json"])?;
+    let code = prodlines::TestCode::of(ctx)?;
+    read_scan(&out, &|file, line| code.holds(file, line))
 }
+
+/// Whether only tests build a line of a file: the file and its 1-based line.
+type Tested<'a> = &'a dyn Fn(&str, usize) -> bool;
 
 #[derive(Deserialize)]
 struct Scan {
@@ -51,14 +56,20 @@ struct Found {
     line: Option<u32>,
 }
 
-/// Rule and taint findings outside the files only tests build, which Outpost may miss; a scan
-/// that read no files is an error, not a clean tree.
-fn read_scan(out: &exec::Output) -> Result<Measurement, String> {
+/// Rule and taint findings outside the code only tests build, which Outpost does not set aside: a
+/// test file, or a test module. A scan that read no files is an error, not a clean tree.
+fn read_scan(out: &exec::Output, tested: Tested<'_>) -> Result<Measurement, String> {
     let scan: Scan = super::read(out, "scan")?;
     if scan.languages.values().all(|read| read.files == 0) {
         return Err(super::nothing_read("rule"));
     }
-    let shipped = |found: &&Found| !prodlines::is_test_path(&found.file);
+    let at = |found: &Found| {
+        found
+            .line
+            .map_or(0, |line| usize::try_from(line).unwrap_or(usize::MAX))
+    };
+    let shipped =
+        |found: &&Found| !prodlines::is_test_path(&found.file) && !tested(&found.file, at(found));
     Ok(keyed(
         scan.findings.iter().chain(&scan.taint).filter(shipped),
     ))
@@ -102,6 +113,10 @@ fn site(details: &mut Details, key: String, found: &Found) {
 mod tests {
     use super::*;
 
+    fn untested(_: &str, _: usize) -> bool {
+        false
+    }
+
     fn scanned(files: u64, findings: &str) -> exec::Output {
         flowed(files, findings, "")
     }
@@ -120,44 +135,75 @@ mod tests {
         format!(r#"{{"file":"{file}","rule":"{rule}","line":{line}}}"#)
     }
 
+    /// Two findings of `rule` in `src/a.rs`, at lines `first` and `then`, from a scan of 51 files.
+    fn two(rule: &str, first: u32, then: u32) -> exec::Output {
+        let both = [first, then].map(|line| found_at("src/a.rs", rule, line));
+        scanned(51, &both.join(","))
+    }
+
     fn found(file: &str, rule: &str) -> String {
         found_at(file, rule, 1)
     }
 
     #[test]
+    fn a_finding_in_test_code_of_a_production_file_is_left_out() {
+        let tested = |file: &str, line: usize| file == "src/a.rs" && (8..=10).contains(&line);
+        let series = read_scan(&two("unwrap", 3, 9), &tested).unwrap().series;
+        assert_eq!(series.get("src/a.rs#unwrap"), Some(1));
+    }
+
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn test_code_is_a_test_module_a_gated_file_or_a_file_gated_from_within() {
+        let held = crate::testdir::Held::tree(
+            "scan-test-code",
+            &[
+                (
+                    "src/lib.rs",
+                    "pub mod a;\n#[cfg(all(test, feature = \"x\"))]\nmod law;\nmod own;\n",
+                ),
+                (
+                    "src/a.rs",
+                    "pub fn a() {}\n\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n",
+                ),
+                ("src/law.rs", "mod deep;\n"),
+                ("src/law/deep.rs", "fn d() {}\n"),
+                ("src/own.rs", "#![cfg(test)]\nfn o() {}\n"),
+            ],
+        );
+        let code = prodlines::TestCode::of(&held).unwrap();
+        let tested = |file: &str, line: usize| code.holds(file, line);
+        assert!(!tested("src/a.rs", 1) && tested("src/a.rs", 3) && tested("src/a.rs", 6));
+        assert!(!tested("src/a.rs", 7) && !tested("src/lib.rs", 1));
+        assert!(tested("src/law.rs", 1) && tested("src/law/deep.rs", 1) && tested("src/own.rs", 2));
+    }
+
+    #[test]
     fn a_finding_is_keyed_by_the_file_and_the_rule_that_found_it() {
         let out = scanned(51, &found("src/a.rs", "interpolated-command"));
-        let series = read_scan(&out).unwrap().series;
+        let series = read_scan(&out, &untested).unwrap().series;
         assert_eq!(series.get("src/a.rs#interpolated-command"), Some(1));
     }
 
     #[test]
     fn two_findings_of_one_rule_in_one_file_count_twice_under_one_key() {
-        let both = format!(
-            "{},{}",
-            found("src/a.rs", "discarded-result"),
-            found("src/a.rs", "discarded-result")
-        );
-        let series = read_scan(&scanned(51, &both)).unwrap().series;
+        let series = read_scan(&two("discarded-result", 1, 1), &untested)
+            .unwrap()
+            .series;
         assert_eq!(series.get("src/a.rs#discarded-result"), Some(2));
     }
 
     #[test]
     fn a_finding_keeps_the_line_outpost_gave_it() {
         let out = scanned(51, &found_at("src/a.rs", "interpolated-command", 7));
-        let read = read_scan(&out).unwrap();
+        let read = read_scan(&out, &untested).unwrap();
         let detail = read.details.get("src/a.rs#interpolated-command").unwrap();
         assert_eq!(detail.line, Some(7));
     }
 
     #[test]
     fn a_second_hit_under_one_key_is_a_place_beside_the_first_line() {
-        let both = format!(
-            "{},{}",
-            found_at("src/a.rs", "discarded-result", 3),
-            found_at("src/a.rs", "discarded-result", 9)
-        );
-        let read = read_scan(&scanned(51, &both)).unwrap();
+        let read = read_scan(&two("discarded-result", 3, 9), &untested).unwrap();
         let detail = read.details.get("src/a.rs#discarded-result").unwrap();
         assert_eq!(detail.line, Some(3));
         assert_eq!(detail.places, [Place::at("hit", "src/a.rs", 9)]);
@@ -174,7 +220,7 @@ mod tests {
                 )
             })
             .collect();
-        let read = read_scan(&scanned(51, &hits.join(","))).unwrap();
+        let read = read_scan(&scanned(51, &hits.join(",")), &untested).unwrap();
         let detail = read.details.get("src/a.rs#discarded-result").unwrap();
         let places: Vec<Place> = (1..=PLACES)
             .map(|n| Place::at("hit", "src/a.rs", 3 + u32::try_from(n).unwrap()))
@@ -190,7 +236,7 @@ mod tests {
             found("src/a.rs", "half-an-inverse"),
             found("src/b.rs", "half-an-inverse")
         );
-        let series = read_scan(&scanned(51, &both)).unwrap().series;
+        let series = read_scan(&scanned(51, &both), &untested).unwrap().series;
         assert_eq!(series.get("src/a.rs#half-an-inverse"), Some(1));
         assert_eq!(series.get("src/b.rs#half-an-inverse"), Some(1));
     }
@@ -202,7 +248,7 @@ mod tests {
             &found("src/a.rs", "discarded-result"),
             &found("src/cli.rs", "rust-path-traversal"),
         );
-        let series = read_scan(&out).unwrap().series;
+        let series = read_scan(&out, &untested).unwrap().series;
         assert_eq!(series.get("src/a.rs#discarded-result"), Some(1));
         assert_eq!(series.get("src/cli.rs#rust-path-traversal"), Some(1));
     }
@@ -210,7 +256,7 @@ mod tests {
     #[test]
     fn a_tree_whose_only_problem_is_a_flow_does_not_read_as_clean() {
         let out = flowed(55, "", &found("src/cli.rs", "rust-command-injection"));
-        let series = read_scan(&out).unwrap().series;
+        let series = read_scan(&out, &untested).unwrap().series;
         assert_eq!(series.get("src/cli.rs#rust-command-injection"), Some(1));
     }
 
@@ -226,31 +272,34 @@ mod tests {
         let out = flowed(9, &tested.join(","), &shipped);
         let mut only = Series::new();
         only.set("crates/a/src/lib.rs#unwrap-in-production", 1);
-        assert_eq!(read_scan(&out).unwrap().series, only);
+        assert_eq!(read_scan(&out, &untested).unwrap().series, only);
     }
 
     #[test]
     fn a_tree_with_nothing_wrong_in_it_holds_nothing() {
-        assert_eq!(read_scan(&scanned(51, "")).unwrap().series, Series::new());
+        assert_eq!(
+            read_scan(&scanned(51, ""), &untested).unwrap().series,
+            Series::new()
+        );
     }
 
     #[test]
     fn a_scan_that_read_no_files_could_not_run() {
-        let err = read_scan(&scanned(0, "")).unwrap_err();
+        let err = read_scan(&scanned(0, ""), &untested).unwrap_err();
         assert_eq!(err, "outpost read no files, so no rule ran");
     }
 
     #[test]
     fn a_tree_outpost_refused_is_not_a_tree_with_nothing_wrong() {
         let refused = exec::Output::of(Some(1), "", "not a repository");
-        assert!(read_scan(&refused).is_err());
+        assert!(read_scan(&refused, &untested).is_err());
     }
 
     #[test]
     fn a_scan_in_a_shape_chock_does_not_know_stops_the_scan_gate() {
         let odd = exec::Output::of(Some(0), "not json", "");
         assert!(
-            read_scan(&odd)
+            read_scan(&odd, &untested)
                 .unwrap_err()
                 .starts_with("outpost printed a scan chock cannot read")
         );

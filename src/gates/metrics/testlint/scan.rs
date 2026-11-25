@@ -44,8 +44,22 @@ pub(crate) struct FileScan {
     pub helpers: Vec<Helper>,
 }
 
+/// Whether the tree builds a whole file only for tests, which its path may not show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Built {
+    /// The path and each `#[cfg(test)]` inside the file say what is test code.
+    ByItsPath,
+    /// A parent's `#[cfg(test)] mod x;` or the file's own `#![cfg(test)]` gates all of it.
+    OnlyForTests,
+}
+
 /// A file that does not lex compiles nowhere, so it holds no test.
 pub(crate) fn scan_source(file: &str, raw: &str) -> FileScan {
+    scan_code(file, raw, Built::ByItsPath)
+}
+
+/// As [`scan_source`], for a file that the tree may build only for tests.
+pub(crate) fn scan_code(file: &str, raw: &str, built: Built) -> FileScan {
     let lexed = Lexed::new(raw).unwrap_or_default();
     let (items, functions) = (lexed.items(), lexed.functions());
     let test = |item: &Item| {
@@ -64,7 +78,7 @@ pub(crate) fn scan_source(file: &str, raw: &str) -> FileScan {
     FileScan {
         file: file.to_string(),
         raw: raw.to_string(),
-        helpers: helpers_in(file, &lexed, &items),
+        helpers: helpers_in(file, &lexed, &items, built),
         lexed,
         tests,
     }
@@ -90,10 +104,10 @@ pub(crate) fn gated_for_tests(lexed: &Lexed, attrs: Range<usize>) -> bool {
     })
 }
 
-/// The functions of the test code: each one of a test file, and in any other file each one under
-/// a `#[cfg(test)]`.
-fn helpers_in(file: &str, lexed: &Lexed, items: &[Item]) -> Vec<Helper> {
-    let whole = is_test_code(file);
+/// The functions of the test code: each one of a test file or of a file built only for tests,
+/// and in any other file each one under a `#[cfg(test)]`.
+fn helpers_in(file: &str, lexed: &Lexed, items: &[Item], built: Built) -> Vec<Helper> {
+    let whole = built == Built::OnlyForTests || is_test_code(file);
     let gated = |item: &&Item| gated_for_tests(lexed, item.first..item.head);
     let span = |item: &Item| item.first..=item.end;
     let spans: Vec<_> = items.iter().filter(gated).map(span).collect();

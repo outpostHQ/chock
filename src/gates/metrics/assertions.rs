@@ -7,6 +7,7 @@ use syn::parse::Parser;
 use syn::visit::Visit;
 
 use crate::gates::metrics::prodlines::{for_each_source, keyed, parse_rust};
+use crate::gates::rules::is_test;
 use crate::run::baseline::{Keys, Series};
 use crate::run::{Ctx, Gate, Group, Kind};
 
@@ -179,18 +180,6 @@ fn set_up_size(compared: &[syn::Expr], given: &Given) -> bool {
     };
     pair.is_some_and(|(left, right)| {
         sized_by_setup(left, right, given) || sized_by_setup(right, left, given)
-    })
-}
-
-/// A test attribute, `#[test]` or `#[tokio::test]`, or a `cfg` that builds the item only for tests.
-fn is_test(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        crate::gates::metrics::prodlines::is_test_gate(attr)
-            || attr
-                .path()
-                .segments
-                .last()
-                .is_some_and(|segment| segment.ident == "test")
     })
 }
 

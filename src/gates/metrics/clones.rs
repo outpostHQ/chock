@@ -8,7 +8,7 @@ use crate::gates::rules::{is_test, line_of};
 use crate::run::baseline::Keys;
 use crate::run::{Ctx, Gate, Group, Kind, Measurement};
 
-use super::prodlines::{IntoHits, for_each_source, tallied, visited};
+use super::prodlines::{IntoHits, for_each_shipped, tallied, visited};
 
 /// The `clone-abuse` gate: a `.clone()` chained on another, or inside a loop.
 pub const GATE: Gate = Gate {
@@ -25,7 +25,7 @@ pub const GATE: Gate = Gate {
 };
 
 fn measure(ctx: &Ctx) -> Result<Measurement, String> {
-    let read = for_each_source(ctx, &|src| hits(src))?;
+    let read = for_each_shipped(ctx, &|src| hits(src))?;
     let (series, details) = tallied(read, "clone");
     Ok(Measurement::detailed(series, details))
 }
@@ -113,18 +113,20 @@ mod tests {
     use super::*;
 
     fn lines(src: &str, pattern: &str) -> Vec<u32> {
-        hits(src)
-            .unwrap()
-            .into_iter()
-            .filter(|(found, _)| *found == pattern)
-            .map(|(_, line)| line)
-            .collect()
+        crate::gates::metrics::lines_of(hits(src), pattern)
     }
 
     #[test]
     fn a_clone_made_on_another_clone_is_a_chain() {
         let src = "fn f(a: &A) -> A {\n    a.clone().clone()\n}\n";
         assert_eq!(lines(src, "clone-chain"), [2]);
+        assert_eq!(lines(src, "clone-in-loop"), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn a_clone_in_a_runtime_s_own_test_function_is_test_code() {
+        let src = "#[tokio::test(flavor = \"multi_thread\")]\nasync fn t(a: &[A]) {\n    \
+                   for x in a {\n        x.clone();\n    }\n}\n";
         assert_eq!(lines(src, "clone-in-loop"), Vec::<u32>::new());
     }
 

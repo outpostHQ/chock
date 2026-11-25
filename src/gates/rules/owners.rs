@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use syn::visit::Visit;
 
-use crate::gates::metrics::prodlines::{for_each_source, parse_rust};
-use crate::gates::rules::{Aliases, Callee, Pattern, line_of, production};
+use crate::gates::metrics::prodlines::for_each_source;
+use crate::gates::rules::{Aliases, Callee, Pattern, line_of, walk_production};
 use crate::project::config::Owner;
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Inspection, Kind};
@@ -57,16 +57,12 @@ type Read = (usize, String, u32);
 /// Each read of a value through a listed call in production code. A value chock cannot name, such
 /// as a variable or a `format!`, is not a read.
 fn reads(src: &str, patterns: &[Pattern]) -> Result<Vec<Read>, String> {
-    let file = parse_rust(src)?;
-    let mut found = Reads {
-        aliases: Aliases::of(&file),
+    let with = |aliases| Reads {
+        aliases,
         patterns,
         seen: Vec::new(),
     };
-    for item in production(&file.items) {
-        found.visit_item(item);
-    }
-    Ok(found.seen)
+    Ok(walk_production(src, with)?.seen)
 }
 
 struct Reads<'a> {
