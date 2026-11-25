@@ -1,9 +1,12 @@
 //! Gates over Outpost's parsed index and call graph: hazards, lenses, unreferenced and unread code.
 //! Each needs `outpost`, so each is opt-in.
 
+use std::collections::BTreeSet;
+
 use serde::Deserialize;
 
 use crate::exec;
+use crate::gates::metrics::dead;
 use crate::run::baseline::{Keys, Series};
 use crate::run::report::Finding;
 use crate::run::{Ctx, Gate, Group, Kind, Measurement, Outcome};
@@ -198,23 +201,97 @@ fn read_unreferenced(out: &exec::Output, ctx: &Ctx) -> Result<Series, String> {
                 .to_string(),
         );
     }
-    keyed(&read.found, &|path, name| {
+    unrooted(&read.found, ctx)
+}
+
+/// The shipped findings no root reaches, read against the sources in the tree at `ctx`.
+fn unrooted(found: &[Unreached], ctx: &Ctx) -> Result<Series, String> {
+    let entry_point = |path: &str, name: &str| {
         // chock reads entry points only in Rust, so an entity in another language is left alone.
-        if std::path::Path::new(path)
-            .extension()
-            .is_none_or(|ext| ext != "rs")
-        {
+        let Some(src) = rust_source(ctx, path)? else {
             return Ok(true);
-        }
-        let src = std::fs::read_to_string(ctx.root.join(path))
-            .map_err(|e| format!("outpost indexed {path}, which chock cannot read: {e}"))?;
-        crate::gates::metrics::dead::is_entry_point(&src, name)
-            .map_err(|why| format!("{path}: {why}"))
+        };
+        dead::is_entry_point(&src, name).map_err(|why| format!("{path}: {why}"))
+    };
+    let named_by = |path: &str, name: &str| {
+        let Some(src) = rust_source(ctx, path)? else {
+            return Ok(BTreeSet::new());
+        };
+        dead::named_by(&src, name).map_err(|why| format!("{path}: {why}"))
+    };
+    let rooted = rooted(found, &entry_point, &named_by)?;
+    keyed(found, &|path, name| {
+        Ok(rooted
+            .iter()
+            .any(|&(file, item)| file == path && item == name))
     })
 }
 
-/// Shipped findings that are not entry points, keyed by file and name at their largest size.
-/// `entry_point` is injected for tests, and its error stops the gate.
+/// A finding's file and name.
+type Site<'a> = (&'a str, &'a str);
+
+/// Whether something outside the crate calls the function at a file and name.
+type Judge<'a> = &'a dyn Fn(&str, &str) -> Result<bool, String>;
+
+/// The names the body of the function at a file and name writes.
+type Reader<'a> = &'a dyn Fn(&str, &str) -> Result<BTreeSet<String>, String>;
+
+/// The text of `path` when it is Rust, the one language chock reads entry points in.
+fn rust_source(ctx: &Ctx, path: &str) -> Result<Option<String>, String> {
+    if std::path::Path::new(path)
+        .extension()
+        .is_none_or(|ext| ext != "rs")
+    {
+        return Ok(None);
+    }
+    std::fs::read_to_string(ctx.root.join(path))
+        .map(Some)
+        .map_err(|e| format!("outpost indexed {path}, which chock cannot read: {e}"))
+}
+
+/// The shipped findings an entry point reaches, itself included, through the names each reached
+/// body writes in its crate; the graph walks from no export. Errors stop the gate.
+fn rooted<'a>(
+    found: &'a [Unreached],
+    entry_point: Judge<'_>,
+    named_by: Reader<'_>,
+) -> Result<BTreeSet<Site<'a>>, String> {
+    let shipped: Vec<Site<'a>> = found
+        .iter()
+        .filter(|one| one.origin == SHIPPED)
+        .map(|one| (one.path.as_str(), one.name.as_str()))
+        .collect();
+    let mut reached = BTreeSet::new();
+    let mut callers = Vec::new();
+    for &(path, name) in &shipped {
+        if entry_point(path, name)? {
+            reached.insert((path, name));
+            callers.push((path, name));
+        }
+    }
+    while let Some((from, caller)) = callers.pop() {
+        let names = named_by(from, caller)?;
+        for &(path, name) in &shipped {
+            let called = crate_of(path) == crate_of(from) && names.contains(name);
+            if called && reached.insert((path, name)) {
+                callers.push((path, name));
+            }
+        }
+    }
+    Ok(reached)
+}
+
+/// The directory of the crate that holds `path`: what precedes its `src`, or the file itself when
+/// no `src` holds it, so a name reaches no further than one crate.
+fn crate_of(path: &str) -> &str {
+    if path.starts_with("src/") {
+        return "";
+    }
+    path.split_once("/src/").map_or(path, |(dir, _)| dir)
+}
+
+/// Shipped findings no root reaches, keyed by file and name at their largest size. `rooted` is
+/// injected for tests, and its error stops the gate.
 fn keyed(
     found: &[Unreached],
     entry_point: &dyn Fn(&str, &str) -> Result<bool, String>,
@@ -316,6 +393,66 @@ mod tests {
         let json = r#"{"files_indexed":1,"unknown_callers":[],"found":[
             {"path":"src/lib.rs","name":"go","lines":4,"origin":"production"}]}"#;
         assert_eq!(read_unreferenced(&said(json), &dir).unwrap(), Series::new());
+    }
+
+    /// The shape of corbin's JNI bridge: the graph walks from no export, so it finds the export and
+    /// every helper only the export calls.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn what_an_exported_symbol_alone_calls_is_reached_through_it() {
+        let src = "#[unsafe(no_mangle)]\npub unsafe extern \"system\" fn Java_a_B_c() { read(); }\n\
+                   fn read() -> u8 { mount_of() }\nfn mount_of() -> u8 { 0 }\nfn lonely() {}\n";
+        let dir = Held::tree(
+            "intel-export-reaches",
+            &[
+                ("Cargo.toml", "[package]\nname = \"p\"\n"),
+                ("src/lib.rs", src),
+            ],
+        );
+        let json = r#"{"files_indexed":1,"unknown_callers":[],"found":[
+            {"path":"src/lib.rs","name":"Java_a_B_c","lines":3,"origin":"production"},
+            {"path":"src/lib.rs","name":"read","lines":3,"origin":"production"},
+            {"path":"src/lib.rs","name":"mount_of","lines":3,"origin":"production"},
+            {"path":"src/lib.rs","name":"lonely","lines":3,"origin":"production"}]}"#;
+        let mut lonely = Series::new();
+        lonely.set("src/lib.rs#lonely", 3);
+        assert_eq!(read_unreferenced(&said(json), &dir).unwrap(), lonely);
+    }
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "it fits the check that `rooted` takes"
+    )]
+    fn exported(_path: &str, name: &str) -> Result<bool, String> {
+        Ok(name == "exported")
+    }
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "it fits the check that `rooted` takes"
+    )]
+    fn names_helper(_path: &str, _name: &str) -> Result<BTreeSet<String>, String> {
+        Ok(BTreeSet::from(["helper".to_string()]))
+    }
+
+    /// A name reaches no further than its crate: another crate's function of that name stays found.
+    #[test]
+    fn an_export_reaches_a_name_in_its_own_crate_only() {
+        let found = [
+            unreached("crates/a/src/ffi.rs", "exported", 9, SHIPPED),
+            unreached("crates/a/src/lib.rs", "helper", 4, SHIPPED),
+            unreached("crates/b/src/lib.rs", "helper", 4, SHIPPED),
+            unreached("crates/a/src/lib.rs", "helper", 4, "test"),
+        ];
+        let reached = rooted(&found, &exported, &names_helper).unwrap();
+        let expected = BTreeSet::from([
+            ("crates/a/src/ffi.rs", "exported"),
+            ("crates/a/src/lib.rs", "helper"),
+        ]);
+        assert_eq!(reached, expected);
+        assert_eq!(crate_of("src/lib.rs"), "");
+        assert_eq!(crate_of("build.rs"), "build.rs");
+        assert_eq!(crate_of("crates/a/src/x/src/y.rs"), "crates/a");
     }
 
     #[test]

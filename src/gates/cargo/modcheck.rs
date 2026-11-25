@@ -1274,6 +1274,29 @@ mod tests {
         assert_eq!(inspect(&ctx).unwrap(), Inspection::default());
     }
 
+    /// cargo's output is also named `target`, and the walk once passed over this module's files.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_module_named_target_under_src_is_read_and_judged_like_any_other() {
+        let ctx = ctx_of(&[
+            ("Cargo.toml", ""),
+            ("src/lib.rs", "mod route;\n"),
+            ("src/route/mod.rs", "mod target;\n"),
+            ("src/route/target/mod.rs", "mod gone;\n"),
+        ]);
+        let named: Vec<(String, Option<String>)> = inspect(&ctx)
+            .unwrap()
+            .blockers
+            .into_iter()
+            .map(|found| (found.file, found.item))
+            .collect();
+        let gone = (
+            "src/route/target/mod.rs".to_string(),
+            Some("gone".to_string()),
+        );
+        assert_eq!(named, [gone]);
+    }
+
     #[test]
     #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
     fn a_fixture_directory_under_src_is_not_judged_as_the_crates_own_modules() {

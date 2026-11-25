@@ -834,6 +834,7 @@ fn f(a: bool, b: Option<u8>) {
         let mut paths: Vec<String> = project::SKIPPED
             .iter()
             .chain(ALSO_SKIPPED.iter())
+            .chain([project::BUILD_DIR].iter())
             .map(|d| format!("{d}/hidden.rs"))
             .collect();
         paths.extend(["main.rs", "lib.rs", "b.rs"].map(String::from));

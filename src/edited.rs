@@ -62,8 +62,13 @@ pub struct Rules {
 impl Rules {
     /// Whether `gate` is on and walks into this file; `skips` is the gate's own directory filter.
     fn speaks(&self, gate: &str, skips: &dyn Fn(&str) -> bool) -> bool {
-        self.config.as_ref().is_none_or(|config| config.is_on(gate))
-            && !self.shown.split('/').any(skips)
+        self.config.as_ref().is_none_or(|config| config.is_on(gate)) && self.walked_into(skips)
+    }
+
+    /// Whether a gate with the directory filter `skips` walks into this file, which no build
+    /// directory holds.
+    fn walked_into(&self, skips: &dyn Fn(&str) -> bool) -> bool {
+        !self.shown.split('/').any(skips) && !crate::project::in_build_dir(&self.shown)
     }
 
     /// An edited file is always one the change touches, so `clean_when_touched` holds it to zero.

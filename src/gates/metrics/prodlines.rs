@@ -56,7 +56,12 @@ pub fn is_test_file(name: &str) -> bool {
 pub fn is_test_path(path: &str) -> bool {
     let mut parts: Vec<&str> = path.split('/').collect();
     let name = parts.pop().unwrap_or_default();
-    parts.into_iter().any(skip_dir) || is_test_file(name)
+    in_skipped_dir(&parts) || is_test_file(name)
+}
+
+/// Whether directories, from the root down, include one no gate counts, or pass through a build one.
+fn in_skipped_dir(parts: &[&str]) -> bool {
+    parts.iter().copied().any(skip_dir) || project::through_build_dir(parts.iter().copied())
 }
 
 /// The parsed file, or `line N: reason` for the caller to prefix with the path.
@@ -471,11 +476,8 @@ where
     series
 }
 
-/// Most hits of one key its finding names as places; the rest are counted, not shown.
-const PLACES: usize = 20;
-
 /// Like [`keyed`], but keeps where a hit was made: the first under a key stands for its `line`;
-/// a further one becomes a `role` place, capped at [`PLACES`].
+/// every further one becomes a `role` place, which `chock explain` lists in full.
 pub(crate) fn tallied<K>(
     read: Vec<(String, Vec<(K, u32)>)>,
     role: &str,
@@ -494,7 +496,7 @@ where
             let detail: &mut Detail = details.entry(key).or_default();
             if detail.line.is_none() {
                 detail.line = Some(line);
-            } else if detail.places.len() < PLACES {
+            } else {
                 detail.places.push(Place::at(role, &shown, line));
             }
         }
@@ -576,9 +578,9 @@ mod tests {
     }
 
     #[test]
-    fn tallied_caps_places_at_the_floor_not_past_it() {
-        let places = u32::try_from(PLACES).unwrap();
-        let count = places + 2;
+    fn tallied_keeps_every_hit_past_the_first_as_a_place_however_many() {
+        let places = 21_u32;
+        let count = places + 1;
         let hits: Vec<(&str, u32)> = (0..count).map(|line| ("x", line)).collect();
         let read = vec![("a.rs".to_string(), hits)];
         let (_, details) = tallied(read, "hit");
@@ -606,9 +608,17 @@ mod tests {
     #[test]
     fn a_directory_either_list_names_is_skipped() {
         assert_eq!(
-            ["target", "fixtures", "tests", ".cache", "src"].map(skip_dir),
+            [".git", "fixtures", "tests", ".cache", "src"].map(skip_dir),
             [true, true, true, true, false]
         );
+    }
+
+    /// `mod target;` puts a module's files in a directory cargo's own output also takes the name of.
+    #[test]
+    fn a_module_directory_named_target_is_shipped_and_cargo_output_is_not() {
+        assert!(!is_test_path("crates/a/src/route/target/mod.rs"));
+        assert!(is_test_path("target/debug/build/a/out/gen.rs"));
+        assert!(is_test_path("crates/a/target/debug/gen.rs"));
     }
 
     /// A file outside every crate, or one only an `include!` reads, is not Rust a crate compiles.

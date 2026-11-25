@@ -1,6 +1,6 @@
 //! Private functions nothing in the tree names, counted across every crate at once.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use proc_macro2::TokenTree;
 use syn::visit::Visit;
@@ -177,22 +177,50 @@ struct Definitions {
 /// # Errors
 /// When `src` does not parse as Rust.
 pub fn is_entry_point(src: &str, name: &str) -> Result<bool, String> {
-    let file = crate::gates::metrics::prodlines::parse_rust(src)?;
-    let mut look = Entry { name, found: false };
-    look.visit_file(&file);
-    Ok(look.found)
+    entry(src, name).map(|look| look.found)
 }
 
+/// Every name the bodies of the functions called `name` in `src` write: the functions they may
+/// call, read as the `dead` gate reads a crate, by name.
+/// # Errors
+/// When `src` does not parse as Rust.
+pub fn named_by(src: &str, name: &str) -> Result<BTreeSet<String>, String> {
+    // A span counts bytes from past a byte order mark, which the parser drops.
+    let src = src.strip_prefix('\u{feff}').unwrap_or(src);
+    let mut names = BTreeMap::new();
+    for bytes in entry(src, name)?.bodies {
+        let body = src
+            .get(bytes)
+            .ok_or_else(|| format!("the body of `{name}` lies outside its file"))?;
+        let stream: proc_macro2::TokenStream = body
+            .parse()
+            .map_err(|e| format!("cannot read the token stream: {e}"))?;
+        idents(stream, &mut names);
+    }
+    Ok(names.into_keys().collect())
+}
+
+fn entry<'a>(src: &str, name: &'a str) -> Result<Entry<'a>, String> {
+    let mut look = Entry {
+        name,
+        found: false,
+        bodies: Vec::new(),
+    };
+    look.visit_file(&crate::gates::metrics::prodlines::parse_rust(src)?);
+    Ok(look)
+}
+
+/// Whether something outside the crate calls a function called `name`, and the bytes of the body
+/// of each.
 struct Entry<'a> {
     name: &'a str,
     found: bool,
+    bodies: Vec<std::ops::Range<usize>>,
 }
 
 impl<'ast> Visit<'ast> for Entry<'_> {
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        if node.sig.ident == self.name && called_from_outside(self.name, &node.attrs) {
-            self.found = true;
-        }
+        self.take(&node.sig, &node.attrs, &node.block);
         syn::visit::visit_item_fn(self, node);
     }
 
@@ -205,10 +233,18 @@ impl<'ast> Visit<'ast> for Entry<'_> {
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
-        if node.sig.ident == self.name && called_from_outside(self.name, &node.attrs) {
-            self.found = true;
-        }
+        self.take(&node.sig, &node.attrs, &node.block);
         syn::visit::visit_impl_item_fn(self, node);
+    }
+}
+
+impl Entry<'_> {
+    /// Notes a function called `name`: whether something outside calls it, and where its body is.
+    fn take(&mut self, sig: &syn::Signature, attrs: &[syn::Attribute], block: &syn::Block) {
+        if sig.ident == self.name {
+            self.found |= called_from_outside(self.name, attrs);
+            self.bodies.push(block.brace_token.span.join().byte_range());
+        }
     }
 }
 
@@ -258,11 +294,27 @@ fn bound_to_another_language(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
+/// The last word of a path: `no_mangle` for `#[no_mangle]`.
+fn last_word(path: &syn::Path) -> Option<String> {
+    path.segments.last().map(|last| last.ident.to_string())
+}
+
+/// The word an attribute goes by. Edition 2024 writes an exported symbol as `#[unsafe(no_mangle)]`,
+/// so `unsafe(..)` goes by the export it wraps, and by nothing when it wraps no export.
+fn word_of(attr: &syn::Attribute) -> Option<String> {
+    let word = last_word(attr.path())?;
+    if word != "unsafe" {
+        return Some(word);
+    }
+    let list = attr.meta.require_list().ok()?;
+    let inner: syn::Meta = list.parse_args().ok()?;
+    last_word(inner.path()).filter(|word| matches!(word.as_str(), "no_mangle" | "export_name"))
+}
+
 fn excuses(attr: &syn::Attribute) -> bool {
-    let Some(last) = attr.path().segments.last() else {
+    let Some(word) = word_of(attr) else {
         return false;
     };
-    let word = last.ident.to_string();
     if word == "allow" || word == "expect" {
         return attr
             .meta
@@ -637,6 +689,34 @@ mod tests {
         assert!(is_entry_point("#[laws::bounded]\nfn b() {}\n", "b").unwrap());
     }
 
+    /// A body's names are the callees of an export; the byte order mark shifts no span.
+    #[test]
+    fn the_names_a_body_writes_are_read_from_that_body_alone() {
+        let src = "\u{feff}fn go() { read(1); S::mount(); }\nfn other() { lonely(); }\n\
+                   struct S;\nimpl S { fn go(&self) { self.free() } }\n";
+        let names = named_by(src, "go").unwrap();
+        for name in ["read", "S", "mount", "free"] {
+            assert!(names.contains(name), "{name}");
+        }
+        assert!(!names.contains("lonely"));
+        assert!(!names.contains("go"));
+        assert_eq!(named_by(src, "absent").unwrap(), BTreeSet::new());
+    }
+
+    /// The shape of a JNI export: another language calls it by its symbol, never this crate.
+    #[test]
+    fn a_symbol_exported_in_the_edition_2024_form_is_an_entry_point() {
+        let jni = "#[unsafe(no_mangle)]\nunsafe extern \"system\" fn Java_a_B_c() {}\n";
+        assert!(is_entry_point(jni, "Java_a_B_c").unwrap());
+        let named = "#[unsafe(export_name = \"c\")]\nextern \"C\" fn c() {}\n";
+        assert!(is_entry_point(named, "c").unwrap());
+        // The control: `unsafe(..)` around an attribute that exports nothing excuses nothing.
+        let placed = "#[unsafe(link_section = \".x\")]\nfn placed() {}\n";
+        assert!(!is_entry_point(placed, "placed").unwrap());
+        let benched = "#[unsafe(bench)]\nfn benched() {}\n";
+        assert!(!is_entry_point(benched, "benched").unwrap());
+    }
+
     #[test]
     fn a_marked_function_does_not_excuse_the_one_beside_it() {
         let src = "#[kani::proof]\nfn proved() {}\nfn plain() {}\n";
@@ -680,6 +760,11 @@ mod tests {
             defined("#[no_mangle]\nfn hook() {}\n"),
             Vec::<String>::new()
         );
+        // Edition 2024 wraps an exported symbol's attribute in `unsafe(..)`.
+        for exported in ["no_mangle", "export_name = \"hook\""] {
+            let src = format!("#[unsafe({exported})]\nunsafe extern \"system\" fn hook() {{}}\n");
+            assert_eq!(defined(&src), Vec::<String>::new(), "{exported}");
+        }
         assert_eq!(defined("#[tokio::test]\nfn t() {}\n"), Vec::<String>::new());
         assert_eq!(defined("#[kani::proof]\nfn p() {}\n"), Vec::<String>::new());
         assert_eq!(

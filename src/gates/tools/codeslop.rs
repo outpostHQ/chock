@@ -171,20 +171,21 @@ pub fn counts(hits: &[Hit]) -> Series {
     series
 }
 
-/// Most hits of one lint its finding names; clippy's own output holds the rest.
-const PLACES: usize = 20;
-
-/// Each lint's first hits as places, so a count past its record names the lines behind it.
-fn placed(hits: &[Hit]) -> Details {
+/// Every hit of each lint as a place. The record keeps no places to tell a new hit from an old one,
+/// so the hits in a file the change `touched` come first: a new hit lands in such a file.
+fn placed(hits: &[Hit], touched: &[String]) -> Details {
     let mut details = Details::new();
     for hit in hits {
         let (Some(file), Some(line)) = (&hit.file, hit.line) else {
             continue;
         };
         let detail: &mut Detail = details.entry(hit.lint.clone()).or_default();
-        if detail.places.len() < PLACES {
-            detail.places.push(Place::at("hit", file, line));
-        }
+        detail.places.push(Place::at("hit", file, line));
+    }
+    // Clippy names a file with the platform's separator, and the repository with `/`.
+    let untouched = |place: &Place| !touched.contains(&place.file.replace('\\', "/"));
+    for detail in details.values_mut() {
+        detail.places.sort_by_key(untouched);
     }
     details
 }
@@ -204,9 +205,9 @@ fn clippy_hits(out: &exec::Output) -> Result<Vec<Hit>, String> {
     Ok(hits(&out.stdout))
 }
 
-fn measured(found: &[Hit]) -> Measurement {
+fn measured(found: &[Hit], touched: &[String]) -> Measurement {
     let mut measured = Measurement::of(counts(found), Vec::new());
-    measured.details = placed(found);
+    measured.details = placed(found, touched);
     measured
 }
 
@@ -261,7 +262,9 @@ fn did_not_finish(stderr: &str) -> String {
 fn measure(ctx: &Ctx) -> Result<Measurement, String> {
     let asked = [ctx.features.as_slice(), ctx.build.as_slice()].concat();
     let ran = exec::run_kept("cargo", &invocation(&asked), &ctx.root, kept);
-    all_hits(&ran.map_err(|e| e.to_string())?, ctx).map(|found| measured(&found))
+    // A tree no repository holds has no touched files, and its places keep file and line order.
+    let touched = ctx.changed().unwrap_or_default();
+    all_hits(&ran.map_err(|e| e.to_string())?, ctx).map(|found| measured(&found, touched))
 }
 
 /// What clippy printed in `ran`, with what chock reads in the project's sources itself, in order.
@@ -279,7 +282,7 @@ mod tests {
 
     /// What one clippy run measured, or why it measured nothing: the measure without the run.
     fn from_run(out: &exec::Output) -> Result<Measurement, String> {
-        clippy_hits(out).map(|found| measured(&found))
+        clippy_hits(out).map(|found| measured(&found, &[]))
     }
 
     /// Captured from `cargo clippy --message-format=json` on a crate that clones a live binding.
@@ -293,10 +296,10 @@ mod tests {
 
     const REAL_FINISHED: &str = r#"{"reason":"build-finished","success":true}"#;
 
-    /// Each lint names its first twenty hits, in file and line order; a hit with no place counts
-    /// and is named nowhere.
+    /// Each lint names every hit, in file and line order; a hit with no place counts and is named
+    /// nowhere.
     #[test]
-    fn a_lint_names_the_places_of_its_first_hits() {
+    fn a_lint_names_the_place_of_every_hit() {
         let mut found: Vec<Hit> = (1..=22)
             .map(|line| at("clippy::a", "src/a.rs", line))
             .collect();
@@ -307,9 +310,9 @@ mod tests {
             line: None,
         });
         found.push(at("clippy::d", "src/d.rs", 7));
-        let details = placed(&found);
+        let details = placed(&found, &[]);
         let lines: Vec<u32> = details["clippy::a"].places.iter().map(|p| p.line).collect();
-        assert_eq!(lines, (1..=20).collect::<Vec<_>>());
+        assert_eq!(lines, (1..=22).collect::<Vec<_>>());
         assert_eq!(
             details["clippy::b"].places,
             [Place::at("hit", "src/b.rs", 4)]
@@ -320,9 +323,32 @@ mod tests {
             [Place::at("hit", "src/d.rs", 7)]
         );
         let measured = from_run(&ran(0, &real_run(), "")).unwrap();
-        assert_eq!(measured.details, placed(&hits(&real_run())));
+        assert_eq!(measured.details, placed(&hits(&real_run()), &[]));
         let names: Vec<&str> = measured.details.keys().map(String::as_str).collect();
         assert_eq!(names, ["clippy::let_and_return", "clippy::redundant_clone"]);
+    }
+
+    /// A count past its record grew in a file the change touched, so those hits lead the list.
+    #[test]
+    fn the_hits_in_a_file_the_change_touched_come_first() {
+        let found = [
+            at("clippy::a", "src/a.rs", 1),
+            at("clippy::a", "src/a.rs", 9),
+            at("clippy::a", "src/new.rs", 5),
+            at("clippy::a", "src/z.rs", 2),
+        ];
+        let touched = ["src/new.rs".to_string(), "src/z.rs".to_string()];
+        let places = &placed(&found, &touched)["clippy::a"].places;
+        let said: Vec<(&str, u32)> = places.iter().map(|p| (p.file.as_str(), p.line)).collect();
+        assert_eq!(
+            said,
+            [
+                ("src/new.rs", 5),
+                ("src/z.rs", 2),
+                ("src/a.rs", 1),
+                ("src/a.rs", 9)
+            ]
+        );
     }
 
     #[test]

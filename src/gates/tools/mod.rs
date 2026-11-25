@@ -606,7 +606,12 @@ const NOT_PROSE: &str = "[default]\nextend-ignore-identifiers-re = ['^[0-9a-f]{7
 fn typos(ctx: &Ctx) -> Result<Series, String> {
     let rules = std::env::temp_dir().join(format!("chock-typos-{}.toml", std::process::id()));
     let run = |argv: &[&str]| exec::tool(&ctx.root, "typos", argv);
-    read_typos(&typos_with_rules(&crate::project::SKIPPED, &rules, &run)?)
+    // A glob cannot tell a module's `target` under `src` from cargo's, so typos skips both.
+    let skipped: Vec<&str> = crate::project::SKIPPED
+        .into_iter()
+        .chain([crate::project::BUILD_DIR])
+        .collect();
+    read_typos(&typos_with_rules(&skipped, &rules, &run)?)
 }
 
 /// Excludes every skipped directory explicitly, since typos honours `.gitignore` only inside git.

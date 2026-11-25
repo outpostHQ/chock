@@ -241,7 +241,6 @@ mod tests {
     fn a_directory_in_either_skip_list_is_passed_over() {
         assert!(skipped("vendor"));
         assert!(skipped(".outpost"));
-        assert!(skipped("target"));
         assert!(!skipped("src"));
     }
 

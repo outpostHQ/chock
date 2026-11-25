@@ -75,9 +75,6 @@ fn read_scan(out: &exec::Output, tested: Tested<'_>) -> Result<Measurement, Stri
     ))
 }
 
-/// Most hits of one key its finding names as places; Outpost's own output holds the rest.
-const PLACES: usize = 20;
-
 /// Keyed by file and rule, not line, so an edit above a finding does not read as a new one. The
 /// first line stands for the key; each further one past it becomes a place `chock explain` shows.
 fn keyed<'a>(findings: impl Iterator<Item = &'a Found>) -> Measurement {
@@ -97,14 +94,14 @@ fn keyed<'a>(findings: impl Iterator<Item = &'a Found>) -> Measurement {
     }
 }
 
-/// A finding with no line leaves no detail. The first line under a key becomes its `line`; a
-/// further one becomes a place, capped at [`PLACES`].
+/// A finding with no line leaves no detail. The first line under a key becomes its `line`; each
+/// further one becomes a place, so `chock explain` names the line of every hit.
 fn site(details: &mut Details, key: String, found: &Found) {
     let Some(line) = found.line else { return };
     let detail: &mut Detail = details.entry(key).or_default();
     if detail.line.is_none() {
         detail.line = Some(line);
-    } else if detail.places.len() < PLACES {
+    } else {
         detail.places.push(Place::at("hit", &found.file, line));
     }
 }
@@ -210,8 +207,8 @@ mod tests {
     }
 
     #[test]
-    fn places_under_one_key_stop_growing_at_the_cap_rather_than_past_it() {
-        let hits: Vec<String> = (0..PLACES + 2)
+    fn every_hit_under_one_key_past_the_first_is_a_place() {
+        let hits: Vec<String> = (0..23)
             .map(|n| {
                 found_at(
                     "src/a.rs",
@@ -222,8 +219,8 @@ mod tests {
             .collect();
         let read = read_scan(&scanned(51, &hits.join(",")), &untested).unwrap();
         let detail = read.details.get("src/a.rs#discarded-result").unwrap();
-        let places: Vec<Place> = (1..=PLACES)
-            .map(|n| Place::at("hit", "src/a.rs", 3 + u32::try_from(n).unwrap()))
+        let places: Vec<Place> = (1..23)
+            .map(|n| Place::at("hit", "src/a.rs", 3 + n))
             .collect();
         assert_eq!(detail.line, Some(3));
         assert_eq!(detail.places, places);

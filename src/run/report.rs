@@ -203,17 +203,25 @@ impl Finding {
         self
     }
 
-    /// The finding's line, then one indented line per other place and one for the fix.
+    /// The finding's line, then one indented line per other place, up to `SAID_PLACES`, and one
+    /// for the fix. A run's own output stays short; `chock explain` lists every place.
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
         let places = self
             .places
             .iter()
+            .take(SAID_PLACES)
             .map(|place| format!("  {}", place.render()));
+        let more = self.places.len().saturating_sub(SAID_PLACES);
+        let unsaid = (more > 0).then(|| {
+            let count = plural(more, "more place");
+            format!("  {count}, which `chock explain` lists")
+        });
         let fix = self.fix.iter().map(|fix| format!("  fix: {fix}"));
         [self.render()]
             .into_iter()
             .chain(places)
+            .chain(unsaid)
             .chain(fix)
             .collect()
     }
@@ -246,6 +254,9 @@ pub struct Detail {
     /// The change that clears the key, where the gate can name one.
     pub fix: Option<String>,
 }
+
+/// Most places a finding names in a run's own output; `chock explain` lists every one.
+const SAID_PLACES: usize = 20;
 
 /// Most lines of code `chock explain` shows for one place; the rest are counted, not shown.
 const SHOWN_LINES: u32 = 12;
@@ -1487,6 +1498,20 @@ mod tests {
             "  fix: merge them",
         ];
         assert_eq!(found.lines(), lines);
+    }
+
+    /// A lint with hundreds of hits keeps them all for `chock explain`, and a hook prints twenty.
+    #[test]
+    fn a_run_names_twenty_places_and_counts_the_rest_that_explain_lists() {
+        let mut found = Finding::at("src/a.rs", "too many");
+        found.places = (1..=23).map(|n| Place::at("hit", "src/b.rs", n)).collect();
+        let mut said = Finding::at("src/a.rs", "too many").lines();
+        said.extend((1..=20).map(|n| format!("  hit: src/b.rs:{n}")));
+        let twenty = said.clone();
+        said.push("  3 more places, which `chock explain` lists".to_string());
+        assert_eq!(found.lines(), said);
+        found.places.truncate(SAID_PLACES);
+        assert_eq!(found.lines(), twenty);
     }
 
     #[test]

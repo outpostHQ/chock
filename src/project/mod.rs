@@ -180,15 +180,14 @@ pub fn is_compile_fail_fixture(path: &Path) -> bool {
 }
 
 /// Directories no gate looks inside. Matched by name at any depth, so only names never used for
-/// a project's own source.
-pub const SKIPPED: [&str; 12] = [
+/// a project's own source; cargo's `target` is [`BUILD_DIR`], since a module can take that name.
+pub const SKIPPED: [&str; 11] = [
     // What a version control system, a build tool or an editor keeps for itself.
     ".git",
     ".jj",
     ".hg",
     ".svn",
     ".outpost",
-    "target",
     "node_modules",
     ".chock",
     ".claude",
@@ -197,6 +196,26 @@ pub const SKIPPED: [&str; 12] = [
     "vendor",
     "third_party",
 ];
+
+/// The directory cargo builds into. No gate looks inside one, except under `src`, where a directory
+/// of that name holds the files of a module named `target`.
+pub const BUILD_DIR: &str = "target";
+
+/// Whether directories, from the root down, pass through a build directory: a [`BUILD_DIR`] that no
+/// `src` directory holds.
+#[must_use]
+pub fn through_build_dir<'a>(dirs: impl IntoIterator<Item = &'a str>) -> bool {
+    dirs.into_iter()
+        .find(|dir| *dir == "src" || *dir == BUILD_DIR)
+        .is_some_and(|dir| dir == BUILD_DIR)
+}
+
+/// Whether a file, by its `/`-separated path from the root, lies inside a build directory.
+#[must_use]
+pub fn in_build_dir(shown: &str) -> bool {
+    let dirs = shown.rsplit_once('/').map_or("", |(dirs, _)| dirs);
+    through_build_dir(dirs.split('/'))
+}
 
 /// Directories holding somebody else's source, kept to test a tool against.
 pub const FIXTURE_DIRS: [&str; 2] = ["fixtures", "testdata"];
@@ -369,8 +388,8 @@ pub fn walked(
         .collect())
 }
 
-/// Every file under `root` that `keep` accepts, sorted; `enter` picks the directories descended.
-/// A directory that cannot be listed is an error, not a skip.
+/// Every file under `root` that `keep` accepts, sorted; `enter` picks the directories descended,
+/// and a build directory is never one. A directory that cannot be listed is an error, not a skip.
 /// # Errors
 /// When a directory under `root` cannot be listed.
 pub fn walk(
@@ -393,8 +412,7 @@ pub fn walk(
                 .into_owned();
             if descends_into(&path) {
                 let shown = relative(root, &path);
-                let other = is_build_cache(&path) || is_other_repository(&path);
-                if enter(&name) && !other && !ignored.holds(&shown, &name) {
+                if enter(&name) && !held_apart(&path, &shown) && !ignored.holds(&shown, &name) {
                     stack.push(path);
                 }
             } else if keep(&name, &path) {
@@ -404,6 +422,12 @@ pub fn walk(
     }
     found.sort();
     Ok(found)
+}
+
+/// Whether the directory at `path`, `shown` from the root, holds no source of this project: a
+/// build directory, a cache, or another repository.
+fn held_apart(path: &Path, shown: &str) -> bool {
+    is_build_cache(path) || is_other_repository(path) || through_build_dir(shown.split('/'))
 }
 
 /// `walk`, with every file read and keyed relative to the root.
@@ -686,6 +710,30 @@ mod tests {
         let files = [("target-coverage/f.rs", ""), ("kept/f.rs", ""), tag];
         let dir = crate::testdir::tree("project-build-cache", &files);
         assert_eq!(reached(&dir), ["kept/f.rs"]);
+    }
+
+    /// `mod target;` keeps a module's files in `src/.../target`; cargo's own output has no marker
+    /// when the directory was made before cargo ran, and the walk still passes it over.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_path_through_target_is_in_a_build_dir_unless_src_holds_it() {
+        assert!(in_build_dir("target/debug/a.rs"));
+        assert!(in_build_dir("bench/arms/target/debug/a.rs"));
+        assert!(!in_build_dir("src/target/mod.rs"));
+        // A file named `target` is no directory.
+        assert!(!in_build_dir("docs/target"));
+        assert!(!in_build_dir("lib.rs"));
+        let module = "crates/a/src/route/target/mod.rs";
+        assert!(!in_build_dir(module));
+        let files = [
+            ("Cargo.toml", "[workspace]\n"),
+            ("target/debug/build/a/out/gen.rs", ""),
+            ("crates/a/target/debug/gen.rs", ""),
+            ("crates/a/src/route/mod.rs", "mod target;\n"),
+            (module, ""),
+        ];
+        let dir = crate::testdir::tree("project-module-target", &files);
+        assert_eq!(reached(&dir), ["crates/a/src/route/mod.rs", module]);
     }
 
     /// A clone, a submodule or a worktree inside the project is a repository of its own.
