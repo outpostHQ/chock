@@ -395,18 +395,12 @@ fn written_on_purpose(commands: &[Command], path: &str) -> bool {
 /// Runs whatever the project's `runner` setting names, since some suites need their own setup.
 /// A run that was stopped keeps what it printed under `gate`'s name.
 pub(super) fn suite(ctx: &Ctx, gate: &str) -> Result<exec::Output, String> {
-    let command = narrowed(&ctx.runner.argv, &ctx.scope, || members(&ctx.root))?;
+    let command = narrowed(&ctx.runner.argv, &ctx.scope, || Metadata::of(&ctx.root))?;
     let (program, args) = command
         .split_first()
         .ok_or("the configured `runner` names no command")?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     exec::run(program, &args, &ctx.root).map_err(|e| stopped_run(&ctx.root, gate, &e))
-}
-
-/// The workspace's members, read only for a run of one package that names features.
-fn members(root: &Path) -> Result<Metadata, String> {
-    serde_json::from_str(&crate::project::metadata(root)?)
-        .map_err(|e| format!("cargo metadata produced something unreadable: {e}"))
 }
 
 /// The runner's argv narrowed to `scope`: `--package NAME` for `--workspace`, the features it can
@@ -469,7 +463,7 @@ mod tests {
             ..Scope::default()
         };
         let kept = argv("cargo test --package lone --features lone/fast -- --exact");
-        assert_eq!(narrowed(&asked, &scope, || members(&root)), Ok(kept));
+        assert_eq!(narrowed(&asked, &scope, || Metadata::of(&root)), Ok(kept));
     }
 
     /// Each run leaves its whole output, under the count of its tests, in a file that each finding

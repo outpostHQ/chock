@@ -14,18 +14,23 @@ pub(super) fn of(ctx: &Ctx) -> Result<Option<Vec<String>>, String> {
     if let Some(part) = ctx.scope.part {
         return kept(ctx).map(|files| Some(parted(ctx, files, part)));
     }
-    let files = if !named.is_empty() {
-        Some(named.to_vec())
-    } else if ctx.ci || ctx.whole || !ctx.baseline.has(crate::gates::tools::MUTEST.name) {
-        return Ok(None);
-    } else {
-        ctx.changed().ok().and_then(narrowed)
-    };
-    Ok(files.map(|files| {
+    Ok(chosen(ctx, named).map(|files| {
         let kept = files.into_iter();
         kept.filter(|file| !left_out(&ctx.not_mutated, file))
             .collect()
     }))
+}
+
+/// The files `--mutate` names; else `None`, the whole crate, for CI, `--whole` or a run with no
+/// record; else those a change to Rust source alone touched.
+fn chosen(ctx: &Ctx, named: &[String]) -> Option<Vec<String>> {
+    if !named.is_empty() {
+        Some(named.to_vec())
+    } else if ctx.ci || ctx.whole || !ctx.baseline.has(crate::gates::tools::MUTEST.name) {
+        None
+    } else {
+        ctx.changed().ok().and_then(narrowed)
+    }
 }
 
 /// The `.rs` files `--mutate` names, or an error for the first that is no Rust source mutest

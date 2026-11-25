@@ -17,6 +17,23 @@ pub struct Metadata {
     pub packages: Vec<Package>,
 }
 
+impl Metadata {
+    /// The answer `cargo metadata` printed as `json`.
+    /// # Errors
+    /// When `json` is not such an answer.
+    pub fn parse(json: &str) -> Result<Self, String> {
+        serde_json::from_str(json)
+            .map_err(|e| format!("cargo metadata produced something unreadable: {e}"))
+    }
+
+    /// What `cargo metadata --no-deps` says of the workspace at `root`.
+    /// # Errors
+    /// When cargo cannot run or fails, or prints something unreadable.
+    pub fn of(root: &std::path::Path) -> Result<Self, String> {
+        Self::parse(&super::metadata(root)?)
+    }
+}
+
 /// One package: a workspace member or a dependency.
 #[derive(Debug, Default, Deserialize)]
 pub struct Package {
@@ -97,6 +114,15 @@ fn documented() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_that_is_no_answer_of_cargo_metadata_is_refused_by_name() {
+        let refused = Metadata::parse(r#"{"packages": 3}"#).unwrap_err();
+        assert!(
+            refused.starts_with("cargo metadata produced something unreadable: "),
+            "{refused}"
+        );
+    }
 
     #[test]
     fn a_field_cargo_leaves_out_takes_its_default_and_doc_defaults_to_documented() {

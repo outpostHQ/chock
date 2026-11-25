@@ -102,8 +102,7 @@ struct Read {
 /// Unreferenced and undeclared features of each workspace member. Read from `cargo metadata`, not
 /// the TOML, so `dep:` and the features cargo adds for optional dependencies arrive resolved.
 fn faults(root: &Path, metadata_json: &str, tree: &Tree) -> Result<Vec<Finding>, String> {
-    let metadata: Metadata = serde_json::from_str(metadata_json)
-        .map_err(|e| format!("cargo metadata produced something unreadable: {e}"))?;
+    let metadata = Metadata::parse(metadata_json)?;
     let members = owners(root, &metadata);
     let reads = sources(tree, &members)?;
     let silent = Read::default();

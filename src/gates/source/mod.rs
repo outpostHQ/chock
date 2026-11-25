@@ -205,8 +205,7 @@ impl<'a> Judge<'a> {
     /// The judge of the tree whose crates are `crates`, from what `cargo metadata` says of it.
     fn for_tree(ctx: &'a Ctx, crates: &'a [String]) -> Result<Self, String> {
         let metadata = project::metadata(&ctx.root)?;
-        let read: project::workspace::Metadata = serde_json::from_str(&metadata)
-            .map_err(|e| format!("cargo metadata produced something unreadable: {e}"))?;
+        let read = project::workspace::Metadata::parse(&metadata)?;
         Ok(Judge {
             reached: shipped::reached(&metadata, &ctx.not_shipped)?,
             crates,

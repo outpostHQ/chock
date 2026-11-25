@@ -37,8 +37,7 @@ fn inspect(ctx: &Ctx) -> Result<Inspection, String> {
 /// # Errors
 /// Returns `Err` when the `cargo metadata` text does not parse.
 pub fn faults(metadata_json: &str) -> Result<Vec<Finding>, String> {
-    let metadata: Metadata = serde_json::from_str(metadata_json)
-        .map_err(|e| format!("cargo metadata produced something unreadable: {e}"))?;
+    let metadata = Metadata::parse(metadata_json)?;
     let mut found = Vec::new();
     // A transitive dependency's manifest is not this project's to fix.
     for package in metadata

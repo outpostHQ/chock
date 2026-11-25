@@ -522,9 +522,7 @@ fn ships_a_binary(package: &Package) -> bool {
 /// Reads the manifests and cargo config. `cargo metadata` names the root, members and binaries but
 /// not `[profile]` or `[lints]`, so those come from the files.
 fn read(ctx: &Ctx) -> Result<Sources, String> {
-    let metadata: Metadata = serde_json::from_str(&project::metadata(&ctx.root)?)
-        .map_err(|e| format!("cargo metadata produced something unreadable: {e}"))?;
-    collect(&metadata, Floor::of(ctx.lint_floor))
+    collect(&Metadata::of(&ctx.root)?, Floor::of(ctx.lint_floor))
 }
 
 fn collect(metadata: &Metadata, floor: Floor) -> Result<Sources, String> {
