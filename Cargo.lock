@@ -19,6 +19,7 @@ name = "chock"
 version = "0.22.1"
 dependencies = [
  "proc-macro2",
+ "quote",
  "rustix",
  "saphyr-parser",
  "serde",

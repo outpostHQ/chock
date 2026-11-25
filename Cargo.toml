@@ -38,6 +38,7 @@ pkg-fmt = "zip"
 
 [dependencies]
 proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+quote = "1.0.47"
 saphyr-parser = "0.4.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["raw_value"] }

@@ -266,6 +266,12 @@ impl Ctx {
             .collect()
     }
 
+    /// The project's feature flags, then its build flags, as cargo is asked for them.
+    #[must_use]
+    pub fn cargo_flags(&self) -> Vec<String> {
+        [self.features.as_slice(), self.build.as_slice()].concat()
+    }
+
     /// One configured build flag's value, such as the triple after `--target`.
     #[must_use]
     pub fn build_flag(&self, flag: &str) -> Option<&str> {
@@ -477,6 +483,19 @@ impl Ctx {
 mod tests {
     use super::*;
     use crate::project::config::{Accepted, History};
+
+    #[test]
+    fn a_verdict_key_names_each_narrowing_of_the_suite() {
+        let part = Some(crate::gates::tools::miri::Part { index: 2, of: 4 });
+        let package = Some("a".to_string());
+        let scope = Scope {
+            package,
+            part,
+            ..Scope::default()
+        };
+        assert_eq!(scope.named().as_deref(), Some("package=a:part=2-of-4"));
+        assert_eq!(Scope::default().named(), None);
+    }
 
     #[test]
     fn the_leaks_a_project_accepted_reach_the_history_gate() {

@@ -32,7 +32,8 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `blocking-async` no longer stop at 20; `codeslop` lists the places in changed files first. A
   run's own output still shows 20 and counts the rest.
 - **A bare `--miri-partition` says it names nothing,** as `--package` does.
-- **Dependencies:** saphyr-parser 0.4.0, errno 0.3.15.
+- **Dependencies:** saphyr-parser 0.4.0, errno 0.3.15; `quote` 1.0.47, which `syn` already
+  builds, is now a direct dependency.
 
 ## [0.22.0] - 2026-11-13
 

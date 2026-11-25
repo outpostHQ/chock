@@ -452,6 +452,26 @@ fn narrowed(
 mod tests {
     use super::*;
 
+    /// The features a package run keeps come from what `cargo metadata` says that package has.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn cargo_metadata_names_the_features_a_package_run_keeps() {
+        let manifest = "[package]\nname = \"lone\"\nversion = \"0.1.0\"\n\n[features]\nfast = []\n\n\
+                        [workspace]\n";
+        let root = crate::testdir::tree(
+            "suite-members",
+            &[("Cargo.toml", manifest), ("src/lib.rs", "")],
+        );
+        let argv = |words: &str| words.split(' ').map(str::to_string).collect::<Vec<_>>();
+        let asked = argv("cargo test --workspace --features lone/fast,gone/slow -- --exact");
+        let scope = Scope {
+            package: Some("lone".to_string()),
+            ..Scope::default()
+        };
+        let kept = argv("cargo test --package lone --features lone/fast -- --exact");
+        assert_eq!(narrowed(&asked, &scope, || members(&root)), Ok(kept));
+    }
+
     /// Each run leaves its whole output, under the count of its tests, in a file that each finding
     /// without a file of its own names.
     #[test]

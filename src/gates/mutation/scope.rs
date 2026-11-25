@@ -10,18 +10,12 @@ use crate::run::{Ctx, Measurement};
 /// The `.rs` files `--mutate` names, each a Rust source mutest mutates, or on a local run with a
 /// record those a change to Rust source alone touched; `None` mutates the whole crate.
 pub(super) fn of(ctx: &Ctx) -> Result<Option<Vec<String>>, String> {
-    let named = &ctx.scope.mutate;
-    let source = |file: &&String| mutable(file) && ctx.root.join(file.as_str()).is_file();
-    if let Some(file) = named.iter().find(|file| !source(file)) {
-        return Err(format!(
-            "`--mutate` names {file}, which is no Rust source mutest mutates here"
-        ));
-    }
+    let named = by_name(ctx)?;
     if let Some(part) = ctx.scope.part {
         return kept(ctx).map(|files| Some(parted(ctx, files, part)));
     }
     let files = if !named.is_empty() {
-        Some(named.clone())
+        Some(named.to_vec())
     } else if ctx.ci || ctx.whole || !ctx.baseline.has(crate::gates::tools::MUTEST.name) {
         return Ok(None);
     } else {
@@ -32,6 +26,18 @@ pub(super) fn of(ctx: &Ctx) -> Result<Option<Vec<String>>, String> {
         kept.filter(|file| !left_out(&ctx.not_mutated, file))
             .collect()
     }))
+}
+
+/// The `.rs` files `--mutate` names, or an error for the first that is no Rust source mutest
+/// mutates here.
+fn by_name(ctx: &Ctx) -> Result<&[String], String> {
+    let source = |file: &&String| mutable(file) && ctx.root.join(file.as_str()).is_file();
+    match ctx.scope.mutate.iter().find(|file| !source(file)) {
+        Some(file) => Err(format!(
+            "`--mutate` names {file}, which is no Rust source mutest mutates here"
+        )),
+        None => Ok(&ctx.scope.mutate),
+    }
 }
 
 /// The flag for a run of the whole crate: none, or where the project leaves files unmutated, each

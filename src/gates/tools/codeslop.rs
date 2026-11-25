@@ -260,8 +260,7 @@ fn did_not_finish(stderr: &str) -> String {
 }
 
 fn measure(ctx: &Ctx) -> Result<Measurement, String> {
-    let asked = [ctx.features.as_slice(), ctx.build.as_slice()].concat();
-    let ran = exec::run_kept("cargo", &invocation(&asked), &ctx.root, kept);
+    let ran = exec::run_kept("cargo", &invocation(&ctx.cargo_flags()), &ctx.root, kept);
     // A tree no repository holds has no touched files, and its places keep file and line order.
     let touched = ctx.changed().unwrap_or_default();
     all_hits(&ran.map_err(|e| e.to_string())?, ctx).map(|found| measured(&found, touched))

@@ -23,9 +23,13 @@ pub const GATE: Gate = Gate {
 };
 
 fn measure(ctx: &Ctx) -> Result<Measurement, String> {
+    super::spawn(&ctx.root, &["scan", "rules", "--json"]).and_then(|out| judged(ctx, &out))
+}
+
+/// The scan in `out`, less each finding in the test code of `ctx`'s tree.
+fn judged(ctx: &Ctx, out: &exec::Output) -> Result<Measurement, String> {
     let code = prodlines::TestCode::of(ctx)?;
-    let out = super::spawn(&ctx.root, &["scan", "rules", "--json"]);
-    out.and_then(|out| read_scan(&out, &|file, line| code.holds(file, line)))
+    read_scan(out, &|file, line| code.holds(file, line))
 }
 
 /// Whether only tests build a line of a file: the file and its 1-based line.
@@ -166,6 +170,7 @@ mod tests {
                 ("src/law.rs", "mod deep;\n"),
                 ("src/law/deep.rs", "fn d() {}\n"),
                 ("src/own.rs", "#![cfg(test)]\nfn o() {}\n"),
+                ("src/broken.rs", "fn (\n"),
             ],
         );
         let code = prodlines::TestCode::of(&held).unwrap();
@@ -173,6 +178,8 @@ mod tests {
         assert!(!tested("src/a.rs", 1) && tested("src/a.rs", 3) && tested("src/a.rs", 6));
         assert!(!tested("src/a.rs", 7) && !tested("src/lib.rs", 1));
         assert!(tested("src/law.rs", 1) && tested("src/law/deep.rs", 1) && tested("src/own.rs", 2));
+        let series = judged(&held, &two("unwrap", 1, 3)).unwrap().series;
+        assert_eq!(series.get("src/a.rs#unwrap"), Some(1));
     }
 
     #[test]

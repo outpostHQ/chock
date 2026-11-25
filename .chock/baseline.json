@@ -593,7 +593,6 @@
     },
     "dupdeps": {
       "proc-macro2": 2,
-      "quote": 2,
       "syn": 2
     },
     "duplicates": {
@@ -682,7 +681,7 @@
       "hazard_unordered_into_ordered": 0
     },
     "lines": {
-      "total": 97076
+      "total": 97118
     },
     "manifest": {},
     "measures": {

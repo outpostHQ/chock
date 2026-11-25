@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use proc_macro2::TokenTree;
+use quote::ToTokens;
 use syn::visit::Visit;
 
 use crate::run::report::Finding;
@@ -185,17 +186,9 @@ pub fn is_entry_point(src: &str, name: &str) -> Result<bool, String> {
 /// # Errors
 /// When `src` does not parse as Rust.
 pub fn named_by(src: &str, name: &str) -> Result<BTreeSet<String>, String> {
-    // A span counts bytes from past a byte order mark, which the parser drops.
-    let src = src.strip_prefix('\u{feff}').unwrap_or(src);
     let mut names = BTreeMap::new();
-    for bytes in entry(src, name)?.bodies {
-        let body = src
-            .get(bytes)
-            .ok_or_else(|| format!("the body of `{name}` lies outside its file"))?;
-        let stream: proc_macro2::TokenStream = body
-            .parse()
-            .map_err(|e| format!("cannot read the token stream: {e}"))?;
-        idents(stream, &mut names);
+    for body in entry(src, name)?.bodies {
+        idents(body, &mut names);
     }
     Ok(names.into_keys().collect())
 }
@@ -210,12 +203,12 @@ fn entry<'a>(src: &str, name: &'a str) -> Result<Entry<'a>, String> {
     Ok(look)
 }
 
-/// Whether something outside the crate calls a function called `name`, and the bytes of the body
-/// of each.
+/// Whether something outside the crate calls a function called `name`, and the tokens of the body
+/// of each, taken from the parsed tree, so a byte order mark or a `#!` line shifts nothing.
 struct Entry<'a> {
     name: &'a str,
     found: bool,
-    bodies: Vec<std::ops::Range<usize>>,
+    bodies: Vec<proc_macro2::TokenStream>,
 }
 
 impl<'ast> Visit<'ast> for Entry<'_> {
@@ -243,7 +236,7 @@ impl Entry<'_> {
     fn take(&mut self, sig: &syn::Signature, attrs: &[syn::Attribute], block: &syn::Block) {
         if sig.ident == self.name {
             self.found |= called_from_outside(self.name, attrs);
-            self.bodies.push(block.brace_token.span.join().byte_range());
+            self.bodies.push(block.to_token_stream());
         }
     }
 }
@@ -689,10 +682,10 @@ mod tests {
         assert!(is_entry_point("#[laws::bounded]\nfn b() {}\n", "b").unwrap());
     }
 
-    /// A body's names are the callees of an export; the byte order mark shifts no span.
+    /// A body's names are the callees of an export; a byte order mark and a `#!` line shift none.
     #[test]
     fn the_names_a_body_writes_are_read_from_that_body_alone() {
-        let src = "\u{feff}fn go() { read(1); S::mount(); }\nfn other() { lonely(); }\n\
+        let src = "\u{feff}#!/usr/bin/env run\nfn go() { read(1); S::mount(); }\nfn other() { lonely(); }\n\
                    struct S;\nimpl S { fn go(&self) { self.free() } }\n";
         let names = named_by(src, "go").unwrap();
         for name in ["read", "S", "mount", "free"] {

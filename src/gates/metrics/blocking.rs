@@ -156,7 +156,7 @@ impl Blocking {
         let Expr::Path(path) = &*call.func else {
             return None;
         };
-        let written = path_of(call)?;
+        let written = path_of(path)?;
         let full = self.aliases.full(&path.path);
         let elsewhere = full != written && full.first().is_none_or(|first| first != "std");
         (!elsewhere).then_some(written)
@@ -173,17 +173,12 @@ fn is_wrapper_call(node: &syn::ExprCall) -> bool {
         .is_some_and(|last| WRAPPERS.contains(&last.ident.to_string().as_str()))
 }
 
-fn path_of(call: &syn::ExprCall) -> Option<Vec<String>> {
-    match &*call.func {
-        Expr::Path(path) if path.qself.is_none() => Some(
-            path.path
-                .segments
-                .iter()
-                .map(|segment| segment.ident.to_string())
-                .collect(),
-        ),
-        _ => None,
-    }
+/// The names of a path as written, unless it is qualified, as `<T as Trait>::f` is.
+fn path_of(path: &syn::ExprPath) -> Option<Vec<String>> {
+    let names = path.path.segments.iter();
+    path.qself
+        .is_none()
+        .then(|| names.map(|segment| segment.ident.to_string()).collect())
 }
 
 fn classify(parts: &[String]) -> Option<&'static str> {

@@ -268,7 +268,7 @@ fn asked(ctx: &Ctx) -> Result<Vec<String>, String> {
     if ctx.build_flag("--profile").is_some() {
         return Err("miri interprets its own build and cannot be told a cargo profile".to_string());
     }
-    Ok([ctx.features.as_slice(), ctx.build.as_slice()].concat())
+    Ok(ctx.cargo_flags())
 }
 
 /// `--no-fail-fast`, so the run lists every test the interpreter rejects and not only the first.
