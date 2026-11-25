@@ -52,16 +52,10 @@ fn inspect(ctx: &Ctx) -> Result<Inspection, String> {
     let sources = prodlines::sources(ctx)?.into_iter();
     let shown = sources.map(|path| (project::relative(&ctx.root, &path), path));
     let code = prodlines::TestCode::of(ctx)?;
-    let mut scans = Vec::new();
-    for (shown, path) in shown.filter(|(shown, _)| targets.compiles(shown)) {
-        let raw = std::fs::read_to_string(&path).map_err(|e| format!("{shown}: {e}"))?;
-        let built = if code.whole(&shown) {
-            scan::Built::OnlyForTests
-        } else {
-            scan::Built::ByItsPath
-        };
-        scans.push(scan::scan_code(&shown, &raw, built));
-    }
+    let scans = shown
+        .filter(|(shown, _)| targets.compiles(shown))
+        .map(|(shown, path)| scanned(&shown, &path, &code))
+        .collect::<Result<Vec<_>, String>>()?;
     let mut found: Vec<Finding> = scans.iter().flat_map(per_test::in_file).collect();
     found.extend(assertionless(&scans));
     found.extend(early_returns(&scans));
@@ -69,6 +63,17 @@ fn inspect(ctx: &Ctx) -> Result<Inspection, String> {
     found.extend(shell_harnesses(ctx)?);
     Finding::sort_by_place(&mut found);
     Ok(Inspection::debt(found))
+}
+
+/// The scan of one file the crate compiles, `shown` from the root, read from `path`.
+fn scanned(shown: &str, path: &Path, code: &prodlines::TestCode) -> Result<scan::FileScan, String> {
+    let raw = std::fs::read_to_string(path).map_err(|e| format!("{shown}: {e}"))?;
+    let built = if code.whole(shown) {
+        scan::Built::OnlyForTests
+    } else {
+        scan::Built::ByItsPath
+    };
+    Ok(scan::scan_code(shown, &raw, built))
 }
 
 fn line(at: usize) -> u32 {

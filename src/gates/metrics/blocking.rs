@@ -62,7 +62,7 @@ fn hits(src: &str) -> Result<Vec<(&'static str, u32)>, String> {
         wrappers: 0,
         hits: Vec::new(),
     };
-    Ok(walk_production(src, with)?.hits)
+    walk_production(src, with).map(|found| found.hits)
 }
 
 struct Blocking {

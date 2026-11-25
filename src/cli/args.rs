@@ -212,6 +212,11 @@ fn scope(names: &[&str]) -> Result<Scope, String> {
         mutate: listed(names, MUTATE)?,
         part: part(names, MUTEST_PARTITION)?,
     };
+    alone(names, &scope).map(|()| scope)
+}
+
+/// Refuses a scope that chooses the files to mutate twice, or narrows a gate beside another.
+fn alone(names: &[&str], scope: &Scope) -> Result<(), String> {
     if !scope.mutate.is_empty() && scope.part.is_some() {
         return Err(format!(
             "`--mutate` and `{MUTEST_PARTITION}` each choose the files to mutate, so give one"
@@ -242,7 +247,7 @@ fn scope(names: &[&str]) -> Result<Scope, String> {
         Some((_, flags, gate)) => Err(format!(
             "{flags} the `{gate}` gate alone, so name `{gate}` and no other gate"
         )),
-        None => Ok(scope),
+        None => Ok(()),
     }
 }
 
@@ -413,7 +418,7 @@ mod tests {
     use super::*;
 
     /// `run` of `names` as `json` on `ci`, narrowed to `scope`; every other flag at its default.
-    fn run_of<'a>(names: Vec<&'a str>, json: Format, ci: Host, scope: Scope) -> Command<'a> {
+    fn run_of(names: Vec<&str>, json: Format, ci: Host, scope: Scope) -> Command<'_> {
         Command::Run {
             names,
             json,

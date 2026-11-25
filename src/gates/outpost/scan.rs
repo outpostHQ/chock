@@ -23,9 +23,9 @@ pub const GATE: Gate = Gate {
 };
 
 fn measure(ctx: &Ctx) -> Result<Measurement, String> {
-    let out = super::spawn(&ctx.root, &["scan", "rules", "--json"])?;
     let code = prodlines::TestCode::of(ctx)?;
-    read_scan(&out, &|file, line| code.holds(file, line))
+    let out = super::spawn(&ctx.root, &["scan", "rules", "--json"]);
+    out.and_then(|out| read_scan(&out, &|file, line| code.holds(file, line)))
 }
 
 /// Whether only tests build a line of a file: the file and its 1-based line.

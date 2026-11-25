@@ -53,6 +53,13 @@ pub(crate) enum Built {
     OnlyForTests,
 }
 
+impl Built {
+    /// Whether all of `file` is test code: built only for tests, or a test file by its path.
+    fn holds_all_of(self, file: &str) -> bool {
+        self == Self::OnlyForTests || is_test_code(file)
+    }
+}
+
 /// A file that does not lex compiles nowhere, so it holds no test.
 pub(crate) fn scan_source(file: &str, raw: &str) -> FileScan {
     scan_code(file, raw, Built::ByItsPath)
@@ -107,7 +114,7 @@ pub(crate) fn gated_for_tests(lexed: &Lexed, attrs: Range<usize>) -> bool {
 /// The functions of the test code: each one of a test file or of a file built only for tests,
 /// and in any other file each one under a `#[cfg(test)]`.
 fn helpers_in(file: &str, lexed: &Lexed, items: &[Item], built: Built) -> Vec<Helper> {
-    let whole = built == Built::OnlyForTests || is_test_code(file);
+    let whole = built.holds_all_of(file);
     let gated = |item: &&Item| gated_for_tests(lexed, item.first..item.head);
     let span = |item: &Item| item.first..=item.end;
     let spans: Vec<_> = items.iter().filter(gated).map(span).collect();

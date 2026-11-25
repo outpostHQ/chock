@@ -262,8 +262,7 @@ mod tests {
             .collect();
         let mut all: Vec<String> = parts.iter().flatten().cloned().collect();
         all.sort();
-        let named: Vec<String> = files.iter().map(|(_, file)| file.clone()).collect();
-        let mut expected = named.clone();
+        let mut expected: Vec<String> = files.iter().map(|(_, file)| file.clone()).collect();
         expected.sort();
         assert_eq!(all, expected, "every file once, in no two parts");
         assert_eq!(parts[0], paths(&["src/a.rs"]));
@@ -280,7 +279,7 @@ mod tests {
             split(one.clone(), Part { index: 1, of: 2 }),
             paths(&["src/a.rs"])
         );
-        assert!(split(one, Part { index: 2, of: 2 }).is_empty());
+        assert_eq!(split(one, Part { index: 2, of: 2 }), Vec::<String>::new());
     }
 
     /// A partition mutates its part of every source, less the files the project leaves out.
