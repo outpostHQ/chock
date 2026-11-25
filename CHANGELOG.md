@@ -5,6 +5,35 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-11-25
+
+- **`chock run mutest --mutest-partition=K/N` mutates one part of the crate.** The files split
+  into N parts of about the same number of lines, each file in exactly one part, and a part keeps
+  the record of every file outside it. CI runs `mutest` as 4 parts on each OS at once.
+- **A gate that runs the project's tests judges a failure again.** `test`, `idempotent`,
+  `coverage`, `crap`, `miri` and `mutest` still recall a pass, but run again after a failure,
+  which an environment variable may have caused.
+- **`--package` keeps only the features that package accepts.** A workspace run keeps every
+  feature.
+- **A timeout names `CHOCK_TIMEOUT`,** the variable that raises the limit.
+- **`test` and `coverage` show up to 40 lines under each `FAILED` test.**
+- **`testlint` reads more test code as tests.** `#[should_panic(expected = "...")]` counts as an
+  assertion, and a bare `#[should_panic]` does not. A module under `#[cfg(test)] mod x;` and a
+  file that opens with `#![cfg(test)]` are test code.
+- **`scan` leaves out findings in inline test modules and in test-only files.**
+- **`#[tokio::test]` marks a test** for `clone-abuse`, `blocking-async` and `assertions`.
+- **`blocking-async` no longer flags an awaited call,** or a name imported from outside `std`,
+  such as `tokio::fs`.
+- **`dead` and `unreferenced` take `#[unsafe(no_mangle)]` and `#[unsafe(export_name)]` as entry
+  points,** and a helper that only such an export calls as live.
+- **A `target` directory under `src` is a module, not cargo output,** for `modcheck` and every
+  walk of the tree.
+- **`chock explain` lists every place of a finding.** `codeslop`, `scan`, `clone-abuse` and
+  `blocking-async` no longer stop at 20; `codeslop` lists the places in changed files first. A
+  run's own output still shows 20 and counts the rest.
+- **A bare `--miri-partition` says it names nothing,** as `--package` does.
+- **Dependencies:** saphyr-parser 0.4.0, errno 0.3.15.
+
 ## [0.22.0] - 2026-11-13
 
 - **Raises the minimum Rust to 1.100.0.** `rust-toolchain.toml` and `rust-version` both move to
