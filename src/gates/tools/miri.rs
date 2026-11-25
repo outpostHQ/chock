@@ -23,7 +23,8 @@ pub const GATE: Gate = Gate {
     kind: Kind::Binary(checked),
 };
 
-/// One part of the suite, from `--miri-partition=K/N`, so CI can run the parts at once.
+/// One part of the work, from `--miri-partition=K/N` or `--mutest-partition=K/N`, so CI can run the
+/// parts at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Part {
     /// Which part this is, K, from 1.
@@ -33,11 +34,11 @@ pub struct Part {
 }
 
 impl Part {
-    /// `K/N` with K from 1 to N, the form of nextest's `count:` partition.
+    /// `K/N` with K from 1 to N, the form of nextest's `count:` partition, given to `flag`.
     /// # Errors
     /// Text that is not K/N with K from 1 to N.
-    pub fn parse(text: &str) -> Result<Self, String> {
-        let wrong = || format!("`--miri-partition` takes K/N with K from 1 to N, not `{text}`");
+    pub fn parse(flag: &str, text: &str) -> Result<Self, String> {
+        let wrong = || format!("`{flag}` takes K/N with K from 1 to N, not `{text}`");
         let (index, of) = text.split_once('/').ok_or_else(wrong)?;
         let index: u32 = index.parse().map_err(|_| wrong())?;
         let of: u32 = of.parse().map_err(|_| wrong())?;

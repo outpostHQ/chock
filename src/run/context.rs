@@ -420,8 +420,8 @@ pub fn coverage_for(config: Option<&crate::project::config::Config>) -> Coverage
     coverage
 }
 
-/// What `--package=NAME` and `--filter=TEXT` narrow `test` to, and `--mutate=FILE,...` narrows
-/// `mutest` to; the default is all of it.
+/// What `--package=NAME` and `--filter=TEXT` narrow `test` to, and `--mutate=FILE,...` or
+/// `--mutest-partition=K/N` narrow `mutest` to; the default is all of it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Scope {
     /// The one package `test` runs, from `--package`.
@@ -430,6 +430,8 @@ pub struct Scope {
     pub filter: Option<String>,
     /// The files `mutest` mutates, from `--mutate`.
     pub mutate: Vec<String>,
+    /// The part of the crate's files `mutest` mutates, from `--mutest-partition`.
+    pub part: Option<crate::gates::tools::miri::Part>,
 }
 
 impl Scope {
@@ -437,10 +439,14 @@ impl Scope {
     #[must_use]
     pub fn named(&self) -> Option<String> {
         let mutate = (!self.mutate.is_empty()).then(|| self.mutate.join(","));
+        let part = self
+            .part
+            .map(|part| format!("{}-of-{}", part.index, part.of));
         let parts: Vec<String> = [
             ("package", &self.package),
             ("filter", &self.filter),
             ("mutate", &mutate),
+            ("part", &part),
         ]
         .into_iter()
         .filter_map(|(name, value)| value.as_ref().map(|value| format!("{name}={value}")))

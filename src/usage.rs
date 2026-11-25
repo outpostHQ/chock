@@ -25,6 +25,7 @@ Every day
   chock run test --package=NAME   run the suite of one package only
   chock run test --filter=TEXT    run only the tests whose name holds TEXT
   chock run mutest --mutate=FILE,...  mutate only the named files
+  chock run mutest --mutest-partition=K/N  mutate only part K of N of the crate's files
   chock cache clear               remove every kept verdict, so the next run judges every gate
   chock explain GATE              the findings of the last run, without a new run
   chock explain                   all the debt in the record, largest first, with the fix for each

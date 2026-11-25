@@ -500,6 +500,10 @@ whose name holds TEXT. The verdict of such a run answers for that part alone. Bo
 `chock run mutest --mutate=FILE,...` mutates only the named Rust files, and keeps the record for
 every other file. Its verdict answers for those files alone.
 
+`chock run mutest --mutest-partition=K/N` splits the files that the whole crate run mutates into N
+parts of about the same number of lines, and mutates only part K. Each file is in exactly one part,
+so N runs together mutate the whole crate. CI runs the N parts on separate runners at once.
+
 ## Output a finding points to
 
 A finding quotes only a part of a long output, so some gates keep the whole of it under

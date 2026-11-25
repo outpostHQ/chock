@@ -149,17 +149,20 @@ jobs:
         run: Get-CimInstance Win32_Process | Format-Table ProcessId, ParentProcessId, Name, CommandLine -Wrap | Out-String -Width 300
 
   # `miri` and `mutest` take most of a run, so their jobs run beside the one above, not after it.
+  # The crate's files split 4 ways per OS, each part on its own runner, as Miri's suite is.
   mutest:
-    name: mutest on ${{ matrix.system }}
+    name: mutest on ${{ matrix.system }} (${{ matrix.part }}/4)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
+        system: [linux, macos, windows]
+        part: [1, 2, 3, 4]
         include:
-          - { os: ubuntu-latest, system: linux }
-          - { os: macos-latest, system: macos }
-          - { os: windows-latest, system: windows }
+          - { system: linux, os: ubuntu-latest }
+          - { system: macos, os: macos-latest }
+          - { system: windows, os: windows-latest }
     env:
       SYSTEM: ${{ matrix.system }}
     defaults:
@@ -191,7 +194,7 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          prefix-key: mutest
+          prefix-key: mutest-${{ matrix.part }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The installed driver embeds its runtime, so the two binaries are the whole tool, and a
@@ -268,7 +271,7 @@ jobs:
           done) &
           beat=$!
           status=0
-          chock run --ci mutest || status=$?
+          chock run --ci mutest --mutest-partition=${{ matrix.part }}/4 || status=$?
           kill "$beat"
           exit "$status"
 
@@ -288,7 +291,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: mutest-results-${{ matrix.system }}
+          name: mutest-results-${{ matrix.system }}-${{ matrix.part }}
           path: |
             target/test-scratch/mutest-results-*
             target/test-scratch/mutest-journal-*

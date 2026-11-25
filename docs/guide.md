@@ -310,6 +310,7 @@ closest name: `` unknown command `doctr`; did you mean `chock doctor`? ``.
 | `chock run test --package=NAME` | runs the suite of one package only |
 | `chock run test --filter=TEXT` | runs only the tests whose name holds `TEXT` |
 | `chock run mutest --mutate=FILE,...` | mutates only the named files, and keeps the record of every other file |
+| `chock run mutest --mutest-partition=K/N` | mutates only part K of N of the crate's files, and keeps the record of every other file |
 | `chock cache clear` | removes every kept verdict, so the next run judges every gate |
 | `chock explain GATE` | shows the findings of the last run, without a new run |
 | `chock explain` | lists all the debt in the record, largest first, with the fix for each kind |

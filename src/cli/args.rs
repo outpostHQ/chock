@@ -136,8 +136,17 @@ const FILTER: &str = "--filter=";
 
 const MUTATE: &str = "--mutate=";
 
+const MUTEST_PARTITION: &str = "--mutest-partition";
+
 /// The flags of `run` that take a value, which may follow as the next word.
-const VALUED: [&str; 5] = ["--skip", "--package", "--filter", "--mutate", PARTITION];
+const VALUED: [&str; 6] = [
+    "--skip",
+    "--package",
+    "--filter",
+    "--mutate",
+    PARTITION,
+    MUTEST_PARTITION,
+];
 
 /// `run --skip miri` as `run --skip=miri`, so a flag of `run` that takes a value takes it either
 /// way.
@@ -159,11 +168,11 @@ pub(super) fn joined(args: &[&str]) -> Vec<String> {
     out
 }
 
-/// A flag of `run`: `--fast`, `--ci`, `--no-cache`, `--verbose`, `--miri-partition=K/N`,
-/// `--skip=NAME,...`, `--package=NAME`, `--filter=TEXT` or `--mutate=FILE,...`.
+/// A flag of `run`: `--fast`, `--ci`, `--no-cache`, `--verbose`, or a flag that takes a value,
+/// such as `--skip=NAME,...` or `--mutest-partition=K/N`.
 fn known(flag: &str) -> bool {
     matches!(flag, "--fast" | "--ci" | "--no-cache" | "--verbose")
-        || [PARTITION, SKIP, PACKAGE, FILTER, MUTATE]
+        || [PARTITION, SKIP, PACKAGE, FILTER, MUTATE, MUTEST_PARTITION]
             .iter()
             .any(|at| flag.starts_with(at))
 }
@@ -194,14 +203,20 @@ fn listed(names: &[&str], flag: &str) -> Result<Vec<String>, String> {
     }
 }
 
-/// `--package` and `--filter` narrow the `test` gate alone, and `--mutate` the `mutest` gate
-/// alone, so a run that gives one names that gate and no other.
+/// `--package` and `--filter` narrow `test` alone, and `--mutate` or `--mutest-partition`
+/// narrow `mutest` alone, so a run that gives one names that gate and no other.
 fn scope(names: &[&str]) -> Result<Scope, String> {
     let scope = Scope {
         package: valued(names, PACKAGE)?,
         filter: valued(names, FILTER)?,
         mutate: listed(names, MUTATE)?,
+        part: part(names, MUTEST_PARTITION)?,
     };
+    if !scope.mutate.is_empty() && scope.part.is_some() {
+        return Err(format!(
+            "`--mutate` and `{MUTEST_PARTITION}` each choose the files to mutate, so give one"
+        ));
+    }
     let gates: Vec<&str> = names
         .iter()
         .copied()
@@ -214,6 +229,11 @@ fn scope(names: &[&str]) -> Result<Scope, String> {
             "test",
         ),
         (!scope.mutate.is_empty(), "`--mutate` narrows", "mutest"),
+        (
+            scope.part.is_some(),
+            "`--mutest-partition` narrows",
+            "mutest",
+        ),
     ];
     match narrowed
         .into_iter()
@@ -244,7 +264,7 @@ fn to_run<'a>(rest: &[&'a str]) -> Command<'a> {
         return Command::Usage(unknown_option(flag));
     }
     // A malformed `--miri-partition` is a usage error too.
-    let (part, scope) = match (miri_part(&names), scope(&names)) {
+    let (part, scope) = match (part(&names, PARTITION), scope(&names)) {
         (Err(why), _) | (_, Err(why)) => return Command::Usage(why),
         (Ok(part), Ok(scope)) => (part, scope),
     };
@@ -270,15 +290,12 @@ fn to_run<'a>(rest: &[&'a str]) -> Command<'a> {
     }
 }
 
-/// The part `--miri-partition=K/N` names; the flag given twice is refused.
-fn miri_part(names: &[&str]) -> Result<Option<Part>, String> {
-    let mut asked = names.iter().filter_map(|n| n.strip_prefix(PARTITION));
-    match (asked.next(), asked.next()) {
-        (_, Some(_)) => Err(format!("`{PARTITION}` is given twice")),
-        (first, None) => first
-            .map(|value| Part::parse(value.trim_prefix('=')))
-            .transpose(),
-    }
+/// The part `flag=K/N` names; the flag given twice or with no value is refused.
+fn part(names: &[&str], flag: &str) -> Result<Option<Part>, String> {
+    let given = valued(names, flag)?;
+    given
+        .map(|value| Part::parse(flag, value.trim_prefix('=')))
+        .transpose()
 }
 
 /// The command the words name, or the usage error for words that name none.
@@ -394,6 +411,21 @@ fn explained<'a>(rest: &'a [&'a str]) -> Command<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `run` of `names` as `json` on `ci`, narrowed to `scope`; every other flag at its default.
+    fn run_of<'a>(names: Vec<&'a str>, json: Format, ci: Host, scope: Scope) -> Command<'a> {
+        Command::Run {
+            names,
+            json,
+            fast: Pace::Full,
+            ci,
+            no_cache: false,
+            verbose: Rows::NotPassed,
+            miri_part: None,
+            skip: Vec::new(),
+            scope,
+        }
+    }
 
     #[test]
     fn each_subcommand_parses_to_its_own_action() {
@@ -630,21 +662,16 @@ mod tests {
             "--package=chock",
             "--json",
         ]);
-        let expected = Command::Run {
-            names: vec!["test"],
-            json: Format::Json,
-            fast: Pace::Full,
-            ci: Host::Local,
-            no_cache: false,
-            verbose: Rows::NotPassed,
-            miri_part: None,
-            skip: Vec::new(),
-            scope: Scope {
+        let expected = run_of(
+            vec!["test"],
+            Format::Json,
+            Host::Local,
+            Scope {
                 package: Some("chock".to_string()),
                 filter: Some("rules::".to_string()),
                 ..Scope::default()
             },
-        };
+        );
         assert_eq!(narrowed, expected);
         let usage = |said: &str| Command::Usage(said.to_string());
         let alone = usage(
@@ -663,20 +690,15 @@ mod tests {
     #[test]
     fn a_list_of_files_narrows_the_mutest_gate_alone() {
         let narrowed = parse(&["run", "mutest", "--mutate=src/a.rs,,src/b.rs"]);
-        let expected = Command::Run {
-            names: vec!["mutest"],
-            json: Format::Text,
-            fast: Pace::Full,
-            ci: Host::Local,
-            no_cache: false,
-            verbose: Rows::NotPassed,
-            miri_part: None,
-            skip: Vec::new(),
-            scope: Scope {
+        let expected = run_of(
+            vec!["mutest"],
+            Format::Text,
+            Host::Local,
+            Scope {
                 mutate: vec!["src/a.rs".to_string(), "src/b.rs".to_string()],
                 ..Scope::default()
             },
-        };
+        );
         assert_eq!(narrowed, expected);
         let usage = |said: &str| Command::Usage(said.to_string());
         let alone =
@@ -689,13 +711,56 @@ mod tests {
     }
 
     #[test]
+    fn a_mutest_partition_narrows_the_mutest_gate_alone_and_never_beside_a_file_list() {
+        let parted = parse(&["run", "--ci", "mutest", "--mutest-partition=3/4"]);
+        let expected = run_of(
+            vec!["mutest"],
+            Format::Text,
+            Host::Ci,
+            Scope {
+                part: Some(Part { index: 3, of: 4 }),
+                ..Scope::default()
+            },
+        );
+        assert_eq!(parted, expected);
+        let usage = |said: &str| Command::Usage(said.to_string());
+        let alone = usage(
+            "`--mutest-partition` narrows the `mutest` gate alone, so name `mutest` and no other gate",
+        );
+        assert_eq!(parse(&["run", "--mutest-partition=1/2"]), alone);
+        assert_eq!(parse(&["run", "miri", "--mutest-partition=1/2"]), alone);
+        let both = usage(
+            "`--mutate` and `--mutest-partition` each choose the files to mutate, so give one",
+        );
+        let flags = [
+            "run",
+            "mutest",
+            "--mutate=src/a.rs",
+            "--mutest-partition=1/2",
+        ];
+        assert_eq!(parse(&flags), both);
+        let wrong = usage("`--mutest-partition` takes K/N with K from 1 to N, not `5/4`");
+        assert_eq!(parse(&["run", "mutest", "--mutest-partition=5/4"]), wrong);
+        let twice = usage("`--mutest-partition` is given twice");
+        let flags = [
+            "run",
+            "mutest",
+            "--mutest-partition=1/2",
+            "--mutest-partition=2/2",
+        ];
+        assert_eq!(parse(&flags), twice);
+        let joined = joined(&["run", "mutest", "--mutest-partition", "2/4"]);
+        assert_eq!(joined, ["run", "mutest", "--mutest-partition=2/4"]);
+    }
+
+    #[test]
     fn a_miri_partition_outside_one_to_n_or_given_twice_is_refused() {
         for wrong in ["0/3", "4/3", "1/0", "3", "a/3", "2/b", ""] {
             let flag = format!("--miri-partition={wrong}");
             let said = format!("`--miri-partition` takes K/N with K from 1 to N, not `{wrong}`");
             assert_eq!(parse(&["run", &flag]), Command::Usage(said));
         }
-        let bare = Command::Usage("`--miri-partition` takes K/N with K from 1 to N, not ``".into());
+        let bare = Command::Usage("`--miri-partition` names nothing".into());
         assert_eq!(parse(&["run", "--miri-partition", "2/3"]), bare);
         let twice = Command::Usage("`--miri-partition` is given twice".to_string());
         let flags = ["run", "--miri-partition=1/2", "--miri-partition=2/2"];

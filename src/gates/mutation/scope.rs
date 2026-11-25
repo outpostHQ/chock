@@ -1,6 +1,7 @@
 //! Which files a local `mutest` run mutates. A change to Rust source alone mutates only those
 //! files and keeps the record for the rest; CI and a recorded baseline mutate the whole crate.
 
+use crate::gates::tools::miri::Part;
 use crate::project::config::Unmutated;
 use crate::run::baseline::Series;
 use crate::run::report::Finding;
@@ -15,6 +16,9 @@ pub(super) fn of(ctx: &Ctx) -> Result<Option<Vec<String>>, String> {
         return Err(format!(
             "`--mutate` names {file}, which is no Rust source mutest mutates here"
         ));
+    }
+    if let Some(part) = ctx.scope.part {
+        return kept(ctx).map(|files| Some(parted(ctx, files, part)));
     }
     let files = if !named.is_empty() {
         Some(named.clone())
@@ -36,6 +40,13 @@ pub(super) fn whole(ctx: &Ctx) -> Result<Option<String>, String> {
     if ctx.not_mutated.is_empty() {
         return Ok(None);
     }
+    let files = kept(ctx)?;
+    Ok((!files.is_empty()).then(|| filter(&files)))
+}
+
+/// Every Rust source mutest mutates, less the files the project leaves unmutated, each a path
+/// mutest's filter can spell.
+fn kept(ctx: &Ctx) -> Result<Vec<String>, String> {
     let sources = sources(ctx)?;
     for named in &ctx.not_mutated {
         let path = &named.path;
@@ -55,10 +66,39 @@ pub(super) fn whole(ctx: &Ctx) -> Result<Option<String>, String> {
     if let Some(file) = files.iter().find(|file| file.contains([':', ','])) {
         return Err(format!(
             "mutest's filter cannot name {file}, so chock cannot leave out the files in \
-             `not_mutated`"
+             `not_mutated` or split the crate into parts"
         ));
     }
-    Ok((!files.is_empty()).then(|| filter(&files)))
+    Ok(files)
+}
+
+/// The files of `part`: each file goes, largest first, to the part with the fewest lines so far,
+/// so the parts cost about the same and every file is in exactly one of them.
+fn parted(ctx: &Ctx, files: Vec<String>, part: Part) -> Vec<String> {
+    let lines = |file: &String| {
+        std::fs::read_to_string(ctx.root.join(file)).map_or(0, |text| text.lines().count())
+    };
+    let weighed = files.into_iter().map(|file| (lines(&file), file)).collect();
+    split(weighed, part)
+}
+
+/// The files of `part`, from each file with its weight.
+fn split(mut weighed: Vec<(usize, String)>, part: Part) -> Vec<String> {
+    weighed.sort_by(|(a, x), (b, y)| b.cmp(a).then_with(|| x.cmp(y)));
+    let mut totals = vec![0_usize; usize::try_from(part.of).unwrap_or(1).max(1)];
+    let wanted = usize::try_from(part.index).unwrap_or(1).saturating_sub(1);
+    let mut files = Vec::new();
+    for (weight, file) in weighed {
+        let lightest = (0..totals.len())
+            .min_by_key(|&at| (totals[at], at))
+            .unwrap_or(0);
+        totals[lightest] = totals[lightest].saturating_add(weight.max(1));
+        if lightest == wanted {
+            files.push(file);
+        }
+    }
+    files.sort();
+    files
 }
 
 fn left_out(named: &[Unmutated], file: &str) -> bool {
@@ -166,8 +206,8 @@ pub(super) fn widened(
 
 fn note(files: usize) -> Finding {
     local(&format!(
-        "mutated only {files} Rust file(s), from this change or `--mutate`; CI mutates the whole \
-         crate"
+        "mutated only {files} Rust file(s), from this change, `--mutate` or \
+         `--mutest-partition`; every other file keeps its record"
     ))
 }
 
@@ -197,6 +237,76 @@ mod tests {
                 .map(|(key, n)| ((*key).to_string(), *n))
                 .collect(),
         )
+    }
+
+    fn weighed(all: &[(usize, &str)]) -> Vec<(usize, String)> {
+        all.iter()
+            .map(|(n, file)| (*n, (*file).to_string()))
+            .collect()
+    }
+
+    /// Each file is in exactly one part, and the parts of a crate cost about the same.
+    #[test]
+    fn the_parts_of_a_partition_hold_every_file_once_and_weigh_about_the_same() {
+        let files = weighed(&[
+            (900, "src/a.rs"),
+            (100, "src/b.rs"),
+            (500, "src/c.rs"),
+            (400, "src/d.rs"),
+            (0, "src/e.rs"),
+            (300, "src/f.rs"),
+            (200, "src/g.rs"),
+        ]);
+        let parts: Vec<Vec<String>> = (1..=3)
+            .map(|index| split(files.clone(), Part { index, of: 3 }))
+            .collect();
+        let mut all: Vec<String> = parts.iter().flatten().cloned().collect();
+        all.sort();
+        let named: Vec<String> = files.iter().map(|(_, file)| file.clone()).collect();
+        let mut expected = named.clone();
+        expected.sort();
+        assert_eq!(all, expected, "every file once, in no two parts");
+        assert_eq!(parts[0], paths(&["src/a.rs"]));
+        // 900, 800 and 701 lines: a file of none still weighs one.
+        assert_eq!(parts[1], paths(&["src/b.rs", "src/c.rs", "src/g.rs"]));
+        assert_eq!(parts[2], paths(&["src/d.rs", "src/e.rs", "src/f.rs"]));
+        // The order the files arrive in does not move them between parts.
+        let mut turned = files;
+        turned.reverse();
+        assert_eq!(split(turned, Part { index: 2, of: 3 }), parts[1]);
+        // More parts than files leaves the last parts empty, never a file out.
+        let one = weighed(&[(10, "src/a.rs")]);
+        assert_eq!(
+            split(one.clone(), Part { index: 1, of: 2 }),
+            paths(&["src/a.rs"])
+        );
+        assert!(split(one, Part { index: 2, of: 2 }).is_empty());
+    }
+
+    /// A partition mutates its part of every source, less the files the project leaves out.
+    #[test]
+    #[cfg_attr(all(miri, windows), ignore = "Miri cannot make a directory on Windows")]
+    fn a_partition_mutates_its_part_of_every_source_the_project_mutates() {
+        let lines = |n: usize| "fn f() {}\n".repeat(n);
+        let (a, b, c, t) = (lines(30), lines(20), lines(10), lines(50));
+        let root = crate::testdir::tree(
+            "mutest-partition",
+            &[
+                ("src/a.rs", &a),
+                ("src/b.rs", &b),
+                ("src/c.rs", &c),
+                ("tests/t.rs", &t),
+            ],
+        );
+        let mut ctx = Ctx::at(&root);
+        ctx.not_mutated = vec![unmutated("src/b.rs", "generated")];
+        let part = |index| {
+            let mut ctx = ctx.clone();
+            ctx.scope.part = Some(Part { index, of: 2 });
+            of(&ctx)
+        };
+        assert_eq!(part(1), Ok(Some(paths(&["src/a.rs"]))));
+        assert_eq!(part(2), Ok(Some(paths(&["src/c.rs"]))));
     }
 
     #[test]
@@ -298,7 +408,7 @@ mod tests {
         );
         ctx.not_mutated = vec![unmutated("src/generated.rs", "written by build.rs")];
         let comma = "mutest's filter cannot name src/a,b.rs, so chock cannot leave out the files \
-                     in `not_mutated`";
+                     in `not_mutated` or split the crate into parts";
         assert_eq!(whole(&ctx), Err(comma.to_string()));
         assert_eq!(of(&ctx), Ok(Some(paths(&["src/lib.rs"]))));
         ctx.scope.mutate = paths(&["crates/b/src/c.rs", "src/generated.rs"]);
