@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/outpostHQ/chock/main/schema/baseline-v1.json",
   "version": 1,
-  "chock": "0.22.0",
+  "chock": "0.22.1",
   "gates": {
     "admits": {},
     "assertions": {
@@ -681,7 +681,7 @@
       "hazard_unordered_into_ordered": 0
     },
     "lines": {
-      "total": 97138
+      "total": 97273
     },
     "manifest": {},
     "measures": {

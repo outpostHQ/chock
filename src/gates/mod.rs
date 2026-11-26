@@ -91,6 +91,13 @@ static REGISTRY: &[Gate] = &[
     wiring::GATE,
 ];
 
+/// The gates chock 0.21.0 removed when proofhouse took over Kani, TLA+ and Verus. A config that
+/// still names one is no typo: a run skips the name, and `chock init --local` drops it.
+pub const RETIRED: [&str; 5] = ["laws", "links", "proof", "tla", "verus"];
+
+/// The version that removed the gates in [`RETIRED`].
+pub const RETIRED_IN: &str = "0.21.0";
+
 /// Every gate that chock knows, opt-in gates and instruments included.
 #[must_use]
 pub fn registry() -> &'static [Gate] {

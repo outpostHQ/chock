@@ -616,7 +616,7 @@ fn enabled_by(config: &Config) -> Result<Vec<&'static run::Gate>, String> {
 #[expect(clippy::print_stderr, reason = "the CLI tells the user on stderr")]
 fn skip_unknown(config: &Config) -> Result<(), String> {
     let known: Vec<&str> = gates::registry().iter().map(|g| g.name).collect();
-    let stale = config.unknown(&known);
+    let (removed, stale) = by_age(config.unknown(&known));
     if let Some(typo) = stale
         .iter()
         .find(|name| crate::usage::closest(name, &known).is_some())
@@ -627,10 +627,30 @@ fn skip_unknown(config: &Config) -> Result<(), String> {
             crate::usage::guess(typo, &known, "")
         ));
     }
-    if let Some(note) = skipped(&stale) {
+    for note in [retired(&removed), skipped(&stale)].into_iter().flatten() {
         eprintln!("chock: {note}");
     }
     Ok(())
+}
+
+/// The names of gates a past chock had and this one removed, then the rest.
+fn by_age(unknown: Vec<String>) -> (Vec<String>, Vec<String>) {
+    unknown
+        .into_iter()
+        .partition(|name| gates::RETIRED.contains(&name.as_str()))
+}
+
+/// The note on the gates this chock removed, which a run skips; `None` when there are none.
+fn retired(removed: &[String]) -> Option<String> {
+    (!removed.is_empty()).then(|| {
+        format!(
+            "{} names gates chock {} removed, so it skips them: {}; `chock init --local` drops \
+         them",
+            project::config::FILE,
+            gates::RETIRED_IN,
+            removed.join(", ")
+        )
+    })
 }
 
 /// The note on the names a newer chock wrote, which this one skips; `None` when there are none.
@@ -1223,6 +1243,24 @@ mod tests {
     fn an_empty_config_runs_nothing_rather_than_quietly_running_everything() {
         let config = Config::of(Vec::<String>::new());
         assert!(select(&[], Some(&config)).unwrap().is_empty());
+    }
+
+    /// `links` is one letter from `lines`, but chock removed it, so it is no typo.
+    #[test]
+    fn a_gate_chock_removed_is_skipped_with_a_note_not_refused_as_a_typo() {
+        let config = Config::of(["lines", "links", "laws"]);
+        assert_eq!(names_of(&select(&[], Some(&config)).unwrap()), ["lines"]);
+        let (removed, stale) = by_age(config.unknown(&["lines"]));
+        assert_eq!(removed, ["laws", "links"]);
+        assert!(stale.is_empty(), "{stale:?}");
+        let note = retired(&removed).unwrap();
+        assert!(
+            note.ends_with(
+                "0.21.0 removed, so it skips them: laws, links; `chock init --local` drops them"
+            ),
+            "{note}"
+        );
+        assert_eq!(retired(&[]), None);
     }
 
     #[test]

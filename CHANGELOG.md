@@ -5,6 +5,14 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-11-26
+
+- **`dead` takes each method of a proofhouse `#[design]` block as reached,** as it takes a
+  `#[pymethods]` block: the checker runs each `#[action]`, `#[invariant]` and `#[reach]`.
+- **A config that names a gate 0.21.0 removed runs.** `laws`, `links`, `proof`, `tla` and `verus`
+  are no typo: a run skips them with a note, and `chock init --local` drops them from the config
+  and says so. Before, `links` was refused as a typo of `lines`, so every hook stopped.
+
 ## [0.22.1] - 2026-11-25
 
 - **`chock run mutest --mutest-partition=K/N` mutates one part of the crate.** The files split

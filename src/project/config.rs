@@ -510,6 +510,30 @@ impl Config {
             .collect()
     }
 
+    /// Takes each name in `gone` out of every key that names a gate, and returns the names taken.
+    pub fn drop_gates(&mut self, gone: &[&str]) -> Vec<String> {
+        let mut dropped = BTreeSet::new();
+        let mut keep = |name: &String| {
+            let kept = !gone.contains(&name.as_str());
+            if !kept {
+                dropped.insert(name.clone());
+            }
+            kept
+        };
+        self.enabled.retain(&mut keep);
+        self.stage.retain(|name, _| keep(name));
+        self.left_off.retain(|name, _| keep(name));
+        let lists = [
+            &mut self.strict,
+            &mut self.clean_when_touched,
+            &mut self.local_only,
+        ];
+        for list in lists.into_iter().flatten() {
+            list.retain(&mut keep);
+        }
+        dropped.into_iter().collect()
+    }
+
     /// Names under `clean_when_touched` that `holds` refuses. A gate with no number for each file
     /// would pass that list in silence, so the run refuses the config.
     #[must_use]

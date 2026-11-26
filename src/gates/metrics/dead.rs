@@ -268,8 +268,10 @@ const BY_NAME: [&str; 9] = [
     "napi",
 ];
 
-/// Attributes on an `impl` block that hand every method in it to another language.
-const BY_BLOCK: [&str; 5] = [
+/// Attributes on an `impl` block that hand every method in it to another language, or to a
+/// checker: proofhouse's `#[design]` runs each `#[action]`, `#[invariant]` and `#[reach]`.
+const BY_BLOCK: [&str; 6] = [
+    "design",
     "pymethods",
     "pyclass",
     "wasm_bindgen",
@@ -277,7 +279,7 @@ const BY_BLOCK: [&str; 5] = [
     "napi_derive",
 ];
 
-/// Whether a block's attributes bind its methods to another language, as `#[pymethods]` does.
+/// Whether a block's attributes hand its methods outside the crate, as `#[pymethods]` does.
 fn bound_to_another_language(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         attr.path()
@@ -373,6 +375,16 @@ mod tests {
             .into_iter()
             .map(|(name, _)| name)
             .collect()
+    }
+
+    /// The laws of a proofhouse design are called by the checker alone, so none is dead; a
+    /// helper beside the design that nothing names still is.
+    #[test]
+    fn each_method_of_a_proofhouse_design_is_run_by_the_checker() {
+        let src = "#[cfg(proofhouse)]\nmod proofs {\n    #[design]\n    impl Meter {\n        \
+                   #[action]\n        fn delete_or_restore(&mut self) {}\n        #[invariant]\n        \
+                   fn booked_once(&self) -> bool { true }\n    }\n    fn unused() {}\n}\n";
+        assert_eq!(defined(src), ["unused"]);
     }
 
     #[test]

@@ -564,6 +564,7 @@ fn write_local_with(
     let (config, decisions) = match already_chosen(root) {
         // `wiring` on asks for every passing gate, so one newer than the config is switched on.
         Some(mut held) => {
+            held.drop_gates(&gates::RETIRED);
             held.enabled.extend(passing(root, &held));
             (held, DECIDED.to_string())
         }
@@ -609,26 +610,39 @@ fn keep_the_choices_already_made(path: &Path, measured: &Config) -> Result<Strin
             crate::project::config::FILE
         ));
     };
-    let offered: Vec<&str> = measured
-        .enabled
-        .iter()
-        .map(String::as_str)
-        .filter(|name| !held.is_on(name))
-        .collect();
-    if offered.is_empty() {
+    let (kept, change) = updated(held, measured);
+    let Some(change) = change else {
         return Ok(format!("  unchanged {}\n", crate::project::config::FILE));
-    }
-    let mut kept = held;
-    kept.enabled.extend(offered.iter().map(ToString::to_string));
+    };
     crate::project::document::write(path, &crate::project::document::render(&kept))
-        .map(|()| {
-            format!(
-                "  updated   {}: switched on {}, which pass here and `wiring` asks to be on\n",
-                crate::project::config::FILE,
-                offered.join(" ")
-            )
-        })
+        .map(|()| format!("  updated   {}: {change}\n", crate::project::config::FILE))
         .map_err(|e| unwritable(path, &e))
+}
+
+/// `held` less the gates chock removed and with each gate `measured` holds that `held` lacks,
+/// and what changed; `None` when nothing did.
+fn updated(mut held: Config, measured: &Config) -> (Config, Option<String>) {
+    let dropped = held.drop_gates(&gates::RETIRED);
+    let offered: Vec<String> = measured
+        .enabled
+        .difference(&held.enabled)
+        .cloned()
+        .collect();
+    held.enabled.extend(offered.iter().cloned());
+    let said: Vec<String> = [
+        (!dropped.is_empty()).then(|| {
+            let gone = dropped.join(" ");
+            format!("dropped {gone}, gates chock {} removed", gates::RETIRED_IN)
+        }),
+        (!offered.is_empty()).then(|| {
+            let on = offered.join(" ");
+            format!("switched on {on}, which pass here and `wiring` asks to be on")
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (held, (!said.is_empty()).then(|| said.join("; ")))
 }
 
 use crate::setup::hooks::install_hooks;
@@ -1829,6 +1843,38 @@ mod tests {
             assert_eq!(after.is_on("lean"), gains, "{report}");
             assert_eq!(report.contains("switched on lean"), gains, "{report}");
         }
+    }
+
+    /// A config 0.20 wrote still names `links` and `laws`; init drops them from each key, says so,
+    /// and keeps every other choice.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn init_drops_the_gates_chock_removed_from_a_held_config_and_says_so() {
+        let mut held = Config::of(["slop", "links", "laws"]);
+        held.strict = Some(vec!["links".to_string(), "slop".to_string()]);
+        let (kept, change) = updated(held, &Config::of(["slop"]));
+        assert_eq!(kept.enabled, Config::of(["slop"]).enabled);
+        assert_eq!(kept.strict, Some(vec!["slop".to_string()]));
+        assert_eq!(
+            change.as_deref(),
+            Some("dropped laws links, gates chock 0.21.0 removed")
+        );
+        let (_, same) = updated(Config::of(["slop"]), &Config::of(["slop"]));
+        assert_eq!(same, None);
+        let dir = crate::testdir::make("init-held-retired");
+        let path = dir.join(crate::project::config::FILE);
+        fs::create_dir_all(dir.join(".chock")).unwrap();
+        let old = Config::of(["slop", "links"]);
+        crate::project::document::write(&path, &crate::project::document::render(&old)).unwrap();
+        let report = write_local_with(&dir, &none_pass, &never_measured).unwrap();
+        assert!(
+            report.contains("updated   .chock/config.json: dropped links"),
+            "{report}"
+        );
+        assert!(
+            !fs::read_to_string(&path).unwrap().contains("links"),
+            "{report}"
+        );
     }
 
     fn never_measured(_root: &Path) -> (Config, String) {
